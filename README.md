@@ -17,7 +17,7 @@ Y2A-Auto (YouTube to AcFun Auto) 是一个自动化工具，旨在简化从 YouT
 - **智能处理**:
     - **视频下载**: 使用 `yt-dlp` 从 YouTube 下载视频和封面。
     - **AI 内容生成与辅助**:
-        - 可能利用 OpenAI API 进行标题/简介翻译、内容摘要、关键词/标签生成。
+        - 利用 OpenAI API 进行标题/简介翻译、内容摘要、关键词/标签生成。
     - **内容审核**: 集成阿里云内容安全 (Green) 服务，对视频内容进行自动审核。
     - **封面处理**: 使用 Pillow 处理封面图片。
 - **AcFun发布**:
@@ -25,7 +25,6 @@ Y2A-Auto (YouTube to AcFun Auto) 是一个自动化工具，旨在简化从 YouT
     - 自动上传处理完成的视频到 AcFun。
 - **配置灵活**:
     - 通过 Web 界面或配置文件管理应用设置。
-    - 支持 `.env` 文件配置敏感信息 (如API密钥)。
 - **实时通知**: 通过 WebSocket 向前端实时推送任务状态更新。
 - **后台任务调度**: 使用 APScheduler 进行如日志清理等后台任务。
 - **Docker化部署**: 提供 `Dockerfile` 和 `docker-compose.yml` 方便快速部署和环境一致性。
@@ -41,7 +40,7 @@ Y2A-Auto (YouTube to AcFun Auto) 是一个自动化工具，旨在简化从 YouT
     - OpenAI API (用于文本生成、翻译等)
     - 阿里云内容安全 (Green) SDK (用于内容审核)
 - **任务调度**: APScheduler
-- **数据库/存储**: (可能基于文件系统或简单的数据库，如SQLite，具体见 `db/` 目录)
+- **数据库/存储**: SQLite
 - **部署**: Docker, Docker Compose
 - **浏览器脚本**: Tampermonkey (JavaScript)
 
@@ -75,16 +74,9 @@ Y2A-Auto (YouTube to AcFun Auto) 是一个自动化工具，旨在简化从 YouT
 
 ### 配置
 
-1.  **环境变量**:
-    项目可能使用 `.env` 文件来管理敏感配置（如API密钥）。如果存在 `config/example.env` 或类似文件，请复制为 `config/.env` 并填入您的凭证。
-    常见的配置项可能包括：
-    - `OPENAI_API_KEY`
-    - `ALIYUN_ACCESS_KEY_ID`
-    - `ALIYUN_ACCESS_KEY_SECRET`
-    *(具体请参照 `modules/config_manager.py` 或相关文档)*
 
-2.  **应用配置 (`config/config.json`)**:
-    应用的主要配置（如默认下载路径、AcFun账户信息等）通常存储在 `config/config.json` 中。首次运行时可能会生成默认配置，或需要手动创建。
+1.  **应用配置 (`config/config.json`)**:
+    应用的主要配置存储在 `config/config.json` 中。首次运行时会生成默认配置。
 
 ### 使用 Docker 运行
 
@@ -92,29 +84,39 @@ Y2A-Auto (YouTube to AcFun Auto) 是一个自动化工具，旨在简化从 YouT
 
 1.  **克隆仓库**:
     ```bash
-    git clone <your-repository-url>
+    git clone https://github.com/fqscfqj/Y2A-Auto.git
     cd Y2A-Auto
     ```
 
-2.  **准备配置文件**:
-    - 确保 `config/` 目录下有必要的配置文件。如果需要，创建 `.env` 文件并放入 `config/` 目录，或根据 `docker-compose.yml` 的volumes映射进行调整。
-    - 确保 `acfunid/id_mapping.json` 文件存在且正确。
 
-3.  **构建并启动服务**:
-    ```bash
-    docker-compose up -d --build
-    ```
+2.  **部署方式选择**:
+    - **本地构建镜像**:
+      ```bash
+      docker-compose -f docker-compose-build.yml up -d --build
+      ```
+      使用此命令将根据 <mcfile name="Dockerfile" path="d:\github\Y2A-Auto\Dockerfile"></mcfile> 构建全新镜像
+    
+    - **使用预构建镜像 (Docker Hub)**:
+      ```bash
+      docker-compose -f docker-compose.yml up -d
+      ```
+      此命令将直接使用 <mcurl name="Docker Hub" url="https://hub.docker.com/r/fqscfqj/y2a-auto"></mcurl> 上的最新镜像
     服务将在后台启动。
 
-4.  **访问应用**:
+3.  **访问应用**:
     打开浏览器，访问 `http://localhost:5000`。
 
-5.  **查看日志**:
+4.  **查看日志**:
     ```bash
     docker-compose logs -f app
     ```
 
-6.  **停止服务**:
+5.  **停止服务**:
+    如果您使用 `docker-compose-build.yml` 启动:
+    ```bash
+    docker-compose -f docker-compose-build.yml down
+    ```
+    如果您使用 `docker-compose.yml` 启动:
     ```bash
     docker-compose down
     ```
