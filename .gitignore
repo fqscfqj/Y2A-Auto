@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE specific
+.vscode/
+.idea/
+
+# Logs and temporary files
+logs/
+*.log
+temp/
+*.tmp
+
+# Downloads
+downloads/
+
+# Secrets and configurations (will add data/ later)
+# data/  <- Placeholder for the new directory
+
+# OS specific
+tasks.db
+.DS_Store
+Thumbs.db 
+config.json 

@@ -1,0 +1,296 @@
+{% extends 'base.html' %}
+
+{% block title %}Y2A-Auto - 人工审核{% endblock %}
+
+{% block content %}
+<div class="review-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-check-square"></i> 人工审核列表</h2>
+    </div>
+    
+    {% if tasks %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for task in tasks %}
+                <div class="col">
+                    <div class="card h-100">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span class="badge bg-warning"><i class="bi bi-hourglass-split"></i> 待审核</span>
+                            <small class="text-muted">任务ID: <span class="text-monospace">{{ task.id[:8] }}...</span></small>
+                        </div>
+                        
+                        {% if task.cover_path_local %}
+                            <div class="card-img-container">
+                                <img src="{{ url_for('static', filename='covers/' + task.id + '.jpg') }}" class="card-img-top" alt="视频封面">
+                            </div>
+                        {% endif %}
+                        
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                {% if task.video_title_translated %}
+                                    {{ task.video_title_translated }}
+                                    <small class="text-muted d-block">原标题: {{ task.video_title_original }}</small>
+                                {% else %}
+                                    {{ task.video_title_original or '未获取标题' }}
+                                {% endif %}
+                            </h5>
+                            
+                            <div class="mt-3">
+                                <h6><i class="bi bi-shield-check"></i> 审核结果:</h6>
+                                {% if task.moderation_result %}
+                                    {% set moderation = parse_json(task.moderation_result) %}
+                                    <div class="moderation-results">
+                                        {% if not moderation.overall_pass %}
+                                            <div class="alert alert-danger">
+                                                <i class="bi bi-x-circle"></i> <strong>审核不通过</strong>
+                                            </div>
+                                        {% else %}
+                                            <div class="alert alert-success">
+                                                <i class="bi bi-check-circle"></i> <strong>审核通过</strong> (若有以下详情，建议检查)
+                                            </div>
+                                        {% endif %}
+                                        
+                                        {% for content_type, result in [('标题', moderation.title), ('描述', moderation.description)] %}
+                                            {% if result and result.details %}
+                                                <div class="moderation-item">
+                                                    <h6><i class="bi bi-exclamation-triangle"></i> {{ content_type }}问题:</h6>
+                                                    <ul class="list-group list-group-flush">
+                                                        {% for detail in result.details %}
+                                                            <li class="list-group-item 
+                                                               {% if detail.suggestion == 'block' %}list-group-item-danger
+                                                               {% elif detail.suggestion == 'review' %}list-group-item-warning
+                                                               {% else %}list-group-item-info{% endif %}">
+                                                                <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
+                                                                {% if detail.description %}
+                                                                    <small class="text-muted"> ({{ detail.description }})</small>
+                                                                {% endif %}
+                                                                <br>
+                                                                <small>
+                                                                    原因: {{ detail.reason or '无' }}<br>
+                                                                    建议: 
+                                                                    {% if detail.suggestion == 'block' %}阻止发布
+                                                                    {% elif detail.suggestion == 'review' %}人工复审
+                                                                    {% else %}通过{% endif %}
+                                                                    {% if detail.confidence %}
+                                                                        (置信度: {{ "%.2f"|format(detail.confidence) }}%)
+                                                                    {% endif %}
+                                                                </small>
+                                                            </li>
+                                                        {% endfor %}
+                                                    </ul>
+                                                </div>
+                                            {% endif %}
+                                        {% endfor %}
+                                        
+                                        {% if moderation.tags and moderation.tags.details %}
+                                            <div class="moderation-item">
+                                                <h6><i class="bi bi-exclamation-triangle"></i> 标签问题:</h6>
+                                                <ul class="list-group list-group-flush">
+                                                    {% for detail in moderation.tags.details %}
+                                                        <li class="list-group-item 
+                                                           {% if detail.suggestion == 'block' %}list-group-item-danger
+                                                           {% elif detail.suggestion == 'review' %}list-group-item-warning
+                                                           {% else %}list-group-item-info{% endif %}">
+                                                            <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
+                                                            {% if detail.description %}
+                                                                <small class="text-muted"> ({{ detail.description }})</small>
+                                                            {% endif %}
+                                                            <br>
+                                                            <small>
+                                                                原因: {{ detail.reason or '无' }}<br>
+                                                                建议: 
+                                                                {% if detail.suggestion == 'block' %}阻止发布
+                                                                {% elif detail.suggestion == 'review' %}人工复审
+                                                                {% else %}通过{% endif %}
+                                                                {% if detail.confidence %}
+                                                                    (置信度: {{ "%.2f"|format(detail.confidence) }}%)
+                                                                {% endif %}
+                                                            </small>
+                                                        </li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-secondary">
+                                        <i class="bi bi-info-circle"></i> 未找到审核结果或审核已跳过。
+                                    </div>
+                                {% endif %}
+                            </div>
+                            
+                            <div class="mt-3">
+                                <h6><i class="bi bi-folder"></i> 当前分区:</h6>
+                                {% if task.selected_partition_id %}
+                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}</span>
+                                {% elif task.recommended_partition_id %}
+                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}</span>
+                                    <span class="badge bg-secondary"><i class="bi bi-stars"></i> 推荐</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">未设置</span>
+                                {% endif %}
+                            </div>
+                            
+                            <div class="mt-3">
+                                <h6><i class="bi bi-tags"></i> 标签:</h6>
+                                <div class="tags-container">
+                                    {% if task.tags_generated %}
+                                        {% set tags = parse_json(task.tags_generated) %}
+                                        {% for tag in tags %}
+                                            <span class="badge bg-secondary me-1 mb-1">{{ tag }}</span>
+                                        {% endfor %}
+                                    {% else %}
+                                        <span class="badge bg-light text-dark">未生成标签</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="card-footer">
+                            <div class="d-flex justify-content-between">
+                                <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-primary">
+                                    <i class="bi bi-pencil"></i> 修改后上传
+                                </a>
+                                <button type="button" class="btn btn-success" 
+                                        onclick="confirmForceUpload('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
+                                    <i class="bi bi-upload"></i> 强制上传
+                                </button>
+                                <button type="button" class="btn btn-outline-danger"
+                                        onclick="confirmAbandon('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
+                                    <i class="bi bi-trash"></i> 放弃任务
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> 当前没有需要人工审核的任务。
+        </div>
+    {% endif %}
+</div>
+
+<!-- 强制上传确认对话框 -->
+<div class="modal fade" id="forceUploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> 确认强制上传</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要强制上传任务 <strong id="forceUploadTitle"></strong> 吗？</p>
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle-fill"></i> 
+                    此操作将忽略内容审核结果，可能导致内容违规!
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form id="forceUploadForm" method="post" action="">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-upload"></i> 确认强制上传
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 放弃任务确认对话框 -->
+<div class="modal fade" id="abandonTaskModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-trash"></i> 确认放弃任务</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要放弃任务 <strong id="abandonTaskTitle"></strong> 吗？</p>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="abandonDeleteFiles" checked>
+                    <label class="form-check-label" for="abandonDeleteFiles">
+                        同时删除任务文件
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form id="abandonTaskForm" method="post" action="">
+                    <input type="hidden" name="delete_files" id="abandonDeleteFilesInput" value="true">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> 确认放弃
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .card-img-container {
+        height: 180px;
+        overflow: hidden;
+        position: relative;
+    }
+    
+    .card-img-container img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+    
+    .moderation-item {
+        margin-bottom: 15px;
+    }
+    .moderation-item h6 {
+        margin-bottom: 0.5rem;
+    }
+    .list-group-item small {
+        font-size: 0.85em;
+        color: #555;
+    }
+    .text-monospace {
+        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    
+    .tags-container {
+        display: flex;
+        flex-wrap: wrap;
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 强制上传确认
+    function confirmForceUpload(taskId, taskTitle) {
+        document.getElementById('forceUploadTitle').textContent = taskTitle;
+        document.getElementById('forceUploadForm').action = "{{ url_for('force_upload_task_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
+        
+        // 显示模态框
+        new bootstrap.Modal(document.getElementById('forceUploadModal')).show();
+    }
+    
+    // 放弃任务确认
+    function confirmAbandon(taskId, taskTitle) {
+        document.getElementById('abandonTaskTitle').textContent = taskTitle;
+        document.getElementById('abandonTaskForm').action = "{{ url_for('abandon_task_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
+        
+        // 绑定复选框变化
+        document.getElementById('abandonDeleteFiles').addEventListener('change', function() {
+            document.getElementById('abandonDeleteFilesInput').value = this.checked ? 'true' : 'false';
+        });
+        
+        // 显示模态框
+        new bootstrap.Modal(document.getElementById('abandonTaskModal')).show();
+    }
+</script>
+{% endblock %} 

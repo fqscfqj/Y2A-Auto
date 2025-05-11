@@ -1,0 +1,276 @@
+{% extends 'base.html' %}
+
+{% block title %}Y2A-Auto - 任务列表{% endblock %}
+
+{% block content %}
+<div class="tasks-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>任务列表</h2>
+        <div>
+            <button type="button" class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#addTaskModal">
+                <i class="bi bi-plus-circle"></i> 新建任务
+            </button>
+            {% if tasks %}
+            <button type="button" class="btn btn-danger" onclick="confirmClearAll()">
+                <i class="bi bi-trash"></i> 清除所有任务
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if tasks %}
+    <div class="card">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 8%">ID</th>
+                            <th style="width: 22%">视频标题</th>
+                            <th style="width: 8%">状态</th>
+                            <th style="width: 12%">创建时间</th>
+                            <th style="width: 8%">分区</th>
+                            <th style="width: 12%">标签</th>
+                            <th style="width: 15%">上传结果</th>
+                            <th style="width: 18%">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for task in tasks %}
+                        <tr>
+                            <td><span class="text-monospace">{{ task.id[:8] }}...</span></td>
+                            <td>
+                                {% if task.video_title_translated %}
+                                    {{ task.video_title_translated }}
+                                    <div class="small text-muted">原标题: {{ task.video_title_original }}</div>
+                                {% else %}
+                                    {{ task.video_title_original or '未获取标题' }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="badge rounded-pill bg-{{ task_status_color(task.status) }}">
+                                    {{ task_status_display(task.status) }}
+                                </span>
+                            </td>
+                            <td>{{ task.created_at }}</td>
+                            <td>
+                                {% if task.selected_partition_id %}
+                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}</span>
+                                {% elif task.recommended_partition_id %}
+                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}</span>
+                                    <div class="small text-muted mt-1">推荐</div>
+                                {% else %}
+                                    <span class="badge bg-secondary">未设置</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if task.tags_generated %}
+                                    {% set tags = parse_json(task.tags_generated) %}
+                                    <div class="tags-container">
+                                        {% for tag in tags[:3] %}
+                                            <span class="badge bg-secondary me-1 mb-1">{{ tag }}</span>
+                                        {% endfor %}
+                                        {% if tags|length > 3 %}
+                                            <span class="badge bg-light text-dark me-1 mb-1">+{{ tags|length - 3 }}</span>
+                                        {% endif %}
+                                    </div>
+                                {% else %}
+                                    <span class="badge bg-secondary">未生成</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if task.status == 'completed' and task.acfun_upload_response %}
+                                    {% set upload_result = parse_json(task.acfun_upload_response) %}
+                                    {% if upload_result and upload_result.ac_number %}
+                                        <span class="badge bg-success">AC{{ upload_result.ac_number }}</span>
+                                        <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" class="btn btn-sm btn-outline-success ms-1">
+                                            <i class="bi bi-box-arrow-up-right"></i> 查看
+                                        </a>
+                                    {% else %}
+                                        <span class="badge bg-secondary">未获取AC号</span>
+                                    {% endif %}
+                                {% elif task.status == 'failed' %}
+                                    <span class="badge bg-danger">{{ task.error_message or '未知错误' }}</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">未上传</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="d-flex justify-content-end gap-1">
+                                    {% if task.status == 'awaiting_manual_review' %}
+                                        <a href="{{ url_for('review_task', task_id=task.id) }}" class="btn btn-sm btn-warning d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                            <i class="bi bi-eye me-1"></i> 审核
+                                        </a>
+                                    {% elif task.status == 'pending' or task.status == 'failed' %}
+                                        <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-primary d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                                <i class="bi bi-play-fill me-1"></i> 开始
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                        <i class="bi bi-pencil me-1"></i> 编辑
+                                    </a>
+                                    <button type="button" class="btn btn-sm btn-outline-danger d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;"
+                                            data-task-id="{{ task.id }}"
+                                            data-task-title="{{ task.video_title_original|default(task.video_title_translated, true)|default('未知视频', true) }}"
+                                            onclick="confirmDelete(this.dataset.taskId, this.dataset.taskTitle)">
+                                        <i class="bi bi-trash me-1"></i> 删除
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-info">
+        <i class="bi bi-info-circle"></i> 暂无任务，请点击"新建任务"按钮添加任务。
+    </div>
+    {% endif %}
+</div>
+
+<!-- 新建任务对话框 -->
+<div class="modal fade" id="addTaskModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 新建任务</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <form method="post" action="{{ url_for('add_task_route') }}">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="youtube_url" class="form-label">YouTube视频URL</label>
+                        <input type="text" class="form-control" id="youtube_url" name="youtube_url" required 
+                               placeholder="https://www.youtube.com/watch?v=...">
+                        <div class="form-text">支持标准YouTube视频链接</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <i class="bi bi-x-circle"></i> 取消
+                    </button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-plus-circle"></i> 添加任务
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 删除确认对话框 -->
+<div class="modal fade" id="deleteTaskModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> 确认删除</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要删除任务 <strong id="deleteTaskTitle"></strong> 吗？</p>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="deleteFiles" checked>
+                    <label class="form-check-label" for="deleteFiles">
+                        同时删除任务文件
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form id="deleteTaskForm" method="post" action="">
+                    <input type="hidden" name="delete_files" id="deleteFilesInput" value="true">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> 删除
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 清除所有任务确认对话框 -->
+<div class="modal fade" id="clearAllTasksModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> 确认清除所有任务</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-danger fw-bold">此操作将清除所有任务，且无法恢复！</p>
+                <p>确定要清除所有任务吗？</p>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="clearAllFiles" checked>
+                    <label class="form-check-label" for="clearAllFiles">
+                        同时删除所有任务文件
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form id="clearAllTasksForm" method="post" action="{{ url_for('clear_all_tasks_route') }}">
+                    <input type="hidden" name="delete_files" id="clearAllFilesInput" value="true">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> 确认清除
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .table tbody tr:hover {
+        background-color: rgba(13, 110, 253, 0.05);
+    }
+    
+    .text-monospace {
+        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    
+    .tags-container {
+        display: flex;
+        flex-wrap: wrap;
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 删除任务确认框
+    function confirmDelete(taskId, taskTitle) {
+        document.getElementById('deleteTaskTitle').textContent = taskTitle;
+        document.getElementById('deleteTaskForm').action = "{{ url_for('delete_task_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
+        
+        // 绑定复选框变化
+        document.getElementById('deleteFiles').addEventListener('change', function() {
+            document.getElementById('deleteFilesInput').value = this.checked ? 'true' : 'false';
+        });
+        
+        // 显示模态框
+        new bootstrap.Modal(document.getElementById('deleteTaskModal')).show();
+    }
+    
+    // 清除所有任务确认框
+    function confirmClearAll() {
+        // 绑定复选框变化
+        document.getElementById('clearAllFiles').addEventListener('change', function() {
+            document.getElementById('clearAllFilesInput').value = this.checked ? 'true' : 'false';
+        });
+        
+        // 显示模态框
+        new bootstrap.Modal(document.getElementById('clearAllTasksModal')).show();
+    }
+</script>
+{% endblock %} 
