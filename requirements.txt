@@ -1,0 +1,16 @@
+flask==2.3.3
+werkzeug==2.3.7
+yt-dlp==2025.4.30
+Pillow==10.0.0
+openai>=1.0.0
+alibabacloud_green20220302==2.2.8
+alibabacloud_tea_openapi==0.3.15
+alibabacloud_tea_util==0.3.13
+APScheduler==3.10.1
+flask-cors==5.0.1
+js2py==0.74
+requests==2.32.3
+flask-socketio==5.5.1
+eventlet==0.39.1
+python-dotenv==1.0.0
+pytz==2025.2

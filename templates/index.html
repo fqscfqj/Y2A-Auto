@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}Y2A-Auto - 首页{% endblock %}
+
+{% block content %}
+<div class="home-hero text-center">
+    <h1 class="display-4 mb-3">Y2A-Auto</h1>
+    <p class="lead">YouTube到AcFun视频全自动处理平台</p>
+    <div class="mt-4">
+        <a href="{{ url_for('tasks') }}" class="btn btn-primary btn-lg me-2">
+            <i class="bi bi-list-task"></i> 查看任务
+        </a>
+        <a href="javascript:void(0);" data-bs-toggle="modal" data-bs-target="#quickStartModal" class="btn btn-outline-primary btn-lg">
+            <i class="bi bi-question-circle"></i> 快速入门
+        </a>
+    </div>
+</div>
+
+<div class="row mt-5">
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-download"></i>
+                </div>
+                <h5 class="card-title">自动下载</h5>
+                <p class="card-text">使用yt-dlp高效下载YouTube视频、元数据、封面和字幕</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-translate"></i>
+                </div>
+                <h5 class="card-title">AI翻译</h5>
+                <p class="card-text">利用OpenAI将视频标题和描述翻译成中文，自动生成AcFun风格标签</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-shield-check"></i>
+                </div>
+                <h5 class="card-title">内容审核</h5>
+                <p class="card-text">集成阿里云内容安全API进行文本和图片审核，确保内容合规</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-3">
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-tags"></i>
+                </div>
+                <h5 class="card-title">分区推荐</h5>
+                <p class="card-text">智能分析视频内容，自动推荐适合的AcFun分区，提高投稿精准度</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-aspect-ratio"></i>
+                </div>
+                <h5 class="card-title">封面优化</h5>
+                <p class="card-text">自动处理封面图片至AcFun最佳比例(16:10)，支持裁剪和填充模式</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="feature-icon">
+                    <i class="bi bi-upload"></i>
+                </div>
+                <h5 class="card-title">一键上传</h5>
+                <p class="card-text">自动登录AcFun并上传视频、封面、标题、描述和标签，全流程自动化</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-5 mb-4">
+    <div class="card">
+        <div class="card-header bg-primary text-white">
+            <h4 class="mb-0">使用流程</h4>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3 text-center mb-3">
+                    <div class="p-3 border rounded">
+                        <h3 class="h5"><i class="bi bi-1-circle"></i> 添加任务</h3>
+                        <p class="small">输入YouTube视频URL创建新任务</p>
+                    </div>
+                </div>
+                <div class="col-md-3 text-center mb-3">
+                    <div class="p-3 border rounded">
+                        <h3 class="h5"><i class="bi bi-2-circle"></i> 自动处理</h3>
+                        <p class="small">系统自动下载、翻译、生成标签并审核</p>
+                    </div>
+                </div>
+                <div class="col-md-3 text-center mb-3">
+                    <div class="p-3 border rounded">
+                        <h3 class="h5"><i class="bi bi-3-circle"></i> 人工审核</h3>
+                        <p class="small">需要时检查并修改翻译和标签</p>
+                    </div>
+                </div>
+                <div class="col-md-3 text-center mb-3">
+                    <div class="p-3 border rounded">
+                        <h3 class="h5"><i class="bi bi-4-circle"></i> 上传AcFun</h3>
+                        <p class="small">一键上传至AcFun平台</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 快速入门模态框 -->
+<div class="modal fade" id="quickStartModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Y2A-Auto 快速入门</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <h5>第一步：准备工作</h5>
+                <ul>
+                    <li>确保已在"设置"页面配置了AcFun账号信息</li>
+                    <li>如需AI功能，请配置OpenAI API密钥</li>
+                    <li>如需内容审核，请配置阿里云内容安全API</li>
+                </ul>
+                
+                <h5>第二步：添加任务</h5>
+                <ul>
+                    <li>访问"任务列表"页面</li>
+                    <li>点击"新建任务"按钮</li>
+                    <li>输入YouTube视频URL</li>
+                </ul>
+                
+                <h5>第三步：处理任务</h5>
+                <ul>
+                    <li>系统将自动下载视频内容</li>
+                    <li>AI会自动翻译标题和描述</li>
+                    <li>生成标签并推荐分区</li>
+                    <li>对内容进行安全审核</li>
+                </ul>
+                
+                <h5>第四步：审核与上传</h5>
+                <ul>
+                    <li>如果内容审核通过，系统将自动上传</li>
+                    <li>如需人工审核，可在"人工审核"页面修改内容</li>
+                    <li>修改后点击"保存并上传"或"强制上传"</li>
+                </ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">了解了</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

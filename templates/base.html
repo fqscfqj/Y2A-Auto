@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Y2A-Auto{% endblock %}</title>
+    <!-- 使用本地Bootstrap CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='lib/bootstrap/bootstrap.min.css') }}">
+    <!-- 使用本地Bootstrap Icons -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='lib/icons/bootstrap-icons.css') }}">
+    <!-- 自定义样式 -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='img/favicon.ico') }}">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <header>
+        <nav class="navbar navbar-expand-lg navbar-dark">
+            <div class="container">
+                <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
+                    <span>Y2A-Auto</span>
+                </a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == url_for('index') %}active{% endif %}" href="{{ url_for('index') }}">
+                                <i class="bi bi-house-door"></i> 首页
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == url_for('tasks') %}active{% endif %}" href="{{ url_for('tasks') }}">
+                                <i class="bi bi-list-task"></i> 任务列表
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == url_for('manual_review') %}active{% endif %}" href="{{ url_for('manual_review') }}">
+                                <i class="bi bi-check-square"></i> 人工审核
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.path == url_for('settings') %}active{% endif %}" href="{{ url_for('settings') }}">
+                                <i class="bi bi-gear"></i> 设置
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+    </header>
+    
+    <main class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">{{ message|safe }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </main>
+    
+    <footer class="footer mt-5 py-3">
+        <div class="container text-center">
+            <p class="text-muted">&copy; {% block year %}{{ now.year }}{% endblock %} Y2A-Auto</p>
+        </div>
+    </footer>
+    
+    <!-- 实时通知模态框 -->
+    <div class="modal fade" id="notificationModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-bell"></i> 任务完成通知</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body" id="notificationBody">
+                    <!-- 通知内容 -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    <a href="#" class="btn btn-primary" id="viewVideoBtn" target="_blank">查看视频</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 使用本地jQuery -->
+    <script src="{{ url_for('static', filename='lib/bootstrap/jquery.min.js') }}"></script>
+    <!-- 使用本地Bootstrap JS Bundle -->
+    <script src="{{ url_for('static', filename='lib/bootstrap/bootstrap.bundle.min.js') }}"></script>
+    <!-- Socket.IO客户端库 -->
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <!-- 自定义JS -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    
+    <script>
+        // 实时通知
+        $(document).ready(function() {
+            // 连接WebSocket
+            const socket = io();
+            
+            // 连接事件
+            socket.on('connect', function() {
+                console.log('已连接到服务器');
+            });
+            
+            // 断开连接事件
+            socket.on('disconnect', function() {
+                console.log('与服务器断开连接');
+            });
+            
+            // 任务完成事件
+            socket.on('task_completed', function(data) {
+                console.log('任务完成通知:', data);
+                
+                // 判断是否显示通知
+                if (data.success) {
+                    let notificationContent = '';
+                    
+                    if (data.ac_number) {
+                        notificationContent = `<p>视频《${data.title || '未知标题'}》上传成功！</p>` +
+                                             `<p>AC号: <strong>AC${data.ac_number}</strong></p>`;
+                        $('#viewVideoBtn').attr('href', data.url).show();
+                    } else {
+                        notificationContent = '<p>任务处理已完成，但未获取到AC号</p>';
+                        $('#viewVideoBtn').hide();
+                    }
+                    
+                    // 显示通知
+                    $('#notificationBody').html(notificationContent);
+                    new bootstrap.Modal(document.getElementById('notificationModal')).show();
+                    
+                    // 任务列表页面自动刷新
+                    if (window.location.pathname.includes('/tasks') || 
+                        window.location.pathname.includes('/manual_review')) {
+                        setTimeout(function() {
+                            location.reload();
+                        }, 3000);
+                    }
+                }
+            });
+        });
+    </script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html> 

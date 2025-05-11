@@ -1,0 +1,104 @@
+/* 自定义主题样式 */
+body {
+    font-family: "Microsoft YaHei", Arial, sans-serif;
+    background-color: #f8f9fa;
+}
+
+/* 自定义导航栏 */
+.navbar {
+    background-color: #0d6efd;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.navbar-brand {
+    font-weight: 700;
+    font-size: 1.4rem;
+}
+
+/* 卡片样式增强 */
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    transition: all 0.3s ease;
+}
+
+.card:hover {
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+/* 首页样式 */
+.home-hero {
+    background-color: #f1f8ff;
+    border-radius: 0.5rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+
+.feature-icon {
+    font-size: 2rem;
+    color: #0d6efd;
+    margin-bottom: 1rem;
+}
+
+/* 设置页面特定样式 */
+.settings-container {
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    padding: 20px;
+}
+
+.settings-container h2 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    color: #0d6efd;
+}
+
+.settings-section {
+    margin-bottom: 30px;
+    padding: 20px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.settings-section h3 {
+    margin-top: 0;
+    color: #0d6efd;
+    font-size: 1.2em;
+}
+
+/* 任务卡片 */
+.task-card {
+    margin-bottom: 1.5rem;
+}
+
+.card-img-container {
+    height: 180px;
+    overflow: hidden;
+    position: relative;
+}
+
+.card-img-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* 审核页面样式 */
+.moderation-item {
+    margin-bottom: 15px;
+}
+
+/* 标签展示 */
+.tag-badge {
+    margin-right: 0.25rem;
+    margin-bottom: 0.25rem;
+}
+
+/* 帮助提示文本 */
+.help-text {
+    font-size: 0.9em;
+    color: #6c757d;
+    margin-top: 5px;
+} 

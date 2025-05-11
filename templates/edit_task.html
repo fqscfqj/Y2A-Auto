@@ -1,0 +1,375 @@
+{% extends 'base.html' %}
+
+{% block title %}Y2A-Auto - 编辑任务{% endblock %}
+
+{% block content %}
+<div class="edit-task-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>编辑任务</h2>
+        <a href="{{ url_for('tasks') }}" class="btn btn-outline-secondary">返回任务列表</a>
+    </div>
+    
+    {% if task %}
+        <div class="row">
+            <!-- 左侧信息栏 -->
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        任务信息
+                    </div>
+                    <div class="card-body">
+                        <p><strong>任务ID:</strong> {{ task.id }}</p>
+                        <p><strong>创建时间:</strong> {{ task.created_at }}</p>
+                        <p><strong>状态:</strong> 
+                            <span class="badge rounded-pill bg-{{ task_status_color(task.status) }}">
+                                {{ task_status_display(task.status) }}
+                            </span>
+                        </p>
+                        <p><strong>YouTube网址:</strong> <a href="{{ task.youtube_url }}" target="_blank">{{ task.youtube_url }}</a></p>
+                    </div>
+                </div>
+                
+                {% if task.cover_path_local %}
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            视频封面
+                        </div>
+                        <img src="{{ url_for('static', filename='covers/' + task.id + '.jpg') }}" class="card-img-top" alt="视频封面">
+                        <div class="card-body">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="cover-mode-switch" 
+                                       {% if config.COVER_PROCESSING_MODE == 'crop' %}checked{% endif %}>
+                                <label class="form-check-label" for="cover-mode-switch">
+                                    使用裁剪模式 (当前: {{ '裁剪' if config.COVER_PROCESSING_MODE == 'crop' else '填充' }})
+                                </label>
+                            </div>
+                            <button class="btn btn-sm btn-primary mt-2" id="toggle-cover-mode">切换封面处理模式</button>
+                        </div>
+                    </div>
+                {% endif %}
+                
+                {% if task.moderation_result %}
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            审核结果
+                        </div>
+                        <div class="card-body">
+                            {% set moderation = parse_json(task.moderation_result) %}
+                            {% if moderation %}
+                                {% if not moderation.overall_pass %}
+                                    <div class="alert alert-danger">
+                                        <i class="bi bi-x-circle"></i> <strong>审核不通过</strong>
+                                </div>
+                            {% else %}
+                                    <div class="alert alert-success">
+                                        <i class="bi bi-check-circle"></i> <strong>审核通过</strong> (若有以下详情，建议检查)
+                                    </div>
+                                {% endif %}
+                                
+                                {% for content_type, result in [('标题', moderation.title), ('描述', moderation.description)] %}
+                                    {% if result and result.details %}
+                                    <div class="moderation-item">
+                                            <h6><i class="bi bi-exclamation-triangle"></i> {{ content_type }}问题:</h6>
+                                            <ul class="list-group list-group-flush">
+                                                {% for detail in result.details %}
+                                                    <li class="list-group-item 
+                                                       {% if detail.suggestion == 'block' %}list-group-item-danger
+                                                       {% elif detail.suggestion == 'review' %}list-group-item-warning
+                                                       {% else %}list-group-item-info{% endif %}">
+                                                        <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
+                                                    {% if detail.description %}
+                                                            <small class="text-muted"> ({{ detail.description }})</small>
+                                                        {% endif %}
+                                                        <br>
+                                                        <small>
+                                                            原因: {{ detail.reason or '无' }}<br>
+                                                            建议: 
+                                                            {% if detail.suggestion == 'block' %}阻止发布
+                                                            {% elif detail.suggestion == 'review' %}人工复审
+                                                            {% else %}通过{% endif %}
+                                                            {% if detail.confidence %}
+                                                                (置信度: {{ "%.2f"|format(detail.confidence) }}%)
+                                                    {% endif %}
+                                                        </small>
+                                                </li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+                                {% endif %}
+                                {% endfor %}
+                                {% if moderation.tags and moderation.tags.details %}
+                                    <div class="moderation-item">
+                                        <h6><i class="bi bi-exclamation-triangle"></i> 标签问题:</h6>
+                                        <ul class="list-group list-group-flush">
+                                            {% for detail in moderation.tags.details %}
+                                                <li class="list-group-item 
+                                                   {% if detail.suggestion == 'block' %}list-group-item-danger
+                                                   {% elif detail.suggestion == 'review' %}list-group-item-warning
+                                                   {% else %}list-group-item-info{% endif %}">
+                                                    <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
+                                                    {% if detail.description %}
+                                                        <small class="text-muted"> ({{ detail.description }})</small>
+                                                    {% endif %}
+                                                    <br>
+                                                    <small>
+                                                        原因: {{ detail.reason or '无' }}<br>
+                                                        建议: 
+                                                        {% if detail.suggestion == 'block' %}阻止发布
+                                                        {% elif detail.suggestion == 'review' %}人工复审
+                                                        {% else %}通过{% endif %}
+                                                        {% if detail.confidence %}
+                                                            (置信度: {{ "%.2f"|format(detail.confidence) }}%)
+                                                        {% endif %}
+                                                    </small>
+                                                </li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+                                {% endif %}
+                            {% else %}
+                                <div class="alert alert-secondary">
+                                    <i class="bi bi-info-circle"></i> 未找到审核结果或审核已跳过。
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+            
+            <!-- 右侧编辑表单 -->
+            <div class="col-md-8">
+                <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}">
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            编辑视频信息
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="video_title_translated" class="form-label">视频标题</label>
+                                <input type="text" class="form-control" id="video_title_translated" name="video_title_translated" 
+                                       value="{{ task.video_title_translated or task.video_title_original }}" required>
+                                {% if task.video_title_original %}
+                                    <div class="form-text">原始标题: {{ task.video_title_original }}</div>
+                                {% endif %}
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="description_translated" class="form-label">视频描述</label>
+                                <textarea class="form-control" id="description_translated" name="description_translated" 
+                                          rows="10">{{ task.description_translated or task.description_original }}</textarea>
+                                {% if task.description_original %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary mt-2" data-bs-toggle="collapse" 
+                                            data-bs-target="#original-description">
+                                        显示/隐藏原始描述
+                                    </button>
+                                    <div class="collapse mt-2" id="original-description">
+                                        <div class="card card-body bg-light">
+                                            <pre>{{ task.description_original }}</pre>
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            分区设置
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="selected_partition_id" class="form-label">选择分区</label>
+                                <select class="form-select" id="selected_partition_id" name="selected_partition_id" required>
+                                    <option value="">-- 请选择分区 --</option>
+                                    {% for category in id_mapping %}
+                                        <optgroup label="{{ category.category }}">
+                                            {% for partition in category.partitions %}
+                                                <option value="{{ partition.id }}" 
+                                                        {% if task.selected_partition_id == partition.id or 
+                                                              (not task.selected_partition_id and task.recommended_partition_id == partition.id) %}
+                                                            selected
+                                                        {% endif %}>
+                                                    {{ partition.name }} ({{ partition.id }})
+                                                </option>
+                                                {% for sub_partition in partition.sub_partitions %}
+                                                    <option value="{{ sub_partition.id }}" 
+                                                            {% if task.selected_partition_id == sub_partition.id or 
+                                                                  (not task.selected_partition_id and task.recommended_partition_id == sub_partition.id) %}
+                                                                selected
+                                                            {% endif %}>
+                                                        &nbsp;&nbsp;└ {{ sub_partition.name }} ({{ sub_partition.id }})
+                                                    </option>
+                                                {% endfor %}
+                                            {% endfor %}
+                                        </optgroup>
+                                    {% endfor %}
+                                </select>
+                                {% if task.recommended_partition_id %}
+                                    <div class="form-text">AI推荐分区: {{ get_partition_name(task.recommended_partition_id) }} ({{ task.recommended_partition_id }})</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            标签设置
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">视频标签（每个不超过20个字符，最多6个）</label>
+                                <div class="row g-2">
+                                    {% set tags = tags_string.split(',') if tags_string else [] %}
+                                    {% for i in range(6) %}
+                                    <div class="col-6 col-md-4">
+                                        <input type="text" class="form-control tag-input" maxlength="20" name="tag_input_{{i}}" placeholder="标签{{i+1}}" value="{{ tags[i]|trim if tags|length > i else '' }}">
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <input type="hidden" id="tags_json" name="tags_json" value="{{ task.tags_generated or '[]' }}">
+                                <div class="form-text">最多可添加6个标签，每个标签不超过20个字符</div>
+                            </div>
+                            <div id="tags-container" class="mb-3 d-flex flex-wrap gap-2"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-cloud-upload"></i> 保存并上传到AcFun
+                        </button>
+                        <a href="{{ url_for('tasks') }}" class="btn btn-outline-secondary">取消</a>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <div class="alert alert-info small">
+                            <i class="bi bi-info-circle"></i> 点击"保存并上传到AcFun"按钮后，系统将保存您的编辑并尝试上传视频。
+                            {% if task.status == 'completed' %}
+                                <strong>当前状态：已完成处理，可以直接上传</strong>
+                            {% elif task.status == 'pending' %}
+                                <strong>当前状态：等待处理，点击后将开始上传</strong>
+                            {% else %}
+                                <strong>当前状态：{{ task_status_display(task.status) }}，需要等待处理完成后才能上传</strong>
+                            {% endif %}
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    {% else %}
+        <div class="alert alert-danger">
+            未找到任务信息，请返回<a href="{{ url_for('tasks') }}">任务列表</a>重新选择。
+        </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // 标签管理
+        const tagInputs = document.querySelectorAll('.tag-input');
+        const tagsJsonField = document.getElementById('tags_json');
+        const tagsContainer = document.getElementById('tags-container');
+        
+        // 初始化标签显示
+        function updateTagsDisplay() {
+            tagsContainer.innerHTML = '';
+            try {
+                const tags = JSON.parse(tagsJsonField.value);
+                tags.forEach((tag, index) => {
+                    if (!tag) return;
+                    const tagElement = document.createElement('div');
+                    tagElement.className = 'badge bg-primary d-flex align-items-center';
+                    tagElement.style.fontSize = '14px';
+                    tagElement.innerHTML = `
+                        <span class="me-2">${tag}</span>
+                    `;
+                    tagsContainer.appendChild(tagElement);
+                });
+            } catch (e) {
+                console.error('解析标签出错:', e);
+            }
+        }
+        
+        // 收集所有输入框的标签，去重、去空、限制长度
+        function collectTags() {
+            const tags = [];
+            tagInputs.forEach(input => {
+                let val = input.value.trim();
+                if (val && val.length <= 20 && !tags.includes(val)) {
+                    tags.push(val);
+                }
+            });
+                tagsJsonField.value = JSON.stringify(tags);
+                updateTagsDisplay();
+        }
+        
+        // 绑定输入事件
+        tagInputs.forEach(input => {
+            input.addEventListener('input', collectTags);
+        });
+
+        // 初始化时同步一次
+        collectTags();
+
+        // 提交前收集一次，防止遗漏
+        const form = tagsJsonField.closest('form');
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                collectTags();
+            });
+        }
+        
+        // 封面处理模式切换
+        const coverModeSwitch = document.getElementById('cover-mode-switch');
+        const toggleCoverModeBtn = document.getElementById('toggle-cover-mode');
+        
+        if (toggleCoverModeBtn) {
+            toggleCoverModeBtn.addEventListener('click', function() {
+                const newMode = coverModeSwitch.checked ? 'crop' : 'pad';
+                
+                fetch('/settings/update_cover_mode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        mode: newMode,
+                        task_id: '{{ task.id }}'
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // 刷新页面以显示新封面
+                        location.reload();
+                    } else {
+                        alert('更新封面处理模式失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('更新封面处理模式出错:', error);
+                    alert('更新失败: ' + error);
+                });
+            });
+        }
+        
+        updateTagsDisplay();
+    });
+</script>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .moderation-item {
+        margin-bottom: 15px;
+    }
+    
+    pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+</style>
+{% endblock %} 

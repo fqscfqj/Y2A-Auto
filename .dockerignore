@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE specific
+.vscode/
+.idea/
+
+# Logs and temporary files
+logs/
+*.log
+temp/
+*.tmp
+
+# Downloads
+downloads/
+
+# OS specific
+tasks.db
+.DS_Store
+Thumbs.db
+# config.json might be needed if it's not mounted as a volume.
+# For now, let's assume it's part of the image or handled differently.
+
+# Docker specific
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Git
+.git/
+.gitignore 

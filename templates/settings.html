@@ -1,0 +1,305 @@
+{% extends 'base.html' %}
+
+{% block title %}Y2A-Auto - 系统设置{% endblock %}
+
+{% block content %}
+<div class="settings-container">
+    <h2>系统设置</h2>
+    
+    <form method="post" enctype="multipart/form-data">
+        <div class="settings-section">
+            <h3>基本设置</h3>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="AUTO_MODE_ENABLED" {% if config.AUTO_MODE_ENABLED %}checked{% endif %}>
+                    启用无人值守自动投稿模式
+                </label>
+                <p class="help-text">自动完成从下载到投稿的全流程，无需人工干预</p>
+            </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="TRANSLATE_TITLE" {% if config.TRANSLATE_TITLE %}checked{% endif %}>
+                    自动翻译标题
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="TRANSLATE_DESCRIPTION" {% if config.TRANSLATE_DESCRIPTION %}checked{% endif %}>
+                    自动翻译描述
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="GENERATE_TAGS" {% if config.GENERATE_TAGS %}checked{% endif %}>
+                    自动生成标签
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
+                    自动推荐分区
+                </label>
+            </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
+                    启用内容审核
+                </label>
+                <p class="help-text">使用阿里云内容安全服务自动审核标题、描述和封面</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="cover-mode">封面处理模式:</label>
+                <select name="COVER_PROCESSING_MODE" id="cover-mode">
+                    <option value="crop" {% if config.COVER_PROCESSING_MODE == 'crop' %}selected{% endif %}>裁剪模式 (保持清晰度)</option>
+                    <option value="pad" {% if config.COVER_PROCESSING_MODE == 'pad' %}selected{% endif %}>填充模式 (保持完整性)</option>
+                </select>
+                <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
+            </div>
+        </div>
+        
+        <div class="settings-section">
+            <h3>YouTube设置</h3>
+            
+            <div class="form-group">
+                <label for="youtube-cookies">YouTube Cookies文件路径:</label>
+                <input type="text" id="youtube-cookies" name="YOUTUBE_COOKIES_PATH" value="{{ config.YOUTUBE_COOKIES_PATH }}">
+                <p class="help-text">用于访问受限制的YouTube视频</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="youtube-cookies-file">上传新的YouTube Cookies文件:</label>
+                <input type="file" id="youtube-cookies-file" name="youtube_cookies_file">
+                <p class="help-text">上传新文件将覆盖原有文件</p>
+            </div>
+        </div>
+        
+        <div class="settings-section">
+            <h3>AcFun账号设置</h3>
+            
+            <div class="form-group">
+                <label for="acfun-username">AcFun用户名:</label>
+                <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}">
+            </div>
+            
+            <div class="form-group">
+                <label for="acfun-password">AcFun密码:</label>
+                <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}">
+                <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
+            </div>
+        </div>
+        
+        <div class="settings-section">
+            <h3>日志清理设置</h3>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="LOG_CLEANUP_ENABLED" {% if config.LOG_CLEANUP_ENABLED %}checked{% endif %}>
+                    启用自动日志清理
+                </label>
+                <p class="help-text">定期自动清理旧日志文件</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="log-cleanup-days">保留日志天数:</label>
+                <input type="number" id="log-cleanup-days" name="LOG_CLEANUP_DAYS" value="{{ config.LOG_CLEANUP_DAYS }}" min="1" max="365">
+                <p class="help-text">保留最近多少天的日志，超过天数的日志将被删除</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="log-cleanup-interval">清理间隔(小时):</label>
+                <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168">
+                <p class="help-text">每隔多少小时执行一次日志清理</p>
+            </div>
+            
+            <div class="form-group">
+                <!-- 手动清理按钮，但不在主表单内 -->
+                <div class="mt-3">
+                    <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
+                        <i class="bi bi-trash"></i> 立即执行日志清理
+                    </button>
+                    <p class="help-text mt-2">手动触发日志清理，将删除{{ config.LOG_CLEANUP_DAYS }}天前的日志文件</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="settings-section">
+            <h3>OpenAI API设置</h3>
+            
+            <div class="form-group">
+                <label for="openai-key">OpenAI API Key:</label>
+                <input type="password" id="openai-key" name="OPENAI_API_KEY" value="{{ config.OPENAI_API_KEY }}">
+            </div>
+            
+            <div class="form-group">
+                <label for="openai-url">OpenAI API Base URL:</label>
+                <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}">
+                <p class="help-text">可以设置为国内中转API或使用官方API</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="openai-model">OpenAI模型:</label>
+                <input type="text" id="openai-model" name="OPENAI_MODEL_NAME" value="{{ config.OPENAI_MODEL_NAME }}">
+                <p class="help-text">推荐使用gpt-3.5-turbo或gpt-4</p>
+            </div>
+        </div>
+        
+        <div class="settings-section">
+            <h3>阿里云内容安全设置</h3>
+            
+            <div class="form-group">
+                <label for="aliyun-key">阿里云AccessKey ID:</label>
+                <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}">
+            </div>
+            
+            <div class="form-group">
+                <label for="aliyun-secret">阿里云AccessKey Secret:</label>
+                <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}">
+            </div>
+            
+            <div class="form-group">
+                <label for="aliyun-region">阿里云区域:</label>
+                <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}">
+                <p class="help-text">默认为cn-shanghai</p>
+            </div>
+
+            <div class="form-group">
+                <label for="aliyun-text-service">阿里云文本审核服务类型:</label>
+                <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}">
+                <p class="help-text">例如：comment_detection, ugc_moderation_byllm等。具体参考阿里云文档。</p>
+            </div>
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">保存设置</button>
+            <button type="reset" class="btn btn-secondary">重置</button>
+        </div>
+    </form>
+
+    <!-- 独立的日志清理表单 -->
+    <form method="post" action="{{ url_for('cleanup_logs_route') }}" class="d-none" id="cleanup-form">
+        <input type="hidden" name="days" id="cleanup-days-input" value="{{ config.LOG_CLEANUP_DAYS }}">
+    </form>
+</div>
+
+{% block extra_js %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // 手动清理按钮点击事件
+        document.getElementById('manual-cleanup-btn').addEventListener('click', function() {
+            // 获取当前设置的保留天数
+            var days = document.getElementById('log-cleanup-days').value;
+            // 更新隐藏表单中的值
+            document.getElementById('cleanup-days-input').value = days;
+            // 提交表单
+            document.getElementById('cleanup-form').submit();
+        });
+    });
+</script>
+{% endblock %}
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .settings-container {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+    
+    .settings-section {
+        margin-bottom: 30px;
+        padding: 20px;
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .form-group {
+        margin-bottom: 15px;
+    }
+    
+    .form-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+    }
+    
+    .form-group input[type="text"],
+    .form-group input[type="password"],
+    .form-group select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    
+    .checkbox-label {
+        display: flex;
+        align-items: center;
+        font-weight: bold;
+    }
+    
+    .checkbox-label input[type="checkbox"] {
+        margin-right: 10px;
+    }
+    
+    .help-text {
+        font-size: 0.9em;
+        color: #666;
+        margin-top: 5px;
+    }
+    
+    .form-actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 10px;
+    }
+    
+    .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    
+    .btn-primary {
+        background-color: #007bff;
+        color: white;
+    }
+    
+    .btn-secondary {
+        background-color: #6c757d;
+        color: white;
+    }
+    
+    .flash-messages {
+        margin-bottom: 20px;
+    }
+    
+    .alert {
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 10px;
+    }
+    
+    .alert-success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+    
+    .alert-danger {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+</style>
+{% endblock %} 
