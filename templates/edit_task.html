@@ -21,7 +21,7 @@
                         <p><strong>任务ID:</strong> {{ task.id }}</p>
                         <p><strong>创建时间:</strong> {{ task.created_at }}</p>
                         <p><strong>状态:</strong> 
-                            <span class="badge rounded-pill bg-{{ task_status_color(task.status) }}">
+                            <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                 {{ task_status_display(task.status) }}
                             </span>
                         </p>
@@ -34,7 +34,7 @@
                         <div class="card-header">
                             视频封面
                         </div>
-                        <img src="{{ url_for('static', filename='covers/' + task.id + '.jpg') }}" class="card-img-top" alt="视频封面">
+                        <img src="{{ url_for('get_task_cover', task_id=task.id) }}" class="card-img-top" alt="视频封面">
                         <div class="card-body">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="cover-mode-switch" 
@@ -242,13 +242,16 @@
                     
                     <div class="mt-3">
                         <div class="alert alert-info small">
-                            <i class="bi bi-info-circle"></i> 点击"保存并上传到AcFun"按钮后，系统将保存您的编辑并尝试上传视频。
+                            <i class="bi bi-info-circle"></i> 点击"保存并上传到AcFun"按钮后，系统将保存您的编辑并在后台上传视频。
+                            <br><strong>💡 上传将在后台进行，您可以立即返回任务列表，无需等待。</strong>
                             {% if task.status == 'completed' %}
-                                <strong>当前状态：已完成处理，可以直接上传</strong>
+                                <br><strong>当前状态：已完成处理，可以直接上传</strong>
                             {% elif task.status == 'pending' %}
-                                <strong>当前状态：等待处理，点击后将开始上传</strong>
+                                <br><strong>当前状态：等待处理，点击后将开始上传</strong>
+                            {% elif task.status == 'ready_for_upload' %}
+                                <br><strong>当前状态：准备上传，可以直接上传</strong>
                             {% else %}
-                                <strong>当前状态：{{ task_status_display(task.status) }}，需要等待处理完成后才能上传</strong>
+                                <br><strong>当前状态：{{ task_status_display(task.status) }}，需要等待处理完成后才能上传</strong>
                             {% endif %}
                         </div>
                     </div>

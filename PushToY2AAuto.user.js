@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         推送到Y2A-Auto
 // @namespace    http://tampermonkey.net/
-// @version      0.1
+// @version      1.0
 // @description  将YouTube视频发送到Y2A-Auto进行处理
 // @author       Y2A-Auto用户
 // @match        *://www.youtube.com/watch?v=*
@@ -9,51 +9,72 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
 // @connect      localhost
+// @connect      127.0.0.1
 // @connect      your-y2a-auto-server.com
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Y2A-Auto服务器地址，可根据实际部署情况修改
+    // Y2A-Auto服务器地址配置
+    // 请根据您的实际部署情况修改以下地址
     const Y2A_AUTO_SERVER = 'http://localhost:5000';
     const API_ENDPOINT = `${Y2A_AUTO_SERVER}/tasks/add_via_extension`;
     
+    // 调试模式开关（生产环境请设置为false）
+    const DEBUG_MODE = false;
+    
+    // 调试日志函数
+    function debugLog(message, ...args) {
+        if (DEBUG_MODE) {
+            console.log(`[Y2A-Auto Script] ${message}`, ...args);
+        }
+    }
+    
     // 样式定义
     const BUTTON_STYLE = `
-        background-color: #007bff;
+        background-color: #ff4757;
         color: white;
         border: none;
-        border-radius: 4px;
-        padding: 8px 12px;
+        border-radius: 6px;
+        padding: 8px 16px;
         font-size: 14px;
-        font-weight: bold;
+        font-weight: 600;
         cursor: pointer;
         margin-left: 10px;
-        transition: background-color 0.3s;
+        transition: all 0.3s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     `;
 
     // 创建按钮
     function createButton() {
         const button = document.createElement('button');
-        button.textContent = '推送到Y2A-Auto';
+        button.innerHTML = '📤 推送到Y2A-Auto';
         button.id = 'push-to-y2a-button';
         button.setAttribute('style', BUTTON_STYLE);
+        button.title = '将当前视频推送到Y2A-Auto进行自动处理';
         
         // 鼠标悬停效果
         button.addEventListener('mouseover', function() {
-            this.style.backgroundColor = '#0069d9';
+            this.style.backgroundColor = '#ff3742';
+            this.style.transform = 'translateY(-1px)';
+            this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
         });
         
         button.addEventListener('mouseout', function() {
-            this.style.backgroundColor = '#007bff';
+            this.style.backgroundColor = '#ff4757';
+            this.style.transform = 'translateY(0)';
+            this.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
         });
         
         // 点击事件
-        button.addEventListener('click', function() {
-            // alert('[Y2A-Auto Script] Button click event FIRED!'); // 调试用，已确认，移除此行
-            console.log('%c[Y2A-Auto Script] PUSH BUTTON CLICKED! Event listener IS FIRING.', 'color: green; font-weight: bold;');
-            console.log('[Y2A-Auto Script] Push button clicked. Calling sendToY2AAuto with:', this);
+        button.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            debugLog('Push button clicked');
             sendToY2AAuto(this);
         });
         
@@ -62,22 +83,35 @@
 
     // 将按钮添加到YouTube界面
     function addButtonToPage() {
-        // 尝试获取视频标题下方的操作栏
-        const actionBar = document.querySelector('#top-level-buttons-computed');
-        
-        if (actionBar) {
-            // 在分享等按钮所在的位置添加我们的按钮
-            const button = createButton();
-            actionBar.appendChild(button);
+        // 检查是否已存在按钮
+        if (document.getElementById('push-to-y2a-button')) {
             return true;
         }
         
-        // 如果找不到标准位置，尝试插入到备选位置
-        const alternativeLocation = document.querySelector('#above-the-fold');
-        if (alternativeLocation) {
+        // 优先尝试新版YouTube布局
+        const actionBar = document.querySelector('#top-level-buttons-computed');
+        if (actionBar) {
             const button = createButton();
-            alternativeLocation.appendChild(button);
+            actionBar.appendChild(button);
+            debugLog('Button added to top-level-buttons-computed');
             return true;
+        }
+        
+        // 尝试其他可能的位置
+        const alternatives = [
+            '#above-the-fold',
+            '.ytd-video-primary-info-renderer',
+            '#info-contents'
+        ];
+        
+        for (const selector of alternatives) {
+            const container = document.querySelector(selector);
+            if (container) {
+                const button = createButton();
+                container.appendChild(button);
+                debugLog(`Button added to ${selector}`);
+                return true;
+            }
         }
         
         return false;
@@ -85,29 +119,30 @@
 
     // 发送视频数据到Y2A-Auto服务器
     function sendToY2AAuto(clickedButton) {
-        console.log('[Y2A-Auto Script] sendToY2AAuto entered. clickedButton:', clickedButton);
-
-        if (!clickedButton || typeof clickedButton.textContent === 'undefined') {
-            console.error('[Y2A-Auto Script] Error: clickedButton is not a valid element in sendToY2AAuto.', clickedButton);
-            alert('[Y2A-Auto Script] 错误：按钮元素无效，无法继续。'); // Fallback alert for critical error
+        if (!clickedButton) {
+            showNotification('错误', '按钮元素无效', 'error');
             return;
         }
 
         const videoUrl = window.location.href;
-        console.log('[Y2A-Auto Script] videoUrl:', videoUrl);
+        debugLog('Sending video URL:', videoUrl);
+        
+        // 验证URL格式
+        if (!videoUrl.includes('youtube.com/watch?v=')) {
+            showNotification('错误', '当前页面不是有效的YouTube视频页面', 'error');
+            return;
+        }
         
         // 显示加载状态
-        const button = clickedButton; // 使用传入的按钮元素
-        const originalText = button.textContent;
-        button.textContent = '发送中...';
-        button.disabled = true;
-        console.log('[Y2A-Auto Script] Button text changed to "发送中..." and disabled.');
+        const originalHTML = clickedButton.innerHTML;
+        clickedButton.innerHTML = '⏳ 发送中...';
+        clickedButton.disabled = true;
+        clickedButton.style.opacity = '0.7';
         
-        // 立即显示任务已发送的通知
-        console.log('[Y2A-Auto Script] About to call showNotification for "已发送请求".');
-        showNotification('推送状态', '已发送请求至Y2A-Auto，请等待服务器响应...', 'info');
+        // 显示发送通知
+        showNotification('推送状态', '正在发送请求到Y2A-Auto服务器...', 'info');
         
-        console.log('[Y2A-Auto Script] About to make GM_xmlhttpRequest to:', API_ENDPOINT);
+        // 发送请求
         GM_xmlhttpRequest({
             method: 'POST',
             url: API_ENDPOINT,
@@ -117,164 +152,222 @@
             data: JSON.stringify({
                 youtube_url: videoUrl
             }),
+            timeout: 10000, // 10秒超时
             onload: function(response) {
-                console.log('[Y2A-Auto Script] GM_xmlhttpRequest onload triggered. Response status:', response.status);
-                button.textContent = originalText;
-                button.disabled = false;
+                resetButton(clickedButton, originalHTML);
                 
                 try {
                     const result = JSON.parse(response.responseText);
-                    console.log('[Y2A-Auto Script] Parsed server response:', result);
+                    debugLog('Server response:', result);
                     
-                    if (result.success) {
-                        // 成功处理
-                        showNotification('成功', `${result.message} (任务ID: ${result.task_id})`, 'success');
+                    if (response.status === 200 && result.success) {
+                        const taskId = result.task_id ? ` (任务ID: ${result.task_id.substring(0, 8)}...)` : '';
+                        showNotification('✅ 推送成功', `${result.message}${taskId}`, 'success');
+                        
+                        // 可选：在按钮上显示成功状态
+                        clickedButton.innerHTML = '✅ 已推送';
+                        setTimeout(() => {
+                            clickedButton.innerHTML = originalHTML;
+                        }, 3000);
                     } else {
-                        // 处理失败
-                        showNotification('失败', result.message || '未知错误', 'error');
+                        showNotification('❌ 推送失败', result.message || '服务器返回错误', 'error');
                     }
                 } catch (e) {
-                    console.error('[Y2A-Auto Script] Error parsing server response:', e, 'Response text:', response.responseText);
-                    // JSON解析错误
-                    showNotification('错误', '无法解析服务器响应', 'error');
+                    debugLog('JSON parse error:', e);
+                    showNotification('❌ 解析错误', '无法解析服务器响应', 'error');
                 }
             },
             onerror: function(error) {
-                console.error('[Y2A-Auto Script] GM_xmlhttpRequest onerror triggered.', error);
-                button.textContent = originalText;
-                button.disabled = false;
-                showNotification('连接错误', '无法连接到Y2A-Auto服务器，请确认服务器是否运行', 'error');
+                debugLog('Request error:', error);
+                resetButton(clickedButton, originalHTML);
+                showNotification('❌ 连接失败', `无法连接到Y2A-Auto服务器 (${Y2A_AUTO_SERVER})。请确认：\n1. 服务器是否运行\n2. 服务器地址是否正确\n3. 防火墙/网络设置`, 'error');
             },
             ontimeout: function() {
-                console.error('[Y2A-Auto Script] GM_xmlhttpRequest ontimeout triggered.');
-                button.textContent = originalText;
-                button.disabled = false;
-                showNotification('连接超时', '连接Y2A-Auto服务器超时', 'error');
+                debugLog('Request timeout');
+                resetButton(clickedButton, originalHTML);
+                showNotification('⏰ 连接超时', '连接Y2A-Auto服务器超时，请稍后重试', 'error');
             }
         });
     }
+    
+    // 重置按钮状态
+    function resetButton(button, originalHTML) {
+        button.innerHTML = originalHTML;
+        button.disabled = false;
+        button.style.opacity = '1';
+    }
 
-    // 显示通知
+    // 显示页面内通知
     function showNotification(title, message, type) {
-        console.log(`[Y2A-Auto Script] In-page showNotification: title="${title}", message="${message}", type="${type}"`);
+        debugLog(`Showing notification: ${title} - ${message} (${type})`);
 
-        // 移除任何现有的横幅
-        const existingBanner = document.getElementById('y2a-auto-inpage-notification');
+        // 移除现有通知
+        const existingBanner = document.getElementById('y2a-auto-notification');
         if (existingBanner) {
-            existingBanner.parentNode.removeChild(existingBanner);
+            existingBanner.remove();
         }
 
         const banner = document.createElement('div');
-        banner.id = 'y2a-auto-inpage-notification';
+        banner.id = 'y2a-auto-notification';
 
-        let backgroundColor;
+        // 根据类型设置颜色和图标
+        let backgroundColor, icon;
         switch (type) {
             case 'success':
-                backgroundColor = '#28a745'; // 绿色
+                backgroundColor = '#2ecc71';
+                icon = '✅';
                 break;
             case 'error':
-                backgroundColor = '#dc3545'; // 红色
+                backgroundColor = '#e74c3c';
+                icon = '❌';
                 break;
             case 'info':
             default:
-                backgroundColor = '#007bff'; // 蓝色
+                backgroundColor = '#3498db';
+                icon = 'ℹ️';
                 break;
         }
 
-        // 创建 strong 元素用于标题
-        const titleStrong = document.createElement('strong');
-        titleStrong.textContent = title + ': '; // 加个冒号和空格
+        // 设置通知内容
+        banner.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 16px;">${icon}</span>
+                <div>
+                    <strong>${title}</strong>
+                    <div style="font-size: 13px; margin-top: 2px; white-space: pre-line;">${message}</div>
+                </div>
+            </div>
+        `;
 
-        // 创建文本节点用于消息
-        const messageText = document.createTextNode(message);
-
-        // 清空 banner 并添加新的子元素
-        while (banner.firstChild) {
-            banner.removeChild(banner.firstChild);
-        }
-        banner.appendChild(titleStrong);
-        banner.appendChild(messageText);
-
+        // 设置样式
         banner.setAttribute('style', `
             position: fixed;
-            top: 20px; /* 初始位置，用于滑入效果 */
+            top: -100px;
             left: 50%;
             transform: translateX(-50%);
-            padding: 12px 20px;
+            padding: 16px 24px;
             border-radius: 8px;
             color: white;
             background-color: ${backgroundColor};
-            z-index: 2147483647; /* 确保在最顶层 */
+            z-index: 2147483647;
             opacity: 0;
-            transition: opacity 0.5s ease-in-out, top 0.5s ease-in-out;
-            font-family: Arial, sans-serif;
+            transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: 14px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+            max-width: 400px;
+            text-align: left;
+            cursor: pointer;
         `);
 
         document.body.appendChild(banner);
 
-        // 动画进入 (滑下并淡入)
-        setTimeout(() => {
+        // 动画显示
+        requestAnimationFrame(() => {
             banner.style.opacity = '1';
-            banner.style.top = '30px'; // 滑入后的最终位置
-        }, 100); // 短暂延迟以确保过渡效果生效
+            banner.style.top = '20px';
+        });
 
-        const displayDuration = (type === 'error' ? 7000 : 5000); // 错误信息显示时间更长
+        // 点击关闭
+        banner.addEventListener('click', () => {
+            hideNotification(banner);
+        });
 
-        // 淡出并移除
+        // 自动隐藏
+        const displayDuration = type === 'error' ? 8000 : 5000;
         setTimeout(() => {
-            banner.style.opacity = '0';
-            banner.style.top = '20px'; // 淡出时滑回初始位置
+            hideNotification(banner);
         }, displayDuration);
-
-        // 动画完成后从DOM中移除
-        setTimeout(() => {
-            if (banner.parentNode) {
-                banner.parentNode.removeChild(banner);
-            }
-        }, displayDuration + 500); // 500ms 用于淡出过渡
+    }
+    
+    // 隐藏通知
+    function hideNotification(banner) {
+        if (banner && banner.parentNode) {
+            banner.style.opacity = '0';
+            banner.style.top = '-100px';
+            setTimeout(() => {
+                if (banner.parentNode) {
+                    banner.remove();
+                }
+            }, 400);
+        }
     }
 
-    // 监听页面变化，在YouTube的SPA导航中保持按钮存在
+    // 监听页面变化，适应YouTube的SPA导航
     function setupObserver() {
-        // YouTube使用动态加载内容，需要监听DOM变化
         const observer = new MutationObserver(function(mutations) {
-            // 检查我们的按钮是否已存在
-            if (!document.getElementById('push-to-y2a-button')) {
-                // 尝试添加按钮
-                if (addButtonToPage()) {
-                    console.log('[Y2A-Auto Script] Y2A-Auto推送按钮已通过Observer添加到页面');
-                }
+            // 检查URL是否变化（YouTube SPA导航）
+            if (window.location.href.includes('/watch?v=')) {
+                setTimeout(() => {
+                    if (!document.getElementById('push-to-y2a-button')) {
+                        if (addButtonToPage()) {
+                            debugLog('Button added via observer');
+                        }
+                    }
+                }, 1000); // 延迟以确保页面元素加载完成
             }
         });
         
-        // 监视整个body元素的变化
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: true 
+        });
+        
+        // 监听URL变化
+        let lastUrl = location.href;
+        new MutationObserver(() => {
+            const url = location.href;
+            if (url !== lastUrl) {
+                lastUrl = url;
+                if (url.includes('/watch?v=')) {
+                    setTimeout(() => {
+                        if (!document.getElementById('push-to-y2a-button')) {
+                            addButtonToPage();
+                        }
+                    }, 1500);
+                }
+            }
+        }).observe(document, { subtree: true, childList: true });
     }
 
     // 初始化
     function init() {
+        debugLog('Y2A-Auto script initializing...');
+        
+        // 确保在YouTube视频页面
+        if (!window.location.href.includes('/watch?v=')) {
+            debugLog('Not on a YouTube video page, skipping initialization');
+            setupObserver(); // 仍然设置观察器，以便在导航到视频页面时添加按钮
+            return;
+        }
+        
         // 等待页面加载完成
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', function() {
-                if (addButtonToPage()) {
-                    console.log('[Y2A-Auto Script] Y2A-Auto推送按钮已添加到页面 (DOMContentLoaded)');
-                } else {
-                    console.warn('[Y2A-Auto Script] 无法找到适合的位置添加Y2A-Auto推送按钮 (DOMContentLoaded), 设置观察器');
-                    setupObserver();
-                }
+                setTimeout(() => {
+                    if (addButtonToPage()) {
+                        debugLog('Button added on DOMContentLoaded');
+                    } else {
+                        debugLog('Failed to add button on DOMContentLoaded, setting up observer');
+                        setupObserver();
+                    }
+                }, 1000);
             });
         } else {
-            // 页面已加载，直接添加按钮
-            if (addButtonToPage()) {
-                console.log('[Y2A-Auto Script] Y2A-Auto推送按钮已添加到页面 (direct)');
-            } else {
-                console.warn('[Y2A-Auto Script] 无法找到适合的位置添加Y2A-Auto推送按钮 (direct), 设置观察器');
-                setupObserver();
-            }
+            // 页面已加载
+            setTimeout(() => {
+                if (addButtonToPage()) {
+                    debugLog('Button added immediately');
+                } else {
+                    debugLog('Failed to add button immediately, setting up observer');
+                    setupObserver();
+                }
+            }, 1000);
         }
+        
+        // 无论如何都设置观察器以处理SPA导航
+        setupObserver();
     }
 
     // 运行初始化

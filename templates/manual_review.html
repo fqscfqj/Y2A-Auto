@@ -20,7 +20,7 @@
                         
                         {% if task.cover_path_local %}
                             <div class="card-img-container">
-                                <img src="{{ url_for('static', filename='covers/' + task.id + '.jpg') }}" class="card-img-top" alt="视频封面">
+                                <img src="{{ url_for('get_task_cover', task_id=task.id) }}" class="card-img-top" alt="视频封面">
                             </div>
                         {% endif %}
                         

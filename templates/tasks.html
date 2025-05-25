@@ -37,7 +37,7 @@
                     </thead>
                     <tbody>
                         {% for task in tasks %}
-                        <tr>
+                        <tr data-task-id="{{ task.id }}">
                             <td><span class="text-monospace">{{ task.id[:8] }}...</span></td>
                             <td>
                                 {% if task.video_title_translated %}
@@ -48,11 +48,14 @@
                                 {% endif %}
                             </td>
                             <td>
-                                <span class="badge rounded-pill bg-{{ task_status_color(task.status) }}">
+                                <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                     {{ task_status_display(task.status) }}
                                 </span>
                             </td>
-                            <td>{{ task.created_at }}</td>
+                            <td>
+                                <span class="task-updated-time">{{ task.updated_at or task.created_at }}</span>
+                                <div class="small text-muted">创建: {{ task.created_at }}</div>
+                            </td>
                             <td>
                                 {% if task.selected_partition_id %}
                                     <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}</span>
@@ -105,6 +108,12 @@
                                         <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0" style="display:inline;">
                                             <button type="submit" class="btn btn-sm btn-primary d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
                                                 <i class="bi bi-play-fill me-1"></i> 开始
+                                            </button>
+                                        </form>
+                                    {% elif task.status == 'ready_for_upload' %}
+                                        <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                                <i class="bi bi-cloud-upload me-1"></i> 上传
                                             </button>
                                         </form>
                                     {% endif %}
@@ -242,6 +251,23 @@
     .tags-container {
         display: flex;
         flex-wrap: wrap;
+    }
+    
+    /* 任务状态实时更新高亮效果 */
+    .task-updated-highlight {
+        animation: taskUpdateFlash 3s ease-in-out;
+        background-color: rgba(40, 167, 69, 0.1) !important;
+    }
+    
+    @keyframes taskUpdateFlash {
+        0% { background-color: rgba(40, 167, 69, 0.3); }
+        50% { background-color: rgba(40, 167, 69, 0.1); }
+        100% { background-color: transparent; }
+    }
+    
+    /* 状态徽章过渡效果 */
+    .task-status-badge {
+        transition: all 0.3s ease-in-out;
     }
 </style>
 {% endblock %}

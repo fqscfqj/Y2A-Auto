@@ -15,6 +15,8 @@ env/
 # IDE specific
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Logs and temporary files
 logs/
@@ -22,21 +24,53 @@ logs/
 temp/
 *.tmp
 
-# Downloads
+# Downloads and generated content (exclude from image)
 downloads/
+static/covers/
+
+# Database files (exclude from image)
+tasks.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration and secrets (handle via volumes)
+cookies/
+*.key
+*.pem
 
 # OS specific
-tasks.db
 .DS_Store
 Thumbs.db
-# config.json might be needed if it's not mounted as a volume.
-# For now, let's assume it's part of the image or handled differently.
+desktop.ini
 
-# Docker specific
+# Docker specific files
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose-build.yml
 
-# Git
+# Git files
 .git/
-.gitignore 
+.gitignore
+.gitattributes
+
+# Documentation and development files
+README.md
+LICENSE
+*.md
+docs/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# Development scripts
+start.bat
+start.ps1

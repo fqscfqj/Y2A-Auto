@@ -17,9 +17,10 @@ DEFAULT_CONFIG = {
     "RECOMMEND_PARTITION": False,
     "CONTENT_MODERATION_ENABLED": False,
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
-    "LOG_CLEANUP_DAYS": 7, # 保留最近多少天的日志
+    "LOG_CLEANUP_HOURS": 168, # 保留最近多少小时的日志 (7天=168小时)
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
-    "YOUTUBE_COOKIES_PATH": "cookies.txt", # 相对于项目根目录
+    "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
+    "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt", # AcFun Cookie文件路径
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "OPENAI_API_KEY": "",
@@ -57,7 +58,7 @@ def load_config():
                 
                 # 如果有新添加的默认键，则保存更新后的配置
                 if missing_keys:
-                    save_config(config, config_path) # <--- 这一行需要缩进
+                    save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
         logger.warning(f"读取配置文件时出错: {str(e)}")

@@ -12,7 +12,7 @@ services:
       - ./db:/app/db
       - ./downloads:/app/downloads
       - ./logs:/app/logs
-      - ./static/covers:/app/static/covers
+      - ./cookies:/app/cookies
       - ./temp:/app/temp
     environment:
       - TZ=Asia/Shanghai

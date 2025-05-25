@@ -95,57 +95,21 @@
     <script src="{{ url_for('static', filename='lib/bootstrap/jquery.min.js') }}"></script>
     <!-- 使用本地Bootstrap JS Bundle -->
     <script src="{{ url_for('static', filename='lib/bootstrap/bootstrap.bundle.min.js') }}"></script>
-    <!-- Socket.IO客户端库 -->
-    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <!-- 自定义JS -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     
     <script>
-        // 实时通知
+        // 使用传统页面刷新方式
         $(document).ready(function() {
-            // 连接WebSocket
-            const socket = io();
+            console.log('Y2A-Auto 已启动 - 使用传统页面刷新模式');
             
-            // 连接事件
-            socket.on('connect', function() {
-                console.log('已连接到服务器');
-            });
-            
-            // 断开连接事件
-            socket.on('disconnect', function() {
-                console.log('与服务器断开连接');
-            });
-            
-            // 任务完成事件
-            socket.on('task_completed', function(data) {
-                console.log('任务完成通知:', data);
-                
-                // 判断是否显示通知
-                if (data.success) {
-                    let notificationContent = '';
-                    
-                    if (data.ac_number) {
-                        notificationContent = `<p>视频《${data.title || '未知标题'}》上传成功！</p>` +
-                                             `<p>AC号: <strong>AC${data.ac_number}</strong></p>`;
-                        $('#viewVideoBtn').attr('href', data.url).show();
-                    } else {
-                        notificationContent = '<p>任务处理已完成，但未获取到AC号</p>';
-                        $('#viewVideoBtn').hide();
-                    }
-                    
-                    // 显示通知
-                    $('#notificationBody').html(notificationContent);
-                    new bootstrap.Modal(document.getElementById('notificationModal')).show();
-                    
-                    // 任务列表页面自动刷新
-                    if (window.location.pathname.includes('/tasks') || 
-                        window.location.pathname.includes('/manual_review')) {
-                        setTimeout(function() {
-                            location.reload();
-                        }, 3000);
-                    }
-                }
-            });
+            // 可选：添加自动刷新功能
+            // setInterval(function() {
+            //     if (window.location.pathname.includes('/tasks') || 
+            //         window.location.pathname.includes('/manual_review')) {
+            //         location.reload();
+            //     }
+            // }, 30000); // 每30秒自动刷新一次
         });
     </script>
     

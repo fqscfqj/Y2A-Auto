@@ -84,12 +84,25 @@
             <h3>AcFun账号设置</h3>
             
             <div class="form-group">
-                <label for="acfun-username">AcFun用户名:</label>
-                <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}">
+                <label for="acfun-cookies">AcFun Cookies文件路径:</label>
+                <input type="text" id="acfun-cookies" name="ACFUN_COOKIES_PATH" value="{{ config.ACFUN_COOKIES_PATH }}">
+                <p class="help-text">推荐使用Cookie登录，支持Netscape和JSON格式</p>
             </div>
             
             <div class="form-group">
-                <label for="acfun-password">AcFun密码:</label>
+                <label for="acfun-cookies-file">上传新的AcFun Cookies文件:</label>
+                <input type="file" id="acfun-cookies-file" name="acfun_cookies_file">
+                <p class="help-text">上传新文件将覆盖原有文件。Cookie优先级高于用户名密码</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="acfun-username">AcFun用户名（备用）:</label>
+                <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}">
+                <p class="help-text">当Cookie文件不存在或失效时使用</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="acfun-password">AcFun密码（备用）:</label>
                 <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}">
                 <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
             </div>
@@ -107,9 +120,9 @@
             </div>
             
             <div class="form-group">
-                <label for="log-cleanup-days">保留日志天数:</label>
-                <input type="number" id="log-cleanup-days" name="LOG_CLEANUP_DAYS" value="{{ config.LOG_CLEANUP_DAYS }}" min="1" max="365">
-                <p class="help-text">保留最近多少天的日志，超过天数的日志将被删除</p>
+                <label for="log-cleanup-hours">保留日志小时数:</label>
+                <input type="number" id="log-cleanup-hours" name="LOG_CLEANUP_HOURS" value="{{ config.LOG_CLEANUP_HOURS }}" min="1" max="8760">
+                <p class="help-text">保留最近多少小时的日志，超过小时数的日志将被删除 (24小时=1天, 168小时=7天)</p>
             </div>
             
             <div class="form-group">
@@ -122,9 +135,33 @@
                 <!-- 手动清理按钮，但不在主表单内 -->
                 <div class="mt-3">
                     <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
-                        <i class="bi bi-trash"></i> 立即执行日志清理
+                        <i class="bi bi-trash"></i> 按时间清理日志
                     </button>
-                    <p class="help-text mt-2">手动触发日志清理，将删除{{ config.LOG_CLEANUP_DAYS }}天前的日志文件</p>
+                    <p class="help-text mt-2">手动触发日志清理，将删除{{ config.LOG_CLEANUP_HOURS }}小时前的日志文件</p>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <!-- 立即清空日志按钮 -->
+                <div class="mt-3">
+                    <button type="button" id="clear-logs-btn" class="btn btn-danger">
+                        <i class="bi bi-trash-fill"></i> 立即清空日志
+                    </button>
+                    <button type="button" id="confirm-clear-btn" class="btn btn-outline-danger ms-2 d-none">
+                        <i class="bi bi-check-lg"></i> 确认清空
+                    </button>
+                    <button type="button" id="cancel-clear-btn" class="btn btn-outline-secondary ms-2 d-none">
+                        <i class="bi bi-x-lg"></i> 取消
+                    </button>
+                    <p class="help-text mt-2">立即清空task_manager.log、app.log的内容，删除所有task_xxx.log文件</p>
+                    <div id="clear-warning" class="alert alert-warning mt-2 d-none">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <strong>警告：</strong>此操作将立即清空所有日志文件，无法恢复！<br>
+                        将执行以下操作：<br>
+                        • 清空 task_manager.log 和 app.log 的内容<br>
+                        • 删除所有 task_xxx.log 文件<br>
+                        <strong>确定要继续吗？</strong>
+                    </div>
                 </div>
             </div>
         </div>
@@ -184,23 +221,89 @@
 
     <!-- 独立的日志清理表单 -->
     <form method="post" action="{{ url_for('cleanup_logs_route') }}" class="d-none" id="cleanup-form">
-        <input type="hidden" name="days" id="cleanup-days-input" value="{{ config.LOG_CLEANUP_DAYS }}">
+        <input type="hidden" name="hours" id="cleanup-hours-input" value="{{ config.LOG_CLEANUP_HOURS }}">
+    </form>
+    
+    <!-- 独立的日志清空表单 -->
+    <form method="post" action="{{ url_for('clear_logs_route') }}" class="d-none" id="clear-form">
     </form>
 </div>
 
 {% block extra_js %}
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        // 手动清理按钮点击事件
-        document.getElementById('manual-cleanup-btn').addEventListener('click', function() {
-            // 获取当前设置的保留天数
-            var days = document.getElementById('log-cleanup-days').value;
+    // 确保只绑定一次事件监听器
+    (function() {
+        var initialized = false;
+        
+        function initializeEventListeners() {
+            if (initialized) return;
+            initialized = true;
+            
+            // 按时间清理日志按钮点击事件
+            var cleanupBtn = document.getElementById('manual-cleanup-btn');
+            if (cleanupBtn) {
+                cleanupBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // 获取当前设置的保留小时数
+                    var hours = document.getElementById('log-cleanup-hours').value;
             // 更新隐藏表单中的值
-            document.getElementById('cleanup-days-input').value = days;
+                    document.getElementById('cleanup-hours-input').value = hours;
             // 提交表单
             document.getElementById('cleanup-form').submit();
         });
-    });
+            }
+            
+            // 立即清空日志按钮点击事件
+            var clearBtn = document.getElementById('clear-logs-btn');
+            var confirmClearBtn = document.getElementById('confirm-clear-btn');
+            var cancelClearBtn = document.getElementById('cancel-clear-btn');
+            var clearWarning = document.getElementById('clear-warning');
+            
+            if (clearBtn && confirmClearBtn && cancelClearBtn && clearWarning) {
+                // 点击立即清空日志按钮
+                clearBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // 显示警告信息和确认按钮
+                    clearWarning.classList.remove('d-none');
+                    confirmClearBtn.classList.remove('d-none');
+                    cancelClearBtn.classList.remove('d-none');
+                    clearBtn.classList.add('d-none');
+                });
+                
+                // 点击确认清空按钮
+                confirmClearBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // 提交清空表单
+                    document.getElementById('clear-form').submit();
+                });
+                
+                // 点击取消按钮
+                cancelClearBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // 隐藏警告信息和确认按钮，显示原始按钮
+                    clearWarning.classList.add('d-none');
+                    confirmClearBtn.classList.add('d-none');
+                    cancelClearBtn.classList.add('d-none');
+                    clearBtn.classList.remove('d-none');
+                });
+            }
+        }
+        
+        // 当DOM加载完成时初始化
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeEventListeners);
+        } else {
+            initializeEventListeners();
+        }
+    })();
 </script>
 {% endblock %}
 {% endblock %}

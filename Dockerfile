@@ -24,5 +24,5 @@ COPY . .
 EXPOSE 5000
 
 # 定义容器启动时运行的命令
-# 使用 eventlet 需要通过 python app.py 启动 (因为 Flask-SocketIO 和 eventlet)
+# 启动应用
 CMD ["python", "app.py"] 
