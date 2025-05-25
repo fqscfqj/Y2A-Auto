@@ -5,16 +5,19 @@ import os
 import json
 import time
 import logging
-import shutil
+import requests
+import ssl
 from base64 import b64decode
 from hashlib import sha1
 from math import ceil
 from mimetypes import guess_type
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-import requests
-import js2py
 from modules.utils import process_cover
+
 
 def setup_task_logger(task_id):
     """
@@ -47,268 +50,418 @@ def setup_task_logger(task_id):
     
     return logger
 
+
 class AcfunUploader:
-    """AcFun视频上传模块"""
+    """AcFun视频上传模块 - 现代化版本，支持Cookie登录"""
     
-    def __init__(self, acfun_username, acfun_password):
+    def __init__(self, acfun_username=None, acfun_password=None, cookie_file=None):
         """
         初始化AcFun上传器
         
         Args:
-            acfun_username (str): AcFun账号用户名
-            acfun_password (str): AcFun账号密码
+            acfun_username (str, optional): AcFun账号用户名
+            acfun_password (str, optional): AcFun账号密码
+            cookie_file (str, optional): Cookie文件路径
         """
         self.username = acfun_username
         self.password = acfun_password
-        self.context = js2py.EvalJs()
-        self.session = requests.session()
+        self.cookie_file = cookie_file or "cookies/ac_cookies.txt"
+        self.session = requests.Session()
         self.logger = None  # 需要在上传时设置
         
+        # 设置通用请求头
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Origin": "https://member.acfun.cn",
+            "Referer": "https://member.acfun.cn/"
+        })
+        
         # API端点
-        self.LOGIN_URL    = "https://id.app.acfun.cn/rest/web/login/signin"
-        self.TOKEN_URL    = "https://member.acfun.cn/video/api/getKSCloudToken"
+        self.LOGIN_URL = "https://id.app.acfun.cn/rest/web/login/signin"
+        self.TOKEN_URL = "https://member.acfun.cn/video/api/getKSCloudToken"
         self.FRAGMENT_URL = "https://upload.kuaishouzt.com/api/upload/fragment"
         self.COMPLETE_URL = "https://upload.kuaishouzt.com/api/upload/complete"
-        self.FINISH_URL   = "https://member.acfun.cn/video/api/uploadFinish"
-        self.C_VIDEO_URL  = "https://member.acfun.cn/video/api/createVideo"
-        self.C_DOUGA_URL  = "https://member.acfun.cn/video/api/createDouga"
-        self.QINIU_URL    = "https://member.acfun.cn/common/api/getQiniuToken"
-        self.COVER_URL    = "https://member.acfun.cn/common/api/getUrlAfterUpload"
-        self.IMAGE_URL    = "https://imgs.aixifan.com/"
+        self.FINISH_URL = "https://member.acfun.cn/video/api/uploadFinish"
+        self.C_VIDEO_URL = "https://member.acfun.cn/video/api/createVideo"
+        self.C_DOUGA_URL = "https://member.acfun.cn/video/api/createDouga"
+        self.QINIU_URL = "https://member.acfun.cn/common/api/getQiniuToken"
+        self.COVER_URL = "https://member.acfun.cn/common/api/getUrlAfterUpload"
     
     def log(self, *msg):
-        """
-        记录日志
+        """记录日志信息"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        message = " ".join(str(m) for m in msg)
         
-        Args:
-            msg: 要记录的消息
-        """
         if self.logger:
-            self.logger.info(" ".join(str(m) for m in msg))
+            self.logger.info(message)
         else:
-            print(f'[{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}]', *msg)
+            print(f'[{timestamp}] {message}')
     
     def calc_sha1(self, data: bytes) -> str:
-        """
-        计算数据的SHA1哈希值
-        
-        Args:
-            data (bytes): 要计算哈希值的数据
-            
-        Returns:
-            str: SHA1哈希值
-        """
+        """计算数据的SHA1哈希值"""
         sha1_obj = sha1()
         sha1_obj.update(data)
         return sha1_obj.hexdigest()
     
-    def login(self):
+    def load_cookies(self, cookie_file: str = None) -> bool:
+        """从文件加载cookie，支持Netscape和JSON格式"""
+        if cookie_file is None:
+            cookie_file = self.cookie_file
+            
+        try:
+            if not os.path.exists(cookie_file):
+                self.log(f"Cookie文件不存在: {cookie_file}")
+                return False
+            
+            with open(cookie_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            if not content:
+                self.log(f"Cookie文件为空: {cookie_file}")
+                return False
+            
+            # 判断文件格式
+            if content.startswith('# Netscape HTTP Cookie File') or '\t' in content:
+                # Netscape格式
+                cookie_count = self._load_netscape_cookies(content)
+                self.log(f"从Netscape格式文件加载了 {cookie_count} 个cookie")
+            else:
+                # JSON格式
+                cookies_data = json.loads(content)
+                for cookie in cookies_data:
+                    self.session.cookies.set(
+                        cookie['name'], 
+                        cookie['value'], 
+                        domain=cookie.get('domain', ''),
+                        path=cookie.get('path', '/')
+                    )
+                self.log(f"从JSON格式文件加载了 {len(cookies_data)} 个cookie")
+            
+            # 测试cookie是否有效
+            return self.test_login()
+        except Exception as e:
+            self.log(f"加载cookie文件失败: {e}")
+            return False
+    
+    def _load_netscape_cookies(self, content: str) -> int:
+        """加载Netscape格式的cookie"""
+        lines = content.split('\n')
+        cookie_count = 0
+        
+        for line in lines:
+            line = line.strip()
+            # 跳过注释和空行
+            if not line or line.startswith('#'):
+                continue
+            
+            # Netscape格式: domain	flag	path	secure	expiration	name	value
+            parts = line.split('\t')
+            if len(parts) >= 7:
+                domain = parts[0]
+                path = parts[2]
+                secure = parts[3].upper() == 'TRUE'
+                name = parts[5]
+                value = parts[6]
+                
+                # 设置cookie
+                self.session.cookies.set(
+                    name=name,
+                    value=value,
+                    domain=domain,
+                    path=path,
+                    secure=secure
+                )
+                cookie_count += 1
+        
+        return cookie_count
+    
+    def save_cookies(self, cookie_file: str = None):
+        """保存cookie到文件"""
+        if cookie_file is None:
+            cookie_file = self.cookie_file
+            
+        try:
+            # 确保目录存在
+            os.makedirs(os.path.dirname(cookie_file), exist_ok=True)
+            
+            cookies_data = []
+            for cookie in self.session.cookies:
+                cookies_data.append({
+                    'name': cookie.name,
+                    'value': cookie.value,
+                    'domain': cookie.domain,
+                    'path': cookie.path
+                })
+            
+            with open(cookie_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies_data, f, ensure_ascii=False, indent=2)
+            
+            self.log(f"Cookie已保存到: {cookie_file}")
+        except Exception as e:
+            self.log(f"保存cookie失败: {e}")
+    
+    def test_network_connectivity(self) -> bool:
+        """测试网络连接"""
+        test_urls = [
+            "https://www.acfun.cn",
+            "https://member.acfun.cn",
+            "https://upload.kuaishouzt.com"
+        ]
+        
+        for url in test_urls:
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    self.log(f"网络连接正常: {url}")
+                else:
+                    self.log(f"网络连接异常: {url} (状态码: {response.status_code})")
+                    return False
+            except Exception as e:
+                self.log(f"网络连接失败: {url} ({e})")
+                return False
+        
+        return True
+    
+    def test_login(self) -> bool:
+        """测试登录状态"""
+        try:
+            # 使用一个简单的API来测试登录状态
+            response = self.session.get("https://member.acfun.cn/video/api/getMyChannels")
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    return result.get('result') == 0
+                except:
+                    # 如果不是JSON，可能是HTML页面，检查是否是登录页面
+                    if "login" in response.text.lower() or "登录" in response.text:
+                        return False
+                    # 如果是其他HTML页面（如创作中心），说明已登录
+                    return True
+            return False
+        except Exception as e:
+            self.log(f"测试登录状态失败: {e}")
+            return False
+    
+    def login(self) -> bool:
         """
-        登录AcFun账号
+        登录AcFun账号，优先使用cookie，其次使用用户名密码
         
         Returns:
             bool: 登录是否成功
         """
-        self.log("正在登录AcFun账号...")
-        r = self.session.post(
-            url = self.LOGIN_URL,
-            data = {
-                'username': self.username,
-                'password': self.password,
-                'key': '',
-                'captcha': ''
-            }
-        )
-        
-        response = r.json()
-        if response['result'] == 0:
-            self.log('登录成功')
+        # 首先尝试使用cookie登录
+        if self.load_cookies():
+            self.log("使用Cookie登录成功")
             return True
-        else:
-            self.log(f"登录失败: {response.get('error_msg', '账号密码错误')}")
+        
+        # 如果cookie登录失败，尝试用户名密码登录
+        if not self.username or not self.password:
+            self.log("没有提供用户名和密码，无法登录")
+            return False
+        
+        self.log("正在使用用户名密码登录AcFun账号...")
+        try:
+            response = self.session.post(
+                self.LOGIN_URL,
+                data={
+                    'username': self.username,
+                    'password': self.password,
+                    'key': '',
+                    'captcha': ''
+                }
+            )
+            
+            result = response.json()
+            if result.get('result') == 0:
+                self.log('用户名密码登录成功')
+                # 保存新的cookie
+                self.save_cookies()
+                return True
+            else:
+                self.log(f"登录失败: {result.get('error_msg', '账号密码错误')}")
+                return False
+        except Exception as e:
+            self.log(f"登录过程中出错: {e}")
             return False
     
     def get_token(self, filename: str, filesize: int) -> tuple:
-        """
-        获取上传令牌
-        
-        Args:
-            filename (str): 文件名
-            filesize (int): 文件大小
-            
-        Returns:
-            tuple: (任务ID, 令牌, 分块大小)
-        """
-        r = self.session.post(
-            url=self.TOKEN_URL,
+        """获取上传token"""
+        response = self.session.post(
+            self.TOKEN_URL,
             data={
                 "fileName": filename,
                 "size": filesize,
                 "template": "1"
             }
         )
-        response = r.json()
-        return response["taskId"], response["token"], response["uploadConfig"]["partSize"]
+        result = response.json()
+        return result["taskId"], result["token"], result["uploadConfig"]["partSize"]
     
-    def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str):
-        """
-        上传文件分块
-        
-        Args:
-            block (bytes): 分块数据
-            fragment_id (int): 分块ID
-            upload_token (str): 上传令牌
-        """
-        # 创建一个新的session用于上传
+    def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str) -> bool:
+        """上传分块"""
+        # 创建专用的上传session
         upload_session = requests.Session()
-        # 配置session
-        upload_session.mount('https://', requests.adapters.HTTPAdapter(
-            max_retries=3,
-            pool_connections=10,
-            pool_maxsize=10
-        ))
         
+        # 配置重试策略
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        
+        # 配置适配器
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        upload_session.mount("http://", adapter)
+        upload_session.mount("https://", adapter)
+        
+        # 设置请求头
         headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
             "Content-Type": "application/octet-stream",
-            "Origin": "https://member.acfun.cn",
-            "Referer": "https://member.acfun.cn/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive"
         }
         
         for attempt in range(3):
             try:
-                r = upload_session.post(
-                    url=self.FRAGMENT_URL,
+                # 添加延迟避免请求过快
+                if attempt > 0:
+                    time.sleep(2 ** attempt)  # 指数退避
+                
+                # 第一次尝试使用标准SSL
+                verify_ssl = True if attempt == 0 else False
+                
+                response = upload_session.post(
+                    self.FRAGMENT_URL,
                     params={
                         "fragment_id": fragment_id,
                         "upload_token": upload_token
                     },
                     data=block,
                     headers=headers,
-                    timeout=30  # 设置超时时间
+                    timeout=(30, 120),  # (连接超时, 读取超时)
+                    verify=verify_ssl,  # 第一次验证SSL，后续尝试跳过验证
+                    stream=False
                 )
                 
-                response = r.json()
-                if response["result"] == 1:
-                    self.log(f"分块{fragment_id+1}上传成功")
-                    return
+                # 检查响应
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("result") == 1:
+                        self.log(f"分块 {fragment_id + 1} 上传成功")
+                        return True
+                    else:
+                        self.log(f"分块 {fragment_id + 1} 上传失败: {result}")
                 else:
-                    self.log(f"分块{fragment_id+1}上传失败，重试第{attempt+1}次", r.text)
+                    self.log(f"分块 {fragment_id + 1} HTTP错误: {response.status_code}")
+                    
+            except ssl.SSLError as e:
+                self.log(f"分块 {fragment_id + 1} SSL错误，重试第 {attempt + 1} 次: {e}")
+                if attempt == 2:  # 最后一次尝试
+                    self.log("SSL连接持续失败，可能是网络问题或防火墙阻拦")
+            except requests.exceptions.Timeout as e:
+                self.log(f"分块 {fragment_id + 1} 超时，重试第 {attempt + 1} 次: {e}")
+            except requests.exceptions.ConnectionError as e:
+                self.log(f"分块 {fragment_id + 1} 连接错误，重试第 {attempt + 1} 次: {e}")
             except Exception as e:
-                self.log(f"分块{fragment_id+1}上传出错，重试第{attempt+1}次", str(e))
+                self.log(f"分块 {fragment_id + 1} 未知错误，重试第 {attempt + 1} 次: {e}")
         
-        self.log(f"分块{fragment_id+1}上传失败，已达到最大重试次数")
+        return False
     
-    def complete(self, fragment_count: int, upload_token: str):
-        """
-        完成上传
-        
-        Args:
-            fragment_count (int): 分块数量
-            upload_token (str): 上传令牌
-        """
-        # 创建一个新的session用于上传
+    def complete_upload(self, fragment_count: int, upload_token: str):
+        """完成上传"""
+        # 创建专用的上传session
         upload_session = requests.Session()
-        # 配置session
-        upload_session.mount('https://', requests.adapters.HTTPAdapter(
-            max_retries=3,
-            pool_connections=10,
-            pool_maxsize=10
-        ))
         
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Content-Length": "0",
-            "Origin": "https://member.acfun.cn",
-            "Referer": "https://member.acfun.cn/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
-        }
-        
-        try:
-            r = upload_session.post(
-                url=self.COMPLETE_URL,
-                params={
-                    "fragment_count": fragment_count,
-                    "upload_token": upload_token
-                },
-                headers=headers,
-                timeout=30  # 设置超时时间
-            )
-            
-            response = r.json()
-            if response["result"] != 1:
-                self.log(f"完成上传失败: {r.text}")
-                return False
-            return True
-        except Exception as e:
-            self.log(f"完成上传出错: {str(e)}")
-            return False
-    
-    def upload_finish(self, taskId: int):
-        """
-        通知上传完成
-        
-        Args:
-            taskId (int): 任务ID
-        """
-        r = self.session.post(
-            url=self.FINISH_URL,
-            data={
-                "taskId": taskId
-            }
+        # 配置重试策略
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
         )
         
-        response = r.json()
-        if response["result"] != 0:
-            self.log(f"上传完成通知失败: {r.text}")
-            return False
-        return True
+        # 配置适配器
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        upload_session.mount("http://", adapter)
+        upload_session.mount("https://", adapter)
+        
+        headers = {
+            "Content-Length": "0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        }
+        
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    time.sleep(2 ** attempt)
+                
+                response = upload_session.post(
+                    self.COMPLETE_URL,
+                    params={
+                        "fragment_count": fragment_count,
+                        "upload_token": upload_token
+                    },
+                    headers=headers,
+                    timeout=(30, 60),
+                    verify=True
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("result") == 1:
+                        self.log("上传完成确认成功")
+                        return
+                    else:
+                        self.log(f"完成上传失败: {result}")
+                else:
+                    self.log(f"完成上传HTTP错误: {response.status_code}")
+                    
+            except Exception as e:
+                self.log(f"完成上传出错，重试第 {attempt + 1} 次: {e}")
+                if attempt == 2:
+                    self.log("完成上传失败，但文件可能已上传成功")
+    
+    def upload_finish(self, task_id: int):
+        """上传完成处理"""
+        response = self.session.post(
+            self.FINISH_URL,
+            data={"taskId": task_id}
+        )
+        
+        if response.json()["result"] != 0:
+            self.log(f"上传完成处理失败: {response.text}")
     
     def create_video(self, video_key: int, filename: str) -> int:
-        """
-        创建视频
-        
-        Args:
-            video_key (int): 视频密钥
-            filename (str): 文件名
-            
-        Returns:
-            int: 视频ID
-        """
-        r = self.session.post(
-            url=self.C_VIDEO_URL,
+        """创建视频"""
+        response = self.session.post(
+            self.C_VIDEO_URL,
             data={
                 "videoKey": video_key,
                 "fileName": filename,
                 "vodType": "ksCloud"
             },
-            headers={"origin": "https://member.acfun.cn", "referer": "https://member.acfun.cn/upload-video"}
+            headers={
+                "origin": "https://member.acfun.cn",
+                "referer": "https://member.acfun.cn/upload-video"
+            }
         )
         
-        response = r.json()
-        self.log(f"创建视频结果: {r.text}")
-        
-        if response["result"] != 0:
-            self.log(f"创建视频失败: {r.text}")
+        result = response.json()
+        if result["result"] != 0:
+            self.log(f"创建视频失败: {response.text}")
             return None
         
         self.upload_finish(video_key)
-        return response.get("videoId")
+        return result["videoId"]
     
-    def upload_cover(self, image_path: str, mode='crop'):
-        """
-        处理并上传封面
-        
-        Args:
-            image_path (str): 封面图片路径
-            mode (str): 处理模式，'crop'表示裁剪，'pad'表示添加黑边
-            
-        Returns:
-            str: 上传后的封面URL
-        """
+    def upload_cover(self, image_path: str, mode='crop') -> str:
+        """上传封面图片"""
         self.log(f"处理封面图片: {image_path}")
         
         # 创建临时目录用于处理封面
@@ -323,58 +476,34 @@ class AcfunUploader:
         if not os.path.exists(processed_image):
             processed_image = image_path
         
-        # 获取文件类型
-        image_type = guess_type(processed_image)[0]
-        suffix = image_type.split("/")[-1] if image_type else "jpeg"
-        
-        # 读取图片数据
-        with open(processed_image, "rb") as f:
-            file_data = f.read()
-        
-        # 计算SHA1
-        file_sha1 = self.calc_sha1(file_data)
-        
-        # 获取七牛云上传令牌
-        def get_qiniu_token(fileName):
-            self.log(f"获取七牛云上传令牌: {fileName}")
-            r = self.session.post(
-                url=self.QINIU_URL,
-                data={"fileName": fileName + ".jpeg"}
-            )
-            response = r.json()
-            self.log(f"七牛云上传令牌响应: {r.text}")
-            return response["info"]["token"]
-        
         # 生成随机文件名
-        self.context.execute("""
-            function u() {
-                var e, t = 0, n = (new Date).getTime().toString(32);
-                for (e = 0; e < 5; e++)
-                    n += Math.floor(65535 * Math.random()).toString(32);
-                return "o_" + n + (t++).toString(32)
-            }
-        """)
+        import random
+        import string
         
-        fileName = self.context.u()
-        token = get_qiniu_token(fileName)
+        file_name = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
         
-        # 上传封面
-        file_size = os.path.getsize(processed_image)
+        # 获取七牛token
+        response = self.session.post(
+            self.QINIU_URL,
+            data={"fileName": f"{file_name}.jpeg"}
+        )
+        
+        token = response.json()["info"]["token"]
+        
+        # 上传图片
         with open(processed_image, "rb") as f:
-            chunk_data = f.read(file_size)
-            self.upload_chunk(chunk_data, 0, token)
+            chunk_data = f.read()
         
-        # 完成上传
-        self.complete(1, token)
+        self.upload_chunk(chunk_data, 0, token)
+        self.complete_upload(1, token)
         
         # 获取上传后的URL
-        r = self.session.post(
-            url=self.COVER_URL,
+        response = self.session.post(
+            self.COVER_URL,
             data={"bizFlag": "web-douga-cover", "token": token}
         )
         
-        response = r.json()
-        cover_url = response.get("url", "")
+        cover_url = response.json()["url"]
         
         # 清理临时文件
         try:
@@ -384,6 +513,83 @@ class AcfunUploader:
             pass
         
         return cover_url
+    
+    def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
+                     desc: str = "", tags: list = None, creation_type: int = 3, 
+                     original_url: str = "") -> tuple:
+        """创建投稿"""
+        if tags is None:
+            tags = []
+        
+        file_name = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path)
+        
+        # 获取上传token
+        task_id, token, part_size = self.get_token(file_name, file_size)
+        fragment_count = ceil(file_size / part_size)
+        
+        self.log(f"开始上传 {file_name}，共 {fragment_count} 个分块")
+        
+        # 上传视频文件
+        with open(file_path, "rb") as f:
+            for fragment_id in range(fragment_count):
+                chunk_data = f.read(part_size)
+                if not chunk_data:
+                    break
+                
+                if not self.upload_chunk(chunk_data, fragment_id, token):
+                    self.log(f"分块 {fragment_id + 1} 上传失败")
+                    return False, "分块上传失败"
+        
+        # 完成上传
+        self.complete_upload(fragment_count, token)
+        
+        # 创建视频
+        video_id = self.create_video(task_id, file_name)
+        if not video_id:
+            return False, "创建视频失败"
+        
+        # 上传封面
+        cover_url = self.upload_cover(cover_path)
+        
+        # 创建投稿
+        data = {
+            "title": title,
+            "description": desc,
+            "tagNames": json.dumps(tags),
+            "creationType": creation_type,
+            "channelId": channel_id,
+            "coverUrl": cover_url,
+            "videoInfos": json.dumps([{"videoId": video_id, "title": title}]),
+            "isJoinUpCollege": "0"
+        }
+        
+        if creation_type == 1:  # 转载
+            data["originalLinkUrl"] = original_url
+            data["originalDeclare"] = "0"
+        else:  # 原创
+            data["originalDeclare"] = "1"
+        
+        response = self.session.post(
+            self.C_DOUGA_URL,
+            data=data,
+            headers={
+                "origin": "https://member.acfun.cn",
+                "referer": "https://member.acfun.cn/upload-video"
+            }
+        )
+        
+        result = response.json()
+        if result["result"] == 0 and "dougaId" in result:
+            self.log(f"视频投稿成功！AC号：{result['dougaId']}")
+            return True, {
+                "ac_number": result['dougaId'],
+                "title": title,
+                "cover_url": cover_url
+            }
+        else:
+            self.log(f"视频投稿失败: {response.text}")
+            return False, f"视频投稿失败: {result.get('error_msg', '未知错误')}"
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
@@ -414,7 +620,7 @@ class AcfunUploader:
         try:
             # 尝试登录
             if not self.login():
-                return False, "AcFun登录失败，请检查用户名和密码"
+                return False, "AcFun登录失败，请检查用户名密码或Cookie文件"
             
             # 检查文件是否存在
             if not os.path.exists(video_file_path):
@@ -468,83 +674,22 @@ class AcfunUploader:
                     description = description[:997] + "..."
                 full_description = description
             
-            # 获取文件名和大小
-            file_name = os.path.basename(video_file_path)
-            file_size = os.path.getsize(video_file_path)
-            
-            # 获取上传令牌
-            task_id, token, part_size = self.get_token(file_name, file_size)
-            fragment_count = ceil(file_size / part_size)
-            self.log(f"开始上传视频 {file_name}，共 {fragment_count} 个分块")
-            
-            # 分块上传
-            with open(video_file_path, "rb") as f:
-                for fragment_id in range(fragment_count):
-                    chunk_data = f.read(part_size)
-                    if not chunk_data:
-                        break
-                    self.upload_chunk(chunk_data, fragment_id, token)
-            
-            # 完成上传
-            if not self.complete(fragment_count, token):
-                return False, "完成视频上传失败"
-            
-            # 上传封面
-            cover_url = self.upload_cover(cover_file_path, cover_mode)
-            if not cover_url:
-                return False, "上传封面失败"
-            
-            # 创建视频
-            video_id = self.create_video(task_id, file_name)
-            if not video_id:
-                return False, "创建视频失败"
-            
             # 判断视频创作类型
-            creation_type = 1  # 转载
-            original_link_url = ""
+            creation_type = 1 if original_url else 3  # 1:转载, 3:原创
             
-            if original_url:
-                creation_type = 1  # 转载
-                original_link_url = original_url
-            else:
-                creation_type = 3  # 原创
-            
-            # 发布视频
-            self.log(f"发布视频: {title}")
-            douga_data = {
-                "title": title,
-                "description": full_description,
-                "tagNames": json.dumps(tags),
-                "creationType": creation_type,
-                "channelId": partition_id,
-                "coverUrl": cover_url,
-                "videoInfos": json.dumps([{"videoId": video_id, "title": title}]),
-                "isJoinUpCollege": "0"
-            }
-            
-            if creation_type == 1:
-                douga_data["originalLinkUrl"] = original_link_url
-                douga_data["originalDeclare"] = "0"
-            else:
-                douga_data["originalDeclare"] = "1"
-            
-            r = self.session.post(
-                url=self.C_DOUGA_URL,
-                data=douga_data,
-                headers={"origin": "https://member.acfun.cn", "referer": "https://member.acfun.cn/upload-video"}
+            # 创建投稿
+            success, result = self.create_douga(
+                file_path=video_file_path,
+                title=title,
+                channel_id=partition_id,
+                cover_path=cover_file_path,
+                desc=full_description,
+                tags=tags,
+                creation_type=creation_type,
+                original_url=original_url or ""
             )
             
-            response = r.json()
-            if response["result"] == 0 and "dougaId" in response:
-                self.log(f"视频投稿成功！AC号：{response['dougaId']}")
-                return True, {
-                    "ac_number": response['dougaId'],
-                    "title": title,
-                    "cover_url": cover_url
-                }
-            else:
-                self.log(f"视频投稿失败: {r.text}")
-                return False, f"视频投稿失败: {response.get('error_msg', '未知错误')}"
+            return success, result
         
         except Exception as e:
             self.log(f"上传过程中发生错误: {str(e)}")

@@ -45,10 +45,13 @@ TASK_STATES = {
     'PARTITIONING': 'partitioning',       # 正在推荐分区
     'MODERATING': 'moderating',           # 正在内容审核
     'AWAITING_REVIEW': 'awaiting_manual_review',  # 等待人工审核
+    'READY_FOR_UPLOAD': 'ready_for_upload',      # 准备上传
     'UPLOADING': 'uploading',             # 正在上传
     'COMPLETED': 'completed',             # 任务完成
     'FAILED': 'failed'                    # 任务失败
 }
+
+# WebSocket实时通知功能已移除，改为使用传统页面刷新方式
 
 # 设置日志记录器
 def setup_logger(name):
@@ -196,6 +199,10 @@ def update_task(task_id, **kwargs):
     """
     if not kwargs:
         return False
+    
+    # 记录状态变化
+    status_changed = 'status' in kwargs
+    new_status = kwargs.get('status') if status_changed else None
     
     # 添加更新时间
     kwargs['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -361,28 +368,7 @@ def delete_task_files(task_id):
             logger.error(f"删除任务 {task_id} 的下载目录失败: {str(e)}")
             # 不直接返回False，尝试继续删除其他文件
     
-    # 删除 static/covers 目录下的封面图片
-    # 假设封面文件名是 task_id 加上常见的图片后缀
-    # 获取项目根目录的父目录，再拼接 static/covers
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    covers_dir = os.path.join(base_dir, 'static', 'covers')
-    
-    possible_extensions = ['.jpg', '.jpeg', '.png']
-    cover_deleted = False
-    for ext in possible_extensions:
-        cover_file_name = f"{task_id}{ext}"
-        cover_file_path = os.path.join(covers_dir, cover_file_name)
-        if os.path.exists(cover_file_path):
-            try:
-                os.remove(cover_file_path)
-                logger.info(f"任务 {task_id} 的封面图片已删除: {cover_file_path}")
-                cover_deleted = True
-                break # 假设只有一个封面文件
-            except Exception as e:
-                logger.error(f"删除任务 {task_id} 的封面图片 {cover_file_path} 失败: {str(e)}")
-    
-    if not cover_deleted:
-        logger.info(f"任务 {task_id} 在 static/covers 目录下未找到对应的封面图片或删除失败 (尝试的后缀: {', '.join(possible_extensions)})")
+    # 封面图片现在保存在downloads目录中，无需单独删除
 
     return True
 
@@ -487,10 +473,10 @@ class TaskProcessor:
             # 任务处理完成后，根据是否已上传到AcFun决定状态
             task = get_task(task_id)
             if task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
-                # 如果没有开启自动上传或者上传失败，则标记为"待上传"
+                # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
                 if not self.config.get('AUTO_MODE_ENABLED', False) or not task.get('acfun_upload_response'):
-                    update_task(task_id, status=TASK_STATES['PENDING'])
-                    task_logger.info("任务处理完成，标记为待上传")
+                    update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
+                    task_logger.info("任务处理完成，标记为准备上传")
                 else:
                     # 只有成功上传到AcFun的视频才会被标记为"已完成"
                     update_task(task_id, status=TASK_STATES['COMPLETED'])
@@ -904,6 +890,22 @@ class TaskProcessor:
         description = task.get('description_translated', '') or task.get('description_original', '')
         partition_id = task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')
         
+        # 如果没有视频文件，先下载视频
+        if not video_path or not os.path.exists(video_path):
+            task_logger.info("检测到视频文件缺失，开始下载视频文件...")
+            youtube_url = task.get('youtube_url', '')
+            if not youtube_url:
+                task_logger.error("无法获取YouTube URL，无法下载视频")
+                update_task(task_id, error_message="无法获取YouTube URL，无法下载视频")
+                return
+            
+            # 下载视频文件
+            self._download_video_file(task_id, youtube_url, task_logger)
+            
+            # 重新获取任务信息
+            task = get_task(task_id)
+            video_path = task.get('video_path_local', '')
+        
         # 解析标签
         tags = []
         try:
@@ -929,22 +931,45 @@ class TaskProcessor:
                 task_logger.error(f"读取视频元数据失败: {str(e)}")
         
         # AcFun配置
-        acfun_config = {
-            'acfun_username': self.config.get('ACFUN_USERNAME', ''),
-            'acfun_password': self.config.get('ACFUN_PASSWORD', '')
-        }
+        acfun_username = self.config.get('ACFUN_USERNAME', '')
+        acfun_password = self.config.get('ACFUN_PASSWORD', '')
+        acfun_cookies_path = self.config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.txt')
         
         # 获取封面处理模式
         cover_mode = self.config.get('COVER_PROCESSING_MODE', 'crop')
         
         # 检查必要参数
-        if not all([video_path, cover_path, title, partition_id, acfun_config['acfun_username'], acfun_config['acfun_password']]):
-            task_logger.error("上传参数不完整，取消上传")
-            update_task(task_id, error_message="上传参数不完整")
+        missing_params = []
+        if not video_path or not os.path.exists(video_path):
+            missing_params.append("video_path (视频文件)")
+        if not cover_path or not os.path.exists(cover_path):
+            missing_params.append("cover_path (封面文件)")
+        if not title:
+            missing_params.append("title (视频标题)")
+        if not partition_id:
+            missing_params.append("partition_id (分区ID)")
+        
+        if missing_params:
+            error_msg = f"上传参数不完整，缺少: {', '.join(missing_params)}"
+            task_logger.error(error_msg)
+            update_task(task_id, error_message=error_msg)
+            return
+        
+        # 检查登录凭据 - Cookie文件或用户名密码至少要有一个
+        cookie_file_exists = os.path.exists(acfun_cookies_path)
+        has_credentials = acfun_username and acfun_password
+        
+        if not cookie_file_exists and not has_credentials:
+            task_logger.error("AcFun登录信息不完整，需要Cookie文件或用户名密码")
+            update_task(task_id, error_message="AcFun登录信息不完整，需要Cookie文件或用户名密码")
             return
         
         # 创建上传器
-        uploader = AcfunUploader(acfun_config['acfun_username'], acfun_config['acfun_password'])
+        uploader = AcfunUploader(
+            acfun_username=acfun_username,
+            acfun_password=acfun_password,
+            cookie_file=acfun_cookies_path
+        )
         
         # 上传视频
         success, result = uploader.upload_video(
@@ -1035,8 +1060,8 @@ def force_upload_task(task_id, config=None):
         logger.error(f"任务 {task_id} 不存在")
         return False
     
-    # 允许状态为"等待人工审核"、"已完成"或"等待处理"的任务进行上传
-    allowed_states = [TASK_STATES['AWAITING_REVIEW'], TASK_STATES['COMPLETED'], TASK_STATES['PENDING']]
+    # 允许状态为"等待人工审核"、"已完成"、"等待处理"或"准备上传"的任务进行上传
+    allowed_states = [TASK_STATES['AWAITING_REVIEW'], TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD']]
     if task['status'] not in allowed_states:
         logger.warning(f"任务 {task_id} 状态为 {task['status']}，只有以下状态的任务可以上传: {', '.join(allowed_states)}")
         return False

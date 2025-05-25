@@ -10,9 +10,8 @@ import time
 import datetime
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file
 from flask_cors import CORS, cross_origin
-from flask_socketio import SocketIO, emit
 from modules.youtube_handler import download_video_data
 from modules.utils import parse_id_md_to_json, process_cover
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
@@ -23,8 +22,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
 
-# 配置SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*")
+# WebSocket功能已移除 - 使用传统的页面刷新方式
 
 # 配置CORS，允许来自YouTube的跨域请求
 CORS(app, resources={
@@ -46,12 +44,12 @@ log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(me
 # 文件处理器
 file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=10, encoding='utf-8')
 file_handler.setFormatter(log_formatter)
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.WARNING)
 
 # 控制台处理器
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.WARNING)
 # 确保Windows控制台编码正确
 if os.name == 'nt':
     import sys
@@ -66,7 +64,7 @@ if os.name == 'nt':
 
 # 配置根日志记录器
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(logging.WARNING)
 root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 
@@ -79,9 +77,8 @@ if len(logging.getLogger().handlers) > 1:
 logger = logging.getLogger('Y2A-Auto')
 logger.setLevel(logging.WARNING)
 
-# 确保静态目录存在
+# 静态目录变量（保留用于兼容性）
 covers_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'covers')
-os.makedirs(covers_dir, exist_ok=True)
 
 def init_id_mapping():
     """
@@ -104,6 +101,7 @@ def task_status_display(status):
         TASK_STATES['PARTITIONING']: '推荐分区中',
         TASK_STATES['MODERATING']: '内容审核中',
         TASK_STATES['AWAITING_REVIEW']: '等待人工审核',
+        TASK_STATES['READY_FOR_UPLOAD']: '准备上传',
         TASK_STATES['UPLOADING']: '上传中',
         TASK_STATES['COMPLETED']: '已完成',
         TASK_STATES['FAILED']: '失败',
@@ -123,6 +121,7 @@ def task_status_color(status):
         TASK_STATES['PARTITIONING']: 'info',
         TASK_STATES['MODERATING']: 'info',
         TASK_STATES['AWAITING_REVIEW']: 'warning',
+        TASK_STATES['READY_FOR_UPLOAD']: 'primary',
         TASK_STATES['UPLOADING']: 'primary',
         TASK_STATES['COMPLETED']: 'success',
         TASK_STATES['FAILED']: 'danger'
@@ -166,27 +165,9 @@ def parse_json(json_str):
         logger.error(f"解析JSON时出错: {str(e)}")
         return {} # 返回空字典
 
-# WebSocket实时通知函数
-def notify_task_completion(task_id, success=True, ac_number=None, title=None):
-    """通过WebSocket发送任务完成通知"""
-    try:
-        if ac_number:
-            acfun_video_url = f"https://www.acfun.cn/v/ac{ac_number}"
-            socketio.emit('task_completed', {
-                'task_id': task_id,
-                'success': success,
-                'ac_number': ac_number,
-                'title': title,
-                'url': acfun_video_url
-            })
-        else:
-            socketio.emit('task_completed', {
-                'task_id': task_id,
-                'success': success
-            })
-        logger.info(f"已通过WebSocket发送任务 {task_id} 完成通知")
-    except Exception as e:
-        logger.error(f"发送WebSocket通知失败: {str(e)}")
+# WebSocket实时通知功能已移除，改为使用传统的页面刷新方式
+
+# WebSocket实时通知功能已移除
 
 # 注册模板辅助函数
 app.jinja_env.globals.update(
@@ -264,18 +245,7 @@ def manual_review():
     logger.info("访问人工审核列表页面")
     review_tasks = get_tasks_by_status(TASK_STATES['AWAITING_REVIEW'])
     
-    # 确保封面图片可访问
-    for task in review_tasks:
-        if task.get('cover_path_local'):
-            # 复制封面图片到静态目录
-            cover_path = task['cover_path_local']
-            static_cover_path = os.path.join(covers_dir, f"{task['id']}.jpg")
-            
-            if os.path.exists(cover_path) and not os.path.exists(static_cover_path):
-                try:
-                    shutil.copy2(cover_path, static_cover_path)
-                except Exception as e:
-                    logger.error(f"复制封面图片失败: {str(e)}")
+    # 封面图片现在直接从downloads目录提供
     
     return render_template('manual_review.html', tasks=review_tasks)
 
@@ -310,47 +280,43 @@ def edit_task(task_id):
         update_task(task_id, **update_data)
         logger.info(f"任务 {task_id} 信息已更新")
         
-        # 执行上传操作（当任务处于"已完成"或"等待处理"状态时）
+        # 执行上传操作（当任务处于"已完成"、"等待处理"或"准备上传"状态时）
         task = get_task(task_id)  # 重新获取更新后的任务信息
-        if task['status'] in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING']]:
+        if task['status'] in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD']]:
             # 获取当前配置
             config = load_config()
             
-            # 尝试执行上传
-            logger.info(f"开始上传任务 {task_id} 到AcFun")
-            flash('正在上传到AcFun，请等待...', 'info')
+            # 启动后台上传
+            logger.info(f"开始后台上传任务 {task_id} 到AcFun")
+            flash('任务已保存，正在后台上传到AcFun...', 'info')
             
-            try:
-                # 调用上传函数
-                success = force_upload_task(task_id, config)
-                
-                if success:
-                    flash('上传成功！您的视频已成功上传到AcFun', 'success')
-                    logger.info(f"任务 {task_id} 上传成功")
-                else:
-                    flash('上传失败，请查看日志了解详情', 'danger')
-                    logger.error(f"任务 {task_id} 上传失败")
-            except Exception as e:
-                flash(f'上传过程中发生错误: {str(e)}', 'danger')
-                logger.error(f"任务 {task_id} 上传出错: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())
+            import threading
+            
+            def background_upload():
+                """后台上传函数"""
+                try:
+                    # 调用上传函数
+                    success = force_upload_task(task_id, config)
+                    
+                    if success:
+                        logger.info(f"任务 {task_id} 后台上传成功")
+                    else:
+                        logger.error(f"任务 {task_id} 后台上传失败")
+                except Exception as e:
+                    logger.error(f"任务 {task_id} 后台上传出错: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            # 启动后台线程
+            upload_thread = threading.Thread(target=background_upload, daemon=True)
+            upload_thread.start()
         else:
             flash('任务已保存，但尚未完成处理，无法上传', 'warning')
         
         return redirect(url_for('tasks'))
     
     # GET请求，显示编辑页面
-    # 确保封面图片可访问
-    if task.get('cover_path_local'):
-        cover_path = task['cover_path_local']
-        static_cover_path = os.path.join(covers_dir, f"{task_id}.jpg")
-        
-        if os.path.exists(cover_path) and not os.path.exists(static_cover_path):
-            try:
-                shutil.copy2(cover_path, static_cover_path)
-            except Exception as e:
-                logger.error(f"复制封面图片失败: {str(e)}")
+    # 封面图片现在直接从downloads目录提供
     
     # 读取分区映射数据
     id_mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'acfunid', 'id_mapping.json')
@@ -440,27 +406,7 @@ def start_task_route(task_id):
             # 等待一段时间后检查任务状态
             import threading
             
-            def check_task_completion():
-                import time
-                # 等待30秒
-                time.sleep(30)
-                # 检查任务状态
-                completed_task = get_task(task_id)
-                if completed_task and completed_task['status'] == TASK_STATES['COMPLETED'] and completed_task.get('acfun_upload_response'):
-                    try:
-                        # 解析上传响应
-                        upload_response = json.loads(completed_task['acfun_upload_response'])
-                        ac_number = upload_response.get('ac_number')
-                        title = upload_response.get('title', '未知标题')
-                        if ac_number:
-                            logger.info(f"任务 {task_id} 已完成，AC号: {ac_number}")
-                            # 发送WebSocket通知
-                            notify_task_completion(task_id, True, ac_number, title)
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.error(f"解析上传响应失败: {str(e)}")
-            
-            # 启动后台线程检查任务完成情况
-            threading.Thread(target=check_task_completion).start()
+            # 使用传统页面刷新方式
         else:
             flash('任务处理已启动', 'success')
     else:
@@ -494,38 +440,30 @@ def force_upload_task_route(task_id):
     # 获取当前配置
     config = load_config()
     
-    # 强制上传
-    success = force_upload_task(task_id, config)
+    # 启动后台强制上传
+    logger.info(f"开始后台强制上传任务 {task_id} 到AcFun")
+    flash('已启动强制上传，正在后台处理...', 'info')
     
-    if success:
-        # 获取最新的任务信息，包含上传结果
-        updated_task = get_task(task_id)
-        if updated_task and updated_task.get('acfun_upload_response'):
-            try:
-                # 解析上传响应
-                upload_response = json.loads(updated_task['acfun_upload_response'])
-                ac_number = upload_response.get('ac_number')
-                title = upload_response.get('title', '未知标题')
+    import threading
+    
+    def background_force_upload():
+        """后台强制上传函数"""
+        try:
+            # 调用上传函数
+            success = force_upload_task(task_id, config)
                 
-                if ac_number:
-                    # 构建AcFun视频链接
-                    acfun_video_url = f"https://www.acfun.cn/v/ac{ac_number}"
-                    flash(f'视频《{title}》上传成功！AC号: {ac_number} <a href="{acfun_video_url}" target="_blank">点击查看</a>', 'success')
-                    notify_task_completion(task_id, True, ac_number, title)
-                else:
-                    flash(f'视频《{title}》上传成功，但未获取到AC号', 'success')
-                    notify_task_completion(task_id, True)
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"解析上传响应失败: {str(e)}")
-                flash('任务已上传成功，但无法获取上传详情', 'warning')
-                notify_task_completion(task_id, True)
-        else:
-            # 如果没有上传响应，也认为是成功的强制上传（可能之前已上传或无需上传）
-            flash('任务已强制上传（可能之前已处理或无需上传响应）', 'success')
-            notify_task_completion(task_id, True)
-    else:
-        flash('强制上传失败', 'danger')
-        notify_task_completion(task_id, False)
+            if success:
+                logger.info(f"任务 {task_id} 后台强制上传成功")
+            else:
+                logger.error(f"任务 {task_id} 后台强制上传失败")
+        except Exception as e:
+            logger.error(f"任务 {task_id} 后台强制上传出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    # 启动后台线程
+    upload_thread = threading.Thread(target=background_force_upload, daemon=True)
+    upload_thread.start()
     
     return redirect(url_for('manual_review'))
 
@@ -563,26 +501,34 @@ def settings():
                 form_data[checkbox] = 'off'  # 未选中的复选框
         
         # 处理文件上传
+        cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
+        os.makedirs(cookies_dir, exist_ok=True)
+        
+        # 处理YouTube Cookies文件上传
         if 'youtube_cookies_file' in request.files:
             cookies_file = request.files['youtube_cookies_file']
             if cookies_file.filename:
-                # 确保config目录存在
-                config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
-                os.makedirs(config_dir, exist_ok=True)
+                # 保存到cookies目录
+                yt_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
+                cookies_file.save(yt_cookies_path)
                 
-                # 获取配置中的cookies路径文件名（仅文件名部分）
-                cookies_filename = os.path.basename(form_data.get('YOUTUBE_COOKIES_PATH', 'cookies.txt'))
+                # 更新配置中的路径
+                form_data['YOUTUBE_COOKIES_PATH'] = 'cookies/yt_cookies.txt'
                 
-                # 构建config目录下的完整路径
-                config_cookies_path = os.path.join(config_dir, cookies_filename)
+                logger.info(f"YouTube cookies文件已上传并保存到: {yt_cookies_path}")
+        
+        # 处理AcFun Cookies文件上传
+        if 'acfun_cookies_file' in request.files:
+            cookies_file = request.files['acfun_cookies_file']
+            if cookies_file.filename:
+                # 保存到cookies目录
+                ac_cookies_path = os.path.join(cookies_dir, 'ac_cookies.txt')
+                cookies_file.save(ac_cookies_path)
                 
-                # 保存文件到config目录
-                cookies_file.save(config_cookies_path)
+                # 更新配置中的路径
+                form_data['ACFUN_COOKIES_PATH'] = 'cookies/ac_cookies.txt'
                 
-                # 更新配置中的路径，指向config目录下的文件
-                form_data['YOUTUBE_COOKIES_PATH'] = os.path.join('config', cookies_filename)
-                
-                logger.info(f"YouTube cookies文件已上传并保存到: {config_cookies_path}")
+                logger.info(f"AcFun cookies文件已上传并保存到: {ac_cookies_path}")
         
         # 更新配置
         update_config(form_data)
@@ -613,15 +559,8 @@ def update_cover_mode():
         if task_id:
             task = get_task(task_id)
             if task and task.get('cover_path_local') and os.path.exists(task['cover_path_local']):
-                # 处理封面
+                # 直接在downloads目录中处理封面
                 process_cover(task['cover_path_local'], mode=mode)
-                
-                # 更新静态目录封面
-                static_cover_path = os.path.join(covers_dir, f"{task_id}.jpg")
-                if os.path.exists(static_cover_path):
-                    os.remove(static_cover_path)
-                
-                shutil.copy2(task['cover_path_local'], static_cover_path)
         
         return jsonify({"success": True, "message": "封面处理模式已更新"})
     except Exception as e:
@@ -729,6 +668,29 @@ def clear_all_tasks_route():
     
     return redirect(url_for('tasks'))
 
+@app.route('/covers/<task_id>')
+def get_task_cover(task_id):
+    """获取任务封面图片"""
+    try:
+        # 获取任务信息
+        task = get_task(task_id)
+        if not task:
+            logger.warning(f"任务 {task_id} 不存在")
+            return '', 404
+        
+        # 检查封面文件路径
+        cover_path = task.get('cover_path_local')
+        if not cover_path or not os.path.exists(cover_path):
+            logger.warning(f"任务 {task_id} 的封面文件不存在: {cover_path}")
+            return '', 404
+        
+        # 直接从downloads目录提供文件
+        return send_file(cover_path, mimetype='image/jpeg')
+        
+    except Exception as e:
+        logger.error(f"获取任务 {task_id} 封面时出错: {str(e)}")
+        return '', 500
+
 # 配置app
 def configure_app(app, config_data):
     """
@@ -752,42 +714,22 @@ def configure_app(app, config_data):
     app.config['ACFUN_USERNAME'] = config_data.get('ACFUN_USERNAME', '')
     app.config['ACFUN_PASSWORD'] = config_data.get('ACFUN_PASSWORD', '')
 
-# 背景任务监控
-@socketio.on('connect')
-def handle_connect():
-    """处理WebSocket连接"""
-    logger.info(f"客户端连接到WebSocket: {request.sid}")
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    """处理WebSocket断开连接"""
-    logger.info(f"客户端断开WebSocket连接: {request.sid}")
-
-# 监控特定任务的状态
-@socketio.on('monitor_task')
-def handle_monitor_task(data):
-    """监控特定任务的状态"""
-    task_id = data.get('task_id')
-    if task_id:
-        logger.info(f"客户端 {request.sid} 开始监控任务 {task_id}")
-        # 注册任务监控
-        # 这里不需要实际操作，因为我们会在任务完成时广播给所有客户端
-        emit('monitor_started', {'task_id': task_id})
+# 使用传统页面刷新方式
 
 # 日志清理功能
-def cleanup_logs(days=7):
+def cleanup_logs(hours=168):
     """
-    清理指定天数以前的日志文件
+    清理指定小时数以前的日志文件
     
     Args:
-        days: 保留最近多少天的日志
+        hours: 保留最近多少小时的日志
     
     Returns:
         cleanup_stats: 清理统计信息
     """
     try:
-        logger.info(f"开始清理{days}天前的日志文件")
-        cutoff_date = datetime.now() - timedelta(days=days)
+        logger.info(f"开始清理{hours}小时前的日志文件")
+        cutoff_date = datetime.now() - timedelta(hours=hours)
         cutoff_timestamp = cutoff_date.timestamp()
         
         files_removed = 0
@@ -842,12 +784,102 @@ def cleanup_logs(days=7):
             "error": str(e)
         }
 
+def clear_specific_logs():
+    """
+    立即清空特定的日志文件（清空主要日志，删除任务日志）
+    
+    Returns:
+        clear_stats: 清理统计信息
+    """
+    try:
+        logger.info("开始清空特定日志文件")
+        
+        files_processed = 0
+        bytes_freed = 0
+        processed_files = []
+        
+        # 定义需要清空内容的日志文件（保留文件，只清空内容）
+        clear_files = ['task_manager.log', 'app.log']
+        
+        # 先处理固定名称的日志文件 - 清空内容
+        for filename in clear_files:
+            file_path = os.path.join(log_dir, filename)
+            if os.path.exists(file_path):
+                try:
+                    # 获取文件大小
+                    file_size = os.path.getsize(file_path)
+                    
+                    # 清空文件内容
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write('')
+                    
+                    files_processed += 1
+                    bytes_freed += file_size
+                    processed_files.append(f"{filename} (已清空)")
+                    logger.info(f"已清空日志文件: {filename}")
+                except Exception as e:
+                    logger.error(f"清空文件 {filename} 失败: {str(e)}")
+        
+        # 处理任务日志文件 (格式如: task_xxx.log) - 删除文件
+        task_files_to_delete = []
+        for filename in os.listdir(log_dir):
+            file_path = os.path.join(log_dir, filename)
+            
+            # 检查是否是任务日志文件
+            if (os.path.isfile(file_path) and 
+                filename.startswith('task_') and 
+                filename.endswith('.log') and
+                filename not in clear_files):
+                task_files_to_delete.append((filename, file_path))
+        
+        # 删除任务日志文件
+        for filename, file_path in task_files_to_delete:
+            try:
+                # 获取文件大小
+                file_size = os.path.getsize(file_path)
+                
+                # 删除文件
+                os.remove(file_path)
+                
+                files_processed += 1
+                bytes_freed += file_size
+                processed_files.append(f"{filename} (已删除)")
+                logger.info(f"已删除任务日志文件: {filename}")
+            except Exception as e:
+                logger.error(f"删除文件 {filename} 失败: {str(e)}")
+        
+        # 转换字节为可读大小
+        if bytes_freed < 1024:
+            bytes_freed_str = f"{bytes_freed} 字节"
+        elif bytes_freed < 1024 * 1024:
+            bytes_freed_str = f"{bytes_freed / 1024:.2f} KB"
+        elif bytes_freed < 1024 * 1024 * 1024:
+            bytes_freed_str = f"{bytes_freed / (1024 * 1024):.2f} MB"
+        else:
+            bytes_freed_str = f"{bytes_freed / (1024 * 1024 * 1024):.2f} GB"
+            
+        logger.info(f"日志清理完成，已处理{files_processed}个文件，释放{bytes_freed_str}")
+        
+        return {
+            "success": True,
+            "files_processed": files_processed,
+            "bytes_freed": bytes_freed,
+            "bytes_freed_readable": bytes_freed_str,
+            "processed_files": processed_files
+        }
+    except Exception as e:
+        logger.error(f"清理日志文件时出错: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 def schedule_log_cleanup():
     """根据配置设置日志清理定时任务"""
     config = load_config()
     
     if config.get('LOG_CLEANUP_ENABLED', False):
-        days = int(config.get('LOG_CLEANUP_DAYS', 7))
+        hours = int(config.get('LOG_CLEANUP_HOURS', 168))  # 默认保留7天=168小时
         interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
         
         # 创建调度器
@@ -858,14 +890,14 @@ def schedule_log_cleanup():
             cleanup_logs,
             'interval',
             hours=interval_hours,
-            kwargs={'days': days},
+            kwargs={'hours': hours},
             id='log_cleanup_job'
         )
         
         # 启动调度器
         scheduler.start()
         
-        logger.info(f"已启用日志自动清理，保留{days}天内的日志，每{interval_hours}小时清理一次")
+        logger.info(f"已启用日志自动清理，保留{hours}小时内的日志，每{interval_hours}小时清理一次")
         return scheduler
     else:
         logger.info("日志自动清理已禁用")
@@ -875,12 +907,25 @@ def schedule_log_cleanup():
 def cleanup_logs_route():
     """手动触发日志清理"""
     config = load_config()
-    days = int(request.form.get('days', config.get('LOG_CLEANUP_DAYS', 7)))
+    hours = int(request.form.get('hours', config.get('LOG_CLEANUP_HOURS', 168)))
     
-    result = cleanup_logs(days)
+    result = cleanup_logs(hours)
     
     if result.get('success'):
         flash(f"日志清理成功，删除了{result['files_removed']}个文件，释放了{result['bytes_freed_readable']}空间", 'success')
+    else:
+        flash(f"日志清理失败: {result.get('error', '未知错误')}", 'danger')
+    
+    return redirect(url_for('settings'))
+
+@app.route('/maintenance/clear_logs', methods=['POST'])
+def clear_logs_route():
+    """立即清空特定日志文件"""
+    result = clear_specific_logs()
+    
+    if result.get('success'):
+        processed_files_str = "、".join(result['processed_files'])
+        flash(f"日志清理成功，已处理{result['files_processed']}个文件（{processed_files_str}），释放了{result['bytes_freed_readable']}空间", 'success')
     else:
         flash(f"日志清理失败: {result.get('error', '未知错误')}", 'danger')
     
@@ -905,7 +950,8 @@ if __name__ == '__main__':
     
     try:
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{5000}")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+        # 使用标准Flask运行
+        app.run(host='0.0.0.0', port=5000, debug=False)
     except KeyboardInterrupt:
         logger.info("接收到退出信号，服务正在关闭...")
     except Exception as e:
