@@ -40,6 +40,7 @@ TASK_STATES = {
     'PENDING': 'pending',                 # 等待处理
     'DOWNLOADING': 'downloading',         # 正在下载
     'DOWNLOADED': 'downloaded',           # 下载完成
+    'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
     'TRANSLATING': 'translating',         # 正在翻译
     'TAGGING': 'tagging',                 # 正在生成标签
     'PARTITIONING': 'partitioning',       # 正在推荐分区
@@ -140,6 +141,9 @@ def init_db():
         selected_partition_id TEXT,
         cover_path_local TEXT,
         video_path_local TEXT,
+        subtitle_path_original TEXT,  -- 原始字幕文件路径
+        subtitle_path_translated TEXT,  -- 翻译后字幕文件路径
+        subtitle_language_detected TEXT,  -- 检测到的字幕语言
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
@@ -466,7 +470,15 @@ class TaskProcessor:
             if task['status'] == TASK_STATES['FAILED']:
                 task_logger.error("下载视频文件失败，终止任务处理")
                 return
-            # 5. 上传
+            
+            # 5. 字幕翻译（如启用）
+            if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
+                self._translate_subtitle(task_id, task_logger)
+                task = get_task(task_id)
+                if task['status'] == TASK_STATES['FAILED']:
+                    task_logger.error("字幕翻译失败，继续执行后续步骤")
+            
+            # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
                 self._upload_to_acfun(task_id, task_logger)
             
@@ -630,6 +642,340 @@ class TaskProcessor:
         task_logger.info("翻译完成")
         return True
     
+    def _translate_subtitle(self, task_id, task_logger):
+        """翻译字幕文件"""
+        from modules.subtitle_translator import create_translator_from_config
+        import glob
+        
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在")
+            return False
+        
+        task_logger.info("开始字幕翻译")
+        update_task(task_id, status=TASK_STATES['TRANSLATING_SUBTITLE'])
+        
+        try:
+            # 查找字幕文件
+            task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+            subtitle_files = []
+            
+            # 查找SRT和VTT字幕文件
+            for ext in ['*.srt', '*.vtt']:
+                subtitle_files.extend(glob.glob(os.path.join(task_dir, ext)))
+            
+            if not subtitle_files:
+                task_logger.info("未找到字幕文件，跳过字幕翻译")
+                return True
+            
+            # 选择第一个字幕文件进行翻译
+            subtitle_file = subtitle_files[0]
+            task_logger.info(f"找到字幕文件: {os.path.basename(subtitle_file)}")
+            
+            # 创建翻译器，传递task_id参数
+            translator = create_translator_from_config(self.config, task_id)
+            if not translator:
+                task_logger.error("无法创建字幕翻译器，请检查API配置")
+                return False
+            
+            # 检测字幕语言（简单实现）
+            subtitle_lang = self._detect_subtitle_language(subtitle_file)
+            task_logger.info(f"检测到字幕语言: {subtitle_lang}")
+            
+            # 生成翻译后的文件路径
+            subtitle_ext = os.path.splitext(subtitle_file)[1]
+            translated_subtitle_path = os.path.join(
+                task_dir, 
+                f"translated_{task_id}{subtitle_ext}"
+            )
+            
+            # 定义进度回调函数
+            def progress_callback(progress, current, total):
+                task_logger.info(f"字幕翻译进度: {progress:.1f}% ({current}/{total})")
+            
+            # 执行翻译
+            success = translator.translate_file(
+                subtitle_file, 
+                translated_subtitle_path,
+                progress_callback=progress_callback
+            )
+            
+            if success:
+                task_logger.info("字幕翻译完成")
+                
+                # 如果配置了将字幕嵌入视频
+                if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
+                    embedded_video_path = self._embed_subtitle_in_video(
+                        task_id, task['video_path_local'], 
+                        translated_subtitle_path, task_logger
+                    )
+                    if embedded_video_path:
+                        # 更新视频路径为嵌入字幕的版本
+                        update_task(
+                            task_id,
+                            video_path_local=embedded_video_path,
+                            subtitle_path_original=subtitle_file,
+                            subtitle_path_translated=translated_subtitle_path,
+                            subtitle_language_detected=subtitle_lang
+                        )
+                    else:
+                        task_logger.warning("字幕嵌入失败，保留原视频和字幕文件")
+                        update_task(
+                            task_id,
+                            subtitle_path_original=subtitle_file,
+                            subtitle_path_translated=translated_subtitle_path,
+                            subtitle_language_detected=subtitle_lang
+                        )
+                else:
+                    # 不嵌入字幕，只保存字幕文件信息
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=translated_subtitle_path,
+                        subtitle_language_detected=subtitle_lang
+                    )
+                
+                task_logger.info("字幕翻译处理完成")
+                return True
+            else:
+                task_logger.error("字幕翻译失败")
+                return False
+                
+        except Exception as e:
+            task_logger.error(f"字幕翻译过程中发生错误: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            return False
+    
+    def _detect_subtitle_language(self, subtitle_path):
+        """简单的字幕语言检测"""
+        try:
+            with open(subtitle_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 简单的语言检测逻辑
+            if any(ord(char) >= 0x4e00 and ord(char) <= 0x9fff for char in content):
+                return "zh"  # 中文
+            elif any(ord(char) >= 0x3040 and ord(char) <= 0x309f for char in content):
+                return "ja"  # 日语平假名
+            elif any(ord(char) >= 0x30a0 and ord(char) <= 0x30ff for char in content):
+                return "ja"  # 日语片假名
+            elif any(ord(char) >= 0xac00 and ord(char) <= 0xd7af for char in content):
+                return "ko"  # 韩语
+            else:
+                return "en"  # 默认英语
+                
+        except Exception:
+            return "auto"
+    
+    def _convert_vtt_to_srt(self, vtt_path, task_logger):
+        """将VTT字幕文件转换为SRT格式（FFmpeg对SRT支持更好）"""
+        try:
+            import re
+            import os
+            
+            # 生成SRT文件路径
+            srt_path = vtt_path.replace('.vtt', '.srt')
+            
+            with open(vtt_path, 'r', encoding='utf-8') as vtt_file:
+                vtt_content = vtt_file.read()
+            
+            # 删除VTT头部
+            vtt_content = re.sub(r'^WEBVTT\n\n?', '', vtt_content)
+            
+            # 删除NOTE行
+            vtt_content = re.sub(r'NOTE.*\n', '', vtt_content)
+            
+            # 删除样式和位置信息
+            vtt_content = re.sub(r'<[^>]*>', '', vtt_content)
+            vtt_content = re.sub(r'{[^}]*}', '', vtt_content)
+            
+            # 处理时间戳格式：VTT使用 "." 分隔毫秒，SRT使用 ","
+            vtt_content = re.sub(r'(\d{2}:\d{2}:\d{2})\.(\d{3})', r'\1,\2', vtt_content)
+            
+            # 分割成字幕块
+            subtitle_blocks = re.split(r'\n\s*\n', vtt_content.strip())
+            
+            srt_content = []
+            subtitle_index = 1
+            
+            for block in subtitle_blocks:
+                if not block.strip():
+                    continue
+                    
+                lines = block.strip().split('\n')
+                if len(lines) >= 2:
+                    # 第一行应该是时间戳
+                    time_line = lines[0]
+                    if '-->' in time_line:
+                        # 添加序号
+                        srt_content.append(str(subtitle_index))
+                        # 添加时间戳（已转换格式）
+                        srt_content.append(time_line)
+                        # 添加字幕文本
+                        srt_content.extend(lines[1:])
+                        srt_content.append('')  # 空行分隔
+                        subtitle_index += 1
+            
+            # 写入SRT文件
+            with open(srt_path, 'w', encoding='utf-8') as srt_file:
+                srt_file.write('\n'.join(srt_content))
+            
+            task_logger.info(f"VTT转换为SRT成功: {srt_path}")
+            return srt_path
+            
+        except Exception as e:
+            task_logger.error(f"VTT转SRT转换失败: {str(e)}")
+            return None
+
+    def _convert_srt_to_ass(self, srt_path, ass_path, task_logger):
+        """将SRT字幕文件转换为ASS格式（FFmpeg对ASS支持最好）"""
+        try:
+            import re
+            import os
+            
+            with open(srt_path, 'r', encoding='utf-8') as srt_file:
+                srt_content = srt_file.read()
+            
+            # ASS文件头部
+            ass_header = """[Script Info]
+Title: Subtitle
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,20,&H00ffffff,&H000000ff,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+            
+            # 解析SRT字幕
+            subtitle_blocks = re.split(r'\n\s*\n', srt_content.strip())
+            ass_lines = []
+            
+            for block in subtitle_blocks:
+                if not block.strip():
+                    continue
+                    
+                lines = block.strip().split('\n')
+                if len(lines) >= 3:  # 序号、时间戳、文本
+                    time_line = lines[1]
+                    text_lines = lines[2:]
+                    
+                    # 解析时间戳
+                    time_match = re.match(r'(\d{2}:\d{2}:\d{2}),(\d{3}) --> (\d{2}:\d{2}:\d{2}),(\d{3})', time_line)
+                    if time_match:
+                        start_time = f"{time_match.group(1)}.{time_match.group(2)[:2]}"  # ASS使用两位毫秒
+                        end_time = f"{time_match.group(3)}.{time_match.group(4)[:2]}"
+                        
+                        # 合并文本行
+                        text = '\\N'.join(text_lines)  # ASS使用\N作为换行符
+                        
+                        # 创建ASS事件行
+                        ass_line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}"
+                        ass_lines.append(ass_line)
+            
+            # 写入ASS文件
+            with open(ass_path, 'w', encoding='utf-8') as ass_file:
+                ass_file.write(ass_header)
+                ass_file.write('\n'.join(ass_lines))
+            
+            task_logger.info(f"SRT转换为ASS成功: {ass_path}")
+            return True
+            
+        except Exception as e:
+            task_logger.error(f"SRT转ASS转换失败: {str(e)}")
+            return False
+
+    def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
+        """使用FFmpeg将字幕嵌入视频（修复版本）"""
+        try:
+            import subprocess
+            import os
+            import tempfile
+            import shutil
+            
+            # 如果是VTT格式，先转换为SRT
+            if subtitle_path.lower().endswith('.vtt'):
+                task_logger.info("检测到VTT格式字幕，转换为SRT格式以提高兼容性")
+                srt_path = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                if srt_path and os.path.exists(srt_path):
+                    subtitle_path = srt_path
+                    task_logger.info(f"使用转换后的SRT文件: {subtitle_path}")
+                else:
+                    task_logger.warning("VTT转SRT失败，尝试直接使用VTT文件")
+            
+            # 生成嵌入字幕后的视频文件路径
+            video_dir = os.path.dirname(video_path)
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            embedded_video_path = os.path.join(video_dir, f"{video_name}_with_subtitle.mp4")
+            
+            task_logger.info("开始将字幕嵌入视频...")
+            task_logger.info(f"视频路径: {video_path}")
+            task_logger.info(f"字幕路径: {subtitle_path}")
+            
+            # 使用简化路径方式（已测试成功）
+            temp_dir = tempfile.mkdtemp()
+            simple_video = os.path.join(temp_dir, "input.mp4")
+            simple_subtitle = os.path.join(temp_dir, "sub.srt")
+            simple_output = os.path.join(temp_dir, "output.mp4")
+            
+            try:
+                # 复制文件到临时目录
+                shutil.copy2(video_path, simple_video)
+                shutil.copy2(subtitle_path, simple_subtitle)
+                
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', 'input.mp4',
+                    '-vf', 'subtitles=sub.srt',  # 简化语法（已验证有效）
+                    '-c:v', 'libx264',
+                    '-crf', '23.5',
+                    '-c:a', 'copy',
+                    '-preset', 'medium',
+                    'output.mp4'
+                ]
+                
+                task_logger.info(f"FFmpeg命令: {' '.join(cmd)}")
+                task_logger.info(f"临时目录: {temp_dir}")
+                
+                # 执行FFmpeg命令
+                process = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    cwd=temp_dir,  # 在临时目录执行
+                    timeout=3600  # 1小时超时
+                )
+                
+                if process.returncode == 0 and os.path.exists(simple_output):
+                    # 成功！复制输出文件回原位置
+                    shutil.copy2(simple_output, embedded_video_path)
+                    task_logger.info("字幕嵌入完成（使用简化路径方式）")
+                    task_logger.info(f"嵌入字幕的视频已保存: {embedded_video_path}")
+                    return embedded_video_path
+                else:
+                    task_logger.error(f"字幕嵌入失败: {process.stderr}")
+                    return None
+            
+            finally:
+                # 清理临时目录
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                    
+        except subprocess.TimeoutExpired:
+            task_logger.error("FFmpeg执行超时")
+            return None
+        except FileNotFoundError:
+            task_logger.error("FFmpeg未安装或不在PATH中")
+            return None
+        except Exception as e:
+            task_logger.error(f"嵌入字幕时发生错误: {str(e)}")
+            return None
+
     def _generate_tags(self, task_id, task_logger):
         """生成视频标签"""
         from modules.ai_enhancer import generate_acfun_tags
@@ -905,6 +1251,23 @@ class TaskProcessor:
             # 重新获取任务信息
             task = get_task(task_id)
             video_path = task.get('video_path_local', '')
+        
+        # 检查是否需要执行字幕翻译（如果启用了字幕翻译且还没有翻译）
+        if (self.config.get('SUBTITLE_TRANSLATION_ENABLED', False) and 
+            not task.get('subtitle_path_translated')):
+            task_logger.info("检测到启用了字幕翻译功能且尚未翻译，开始执行字幕翻译...")
+            try:
+                self._translate_subtitle(task_id, task_logger)
+                # 重新获取任务信息（可能包含新的视频路径，如果字幕被嵌入）
+                task = get_task(task_id)
+                video_path = task.get('video_path_local', '')
+                task_logger.info("字幕翻译完成，继续上传流程")
+            except Exception as e:
+                task_logger.warning(f"字幕翻译失败，继续上传流程: {str(e)}")
+        elif task.get('subtitle_path_translated'):
+            task_logger.info("字幕已翻译，跳过字幕翻译步骤")
+        else:
+            task_logger.info("字幕翻译功能未启用，跳过字幕翻译步骤")
         
         # 解析标签
         tags = []
