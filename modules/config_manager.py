@@ -30,7 +30,18 @@ DEFAULT_CONFIG = {
     "ALIYUN_ACCESS_KEY_SECRET": "",
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
     "ALIYUN_TEXT_MODERATION_SERVICE": "comment_detection_pro",
-    "COVER_PROCESSING_MODE": "crop"
+    "COVER_PROCESSING_MODE": "crop",
+    # 字幕翻译相关配置
+    "SUBTITLE_TRANSLATION_ENABLED": False,  # 是否启用字幕翻译
+    "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
+    "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
+    "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (仅支持openai)
+    "SUBTITLE_BATCH_SIZE": 5,  # 批次大小
+    "SUBTITLE_MAX_RETRIES": 3,  # 最大重试次数
+    "SUBTITLE_RETRY_DELAY": 2,  # 重试延迟(秒)
+    "SUBTITLE_EMBED_IN_VIDEO": True,  # 是否将字幕嵌入视频
+    "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
+    "SUBTITLE_MAX_WORKERS": 3,  # 字幕翻译最大并发线程数
 }
 
 def load_config():
