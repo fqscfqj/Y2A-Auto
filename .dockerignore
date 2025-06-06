@@ -28,13 +28,15 @@ temp/
 downloads/
 static/covers/
 
-# Database files (exclude from image)
+# Database files (exclude from image)  
+db/
 tasks.db
 *.db
 *.sqlite
 *.sqlite3
 
 # Configuration and secrets (handle via volumes)
+config/
 cookies/
 *.key
 *.pem
@@ -45,10 +47,10 @@ Thumbs.db
 desktop.ini
 
 # Docker specific files
-Dockerfile
 .dockerignore
 docker-compose.yml
 docker-compose-build.yml
+Makefile
 
 # Git files
 .git/

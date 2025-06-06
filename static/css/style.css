@@ -101,4 +101,51 @@ body {
     font-size: 0.9em;
     color: #6c757d;
     margin-top: 5px;
+}
+
+/* 任务列表页面样式 */
+.table tbody tr:hover {
+    background-color: rgba(13, 110, 253, 0.05);
+}
+
+.text-monospace {
+    font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.tags-container {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+/* 任务状态实时更新高亮效果 */
+.task-updated-highlight {
+    animation: taskUpdateFlash 3s ease-in-out;
+    background-color: rgba(40, 167, 69, 0.1) !important;
+}
+
+@keyframes taskUpdateFlash {
+    0% { background-color: rgba(40, 167, 69, 0.3); }
+    50% { background-color: rgba(40, 167, 69, 0.1); }
+    100% { background-color: transparent; }
+}
+
+/* 状态徽章过渡效果 */
+.task-status-badge {
+    transition: all 0.3s ease-in-out;
+}
+
+/* 表格列宽设置 */
+.tasks-table th.col-id { width: 8%; }
+.tasks-table th.col-title { width: 22%; }
+.tasks-table th.col-status { width: 8%; }
+.tasks-table th.col-time { width: 12%; }
+.tasks-table th.col-partition { width: 8%; }
+.tasks-table th.col-tags { width: 12%; }
+.tasks-table th.col-result { width: 15%; }
+.tasks-table th.col-actions { width: 18%; }
+
+/* 操作按钮样式 */
+.task-action-btn {
+    min-width: 80px;
+    max-width: 100px;
 } 

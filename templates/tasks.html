@@ -22,17 +22,17 @@
     <div class="card">
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-striped table-hover mb-0">
+                <table class="table table-striped table-hover mb-0 tasks-table">
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 8%">ID</th>
-                            <th style="width: 22%">视频标题</th>
-                            <th style="width: 8%">状态</th>
-                            <th style="width: 12%">创建时间</th>
-                            <th style="width: 8%">分区</th>
-                            <th style="width: 12%">标签</th>
-                            <th style="width: 15%">上传结果</th>
-                            <th style="width: 18%">操作</th>
+                            <th class="col-id">ID</th>
+                            <th class="col-title">视频标题</th>
+                            <th class="col-status">状态</th>
+                            <th class="col-time">创建时间</th>
+                            <th class="col-partition">分区</th>
+                            <th class="col-tags">标签</th>
+                            <th class="col-result">上传结果</th>
+                            <th class="col-actions">操作</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -86,7 +86,7 @@
                                     {% set upload_result = parse_json(task.acfun_upload_response) %}
                                     {% if upload_result and upload_result.ac_number %}
                                         <span class="badge bg-success">AC{{ upload_result.ac_number }}</span>
-                                        <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" class="btn btn-sm btn-outline-success ms-1">
+                                        <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success ms-1">
                                             <i class="bi bi-box-arrow-up-right"></i> 查看
                                         </a>
                                     {% else %}
@@ -101,26 +101,26 @@
                             <td>
                                 <div class="d-flex justify-content-end gap-1">
                                     {% if task.status == 'awaiting_manual_review' %}
-                                        <a href="{{ url_for('review_task', task_id=task.id) }}" class="btn btn-sm btn-warning d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                        <a href="{{ url_for('review_task', task_id=task.id) }}" class="btn btn-sm btn-warning d-flex align-items-center justify-content-center task-action-btn">
                                             <i class="bi bi-eye me-1"></i> 审核
                                         </a>
                                     {% elif task.status == 'pending' or task.status == 'failed' %}
-                                        <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0" style="display:inline;">
-                                            <button type="submit" class="btn btn-sm btn-primary d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                        <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                                            <button type="submit" class="btn btn-sm btn-primary d-flex align-items-center justify-content-center task-action-btn">
                                                 <i class="bi bi-play-fill me-1"></i> 开始
                                             </button>
                                         </form>
                                     {% elif task.status == 'ready_for_upload' %}
-                                        <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0" style="display:inline;">
-                                            <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                        <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                                            <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center task-action-btn">
                                                 <i class="bi bi-cloud-upload me-1"></i> 上传
                                             </button>
                                         </form>
                                     {% endif %}
-                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;">
+                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary d-flex align-items-center justify-content-center task-action-btn">
                                         <i class="bi bi-pencil me-1"></i> 编辑
                                     </a>
-                                    <button type="button" class="btn btn-sm btn-outline-danger d-flex align-items-center justify-content-center" style="min-width:80px;max-width:100px;"
+                                    <button type="button" class="btn btn-sm btn-outline-danger d-flex align-items-center justify-content-center task-action-btn"
                                             data-task-id="{{ task.id }}"
                                             data-task-title="{{ task.video_title_original|default(task.video_title_translated, true)|default('未知视频', true) }}"
                                             onclick="confirmDelete(this.dataset.taskId, this.dataset.taskTitle)">
@@ -239,37 +239,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<style>
-    .table tbody tr:hover {
-        background-color: rgba(13, 110, 253, 0.05);
-    }
-    
-    .text-monospace {
-        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    }
-    
-    .tags-container {
-        display: flex;
-        flex-wrap: wrap;
-    }
-    
-    /* 任务状态实时更新高亮效果 */
-    .task-updated-highlight {
-        animation: taskUpdateFlash 3s ease-in-out;
-        background-color: rgba(40, 167, 69, 0.1) !important;
-    }
-    
-    @keyframes taskUpdateFlash {
-        0% { background-color: rgba(40, 167, 69, 0.3); }
-        50% { background-color: rgba(40, 167, 69, 0.1); }
-        100% { background-color: transparent; }
-    }
-    
-    /* 状态徽章过渡效果 */
-    .task-status-badge {
-        transition: all 0.3s ease-in-out;
-    }
-</style>
+<!-- 任务页面样式已移至 static/css/style.css -->
 {% endblock %}
 
 {% block extra_js %}
