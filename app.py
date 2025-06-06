@@ -22,8 +22,6 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
 
-# WebSocket功能已移除 - 使用传统的页面刷新方式
-
 # 配置CORS，允许来自YouTube的跨域请求
 CORS(app, resources={
     r"/tasks/add_via_extension": {
@@ -166,10 +164,6 @@ def parse_json(json_str):
     except Exception as e:
         logger.error(f"解析JSON时出错: {str(e)}")
         return {} # 返回空字典
-
-# WebSocket实时通知功能已移除，改为使用传统的页面刷新方式
-
-# WebSocket实时通知功能已移除
 
 # 注册模板辅助函数
 app.jinja_env.globals.update(

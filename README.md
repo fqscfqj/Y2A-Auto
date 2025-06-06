@@ -88,7 +88,12 @@ open http://localhost:5000
 ```bash
 # 本地构建并部署
 docker-compose -f docker-compose-build.yml up -d --build
+
+# 或使用便捷命令
+make build-local
 ```
+
+
 
 ### 🎯 首次配置
 
@@ -104,33 +109,139 @@ docker-compose -f docker-compose-build.yml up -d --build
 <summary>📦 Docker 部署 (推荐)</summary>
 
 ### 🎯 优势
-- ✅ 环境一致性
-- ✅ 快速部署
-- ✅ 便于维护
-- ✅ 内置 FFmpeg
+- ✅ 环境一致性 - 多阶段构建确保最小化镜像
+- ✅ 快速部署 - 预构建镜像或本地构建
+- ✅ 便于维护 - 包含健康检查和便捷管理
+- ✅ 安全可靠 - 非root用户运行，最小权限
+- ✅ 内置 FFmpeg - 完整的视频处理能力
 
-### 📝 步骤
+### 🚀 快速开始
+
+**方式一：使用预构建镜像（推荐）**
 ```bash
 # 1. 获取项目
 git clone https://github.com/fqscfqj/Y2A-Auto.git
 cd Y2A-Auto
 
-# 2. 选择部署方式
-# 预构建镜像 (推荐)
+# 2. 启动服务
 docker-compose up -d
-
-# 或本地构建
-docker-compose -f docker-compose-build.yml up -d --build
 
 # 3. 查看状态
 docker-compose ps
-docker-compose logs -f app
+docker-compose logs -f
 ```
 
-### 🛑 停止服务
+**方式二：本地构建**
+```bash
+# 本地构建并启动
+docker-compose -f docker-compose-build.yml up -d --build
+
+# 或使用便捷命令
+make build-local
+```
+
+### 🛠️ Makefile 便捷命令
+
+项目提供了便捷的Makefile命令：
+
+```bash
+# 查看所有命令
+make help
+
+# 生产环境
+make up          # 启动应用
+make down        # 停止应用  
+make logs        # 查看日志
+make restart     # 重启应用
+
+# 构建相关
+make build       # 构建镜像
+make build-local # 本地构建启动
+
+# 维护清理
+make clean       # 清理Docker资源
+make clean-all   # 深度清理
+make health      # 健康检查
+make status      # 查看状态
+```
+
+### 🗂️ 目录挂载
+
+所有配置都使用卷挂载，确保数据持久化：
+
+```yaml
+volumes:
+  - ./config:/app/config      # 配置文件
+  - ./db:/app/db             # 数据库文件
+  - ./downloads:/app/downloads # 下载文件
+  - ./logs:/app/logs         # 日志文件  
+  - ./cookies:/app/cookies   # Cookie文件
+  - ./temp:/app/temp         # 临时文件
+```
+
+### 🏥 健康检查
+
+所有配置都包含健康检查：
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+  interval: 30s    # 检查间隔
+  timeout: 10s     # 超时时间
+  retries: 3       # 重试次数
+  start_period: 10s # 启动等待时间
+```
+
+### 🔒 安全特性
+
+- **多阶段构建** - 减小镜像体积，提高安全性
+- **非root用户** - 使用专用用户 `y2a` 运行应用
+- **最小权限** - 只包含运行时必需的组件
+- **网络隔离** - 使用自定义Docker网络
+
+### 🐛 常见问题
+
+**端口被占用**
+```bash
+# 检查端口占用
+netstat -tlnp | grep 5000
+# 使用其他端口
+docker-compose up -d --scale y2a-auto=0
+docker-compose run -p 5001:5000 y2a-auto
+```
+
+**权限问题**
+```bash
+# 确保目录权限正确
+sudo chown -R $USER:$USER ./config ./db ./downloads ./logs ./cookies ./temp
+```
+
+**镜像拉取失败**
+```bash
+# 使用本地构建
+make build-local
+```
+
+### 🔄 更新维护
+
+**更新到最新版本**
 ```bash
 docker-compose down
+docker-compose pull
+docker-compose up -d
 ```
+
+**备份数据**
+```bash
+tar -czf y2a-auto-backup-$(date +%Y%m%d).tar.gz config db cookies
+```
+
+**清理旧数据**
+```bash
+make clean       # 清理Docker资源
+make clean-all   # 深度清理（注意：会删除所有数据）
+```
+
 </details>
 
 <details>
@@ -359,7 +470,7 @@ Y2A-Auto/
 - **文件系统** - 媒体文件存储
 
 ### 🔧 部署工具
-- **Docker** - 容器化部署
+- **Docker** - 多阶段构建容器化部署
 - **Docker Compose** - 多容器编排
 - **Python venv** - 虚拟环境
 
@@ -389,11 +500,13 @@ Y2A-Auto/
 ├── 📁 downloads/           # 下载文件
 ├── 📁 logs/                # 日志文件
 ├── 📁 temp/                # 临时文件
-├── 🐳 docker-compose.yml   # Docker 配置
-├── 🐳 Dockerfile           # Docker 镜像
-├── 🐍 app.py               # Flask 主应用
-├── 📋 requirements.txt     # Python 依赖
-└── 🔧 PushToY2AAuto.user.js # 浏览器脚本
+├── 🐳 docker-compose.yml       # Docker 生产配置
+├── 🐳 docker-compose-build.yml # Docker 构建配置
+├── 🐳 Dockerfile               # Docker 镜像（多阶段构建）
+├── 🔧 Makefile                 # Docker 便捷管理
+├── 🐍 app.py                   # Flask 主应用
+├── 📋 requirements.txt         # Python 依赖
+└── 🔧 PushToY2AAuto.user.js     # 浏览器脚本
 ```
 
 ## 🔌 API 接口
@@ -473,8 +586,14 @@ Y2A-Auto/
 2. 确认端口 5000 未被占用
 3. 查看容器日志: `docker-compose logs -f`
 4. 重新构建: `docker-compose up -d --build`
-5. 检查磁盘空间是否充足
+5. 检查磁盘空间是否充足（多阶段构建需要额外空间）
 6. 确认网络连接正常
+7. 验证用户权限: 容器以非root用户运行
+
+**多阶段构建相关**:
+- 构建时间较长是正常的，包含编译阶段
+- 如遇权限问题，检查挂载目录的所有权
+- 可以使用 `make build` 查看详细构建过程
 </details>
 
 <details>
