@@ -132,24 +132,49 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 获取yt-dlp路径
         yt_dlp_path = 'yt-dlp'
         
-        # 检查虚拟环境中的yt-dlp
-        venv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.venv', 'Scripts', 'yt-dlp.exe')
-        if os.path.exists(venv_path):
-            yt_dlp_path = venv_path
-            logger.info(f"使用虚拟环境中的yt-dlp: {yt_dlp_path}")
-        
-        # 检查python目录下的yt-dlp
+        # 在Linux/Docker环境中，首先检查系统PATH中的yt-dlp
         try:
-            python_dir = os.path.dirname(os.path.dirname(subprocess.run(['where', 'python'], 
-                                                       capture_output=True, 
-                                                       text=True, 
-                                                       shell=True).stdout.strip()))
-            python_scripts = os.path.join(python_dir, 'Scripts', 'yt-dlp.exe')
-            if os.path.exists(python_scripts):
-                yt_dlp_path = python_scripts
-                logger.info(f"使用Python Scripts目录中的yt-dlp: {yt_dlp_path}")
+            # 尝试使用which命令查找yt-dlp
+            result = subprocess.run(['which', 'yt-dlp'], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                yt_dlp_path = result.stdout.strip()
+                logger.info(f"找到系统中的yt-dlp: {yt_dlp_path}")
         except:
-            pass
+            # 如果which命令失败，检查常见的yt-dlp安装位置
+            possible_paths = [
+                '/home/y2a/.local/bin/yt-dlp',  # Docker环境中的用户安装路径
+                '/usr/local/bin/yt-dlp',        # 系统全局安装路径
+                '/usr/bin/yt-dlp',              # 系统安装路径
+                'yt-dlp'                        # 回退到PATH查找
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path) or path == 'yt-dlp':
+                    yt_dlp_path = path
+                    if path != 'yt-dlp':
+                        logger.info(f"使用yt-dlp路径: {yt_dlp_path}")
+                    break
+        
+        # Windows环境的特殊处理（保持兼容性）
+        if os.name == 'nt':  # Windows系统
+            # 检查虚拟环境中的yt-dlp
+            venv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.venv', 'Scripts', 'yt-dlp.exe')
+            if os.path.exists(venv_path):
+                yt_dlp_path = venv_path
+                logger.info(f"使用虚拟环境中的yt-dlp: {yt_dlp_path}")
+            
+            # 检查python目录下的yt-dlp
+            try:
+                python_dir = os.path.dirname(os.path.dirname(subprocess.run(['where', 'python'], 
+                                                           capture_output=True, 
+                                                           text=True, 
+                                                           shell=True).stdout.strip()))
+                python_scripts = os.path.join(python_dir, 'Scripts', 'yt-dlp.exe')
+                if os.path.exists(python_scripts):
+                    yt_dlp_path = python_scripts
+                    logger.info(f"使用Python Scripts目录中的yt-dlp: {yt_dlp_path}")
+            except:
+                pass
         
         # 处理cookies路径
         cookies_path = None
