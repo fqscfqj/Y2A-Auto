@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block title %}YouTube监控 - Y2A-Auto{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-youtube text-danger"></i> YouTube监控系统</h2>
+    <div>
+        <a href="{{ url_for('youtube_monitor_config') }}" class="btn btn-primary">
+            <i class="bi bi-plus-circle"></i> 新建监控
+        </a>
+    </div>
+</div>
+
+<!-- 监控配置列表 -->
+<div class="row mb-5">
+    <div class="col-12">
+        <h4><i class="bi bi-list-ul"></i> 监控配置</h4>
+        {% if configs %}
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>名称</th>
+                        <th>状态</th>
+                        <th>地区</th>
+                        <th>时间段</th>
+                        <th>最大结果</th>
+                        <th>最小观看数</th>
+                        <th>调度类型</th>
+                        <th>最后运行</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for config in configs %}
+                    <tr>
+                        <td>
+                            <strong>{{ config.name }}</strong>
+                            {% if config.keywords %}
+                            <br><small class="text-muted">关键词: {{ config.keywords[:50] }}{% if config.keywords|length > 50 %}...{% endif %}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if config.enabled %}
+                            <span class="badge bg-success">启用</span>
+                            {% else %}
+                            <span class="badge bg-secondary">禁用</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ config.region_code }}</td>
+                        <td>{{ config.time_period }}天</td>
+                        <td>{{ config.max_results }}</td>
+                        <td>{{ config.min_view_count|int }}</td>
+                        <td>
+                            {% if config.schedule_type == 'auto' %}
+                            <span class="badge bg-info">自动({{ config.schedule_interval }}分钟)</span>
+                            {% else %}
+                            <span class="badge bg-warning">手动</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if config.last_run_time %}
+                            <small>{{ config.last_run_time }}</small>
+                            {% else %}
+                            <small class="text-muted">从未运行</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
+                                    <button type="submit" class="btn btn-success btn-sm" title="立即运行">
+                                        <i class="bi bi-play-fill"></i>
+                                    </button>
+                                </form>
+                                <a href="{{ url_for('youtube_monitor_history', config_id=config.id) }}" class="btn btn-info btn-sm" title="查看历史">
+                                    <i class="bi bi-clock-history"></i>
+                                </a>
+                                <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-warning btn-sm" title="编辑">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                                <form method="POST" action="{{ url_for('youtube_monitor_config_delete', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要删除监控配置 {{ config.name }} 吗？')">
+                                    <button type="submit" class="btn btn-danger btn-sm" title="删除">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> 还没有监控配置，<a href="{{ url_for('youtube_monitor_config') }}">点击这里创建第一个监控配置</a>。
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 最近的监控历史 -->
+<div class="row">
+    <div class="col-12">
+        <h4><i class="bi bi-clock-history"></i> 最近的监控记录</h4>
+        {% if history %}
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead class="table-dark">
+                    <tr>
+                        <th>时间</th>
+                        <th>配置名称</th>
+                        <th>视频标题</th>
+                        <th>频道</th>
+                        <th>观看数</th>
+                        <th>点赞数</th>
+                        <th>评论数</th>
+                        <th>状态</th>
+                        <th>链接</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in history %}
+                    <tr>
+                        <td><small>{{ record.run_time }}</small></td>
+                        <td>{{ record.config_name }}</td>
+                        <td>
+                            <div class="text-truncate-300" title="{{ record.video_title }}">
+                                {{ record.video_title }}
+                            </div>
+                        </td>
+                        <td>{{ record.channel_title }}</td>
+                        <td>{{ record.view_count|int }}</td>
+                        <td>{{ record.like_count|int }}</td>
+                        <td>{{ record.comment_count|int }}</td>
+                        <td>
+                            {% if record.added_to_tasks %}
+                            <span class="badge bg-success">已添加</span>
+                            {% else %}
+                            <span class="badge bg-secondary">未添加</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="https://www.youtube.com/watch?v={{ record.video_id }}" target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
+                                <i class="bi bi-youtube"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> 还没有监控记录。
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.table th {
+    border-top: none;
+}
+.badge {
+    font-size: 0.75em;
+}
+.text-truncate-300 {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+</style>
+{% endblock %} 

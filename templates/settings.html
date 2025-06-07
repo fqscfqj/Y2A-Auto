@@ -298,6 +298,40 @@
             </div>
         </div>
         
+        <div class="settings-section">
+            <h3><i class="bi bi-youtube text-danger"></i> YouTube监控设置</h3>
+            
+            <div class="form-group">
+                <label for="youtube-api-key">YouTube Data API v3 密钥:</label>
+                <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}">
+                <p class="help-text">
+                    请在 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> 获取API密钥。
+                    配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面使用自动监控功能。
+                </p>
+            </div>
+            
+            {% if config.YOUTUBE_API_KEY %}
+            <div class="alert alert-success">
+                <i class="bi bi-check-circle"></i> YouTube API密钥已配置，监控功能可正常使用
+            </div>
+            {% else %}
+            <div class="alert alert-warning">
+                <i class="bi bi-exclamation-triangle"></i> 尚未配置YouTube API密钥，请先设置才能使用监控功能
+            </div>
+            {% endif %}
+            
+            <div class="alert alert-info">
+                <strong><i class="bi bi-info-circle"></i> 使用说明：</strong>
+                <ul class="mb-0 mt-2">
+                    <li>1. 访问 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a></li>
+                    <li>2. 创建项目并启用 YouTube Data API v3</li>
+                    <li>3. 创建API密钥并设置适当的限制</li>
+                    <li>4. 将密钥填入上方输入框并保存</li>
+                    <li>5. 前往 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面配置监控任务</li>
+                </ul>
+            </div>
+        </div>
+        
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">保存设置</button>
             <button type="reset" class="btn btn-secondary">重置</button>
