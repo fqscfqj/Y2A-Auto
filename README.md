@@ -1,5 +1,6 @@
 <div align="center">
 
+# docker镜像暂时损坏，预计6月8恢复
 # 🎬 Y2A-Auto
 
 **YouTube to AcFun 自动化工具**
