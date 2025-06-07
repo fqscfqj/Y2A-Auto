@@ -4,12 +4,13 @@
 
 **YouTube to AcFun 自动化工具**
 
-*一键从 YouTube 搬运视频到 AcFun，支持 AI 翻译、字幕翻译、内容审核、智能标签生成*
+*一键从 YouTube 搬运视频到 AcFun，支持 AI 翻译、字幕翻译、内容审核、智能标签生成、YouTube 监控*
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
 [![Flask](https://img.shields.io/badge/flask-2.3+-blue.svg)](https://flask.palletsprojects.com/)
+[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-green.svg)](https://github.com/features/actions)
 [![Status](https://img.shields.io/badge/status-stable-brightgreen.svg)]()
 
 [🚀 快速开始](#-快速开始) • [📖 功能特性](#-功能特性) • [🔧 部署方式](#-部署方式) • [📱 使用指南](#-使用指南) • [❓ 常见问题](#-常见问题)
@@ -24,12 +25,24 @@ Y2A-Auto 是一个现代化的 YouTube 到 AcFun 视频搬运自动化工具，�
 
 🎯 **核心价值**
 - 🤖 **全自动化流程** - 从 YouTube 下载到 AcFun 发布一站式完成
+- 📺 **智能监控** - 自动监控 YouTube 趋势视频和特定频道
 - 🧠 **AI 智能处理** - 自动翻译、标签生成、内容审核
 - 🎞️ **字幕翻译** - 自动下载和翻译字幕，支持多种语言
 - 🎨 **友好的 Web 界面** - 直观的任务管理和状态监控
 - 📱 **浏览器集成** - 在 YouTube 页面一键推送视频
 
 ## ✨ 功能特性
+
+### 📺 YouTube 监控
+- **🎯 智能监控** - 自动监控 YouTube 趋势视频、热门内容
+- **📋 多种监控模式** - 支持趋势榜、搜索关键词、特定频道监控
+- **🔧 灵活配置** - 自定义监控条件（观看数、点赞数、时长等）
+- **⏰ 定时调度** - 支持手动执行和自动定时监控
+- **🎚️ 智能过滤** - 关键词过滤、频道黑白名单、内容筛选
+- **📊 监控历史** - 完整的监控记录和统计分析
+- **🚀 自动添加** - 符合条件的视频自动加入处理队列
+- **🌍 多地区支持** - 支持不同国家/地区的 YouTube 内容
+- **📈 API 配额管理** - 智能管理 YouTube API 调用频率
 
 ### 🎥 视频处理
 - **📥 智能下载** - 使用最新 yt-dlp (≥2025.5.22)，支持多格式回退机制
@@ -59,6 +72,7 @@ Y2A-Auto 是一个现代化的 YouTube 到 AcFun 视频搬运自动化工具，�
 - **⚙️ 灵活配置** - Web 界面配置管理，支持热更新
 - **🔄 定时任务** - 基于 APScheduler 的任务调度
 - **🌐 跨域支持** - 支持浏览器插件跨域访问
+- **🤖 CI/CD 集成** - GitHub Actions 自动构建和发布
 
 ## 🚀 快速开始
 
@@ -68,16 +82,17 @@ Y2A-Auto 是一个现代化的 YouTube 到 AcFun 视频搬运自动化工具，�
 - 🐍 **Python 3.10+** (本地部署)
 - 🌐 **现代浏览器** (Chrome/Firefox/Edge)
 - 🎬 **FFmpeg** (Docker 镜像已包含)
+- 🔑 **YouTube Data API v3** (YouTube 监控功能需要)
 
 ### ⚡ 一键部署
 
-**方式一：使用预构建镜像**
+**方式一：使用预构建镜像（推荐）**
 ```bash
 # 克隆项目
 git clone https://github.com/fqscfqj/Y2A-Auto.git
 cd Y2A-Auto
 
-# 启动服务
+# 启动服务（自动拉取最新镜像）
 docker-compose up -d
 
 # 访问界面
@@ -93,15 +108,15 @@ docker-compose -f docker-compose-build.yml up -d --build
 make build-local
 ```
 
-
-
 ### 🎯 首次配置
 
 1. **🌐 访问 Web 界面**: http://localhost:5000
 2. **⚙️ 进入设置页面**: 配置 API 密钥和账号信息
-3. **🍪 上传 Cookie 文件**: 配置 AcFun 和 YouTube 登录凭据
-4. **🎞️ 配置字幕选项**: 设置字幕翻译语言和处理方式
-5. **✅ 测试功能**: 添加第一个测试任务
+3. **🔑 配置 YouTube API**: 设置 YouTube Data API v3 密钥（监控功能必需）
+4. **🍪 上传 Cookie 文件**: 配置 AcFun 和 YouTube 登录凭据
+5. **🎞️ 配置字幕选项**: 设置字幕翻译语言和处理方式
+6. **📺 设置监控规则**: 配置 YouTube 监控条件和调度
+7. **✅ 测试功能**: 添加第一个测试任务或启动监控
 
 ## 🔧 部署方式
 
@@ -114,6 +129,7 @@ make build-local
 - ✅ 便于维护 - 包含健康检查和便捷管理
 - ✅ 安全可靠 - 非root用户运行，最小权限
 - ✅ 内置 FFmpeg - 完整的视频处理能力
+- ✅ 自动更新 - GitHub Actions 自动构建最新镜像
 
 ### 🚀 快速开始
 
@@ -277,8 +293,16 @@ python app.py
 
 ### 🖥️ Web 界面操作
 
+#### 📺 YouTube 监控
+1. **⚙️ 监控配置**: 进入 YouTube 监控页面，创建监控配置
+2. **🎯 设置条件**: 配置监控类型、地区、分类、关键词等
+3. **📊 筛选规则**: 设置最小观看数、点赞数、视频时长等条件
+4. **⏰ 调度设置**: 选择手动执行或自动定时监控
+5. **▶️ 启动监控**: 开始监控并查看发现的视频
+6. **🚀 自动添加**: 符合条件的视频自动加入处理队列
+
 #### 📋 任务管理
-1. **➕ 添加任务**: 输入 YouTube 视频 URL
+1. **➕ 添加任务**: 输入 YouTube 视频 URL 或通过监控自动添加
 2. **▶️ 启动处理**: 开始下载和 AI 处理流程
 3. **👁️ 人工审核**: 检查和调整 AI 生成的内容
 4. **🚀 上传发布**: 后台上传到 AcFun
@@ -291,9 +315,10 @@ python app.py
 5. **📋 文件保留**: 可选择保留原始字幕文件
 
 #### ⚙️ 系统设置
-- **🔑 API 配置**: OpenAI、阿里云等服务密钥
+- **🔑 API 配置**: OpenAI、阿里云、YouTube Data API 等服务密钥
 - **🍪 账号管理**: Cookie 文件上传和登录配置
 - **🎞️ 字幕设置**: 翻译语言、批次大小、并发数配置
+- **📺 监控设置**: YouTube 监控规则和调度配置
 - **📝 日志管理**: 自动清理和手动清空
 
 ### 🔌 浏览器插件
@@ -314,6 +339,17 @@ python app.py
 ## ⚙️ 配置说明
 
 ### 🔧 主要配置项
+
+#### 📺 YouTube 监控配置
+```json
+{
+  "YOUTUBE_API_KEY": "your-youtube-data-api-v3-key",
+  "YOUTUBE_MONITOR_ENABLED": true,
+  "YOUTUBE_MONITOR_DEFAULT_REGION": "US",
+  "YOUTUBE_MONITOR_DEFAULT_MAX_RESULTS": 10,
+  "YOUTUBE_MONITOR_RATE_LIMIT": 100
+}
+```
 
 #### 🤖 AI 配置
 ```json
@@ -361,6 +397,21 @@ python app.py
   "LOG_CLEANUP_INTERVAL": 12
 }
 ```
+
+### 🔑 API 密钥获取指南
+
+#### 📺 YouTube Data API v3
+1. **🌐 访问 Google Cloud Console**: https://console.cloud.google.com/
+2. **📋 创建项目**: 创建新项目或选择现有项目
+3. **🔧 启用 API**: 搜索并启用 "YouTube Data API v3"
+4. **🔑 创建凭据**: 创建 API 密钥（服务器密钥）
+5. **⚙️ 配置限制**: 可选择限制 API 密钥的使用范围
+
+#### 🤖 OpenAI API
+1. **🌐 访问 OpenAI Platform**: https://platform.openai.com/
+2. **👤 注册登录**: 创建账号并完成验证
+3. **🔑 生成 API Key**: 在 API Keys 页面生成新密钥
+4. **💳 充值账户**: 确保账户有足够余额
 
 ### 🍪 Cookie 配置指南
 
@@ -438,26 +489,31 @@ Y2A-Auto/
 │   📹 视频源      │─▶─│   📥 下载处理    │─▶─│   🚀 自动发布    │
 │   🔗 视频链接    │    │   🎞️ 字幕翻译    │    │   📊 数据统计    │
 │   🎞️ 字幕文件    │    │   🧠 AI 增强     │    └─────────────────┘
-└─────────────────┘    │   👁️ 人工审核    │
-                       │   📋 任务管理    │
+│   📺 API 监控    │    │   👁️ 人工审核    │
+└─────────────────┘    │   📋 任务管理    │
+                       │   📺 智能监控    │
                        └─────────────────┘
                                │
                        ┌─────────────────┐
                        │   🌐 Flask Web   │
                        │   📱 浏览器插件   │
                        │   🔄 定时任务    │
+                       │   🤖 CI/CD      │
                        └─────────────────┘
 ```
 
 ## 🏗️ 技术栈
 
 ### 🐍 后端技术
-- **Flask 2.3+** - Web 框架
+- **Flask 2.3.3** - Web 框架
 - **yt-dlp ≥2025.5.22** - YouTube 下载器
 - **OpenAI ≥1.0.0** - AI 翻译和增强
-- **APScheduler 3.10+** - 任务调度
-- **Pillow 10.0** - 图像处理
+- **APScheduler 3.10.1** - 任务调度
+- **Pillow 10.0.0** - 图像处理
 - **FFmpeg** - 视频处理
+- **Google API Client 2.116.0** - YouTube Data API
+- **Flask-CORS 5.0.1** - 跨域支持
+- **pytz 2025.2** - 时区处理
 
 ### 🌐 前端技术
 - **Bootstrap 5** - UI 框架
@@ -472,6 +528,8 @@ Y2A-Auto/
 ### 🔧 部署工具
 - **Docker** - 多阶段构建容器化部署
 - **Docker Compose** - 多容器编排
+- **GitHub Actions** - 自动 CI/CD 构建
+- **Makefile** - 便捷管理命令
 - **Python venv** - 虚拟环境
 
 ## 📂 项目结构
@@ -480,6 +538,7 @@ Y2A-Auto/
 Y2A-Auto/
 ├── 📁 modules/             # 核心功能模块
 │   ├── 🎬 youtube_handler.py      # YouTube 视频处理
+│   ├── 📺 youtube_monitor.py      # YouTube 监控系统
 │   ├── 📤 acfun_uploader.py       # AcFun 上传器
 │   ├── 🎞️ subtitle_translator.py  # 字幕翻译器
 │   ├── 🤖 ai_enhancer.py          # AI 增强功能
@@ -488,6 +547,9 @@ Y2A-Auto/
 │   ├── ⚙️ config_manager.py       # 配置管理
 │   └── 🔧 utils.py               # 工具函数
 ├── 📁 templates/           # HTML 模板
+│   ├── 📺 youtube_monitor.html         # 监控主页
+│   ├── 📺 youtube_monitor_config.html  # 监控配置
+│   └── 📺 youtube_monitor_history.html # 监控历史
 ├── 📁 static/              # 静态资源
 │   ├── 🎨 css/                   # 样式文件
 │   ├── 📜 js/                    # JavaScript 文件
@@ -497,9 +559,13 @@ Y2A-Auto/
 ├── 📁 config/              # 配置文件
 ├── 📁 cookies/             # Cookie 文件
 ├── 📁 db/                  # 数据库文件
+│   └── 📺 youtube_monitor.db     # 监控数据库
 ├── 📁 downloads/           # 下载文件
 ├── 📁 logs/                # 日志文件
 ├── 📁 temp/                # 临时文件
+├── 📁 .github/             # GitHub 配置
+│   └── 📁 workflows/             # CI/CD 工作流
+│       └── 🤖 docker-publish.yml    # Docker 自动构建
 ├── 🐳 docker-compose.yml       # Docker 生产配置
 ├── 🐳 docker-compose-build.yml # Docker 构建配置
 ├── 🐳 Dockerfile               # Docker 镜像（多阶段构建）
@@ -510,6 +576,15 @@ Y2A-Auto/
 ```
 
 ## 🔌 API 接口
+
+### 📺 YouTube 监控接口
+- `GET /youtube_monitor` - 监控主页面
+- `POST /youtube_monitor/config` - 创建监控配置
+- `GET /youtube_monitor/config/{id}` - 获取监控配置
+- `PUT /youtube_monitor/config/{id}` - 更新监控配置
+- `DELETE /youtube_monitor/config/{id}` - 删除监控配置
+- `POST /youtube_monitor/run/{id}` - 手动执行监控
+- `GET /youtube_monitor/history` - 获取监控历史
 
 ### 📋 任务管理接口
 - `POST /tasks/add` - 添加新任务
@@ -529,6 +604,28 @@ Y2A-Auto/
 - `GET /covers/{task_id}` - 获取任务封面
 
 ## ❓ 常见问题
+
+<details>
+<summary>📺 YouTube 监控相关问题</summary>
+
+**Q: YouTube API 配额不足怎么办？**
+- 合理设置监控频率，避免过于频繁的调用
+- 使用更精确的搜索条件，减少不必要的 API 调用
+- 考虑申请更高的 API 配额限制
+- 监控多个项目时可以分配不同的 API 密钥
+
+**Q: 监控到的视频质量不符合要求？**
+- 调整监控配置中的筛选条件（观看数、点赞数等）
+- 完善关键词过滤和排除规则
+- 使用频道黑白名单功能
+- 适当提高视频质量阈值
+
+**Q: 自动添加的任务太多怎么办？**
+- 关闭"自动添加到任务"功能，改为手动筛选
+- 调整监控频率，降低执行间隔
+- 设置更严格的筛选条件
+- 定期清理不需要的监控配置
+</details>
 
 <details>
 <summary>🎞️ 字幕翻译相关问题</summary>
@@ -623,6 +720,7 @@ Y2A-Auto/
 
 **优化建议**:
 - 调整字幕翻译并发数
+- 合理设置 YouTube 监控频率
 - 配置日志自动清理
 - 定期清理下载文件
 - 监控系统资源使用情况
@@ -633,22 +731,25 @@ Y2A-Auto/
 
 > ⚠️ **重要提醒**
 
-- 🔐 **保护 Cookie 文件**: 包含敏感登录信息，请妥善保管
+- 🔐 **保护 API 密钥**: YouTube API、OpenAI API 等密钥请妥善保管
+- 🔑 **Cookie 文件安全**: 包含敏感登录信息，请妥善保管
 - 🔄 **定期更新凭据**: 建议定期更新 Cookie 和密码
 - 💾 **备份重要数据**: 建议同时配置多种登录方式
 - 🛡️ **网络安全**: 在受信任的网络环境中使用
-- 🔑 **API 密钥管理**: 妥善保管各种 API 密钥，避免泄露
 - 📝 **日志隐私**: 定期清理日志文件，避免敏感信息泄露
+- 🚦 **API 配额管理**: 合理使用 YouTube API，避免超出配额限制
 
 ## 🚀 未来规划
 
 - 🎥 **更多视频平台支持** - 支持 Bilibili、抖音等平台
+- 📺 **智能监控增强** - 机器学习驱动的内容推荐
 - 🌐 **多语言界面** - 支持英文、日文等界面语言
 - 📱 **移动端适配** - 响应式设计，支持手机访问
 - 🔄 **增量更新** - 支持视频更新和版本管理
 - 📊 **数据分析** - 视频表现统计和分析功能
 - 🎛️ **高级调度** - 更灵活的任务调度和批处理
 - 🔌 **插件系统** - 支持第三方插件扩展
+- 🤖 **AI 工作流** - 更智能的自动化处理流程
 
 ## 📄 许可证
 

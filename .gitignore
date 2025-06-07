@@ -35,7 +35,7 @@ tasks.db
 *.sqlite3
 
 # Configuration and secrets
-config/config.json
+config/*
 cookies/
 *.key
 *.pem

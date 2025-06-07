@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+
+{% block title %}监控历史 - {{ config.name }} - Y2A-Auto{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-clock-history"></i> 监控历史
+        <small class="text-muted">- {{ config.name }}</small>
+    </h2>
+    <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-secondary">
+        <i class="bi bi-arrow-left"></i> 返回
+    </a>
+</div>
+
+<!-- 配置信息摘要 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-info-circle"></i> 配置信息</h6>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-2">
+                <strong>状态：</strong>
+                {% if config.enabled %}
+                <span class="badge bg-success">启用</span>
+                {% else %}
+                <span class="badge bg-secondary">禁用</span>
+                {% endif %}
+            </div>
+            <div class="col-md-2">
+                <strong>地区：</strong> {{ config.region_code }}
+            </div>
+            <div class="col-md-2">
+                <strong>时间段：</strong> {{ config.time_period }}天
+            </div>
+            <div class="col-md-2">
+                <strong>最大结果：</strong> {{ config.max_results }}
+            </div>
+            <div class="col-md-2">
+                <strong>最小观看数：</strong> {{ config.min_view_count|int }}
+            </div>
+            <div class="col-md-2">
+                <strong>调度：</strong>
+                {% if config.schedule_type == 'auto' %}
+                <span class="badge bg-info">自动({{ config.schedule_interval }}分钟)</span>
+                {% else %}
+                <span class="badge bg-warning">手动</span>
+                {% endif %}
+            </div>
+        </div>
+        
+        {% if config.keywords %}
+        <div class="row mt-2">
+            <div class="col-12">
+                <strong>关键词：</strong> {{ config.keywords }}
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if config.exclude_keywords %}
+        <div class="row mt-2">
+            <div class="col-12">
+                <strong>排除关键词：</strong> {{ config.exclude_keywords }}
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if config.last_run_time %}
+        <div class="row mt-2">
+            <div class="col-12">
+                <strong>最后运行：</strong> {{ config.last_run_time }}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 操作按钮 -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4><i class="bi bi-list"></i> 监控记录</h4>
+    <div>
+        <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
+            <button type="submit" class="btn btn-success">
+                <i class="bi bi-play-fill"></i> 立即运行
+            </button>
+        </form>
+        <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-warning">
+            <i class="bi bi-pencil"></i> 编辑配置
+        </a>
+    </div>
+</div>
+
+<!-- 监控历史列表 -->
+{% if history %}
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead class="table-dark">
+            <tr>
+                <th>时间</th>
+                <th>视频标题</th>
+                <th>频道</th>
+                <th>观看数</th>
+                <th>点赞数</th>
+                <th>评论数</th>
+                <th>时长</th>
+                <th>发布时间</th>
+                <th>状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for record in history %}
+            <tr>
+                <td>
+                    <small>{{ record.run_time }}</small>
+                </td>
+                <td>
+                    <div class="text-truncate-300" title="{{ record.video_title }}">
+                        {{ record.video_title }}
+                    </div>
+                </td>
+                <td>
+                    <div class="text-truncate-150" title="{{ record.channel_title }}">
+                        {{ record.channel_title }}
+                    </div>
+                </td>
+                <td>{{ record.view_count|int }}</td>
+                <td>{{ record.like_count|int }}</td>
+                <td>{{ record.comment_count|int }}</td>
+                <td>
+                    {% set duration_seconds = record.duration|parse_youtube_duration %}
+                    {% if duration_seconds %}
+                        {% set hours = duration_seconds // 3600 %}
+                        {% set minutes = (duration_seconds % 3600) // 60 %}
+                        {% set seconds = duration_seconds % 60 %}
+                        {% if hours > 0 %}
+                            {{ hours }}:{{ "%02d"|format(minutes) }}:{{ "%02d"|format(seconds) }}
+                        {% else %}
+                            {{ minutes }}:{{ "%02d"|format(seconds) }}
+                        {% endif %}
+                    {% else %}
+                        {{ record.duration }}
+                    {% endif %}
+                </td>
+                <td>
+                    <small>{{ record.published_at[:10] }}</small>
+                </td>
+                <td>
+                    {% if record.added_to_tasks %}
+                    <span class="badge bg-success">已添加</span>
+                    {% else %}
+                    <span class="badge bg-secondary">未添加</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="btn-group" role="group">
+                        <a href="https://www.youtube.com/watch?v={{ record.video_id }}" 
+                           target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
+                            <i class="bi bi-youtube"></i>
+                        </a>
+                        {% if not record.added_to_tasks %}
+                        <button type="button" class="btn btn-outline-success btn-sm" 
+                                onclick="addToTasks('{{ record.video_id }}', '{{ config.id }}')" 
+                                title="添加到任务队列">
+                            <i class="bi bi-plus-circle"></i>
+                        </button>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- 统计信息 -->
+<div class="row mt-4">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.total_records }}</h5>
+                <p class="card-text">总记录数</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.added_to_tasks }}</h5>
+                <p class="card-text">已添加到任务</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.avg_views }}</h5>
+                <p class="card-text">平均观看数</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.avg_likes }}</h5>
+                <p class="card-text">平均点赞数</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i> 此配置还没有监控记录。
+    <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
+        <button type="submit" class="btn btn-link p-0">点击这里立即运行一次监控</button>
+    </form>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function addToTasks(videoId, configId) {
+    if (!confirm('确定要将此视频添加到任务队列吗？')) {
+        return;
+    }
+    
+    const button = event.target.closest('button');
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+    
+    fetch('/youtube_monitor/add_to_tasks', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            video_id: videoId,
+            config_id: parseInt(configId)
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // 成功后隐藏按钮并更新状态
+            button.style.display = 'none';
+            const statusCell = button.closest('tr').querySelector('td:nth-last-child(2)');
+            statusCell.innerHTML = '<span class="badge bg-success">已添加</span>';
+            
+            // 显示成功消息
+            showAlert('success', data.message);
+        } else {
+            // 失败后恢复按钮
+            button.disabled = false;
+            button.innerHTML = originalHtml;
+            showAlert('danger', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+        showAlert('danger', '操作失败，请重试');
+    });
+}
+
+function showAlert(type, message) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    const container = document.querySelector('.container-fluid');
+    container.insertBefore(alertDiv, container.firstChild);
+    
+    // 3秒后自动消失
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 3000);
+}
+</script>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.table th {
+    border-top: none;
+}
+.badge {
+    font-size: 0.75em;
+}
+.card-title {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+}
+.text-truncate-300 {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.text-truncate-150 {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+</style>
+{% endblock %} 

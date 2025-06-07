@@ -1,0 +1,371 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_edit %}编辑监控配置{% else %}新建监控配置{% endif %} - Y2A-Auto{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-youtube text-danger"></i> 
+        {% if is_edit %}编辑监控配置{% else %}新建监控配置{% endif %}
+    </h2>
+    <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-secondary">
+        <i class="bi bi-arrow-left"></i> 返回
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <form method="POST" class="needs-validation" novalidate>
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-gear"></i> 基本设置</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="name" class="form-label">配置名称 <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="name" name="name" 
+                                       value="{{ config.name if config else '' }}" required>
+                                <div class="invalid-feedback">请输入配置名称</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="enabled" name="enabled" 
+                                           {% if not config or config.enabled %}checked{% endif %}>
+                                    <label class="form-check-label" for="enabled">
+                                        启用此监控配置
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-search"></i> 搜索条件</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="region_code" class="form-label">地区代码</label>
+                                <select class="form-select" id="region_code" name="region_code">
+                                    <option value="US" {% if not config or config.region_code == 'US' %}selected{% endif %}>美国 (US)</option>
+                                    <option value="JP" {% if config and config.region_code == 'JP' %}selected{% endif %}>日本 (JP)</option>
+                                    <option value="KR" {% if config and config.region_code == 'KR' %}selected{% endif %}>韩国 (KR)</option>
+                                    <option value="GB" {% if config and config.region_code == 'GB' %}selected{% endif %}>英国 (GB)</option>
+                                    <option value="DE" {% if config and config.region_code == 'DE' %}selected{% endif %}>德国 (DE)</option>
+                                    <option value="FR" {% if config and config.region_code == 'FR' %}selected{% endif %}>法国 (FR)</option>
+                                    <option value="CA" {% if config and config.region_code == 'CA' %}selected{% endif %}>加拿大 (CA)</option>
+                                    <option value="AU" {% if config and config.region_code == 'AU' %}selected{% endif %}>澳大利亚 (AU)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="category_id" class="form-label">视频分类</label>
+                                <select class="form-select" id="category_id" name="category_id">
+                                    <option value="0" {% if not config or config.category_id == '0' %}selected{% endif %}>所有分类</option>
+                                    <option value="1" {% if config and config.category_id == '1' %}selected{% endif %}>电影和动画</option>
+                                    <option value="2" {% if config and config.category_id == '2' %}selected{% endif %}>汽车和交通</option>
+                                    <option value="10" {% if config and config.category_id == '10' %}selected{% endif %}>音乐</option>
+                                    <option value="15" {% if config and config.category_id == '15' %}selected{% endif %}>宠物和动物</option>
+                                    <option value="17" {% if config and config.category_id == '17' %}selected{% endif %}>体育</option>
+                                    <option value="19" {% if config and config.category_id == '19' %}selected{% endif %}>旅行和事件</option>
+                                    <option value="20" {% if config and config.category_id == '20' %}selected{% endif %}>游戏</option>
+                                    <option value="22" {% if config and config.category_id == '22' %}selected{% endif %}>人员和博客</option>
+                                    <option value="23" {% if config and config.category_id == '23' %}selected{% endif %}>喜剧</option>
+                                    <option value="24" {% if config and config.category_id == '24' %}selected{% endif %}>娱乐</option>
+                                    <option value="25" {% if config and config.category_id == '25' %}selected{% endif %}>新闻和政治</option>
+                                    <option value="26" {% if config and config.category_id == '26' %}selected{% endif %}>指南和风格</option>
+                                    <option value="27" {% if config and config.category_id == '27' %}selected{% endif %}>教育</option>
+                                    <option value="28" {% if config and config.category_id == '28' %}selected{% endif %}>科学技术</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="time_period" class="form-label">时间段（天）</label>
+                                <input type="number" class="form-control" id="time_period" name="time_period" 
+                                       value="{{ config.time_period if config else 7 }}" min="1" max="30">
+                                <div class="form-text">搜索多少天内发布的视频</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="max_results" class="form-label">最大结果数</label>
+                                <input type="number" class="form-control" id="max_results" name="max_results" 
+                                       value="{{ config.max_results if config else 10 }}" min="1" max="50">
+                                <div class="form-text">每次监控最多获取多少个视频</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="order_by" class="form-label">排序方式</label>
+                                <select class="form-select" id="order_by" name="order_by">
+                                    <option value="viewCount" {% if not config or config.order_by == 'viewCount' %}selected{% endif %}>观看次数</option>
+                                    <option value="date" {% if config and config.order_by == 'date' %}selected{% endif %}>上传日期</option>
+                                    <option value="rating" {% if config and config.order_by == 'rating' %}selected{% endif %}>评分</option>
+                                    <option value="relevance" {% if config and config.order_by == 'relevance' %}selected{% endif %}>相关程度</option>
+                                </select>
+                                <div class="form-text">视频搜索结果排序方式</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="keywords" class="form-label">包含关键词</label>
+                        <input type="text" class="form-control" id="keywords" name="keywords" 
+                               value="{{ config.keywords if config else '' }}" placeholder="多个关键词用空格分隔">
+                        <div class="form-text">视频标题或描述中必须包含的关键词</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="exclude_keywords" class="form-label">排除关键词</label>
+                        <input type="text" class="form-control" id="exclude_keywords" name="exclude_keywords" 
+                               value="{{ config.exclude_keywords if config else '' }}" placeholder="多个关键词用逗号分隔">
+                        <div class="form-text">包含这些关键词的视频将被排除</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-funnel"></i> 筛选条件</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="min_view_count" class="form-label">最小观看数</label>
+                                <input type="number" class="form-control" id="min_view_count" name="min_view_count" 
+                                       value="{{ config.min_view_count if config else 1000 }}" min="0">
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="min_like_count" class="form-label">最小点赞数</label>
+                                <input type="number" class="form-control" id="min_like_count" name="min_like_count" 
+                                       value="{{ config.min_like_count if config else 0 }}" min="0">
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="min_comment_count" class="form-label">最小评论数</label>
+                                <input type="number" class="form-control" id="min_comment_count" name="min_comment_count" 
+                                       value="{{ config.min_comment_count if config else 0 }}" min="0">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="min_duration" class="form-label">最小时长（秒）</label>
+                                <input type="number" class="form-control" id="min_duration" name="min_duration" 
+                                       value="{{ config.min_duration if config else 0 }}" min="0" placeholder="0表示不限制">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="max_duration" class="form-label">最大时长（秒）</label>
+                                <input type="number" class="form-control" id="max_duration" name="max_duration" 
+                                       value="{{ config.max_duration if config else 0 }}" min="0" placeholder="0表示不限制">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="mb-3">
+                                <label for="channel_ids" class="form-label">指定频道ID <span class="badge bg-info">增强功能</span></label>
+                                <textarea class="form-control" id="channel_ids" name="channel_ids" rows="2" 
+                                          placeholder="多个频道ID用逗号分隔，留空表示不限制频道">{{ config.channel_ids if config else '' }}</textarea>
+                                <div class="form-text">只监控这些频道的视频，留空表示监控所有频道。配合开始日期可以搬运指定频道的历史视频。</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="start_date" class="form-label">开始日期</label>
+                                <input type="date" class="form-control" id="start_date" name="start_date" 
+                                       value="{{ config.start_date if config else '' }}">
+                                <div class="form-text">监控指定日期之后的视频</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="exclude_channel_ids" class="form-label">排除频道ID</label>
+                        <textarea class="form-control" id="exclude_channel_ids" name="exclude_channel_ids" rows="2" 
+                                  placeholder="多个频道ID用逗号分隔">{{ config.exclude_channel_ids if config else '' }}</textarea>
+                        <div class="form-text">排除这些频道的视频</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-shield-check"></i> 请求限制设置</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="rate_limit_requests" class="form-label">最大请求数</label>
+                                <input type="number" class="form-control" id="rate_limit_requests" name="rate_limit_requests" 
+                                       value="{{ config.rate_limit_requests if config else 100 }}" min="10" max="1000">
+                                <div class="form-text">指定时间窗口内的最大请求数</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="rate_limit_window" class="form-label">时间窗口（秒）</label>
+                                <input type="number" class="form-control" id="rate_limit_window" name="rate_limit_window" 
+                                       value="{{ config.rate_limit_window if config else 60 }}" min="30" max="3600">
+                                <div class="form-text">请求限制的时间窗口，防止被封锁</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-clock"></i> 调度设置</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="schedule_type" class="form-label">调度类型</label>
+                                <select class="form-select" id="schedule_type" name="schedule_type" onchange="toggleScheduleInterval()">
+                                    <option value="manual" {% if not config or config.schedule_type == 'manual' %}selected{% endif %}>手动执行</option>
+                                    <option value="auto" {% if config and config.schedule_type == 'auto' %}selected{% endif %}>自动调度</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3" id="schedule_interval_group">
+                                <label for="schedule_interval" class="form-label">调度间隔（分钟）</label>
+                                <input type="number" class="form-control" id="schedule_interval" name="schedule_interval" 
+                                       value="{{ config.schedule_interval if config else 60 }}" min="5" max="1440">
+                                <div class="form-text">最小5分钟，最大1440分钟（24小时）</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="auto_add_to_tasks" name="auto_add_to_tasks" 
+                                           {% if config and config.auto_add_to_tasks %}checked{% endif %}>
+                                    <label class="form-check-label" for="auto_add_to_tasks">
+                                        <i class="bi bi-arrow-right-circle text-success"></i> 自动添加到任务队列
+                                    </label>
+                                    <div class="form-text">勾选后，监控到的视频将自动添加到搬运任务队列中，无需手动操作</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between mt-4">
+                <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-secondary">
+                    <i class="bi bi-x-circle"></i> 取消
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-circle"></i> 
+                    {% if is_edit %}更新配置{% else %}创建配置{% endif %}
+                </button>
+            </div>
+        </form>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-info-circle"></i> 使用说明</h6>
+            </div>
+            <div class="card-body">
+                <h6>基本设置</h6>
+                <ul class="small">
+                    <li><strong>配置名称</strong> <span class="text-danger">*</span>：为这个监控配置起一个名字</li>
+                    <li><strong>启用</strong>：勾选后此配置才会生效</li>
+                </ul>
+                
+                <h6>搜索条件</h6>
+                <ul class="small">
+                    <li><strong>地区代码</strong>：搜索特定地区的热门视频</li>
+                    <li><strong>视频分类</strong>：按YouTube分类筛选</li>
+                    <li><strong>时间段</strong>：搜索最近几天发布的视频</li>
+                    <li><strong>排序方式</strong>：结果排序规则（观看数/日期/评分/相关度）</li>
+                    <li><strong>关键词</strong>：视频标题或描述包含的词</li>
+                </ul>
+                
+                <h6>筛选条件</h6>
+                <ul class="small">
+                    <li><strong>数据门槛</strong>：观看数、点赞数、评论数的最低要求</li>
+                    <li><strong>时长限制</strong>：视频长度的限制范围</li>
+                    <li><strong>频道筛选</strong>：指定或排除特定频道</li>
+                    <li><strong>开始日期</strong>：配合指定频道可搬运历史视频</li>
+                </ul>
+                
+                <h6>请求限制</h6>
+                <ul class="small">
+                    <li><strong>最大请求数</strong>：防止API请求过于频繁</li>
+                    <li><strong>时间窗口</strong>：请求限制的时间范围</li>
+                </ul>
+                
+                <h6>调度设置</h6>
+                <ul class="small">
+                    <li><strong>手动执行</strong>：需要手动点击运行</li>
+                    <li><strong>自动调度</strong>：按设定间隔自动运行</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function toggleScheduleInterval() {
+    const scheduleType = document.getElementById('schedule_type').value;
+    const intervalGroup = document.getElementById('schedule_interval_group');
+    
+    if (scheduleType === 'auto') {
+        intervalGroup.style.display = 'block';
+    } else {
+        intervalGroup.style.display = 'none';
+    }
+}
+
+// 页面加载时初始化
+document.addEventListener('DOMContentLoaded', function() {
+    toggleScheduleInterval();
+    
+    // Bootstrap表单验证
+    const forms = document.querySelectorAll('.needs-validation');
+    Array.from(forms).forEach(function(form) {
+        form.addEventListener('submit', function(event) {
+            if (!form.checkValidity()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            form.classList.add('was-validated');
+        });
+    });
+});
+</script>
+{% endblock %} 

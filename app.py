@@ -16,6 +16,7 @@ from modules.youtube_handler import download_video_data
 from modules.utils import parse_id_md_to_json, process_cover
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
 from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
+from modules.youtube_monitor import youtube_monitor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
@@ -165,6 +166,26 @@ def parse_json(json_str):
         logger.error(f"解析JSON时出错: {str(e)}")
         return {} # 返回空字典
 
+def parse_youtube_duration(duration_str):
+    """解析YouTube ISO 8601时长格式为秒数"""
+    import re
+    
+    if not duration_str:
+        return 0
+    
+    # PT1H30M45S -> 1小时30分45秒
+    pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
+    match = re.match(pattern, duration_str)
+    
+    if not match:
+        return 0
+    
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    
+    return hours * 3600 + minutes * 60 + seconds
+
 # 注册模板辅助函数
 app.jinja_env.globals.update(
     task_status_display=task_status_display,
@@ -172,6 +193,9 @@ app.jinja_env.globals.update(
     get_partition_name=get_partition_name,
     parse_json=parse_json
 )
+
+# 注册模板过滤器
+app.jinja_env.filters['parse_youtube_duration'] = parse_youtube_duration
 
 ALIYUN_LABEL_MAP = {
     "pornographic_adult": "疑似色情内容",
@@ -528,6 +552,14 @@ def settings():
         
         # 更新配置
         update_config(form_data)
+        
+        # 如果YouTube API密钥有更新，同步到监控系统
+        if 'YOUTUBE_API_KEY' in form_data:
+            api_key = form_data['YOUTUBE_API_KEY']
+            if api_key:
+                youtube_monitor.set_api_key(api_key)
+                logger.info("YouTube API密钥已更新并同步到监控系统")
+        
         flash('配置已成功保存', 'success')
         return redirect(url_for('settings'))
     
@@ -927,6 +959,207 @@ def clear_logs_route():
     
     return redirect(url_for('settings'))
 
+# YouTube监控系统路由
+@app.route('/youtube_monitor')
+def youtube_monitor_index():
+    """YouTube监控主页"""
+    configs = youtube_monitor.get_monitor_configs()
+    history = youtube_monitor.get_monitor_history(limit=50)
+    return render_template('youtube_monitor.html', configs=configs, history=history)
+
+@app.route('/youtube_monitor/config', methods=['GET', 'POST'])
+def youtube_monitor_config():
+    """监控配置页面"""
+    if request.method == 'POST':
+        try:
+            # 安全的整数转换函数
+            def safe_int(value, default=0):
+                if not value or value.strip() == '':
+                    return default
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return default
+            
+            config_data = {
+                'name': request.form.get('name', '').strip(),
+                'enabled': 'enabled' in request.form,
+                'region_code': request.form.get('region_code', 'US'),
+                'category_id': request.form.get('category_id', '0'),
+                'time_period': safe_int(request.form.get('time_period'), 7),
+                'max_results': safe_int(request.form.get('max_results'), 10),
+                'min_view_count': safe_int(request.form.get('min_view_count'), 1000),
+                'min_like_count': safe_int(request.form.get('min_like_count'), 0),
+                'min_comment_count': safe_int(request.form.get('min_comment_count'), 0),
+                'keywords': request.form.get('keywords', ''),
+                'exclude_keywords': request.form.get('exclude_keywords', ''),
+                'channel_ids': request.form.get('channel_ids', ''),
+                'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),
+                'min_duration': safe_int(request.form.get('min_duration'), 0),
+                'max_duration': safe_int(request.form.get('max_duration'), 0),
+                'schedule_type': request.form.get('schedule_type', 'manual'),
+                'schedule_interval': safe_int(request.form.get('schedule_interval'), 60),
+                'order_by': request.form.get('order_by', 'viewCount'),
+                'start_date': request.form.get('start_date', ''),
+                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 100),
+                'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
+                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
+            }
+            
+            # 验证必填项
+            if not config_data['name']:
+                flash('配置名称不能为空', 'danger')
+                return render_template('youtube_monitor_config.html')
+            
+            config_id = youtube_monitor.create_monitor_config(config_data)
+            flash(f'监控配置 "{config_data["name"]}" 创建成功！', 'success')
+            return redirect(url_for('youtube_monitor_index'))
+            
+        except Exception as e:
+            flash(f'创建监控配置失败: {str(e)}', 'danger')
+    
+    return render_template('youtube_monitor_config.html')
+
+@app.route('/youtube_monitor/config/<int:config_id>/edit', methods=['GET', 'POST'])
+def youtube_monitor_config_edit(config_id):
+    """编辑监控配置"""
+    config = youtube_monitor.get_monitor_config(config_id)
+    if not config:
+        flash('监控配置不存在', 'danger')
+        return redirect(url_for('youtube_monitor_index'))
+    
+    if request.method == 'POST':
+        try:
+            # 安全的整数转换函数
+            def safe_int(value, default=0):
+                if not value or value.strip() == '':
+                    return default
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return default
+            
+            config_data = {
+                'name': request.form.get('name', '').strip(),
+                'enabled': 'enabled' in request.form,
+                'region_code': request.form.get('region_code', 'US'),
+                'category_id': request.form.get('category_id', '0'),
+                'time_period': safe_int(request.form.get('time_period'), 7),
+                'max_results': safe_int(request.form.get('max_results'), 10),
+                'min_view_count': safe_int(request.form.get('min_view_count'), 1000),
+                'min_like_count': safe_int(request.form.get('min_like_count'), 0),
+                'min_comment_count': safe_int(request.form.get('min_comment_count'), 0),
+                'keywords': request.form.get('keywords', ''),
+                'exclude_keywords': request.form.get('exclude_keywords', ''),
+                'channel_ids': request.form.get('channel_ids', ''),
+                'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),
+                'min_duration': safe_int(request.form.get('min_duration'), 0),
+                'max_duration': safe_int(request.form.get('max_duration'), 0),
+                'schedule_type': request.form.get('schedule_type', 'manual'),
+                'schedule_interval': safe_int(request.form.get('schedule_interval'), 60),
+                'order_by': request.form.get('order_by', 'viewCount'),
+                'start_date': request.form.get('start_date', ''),
+                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 100),
+                'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
+                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
+            }
+            
+            # 验证必填项
+            if not config_data['name']:
+                flash('配置名称不能为空', 'danger')
+                return render_template('youtube_monitor_config.html', config=config, is_edit=True)
+            
+            youtube_monitor.update_monitor_config(config_id, config_data)
+            flash(f'监控配置更新成功！', 'success')
+            return redirect(url_for('youtube_monitor_index'))
+            
+        except Exception as e:
+            flash(f'更新监控配置失败: {str(e)}', 'danger')
+    
+    return render_template('youtube_monitor_config.html', config=config, is_edit=True)
+
+@app.route('/youtube_monitor/config/<int:config_id>/delete', methods=['POST'])
+def youtube_monitor_config_delete(config_id):
+    """删除监控配置"""
+    try:
+        config = youtube_monitor.get_monitor_config(config_id)
+        if config:
+            youtube_monitor.delete_monitor_config(config_id)
+            flash(f'监控配置 "{config["name"]}" 删除成功！', 'success')
+        else:
+            flash('监控配置不存在', 'danger')
+    except Exception as e:
+        flash(f'删除监控配置失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_index'))
+
+@app.route('/youtube_monitor/config/<int:config_id>/run', methods=['POST'])
+def youtube_monitor_run(config_id):
+    """手动执行监控任务"""
+    try:
+        success, message = youtube_monitor.run_monitor(config_id)
+        if success:
+            flash(message, 'success')
+        else:
+            flash(message, 'danger')
+    except Exception as e:
+        flash(f'执行监控任务失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_index'))
+
+
+
+@app.route('/youtube_monitor/history/<int:config_id>')
+def youtube_monitor_history(config_id):
+    """查看指定配置的监控历史"""
+    config = youtube_monitor.get_monitor_config(config_id)
+    if not config:
+        flash('监控配置不存在', 'danger')
+        return redirect(url_for('youtube_monitor_index'))
+    
+    history = youtube_monitor.get_monitor_history(config_id, limit=200)
+    
+    # 计算统计数据
+    stats = {
+        'total_records': len(history),
+        'added_to_tasks': 0,
+        'avg_views': 0,
+        'avg_likes': 0
+    }
+    
+    if history:
+        total_views = 0
+        total_likes = 0
+        
+        for record in history:
+            if record.get('added_to_tasks'):
+                stats['added_to_tasks'] += 1
+            total_views += record.get('view_count', 0)
+            total_likes += record.get('like_count', 0)
+        
+        stats['avg_views'] = int(total_views / len(history))
+        stats['avg_likes'] = int(total_likes / len(history))
+    
+    return render_template('youtube_monitor_history.html', config=config, history=history, stats=stats)
+
+@app.route('/youtube_monitor/add_to_tasks', methods=['POST'])
+def youtube_monitor_add_to_tasks():
+    """手动将视频添加到任务队列"""
+    try:
+        data = request.get_json()
+        video_id = data.get('video_id')
+        config_id = data.get('config_id')
+        
+        if not video_id or not config_id:
+            return jsonify({'success': False, 'message': '参数不完整'})
+        
+        success, message = youtube_monitor.add_video_to_tasks_manually(video_id, config_id)
+        return jsonify({'success': success, 'message': message})
+        
+    except Exception as e:
+        logger.error(f"添加视频到任务队列失败: {str(e)}")
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'})
+
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")
     
@@ -937,6 +1170,12 @@ if __name__ == '__main__':
     config = load_config()
     app.config['Y2A_SETTINGS'] = config
     logger.info(f"配置已加载: {json.dumps(config, ensure_ascii=False, indent=2)}")
+    
+    # 初始化YouTube监控API
+    if config.get('YOUTUBE_API_KEY'):
+        youtube_monitor.set_api_key(config['YOUTUBE_API_KEY'])
+        youtube_monitor.start_all_schedules()
+        logger.info("YouTube监控系统已初始化")
     
     # 配置应用
     configure_app(app, config)
