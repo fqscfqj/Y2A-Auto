@@ -7,38 +7,45 @@ import logging
 import time
 from logging.handlers import RotatingFileHandler
 
-from alibabacloud_green20220302.client import Client
+from alibabacloud_green20220302.client import Client as Green20220302Client
 from alibabacloud_green20220302 import models
-from alibabacloud_tea_openapi.models import Config
+from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_tea_util.models import RuntimeOptions
 
 def setup_task_logger(task_id):
     """
-    为特定任务设置日志记录器
+    为具体任务设置专用日志器
     
     Args:
         task_id: 任务ID
         
     Returns:
-        logger: 配置好的日志记录器
+        logging.Logger: 配置好的日志器
     """
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    log_file = os.path.join(log_dir, f'task_{task_id}.log')
     logger = logging.getLogger(f'content_moderator_{task_id}')
     
-    if not logger.handlers:  # 避免重复添加处理器
+    if not logger.handlers:
         logger.setLevel(logging.INFO)
         
-        # 文件处理器
-        file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5, encoding='utf-8')
-        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        file_handler.setLevel(logging.INFO)
-        logger.addHandler(file_handler)
+        # 创建文件处理器
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
         
-        # 确保消息不会传播到根日志记录器
+        log_file = os.path.join(log_dir, f'content_moderator_{task_id}.log')
+        handler = RotatingFileHandler(
+            log_file, 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        
         logger.propagate = False
     
     return logger
@@ -48,74 +55,62 @@ class AlibabaCloudModerator:
     
     def __init__(self, aliyun_config, task_id=None):
         """
-        初始化阿里云内容审核器
+        初始化阿里云内容审核客户端
         
         Args:
-            aliyun_config (dict): 阿里云配置字典，包含access_key_id、access_key_secret和region
-            task_id (str, optional): 任务ID，用于日志记录
+            aliyun_config (dict): 阿里云配置信息
+            task_id (str, optional): 任务ID，用于日志
         """
-        self.access_key_id = aliyun_config.get('ALIYUN_ACCESS_KEY_ID')
-        self.access_key_secret = aliyun_config.get('ALIYUN_ACCESS_KEY_SECRET')
-        self.region = aliyun_config.get('ALIYUN_CONTENT_MODERATION_REGION', 'cn-shanghai')
-        self.logger = setup_task_logger(task_id or "unknown")
+        self.aliyun_config = aliyun_config
+        self.task_id = task_id
         
-        # 初始化日志
-        self.logger.info(f"初始化阿里云内容审核模块，区域：{self.region}")
+        # 设置日志器
+        if task_id:
+            self.logger = setup_task_logger(task_id)
+        else:
+            self.logger = logging.getLogger('content_moderator')
         
-        # 创建阿里云客户端
-        self.client = self._create_client()
+        # 初始化客户端
+        self.client = None
+        self._create_client()
     
     def _create_client(self):
-        """
-        创建阿里云内容安全客户端
-        
-        Returns:
-            Client: 阿里云内容安全客户端
-        """
+        """创建阿里云客户端"""
         try:
-            config = Config(
-                access_key_id=self.access_key_id,
-                access_key_secret=self.access_key_secret,
-                region_id=self.region,
-                endpoint=f'green-cip.{self.region}.aliyuncs.com',
-                connect_timeout=10000,
-                read_timeout=10000
+            # 兼容不同的配置键名格式
+            access_key_id = (self.aliyun_config.get('access_key_id') or 
+                           self.aliyun_config.get('ALIYUN_ACCESS_KEY_ID') or '')
+            access_key_secret = (self.aliyun_config.get('access_key_secret') or 
+                               self.aliyun_config.get('ALIYUN_ACCESS_KEY_SECRET') or '')
+            
+            if not self.aliyun_config or not access_key_id or not access_key_secret:
+                self.logger.error("阿里云配置信息不完整，内容审核功能将不可用")
+                self.logger.error(f"当前配置: access_key_id={'***有值***' if access_key_id else '无'}, access_key_secret={'***有值***' if access_key_secret else '无'}")
+                return
+            
+            config = open_api_models.Config(
+                access_key_id=access_key_id,
+                access_key_secret=access_key_secret,
+                endpoint='green-cip.cn-shanghai.aliyuncs.com'
             )
             
-            return Client(config)
+            self.client = Green20220302Client(config)
+            self.logger.info("阿里云内容审核客户端初始化成功")
+            
         except Exception as e:
             self.logger.error(f"创建阿里云客户端失败: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return None
+            self.client = None
     
-    def moderate_text(self, text_content, service_type='comment_detection'):
+    def moderate_text(self, text_content, service_type='comment_detection_pro'):
         """
-        审核文本内容
+        文本内容审核
         
         Args:
             text_content (str): 待审核的文本内容
-            service_type (str): 审核服务类型，默认为UGC内容检测
-                可选值：
-                - ugc_moderation_byllm：UGC内容检测（推荐）
-                - nickname_detection_pro：用户昵称检测
-                - chat_detection_pro：私聊互动内容检测
-                - comment_detection_pro：公聊评论内容检测
-                - ad_compliance_detection_pro：广告法合规检测
-        
+            service_type (str): 审核服务类型，默认为'comment_detection'
+            
         Returns:
-            dict: 审核结果，格式为
-            {
-                "pass": True/False, 
-                "details": [
-                    {
-                        "label": "违规标签", 
-                        "suggestion": "block/review/pass", 
-                        "reason": "具体原因"
-                    }, 
-                    ...
-                ]
-            }
+            dict: 审核结果
         """
         if not self.client:
             self.logger.error("阿里云客户端未初始化")
@@ -124,26 +119,6 @@ class AlibabaCloudModerator:
         if not text_content or not text_content.strip():
             self.logger.warning("文本内容为空，跳过审核")
             return {"pass": True, "details": []}
-            
-        # 首先检查文本是否包含潜在敏感词汇
-        sensitive_keywords = [
-            "订阅", "关注", "点击链接", "私信", "微信", "联系我", "更多资源",
-            "加我", "添加", "群号", "公众号", "频道", "欢迎", "来撩", "加+",
-            "投稿", "打赏", "赞助", "咨询", "购买", "出售", "售卖", "广告",
-            "优惠", "抽奖", "免费", "特价", "淘宝", "店铺", "联系方式", "联系电话",
-            "客服", "营销", "推广", "引流", "商务合作", "官网", "活动", "链接"
-        ]
-        
-        # 检查文本中是否包含敏感词
-        has_sensitive_words = False
-        detected_words = []
-        for keyword in sensitive_keywords:
-            if keyword in text_content:
-                has_sensitive_words = True
-                detected_words.append(keyword)
-                
-        if has_sensitive_words:
-            self.logger.warning(f"文本包含潜在引流/广告词汇: {', '.join(detected_words)}")
         
         # 记录原始文本长度
         self.logger.info(f"开始审核文本，长度: {len(text_content)}")
@@ -185,18 +160,7 @@ class AlibabaCloudModerator:
                 moderation_result = self._parse_text_moderation_response(response.body)
                 self.logger.info(f"文本审核结果: {json.dumps(moderation_result, ensure_ascii=False)}")
                 
-                # 如果阿里云未检测出问题，但我们的敏感词检测出问题，仍然标记为需要审核
-                if moderation_result["pass"] and has_sensitive_words:
-                    self.logger.warning("阿里云审核通过，但检测到潜在引流/广告词汇，标记为需要人工审核")
-                    moderation_result["pass"] = False
-                    moderation_result["details"].append({
-                        "label": "pt_to_contact",
-                        "description": "疑似引流广告词汇",
-                        "confidence": 95,
-                        "suggestion": "review",
-                        "reason": f"检测到潜在引流/广告词汇: {', '.join(detected_words[:5])}" + ("..." if len(detected_words) > 5 else "")
-                    })
-                
+                # 完全依赖阿里云的审核结果，不做额外检测
                 return moderation_result
             else:
                 error_msg = f"文本审核请求失败，状态码: {response.status_code}, 错误消息: {response.body.message if hasattr(response.body, 'message') else '未知错误'}"
@@ -239,7 +203,7 @@ class AlibabaCloudModerator:
         # 逐段审核
         for index, segment in enumerate(text_segments):
             self.logger.info(f"审核第 {index+1}/{len(text_segments)} 段文本")
-            result = self.moderate_text(segment, service_type)
+            result = self._moderate_text_segment(segment, service_type)
             segment_results.append(result)
             
             # 只要有一段不通过，整体就不通过
@@ -270,6 +234,54 @@ class AlibabaCloudModerator:
             })
             
         return merged_result
+    
+    def _moderate_text_segment(self, text_content, service_type):
+        """
+        审核单个文本段，不进行长度检查和递归处理
+        
+        Args:
+            text_content (str): 待审核的文本内容
+            service_type (str): 审核服务类型
+            
+        Returns:
+            dict: 审核结果
+        """
+        try:
+            # 准备服务参数
+            service_parameters = {
+                "content": text_content
+            }
+            
+            # 创建请求
+            request = models.TextModerationPlusRequest(
+                service=service_type,
+                service_parameters=json.dumps(service_parameters)
+            )
+            
+            # 设置运行时选项
+            runtime = RuntimeOptions()
+            
+            # 发送请求
+            start_time = time.time()
+            response = self.client.text_moderation_plus_with_options(request, runtime)
+            response_time = time.time() - start_time
+            
+            self.logger.info(f"文本段审核完成，耗时: {response_time:.2f}秒")
+            
+            # 解析响应
+            if response.status_code == 200 and response.body.code == 200:
+                # 提取审核结果
+                moderation_result = self._parse_text_moderation_response(response.body)
+                return moderation_result
+            else:
+                error_msg = f"文本段审核请求失败，状态码: {response.status_code}, 错误消息: {response.body.message if hasattr(response.body, 'message') else '未知错误'}"
+                self.logger.error(error_msg)
+                return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
+                
+        except Exception as e:
+            error_msg = f"文本段审核过程中发生错误: {str(e)}"
+            self.logger.error(error_msg)
+            return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
     
     def _parse_text_moderation_response(self, response):
         """

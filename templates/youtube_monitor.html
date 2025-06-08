@@ -6,6 +6,11 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-youtube text-danger"></i> YouTube监控系统</h2>
     <div>
+        <form method="POST" action="{{ url_for('youtube_monitor_restore_configs') }}" class="d-inline me-2" onsubmit="return confirm('确定要从配置文件恢复监控配置吗？这将从 config/youtube_monitor/ 目录中读取配置文件并恢复到数据库中。')">
+            <button type="submit" class="btn btn-outline-info">
+                <i class="bi bi-arrow-clockwise"></i> 恢复配置
+            </button>
+        </form>
         <a href="{{ url_for('youtube_monitor_config') }}" class="btn btn-primary">
             <i class="bi bi-plus-circle"></i> 新建监控
         </a>
@@ -25,7 +30,7 @@
                         <th>状态</th>
                         <th>地区</th>
                         <th>时间段</th>
-                        <th>最大结果</th>
+                        <th>处理数量</th>
                         <th>最小观看数</th>
                         <th>调度类型</th>
                         <th>最后运行</th>
@@ -50,8 +55,18 @@
                         </td>
                         <td>{{ config.region_code }}</td>
                         <td>{{ config.time_period }}天</td>
-                        <td>{{ config.max_results }}</td>
-                        <td>{{ config.min_view_count|int }}</td>
+                        <td>
+                            {% if config.monitor_type == 'youtube_search' %}
+                                {{ config.max_results }}
+                            {% else %}
+                                {% if config.channel_mode == 'historical' %}
+                                    {{ config.rate_limit_requests or 4 }}
+                                {% else %}
+                                    {{ config.latest_max_results or 20 }}
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                        <td>{{ config.min_view_count if config.min_view_count is not none else 0 }}</td>
                         <td>
                             {% if config.schedule_type == 'auto' %}
                             <span class="badge bg-info">自动({{ config.schedule_interval }}分钟)</span>
@@ -64,6 +79,9 @@
                             <small>{{ config.last_run_time }}</small>
                             {% else %}
                             <small class="text-muted">从未运行</small>
+                            {% endif %}
+                            {% if config.channel_mode == 'historical' and config.historical_offset %}
+                            <br><small class="text-info">已处理: {{ config.historical_offset }} 个视频</small>
                             {% endif %}
                         </td>
                         <td>
@@ -102,7 +120,16 @@
 <!-- 最近的监控历史 -->
 <div class="row">
     <div class="col-12">
-        <h4><i class="bi bi-clock-history"></i> 最近的监控记录</h4>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4><i class="bi bi-clock-history"></i> 最近的监控记录</h4>
+            {% if history %}
+            <form method="POST" action="{{ url_for('youtube_monitor_clear_all_history') }}" class="d-inline" onsubmit="return confirm('确定要清除所有监控历史记录吗？此操作不可恢复！')">
+                <button type="submit" class="btn btn-outline-danger btn-sm">
+                    <i class="bi bi-trash"></i> 清除所有历史记录
+                </button>
+            </form>
+            {% endif %}
+        </div>
         {% if history %}
         <div class="table-responsive">
             <table class="table table-striped">
@@ -116,7 +143,7 @@
                         <th>点赞数</th>
                         <th>评论数</th>
                         <th>状态</th>
-                        <th>链接</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -141,9 +168,19 @@
                             {% endif %}
                         </td>
                         <td>
-                            <a href="https://www.youtube.com/watch?v={{ record.video_id }}" target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
-                                <i class="bi bi-youtube"></i>
-                            </a>
+                            <div class="btn-group" role="group">
+                                <a href="https://www.youtube.com/watch?v={{ record.video_id }}" 
+                                   target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
+                                    <i class="bi bi-youtube"></i>
+                                </a>
+                                {% if not record.added_to_tasks %}
+                                <button type="button" class="btn btn-outline-success btn-sm" 
+                                        onclick="addToTasks('{{ record.video_id }}', '{{ record.config_id }}')" 
+                                        title="添加到任务队列">
+                                    <i class="bi bi-plus-circle"></i>
+                                </button>
+                                {% endif %}
+                            </div>
                         </td>
                     </tr>
                     {% endfor %}
@@ -175,4 +212,74 @@
     white-space: nowrap;
 }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function addToTasks(videoId, configId) {
+    if (!confirm('确定要将此视频添加到任务队列吗？')) {
+        return;
+    }
+    
+    const button = event.target.closest('button');
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+    
+    fetch('/youtube_monitor/add_to_tasks', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            video_id: videoId,
+            config_id: parseInt(configId)
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // 成功后隐藏按钮并更新状态
+            button.style.display = 'none';
+            const statusCell = button.closest('tr').querySelector('td:nth-last-child(2)');
+            statusCell.innerHTML = '<span class="badge bg-success">已添加</span>';
+            
+            // 显示成功消息
+            showAlert('success', data.message);
+        } else {
+            // 失败后恢复按钮
+            button.disabled = false;
+            button.innerHTML = originalHtml;
+            showAlert('danger', data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+        showAlert('danger', '操作失败，请重试');
+    });
+}
+
+function showAlert(type, message) {
+    // 创建并显示提示消息
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    // 插入到页面顶部
+    const container = document.querySelector('.container-fluid') || document.body;
+    container.insertBefore(alertDiv, container.firstChild);
+    
+    // 3秒后自动消失
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 3000);
+}
+</script>
 {% endblock %} 

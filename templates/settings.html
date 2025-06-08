@@ -109,6 +109,32 @@
         </div>
         
         <div class="settings-section">
+            <h3>任务并发控制</h3>
+            
+            <div class="form-group">
+                <label for="max-concurrent-tasks">最大并发任务数:</label>
+                <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 3) }}" min="1" max="10">
+                <p class="help-text">同时处理的最大任务数量（包括下载、翻译等操作）</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="max-concurrent-uploads">最大并发上传数:</label>
+                <input type="number" id="max-concurrent-uploads" name="MAX_CONCURRENT_UPLOADS" value="{{ config.get('MAX_CONCURRENT_UPLOADS', 1) }}" min="1" max="5">
+                <p class="help-text">同时上传到AcFun的最大视频数量，建议设置为1避免高并发触发限制</p>
+            </div>
+            
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle"></i> 
+                <strong>并发控制说明：</strong>
+                <ul class="mb-0 mt-2">
+                    <li><strong>任务并发：</strong>控制整体任务处理的并发数，影响系统资源使用</li>
+                    <li><strong>上传并发：</strong>控制同时上传到AcFun的视频数，建议设置为1</li>
+                    <li><strong>推荐配置：</strong>任务并发3，上传并发1（避免触发AcFun限制）</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="settings-section">
             <h3>日志清理设置</h3>
             
             <div class="form-group">
@@ -221,13 +247,7 @@
                 <p class="help-text">翻译的目标语言</p>
             </div>
             
-            <div class="form-group">
-                <label for="subtitle-api-provider">API提供商:</label>
-                <select name="SUBTITLE_API_PROVIDER" id="subtitle-api-provider">
-                    <option value="openai" {% if config.SUBTITLE_API_PROVIDER == 'openai' %}selected{% endif %}>OpenAI</option>
-                </select>
-                <p class="help-text">翻译API提供商（当前仅支持OpenAI）</p>
-            </div>
+
             
             <div class="form-group">
                 <label for="subtitle-batch-size">批次大小:</label>

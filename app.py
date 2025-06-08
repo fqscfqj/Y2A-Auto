@@ -514,11 +514,36 @@ def settings():
         checkboxes = [
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
-            'LOG_CLEANUP_ENABLED'
+            'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
+            'SUBTITLE_KEEP_ORIGINAL'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
                 form_data[checkbox] = 'off'  # 未选中的复选框
+        
+        # 处理数字类型的配置项
+        numeric_fields = [
+            'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
+            'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
+            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS'
+        ]
+        for field in numeric_fields:
+            if field in form_data:
+                try:
+                    form_data[field] = int(form_data[field])
+                except (ValueError, TypeError):
+                    # 如果转换失败，使用默认值
+                    defaults = {
+                        'MAX_CONCURRENT_TASKS': 3,
+                        'MAX_CONCURRENT_UPLOADS': 1,
+                        'LOG_CLEANUP_HOURS': 168,
+                        'LOG_CLEANUP_INTERVAL': 24,
+                        'SUBTITLE_BATCH_SIZE': 5,
+                        'SUBTITLE_MAX_RETRIES': 3,
+                        'SUBTITLE_RETRY_DELAY': 5,
+                        'SUBTITLE_MAX_WORKERS': 3
+                    }
+                    form_data[field] = defaults.get(field, 1)
         
         # 处理文件上传
         cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
@@ -552,6 +577,14 @@ def settings():
         
         # 更新配置
         update_config(form_data)
+        
+        # 如果并发配置有更新，重新初始化全局任务处理器
+        if 'MAX_CONCURRENT_TASKS' in form_data or 'MAX_CONCURRENT_UPLOADS' in form_data:
+            from modules.task_manager import get_global_task_processor
+            updated_config = load_config()
+            app.config['Y2A_SETTINGS'] = updated_config
+            get_global_task_processor(updated_config)
+            logger.info("并发配置已更新，全局任务处理器已重新初始化")
         
         # 如果YouTube API密钥有更新，同步到监控系统
         if 'YOUTUBE_API_KEY' in form_data:
@@ -981,27 +1014,37 @@ def youtube_monitor_config():
                 except (ValueError, TypeError):
                     return default
             
+            # 获取监控类型和模式
+            monitor_type = request.form.get('monitor_type', 'youtube_search')
+            channel_mode = request.form.get('channel_mode', 'latest')
+            
             config_data = {
                 'name': request.form.get('name', '').strip(),
                 'enabled': 'enabled' in request.form,
+                'monitor_type': monitor_type,
+                'channel_mode': channel_mode,
                 'region_code': request.form.get('region_code', 'US'),
                 'category_id': request.form.get('category_id', '0'),
                 'time_period': safe_int(request.form.get('time_period'), 7),
                 'max_results': safe_int(request.form.get('max_results'), 10),
-                'min_view_count': safe_int(request.form.get('min_view_count'), 1000),
+                'min_view_count': safe_int(request.form.get('min_view_count'), 0),
                 'min_like_count': safe_int(request.form.get('min_like_count'), 0),
                 'min_comment_count': safe_int(request.form.get('min_comment_count'), 0),
                 'keywords': request.form.get('keywords', ''),
                 'exclude_keywords': request.form.get('exclude_keywords', ''),
                 'channel_ids': request.form.get('channel_ids', ''),
+                'channel_keywords': request.form.get('channel_keywords', ''),
                 'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),
                 'min_duration': safe_int(request.form.get('min_duration'), 0),
                 'max_duration': safe_int(request.form.get('max_duration'), 0),
                 'schedule_type': request.form.get('schedule_type', 'manual'),
-                'schedule_interval': safe_int(request.form.get('schedule_interval'), 60),
+                'schedule_interval': safe_int(request.form.get('schedule_interval'), 120),
                 'order_by': request.form.get('order_by', 'viewCount'),
                 'start_date': request.form.get('start_date', ''),
-                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 100),
+                'end_date': request.form.get('end_date', ''),
+                'latest_days': safe_int(request.form.get('latest_days'), 7),
+                'latest_max_results': safe_int(request.form.get('latest_max_results'), 20),
+                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 20),
                 'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
                 'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
             }
@@ -1039,27 +1082,37 @@ def youtube_monitor_config_edit(config_id):
                 except (ValueError, TypeError):
                     return default
             
+            # 获取监控类型和模式
+            monitor_type = request.form.get('monitor_type', 'youtube_search')
+            channel_mode = request.form.get('channel_mode', 'latest')
+            
             config_data = {
                 'name': request.form.get('name', '').strip(),
                 'enabled': 'enabled' in request.form,
+                'monitor_type': monitor_type,
+                'channel_mode': channel_mode,
                 'region_code': request.form.get('region_code', 'US'),
                 'category_id': request.form.get('category_id', '0'),
                 'time_period': safe_int(request.form.get('time_period'), 7),
                 'max_results': safe_int(request.form.get('max_results'), 10),
-                'min_view_count': safe_int(request.form.get('min_view_count'), 1000),
+                'min_view_count': safe_int(request.form.get('min_view_count'), 0),
                 'min_like_count': safe_int(request.form.get('min_like_count'), 0),
                 'min_comment_count': safe_int(request.form.get('min_comment_count'), 0),
                 'keywords': request.form.get('keywords', ''),
                 'exclude_keywords': request.form.get('exclude_keywords', ''),
                 'channel_ids': request.form.get('channel_ids', ''),
+                'channel_keywords': request.form.get('channel_keywords', ''),
                 'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),
                 'min_duration': safe_int(request.form.get('min_duration'), 0),
                 'max_duration': safe_int(request.form.get('max_duration'), 0),
                 'schedule_type': request.form.get('schedule_type', 'manual'),
-                'schedule_interval': safe_int(request.form.get('schedule_interval'), 60),
+                'schedule_interval': safe_int(request.form.get('schedule_interval'), 120),
                 'order_by': request.form.get('order_by', 'viewCount'),
                 'start_date': request.form.get('start_date', ''),
-                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 100),
+                'end_date': request.form.get('end_date', ''),
+                'latest_days': safe_int(request.form.get('latest_days'), 7),
+                'latest_max_results': safe_int(request.form.get('latest_max_results'), 20),
+                'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 20),
                 'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
                 'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
             }
@@ -1106,8 +1159,6 @@ def youtube_monitor_run(config_id):
         flash(f'执行监控任务失败: {str(e)}', 'danger')
     
     return redirect(url_for('youtube_monitor_index'))
-
-
 
 @app.route('/youtube_monitor/history/<int:config_id>')
 def youtube_monitor_history(config_id):
@@ -1160,6 +1211,59 @@ def youtube_monitor_add_to_tasks():
         logger.error(f"添加视频到任务队列失败: {str(e)}")
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'})
 
+@app.route('/youtube_monitor/history/<int:config_id>/clear', methods=['POST'])
+def youtube_monitor_clear_history(config_id):
+    """清除指定配置的监控历史记录"""
+    try:
+        config = youtube_monitor.get_monitor_config(config_id)
+        if not config:
+            flash('监控配置不存在', 'danger')
+            return redirect(url_for('youtube_monitor_index'))
+        
+        success, message = youtube_monitor.clear_monitor_history(config_id)
+        if success:
+            flash(message, 'success')
+        else:
+            flash(message, 'danger')
+            
+    except Exception as e:
+        logger.error(f"清除监控历史失败: {str(e)}")
+        flash(f'清除历史记录失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_history', config_id=config_id))
+
+@app.route('/youtube_monitor/history/clear_all', methods=['POST'])
+def youtube_monitor_clear_all_history():
+    """清除所有监控历史记录"""
+    try:
+        success, message = youtube_monitor.clear_all_monitor_history()
+        if success:
+            flash(message, 'success')
+        else:
+            flash(message, 'danger')
+            
+    except Exception as e:
+        logger.error(f"清除所有监控历史失败: {str(e)}")
+        flash(f'清除历史记录失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_index'))
+
+@app.route('/youtube_monitor/restore_configs', methods=['POST'])
+def youtube_monitor_restore_configs():
+    """从配置文件恢复监控配置"""
+    try:
+        success, message = youtube_monitor.restore_configs_from_files_manually()
+        if success:
+            flash(message, 'success')
+        else:
+            flash(message, 'warning')
+            
+    except Exception as e:
+        logger.error(f"恢复配置失败: {str(e)}")
+        flash(f'恢复配置失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_index'))
+
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")
     
@@ -1170,6 +1274,11 @@ if __name__ == '__main__':
     config = load_config()
     app.config['Y2A_SETTINGS'] = config
     logger.info(f"配置已加载: {json.dumps(config, ensure_ascii=False, indent=2)}")
+    
+    # 初始化全局任务处理器，确保并发控制生效
+    from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
+    get_global_task_processor(config)
+    logger.info("全局任务处理器已初始化")
     
     # 初始化YouTube监控API
     if config.get('YOUTUBE_API_KEY'):
@@ -1192,6 +1301,9 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"服务启动失败: {str(e)}")
     finally:
+        # 关闭全局任务处理器
+        shutdown_global_task_processor()
+        
         if log_cleanup_scheduler:
             log_cleanup_scheduler.shutdown()
         logger.info("服务已关闭") 
