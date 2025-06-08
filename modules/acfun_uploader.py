@@ -540,6 +540,8 @@ class AcfunUploader:
                 if not self.upload_chunk(chunk_data, fragment_id, token):
                     self.log(f"分块 {fragment_id + 1} 上传失败")
                     return False, "分块上传失败"
+                
+
         
         # 完成上传
         self.complete_upload(fragment_count, token)

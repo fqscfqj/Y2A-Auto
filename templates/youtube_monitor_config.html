@@ -16,6 +16,7 @@
 <div class="row">
     <div class="col-lg-8">
         <form method="POST" class="needs-validation" novalidate>
+            <!-- 基本设置 -->
             <div class="card">
                 <div class="card-header">
                     <h5 class="mb-0"><i class="bi bi-gear"></i> 基本设置</h5>
@@ -45,9 +46,41 @@
                 </div>
             </div>
 
+            <!-- 监控类型选择 -->
             <div class="card mt-4">
                 <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-search"></i> 搜索条件</h5>
+                    <h5 class="mb-0"><i class="bi bi-diagram-3"></i> 监控类型</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="monitor_type" id="monitor_type_youtube" 
+                                   value="youtube_search" onchange="toggleMonitorType()" 
+                                   {% if not config or not config.channel_ids %}checked{% endif %}>
+                            <label class="form-check-label" for="monitor_type_youtube">
+                                <strong><i class="bi bi-globe"></i> 全YouTube检索</strong>
+                                <div class="form-text text-muted">在整个YouTube平台搜索符合条件的视频</div>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="monitor_type" id="monitor_type_channel" 
+                                   value="channel_monitor" onchange="toggleMonitorType()"
+                                   {% if config and config.channel_ids %}checked{% endif %}>
+                            <label class="form-check-label" for="monitor_type_channel">
+                                <strong><i class="bi bi-person-video2"></i> 单频道监控</strong>
+                                <div class="form-text text-muted">针对特定频道进行深度监控</div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- YouTube检索设置 -->
+            <div class="card mt-4" id="youtube_search_settings">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-search"></i> YouTube检索设置</h5>
                 </div>
                 <div class="card-body">
                     <div class="row">
@@ -99,7 +132,7 @@
                                 <div class="form-text">搜索多少天内发布的视频</div>
                             </div>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-4" id="max_results_group">
                             <div class="mb-3">
                                 <label for="max_results" class="form-label">最大结果数</label>
                                 <input type="number" class="form-control" id="max_results" name="max_results" 
@@ -122,10 +155,10 @@
                     </div>
                     
                     <div class="mb-3">
-                        <label for="keywords" class="form-label">包含关键词</label>
+                        <label for="keywords" class="form-label">包含关键词 <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="keywords" name="keywords" 
                                value="{{ config.keywords if config else '' }}" placeholder="多个关键词用空格分隔">
-                        <div class="form-text">视频标题或描述中必须包含的关键词</div>
+                        <div class="form-text">视频标题或描述中必须包含的关键词（全YouTube检索时必填）</div>
                     </div>
                     
                     <div class="mb-3">
@@ -134,9 +167,128 @@
                                value="{{ config.exclude_keywords if config else '' }}" placeholder="多个关键词用逗号分隔">
                         <div class="form-text">包含这些关键词的视频将被排除</div>
                     </div>
+                    
+                    <div class="mb-3">
+                        <label for="exclude_channel_ids" class="form-label">排除频道ID</label>
+                        <textarea class="form-control" id="exclude_channel_ids" name="exclude_channel_ids" rows="2" 
+                                  placeholder="多个频道ID用逗号分隔">{{ config.exclude_channel_ids if config else '' }}</textarea>
+                        <div class="form-text">排除这些频道的视频</div>
+                    </div>
                 </div>
             </div>
 
+            <!-- 频道监控设置 -->
+            <div class="card mt-4" id="channel_monitor_settings" class="d-none">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-person-video2"></i> 频道监控设置</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <label for="channel_ids" class="form-label">监控频道ID <span class="text-danger">*</span></label>
+                        <textarea class="form-control" id="channel_ids" name="channel_ids" rows="3" 
+                                  placeholder="输入要监控的频道ID，多个频道用逗号分隔&#10;例如：UCxxxxxxxxxxxxxxxxxxxxxx,UCyyyyyyyyyyyyyyyyyyyyyy">{{ config.channel_ids if config else '' }}</textarea>
+                        <div class="form-text">
+                            <strong>如何获取频道ID：</strong><br>
+                            1. 访问频道主页 → 查看页面源代码 → 搜索 "channelId"<br>
+                            2. 或使用在线工具：<a href="https://commentpicker.com/youtube-channel-id.php" target="_blank" rel="noopener">YouTube Channel ID Finder</a>
+                        </div>
+                    </div>
+
+                    <!-- 频道监控模式选择 -->
+                    <div class="mb-4">
+                        <label class="form-label">监控模式</label>
+                        <div class="ms-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="channel_mode" id="channel_mode_search" 
+                                       value="search" onchange="toggleChannelMode()">
+                                <label class="form-check-label" for="channel_mode_search">
+                                    <strong><i class="bi bi-search"></i> 频道内搜索</strong>
+                                    <div class="form-text text-muted">在指定频道内搜索包含特定关键词的视频</div>
+                                </label>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="radio" name="channel_mode" id="channel_mode_historical" 
+                                       value="historical" onchange="toggleChannelMode()">
+                                <label class="form-check-label" for="channel_mode_historical">
+                                    <strong><i class="bi bi-clock-history"></i> 历史视频搬运</strong>
+                                    <div class="form-text text-muted">从指定时间开始，搬运频道的历史视频到最新</div>
+                                </label>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="radio" name="channel_mode" id="channel_mode_latest" 
+                                       value="latest" onchange="toggleChannelMode()" checked>
+                                <label class="form-check-label" for="channel_mode_latest">
+                                    <strong><i class="bi bi-rss"></i> 持续跟进最新</strong>
+                                    <div class="form-text text-muted">持续监控频道最新发布的视频（推荐用于日常监控）</div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 频道搜索设置 -->
+                    <div id="channel_search_settings" class="d-none">
+                        <div class="mb-3">
+                            <label for="channel_keywords" class="form-label">频道内搜索关键词 <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="channel_keywords" name="channel_keywords" 
+                                   placeholder="在频道内搜索包含这些关键词的视频">
+                            <div class="form-text">多个关键词用空格分隔</div>
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> 
+                            <strong>提示：</strong>在频道内搜索模式下，上方的"视频筛选与搜索设置"将用于对搜索结果进行进一步筛选（如观看数、时长、排序等），"包含关键词"设置在此模式下变为可选。
+                        </div>
+                    </div>
+
+                    <!-- 历史搬运设置 -->
+                    <div id="channel_historical_settings" class="d-none">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="start_date" class="form-label">开始时间 <span class="text-danger">*</span></label>
+                                    <input type="date" class="form-control" id="start_date" name="start_date" 
+                                           value="{{ config.start_date if config else '' }}">
+                                    <div class="form-text">从此日期开始搬运视频</div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="end_date" class="form-label">结束时间</label>
+                                    <input type="date" class="form-control" id="end_date" name="end_date">
+                                    <div class="form-text">搬运到此日期为止，留空表示到最新</div>
+                                </div>
+                            </div>
+                        </div>
+                        {% if config and config.channel_mode == 'historical' and config.historical_offset %}
+                        <div class="alert alert-warning">
+                            <i class="bi bi-clock-history"></i> 
+                            <strong>历史搬运进度：</strong>已处理 {{ config.historical_offset }} 个视频，下次将从第{{ config.historical_offset + 1 }}个视频继续。
+                        </div>
+                        {% endif %}
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> 
+                            <strong>历史搬运说明：</strong>系统会按时间顺序从最老的视频开始搬运到最新，每次处理一批视频，避免重复处理。搬运完成后建议切换为"持续跟进最新"模式。
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="bi bi-gear"></i> 
+                            <strong>设置说明：</strong>上方的"视频筛选与搜索设置"将用于对历史视频进行筛选（如观看数、时长、排序等），时间范围由上述开始/结束时间控制。
+                        </div>
+                    </div>
+
+                    <!-- 最新跟进设置 -->
+                    <div id="channel_latest_settings">
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i> 
+                            <strong>推荐模式：</strong>适用于日常监控，自动跟进频道最新发布的视频，避免遗漏。监控的时间范围和添加任务数量由下方的"调度与限制设置"控制。
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> 
+                            <strong>提示：</strong>上方的"视频筛选与搜索设置"将用于对频道最新视频进行筛选（如观看数、时长、排序等），时间范围由调度间隔自动计算。
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 筛选条件 -->
             <div class="card mt-4">
                 <div class="card-header">
                     <h5 class="mb-0"><i class="bi bi-funnel"></i> 筛选条件</h5>
@@ -147,7 +299,7 @@
                             <div class="mb-3">
                                 <label for="min_view_count" class="form-label">最小观看数</label>
                                 <input type="number" class="form-control" id="min_view_count" name="min_view_count" 
-                                       value="{{ config.min_view_count if config else 1000 }}" min="0">
+                                       value="{{ config.min_view_count if config else 0 }}" min="0">
                             </div>
                         </div>
                         <div class="col-md-4">
@@ -182,68 +334,17 @@
                             </div>
                         </div>
                     </div>
-                    
+                </div>
+            </div>
+
+            <!-- 调度与限制设置 -->
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-clock"></i> 调度与限制设置</h5>
+                </div>
+                <div class="card-body">
                     <div class="row">
-                        <div class="col-md-8">
-                            <div class="mb-3">
-                                <label for="channel_ids" class="form-label">指定频道ID <span class="badge bg-info">增强功能</span></label>
-                                <textarea class="form-control" id="channel_ids" name="channel_ids" rows="2" 
-                                          placeholder="多个频道ID用逗号分隔，留空表示不限制频道">{{ config.channel_ids if config else '' }}</textarea>
-                                <div class="form-text">只监控这些频道的视频，留空表示监控所有频道。配合开始日期可以搬运指定频道的历史视频。</div>
-                            </div>
-                        </div>
                         <div class="col-md-4">
-                            <div class="mb-3">
-                                <label for="start_date" class="form-label">开始日期</label>
-                                <input type="date" class="form-control" id="start_date" name="start_date" 
-                                       value="{{ config.start_date if config else '' }}">
-                                <div class="form-text">监控指定日期之后的视频</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-3">
-                        <label for="exclude_channel_ids" class="form-label">排除频道ID</label>
-                        <textarea class="form-control" id="exclude_channel_ids" name="exclude_channel_ids" rows="2" 
-                                  placeholder="多个频道ID用逗号分隔">{{ config.exclude_channel_ids if config else '' }}</textarea>
-                        <div class="form-text">排除这些频道的视频</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card mt-4">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-shield-check"></i> 请求限制设置</h5>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <div class="mb-3">
-                                <label for="rate_limit_requests" class="form-label">最大请求数</label>
-                                <input type="number" class="form-control" id="rate_limit_requests" name="rate_limit_requests" 
-                                       value="{{ config.rate_limit_requests if config else 100 }}" min="10" max="1000">
-                                <div class="form-text">指定时间窗口内的最大请求数</div>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="mb-3">
-                                <label for="rate_limit_window" class="form-label">时间窗口（秒）</label>
-                                <input type="number" class="form-control" id="rate_limit_window" name="rate_limit_window" 
-                                       value="{{ config.rate_limit_window if config else 60 }}" min="30" max="3600">
-                                <div class="form-text">请求限制的时间窗口，防止被封锁</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card mt-4">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-clock"></i> 调度设置</h5>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-6">
                             <div class="mb-3">
                                 <label for="schedule_type" class="form-label">调度类型</label>
                                 <select class="form-select" id="schedule_type" name="schedule_type" onchange="toggleScheduleInterval()">
@@ -252,12 +353,27 @@
                                 </select>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <div class="mb-3" id="schedule_interval_group">
+                        <div class="col-md-4">
+                            <div class="mb-3 d-none" id="schedule_interval_group">
                                 <label for="schedule_interval" class="form-label">调度间隔（分钟）</label>
                                 <input type="number" class="form-control" id="schedule_interval" name="schedule_interval" 
-                                       value="{{ config.schedule_interval if config else 60 }}" min="5" max="1440">
-                                <div class="form-text">最小5分钟，最大1440分钟（24小时）</div>
+                                       value="{{ config.schedule_interval if config else 120 }}" min="1" max="43200"
+                                       oninput="updateIntervalDisplay()">
+                                <div class="form-text">
+                                    执行间隔，同时作为API请求的时间窗口（推荐30分钟以上，最长30天）<br>
+                                    <small class="text-primary" id="interval_display">约等于 2 小时</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label for="rate_limit_requests" class="form-label">最大请求数</label>
+                                <input type="number" class="form-control" id="rate_limit_requests" name="rate_limit_requests" 
+                                       value="{{ config.rate_limit_requests if config else 20 }}" min="1" max="100">
+                                <div class="form-text">
+                                    <span id="rate_limit_help_youtube">调度间隔内的最大API请求数，同时限制每次添加到任务队列的视频数量</span>
+                                    <span id="rate_limit_help_historical" class="d-none">每次最多处理多少个视频到上传任务模块</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -271,13 +387,26 @@
                                     <label class="form-check-label" for="auto_add_to_tasks">
                                         <i class="bi bi-arrow-right-circle text-success"></i> 自动添加到任务队列
                                     </label>
-                                    <div class="form-text">勾选后，监控到的视频将自动添加到搬运任务队列中，无需手动操作</div>
+                                    <div class="form-text">勾选后，监控到的视频将自动添加到搬运任务队列中，无需手动操作。<br>
+                                    <small class="text-muted">提示：系统会根据"最大请求数"设置来控制每次添加的视频数量，避免一次性添加过多任务影响系统性能</small></div>
                                 </div>
                             </div>
                         </div>
                     </div>
+                    
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> 
+                        <strong>说明：</strong>调度间隔既控制执行频率，也作为API请求限制的时间窗口。例如设置120分钟间隔、最大20个请求，表示每120分钟执行一次，且这120分钟内最多使用20个API请求。
+                    </div>
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> 
+                        <strong>注意：</strong>过短的调度间隔（如5-30分钟）会快速消耗YouTube API配额，请根据实际需求合理设置。推荐大多数场景使用30分钟以上的间隔。
+                    </div>
                 </div>
             </div>
+            
+            <!-- 隐藏字段：保持向下兼容 -->
+            <input type="hidden" id="rate_limit_window" name="rate_limit_window" value="60">
 
             <div class="d-flex justify-content-between mt-4">
                 <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-secondary">
@@ -294,43 +423,69 @@
     <div class="col-lg-4">
         <div class="card">
             <div class="card-header">
-                <h6 class="mb-0"><i class="bi bi-info-circle"></i> 使用说明</h6>
+                <h6 class="mb-0"><i class="bi bi-info-circle"></i> 使用指南</h6>
             </div>
             <div class="card-body">
-                <h6>基本设置</h6>
+                <h6>监控类型说明</h6>
                 <ul class="small">
-                    <li><strong>配置名称</strong> <span class="text-danger">*</span>：为这个监控配置起一个名字</li>
-                    <li><strong>启用</strong>：勾选后此配置才会生效</li>
+                    <li><strong>全YouTube检索</strong>：在整个YouTube平台搜索符合条件的视频，适合发现热门内容</li>
+                    <li><strong>单频道监控</strong>：针对特定频道进行深度监控，适合关注特定创作者</li>
                 </ul>
                 
-                <h6>搜索条件</h6>
+                <h6>频道监控模式</h6>
                 <ul class="small">
-                    <li><strong>地区代码</strong>：搜索特定地区的热门视频</li>
-                    <li><strong>视频分类</strong>：按YouTube分类筛选</li>
-                    <li><strong>时间段</strong>：搜索最近几天发布的视频</li>
-                    <li><strong>排序方式</strong>：结果排序规则（观看数/日期/评分/相关度）</li>
-                    <li><strong>关键词</strong>：视频标题或描述包含的词</li>
+                    <li><strong>频道内搜索</strong>：在指定频道内搜索包含特定关键词的视频</li>
+                    <li><strong>历史视频搬运</strong>：从指定时间开始批量搬运历史视频</li>
+                    <li><strong>持续跟进最新</strong>：持续监控频道最新发布的视频（推荐）</li>
                 </ul>
                 
-                <h6>筛选条件</h6>
+                <h6>使用建议</h6>
                 <ul class="small">
-                    <li><strong>数据门槛</strong>：观看数、点赞数、评论数的最低要求</li>
-                    <li><strong>时长限制</strong>：视频长度的限制范围</li>
-                    <li><strong>频道筛选</strong>：指定或排除特定频道</li>
-                    <li><strong>开始日期</strong>：配合指定频道可搬运历史视频</li>
+                    <li>新关注频道：先用"历史搬运"获取优质内容，再切换为"持续跟进"</li>
+                    <li>日常监控：使用"持续跟进最新"模式，配合自动调度</li>
+                    <li>内容发现：使用"全YouTube检索"模式，设置合适的关键词</li>
+                    <li>精准筛选：合理设置观看数、点赞数等筛选条件</li>
                 </ul>
                 
-                <h6>请求限制</h6>
+                <h6>调度间隔建议</h6>
                 <ul class="small">
-                    <li><strong>最大请求数</strong>：防止API请求过于频繁</li>
-                    <li><strong>时间窗口</strong>：请求限制的时间范围</li>
+                    <li><strong>超高频监控</strong>：5-30分钟，适合极活跃频道或紧急需求（注意API配额）</li>
+                    <li><strong>高频监控</strong>：30-120分钟，适合活跃频道的实时跟进</li>
+                    <li><strong>日常监控</strong>：2-6小时（120-360分钟），平衡效率与及时性</li>
+                    <li><strong>低频监控</strong>：12-24小时（720-1440分钟），适合更新不频繁的频道</li>
+                    <li><strong>周期性检查</strong>：3-7天（4320-10080分钟），适合收集长期内容</li>
                 </ul>
                 
-                <h6>调度设置</h6>
-                <ul class="small">
-                    <li><strong>手动执行</strong>：需要手动点击运行</li>
-                    <li><strong>自动调度</strong>：按设定间隔自动运行</li>
-                </ul>
+                <h6>频道ID获取方法</h6>
+                <ol class="small">
+                    <li>访问频道主页</li>
+                    <li>右键查看页面源代码</li>
+                    <li>搜索"channelId"</li>
+                    <li>复制UC开头的24位字符串</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-lightbulb"></i> 配置模板</h6>
+            </div>
+            <div class="card-body">
+                <div class="mb-2">
+                    <button type="button" class="btn btn-outline-primary btn-sm w-100" onclick="loadTemplate('trending')">
+                        <i class="bi bi-fire"></i> 热门视频发现
+                    </button>
+                </div>
+                <div class="mb-2">
+                    <button type="button" class="btn btn-outline-success btn-sm w-100" onclick="loadTemplate('channel_latest')">
+                        <i class="bi bi-rss"></i> 频道最新跟进
+                    </button>
+                </div>
+                <div class="mb-2">
+                    <button type="button" class="btn btn-outline-info btn-sm w-100" onclick="loadTemplate('channel_historical')">
+                        <i class="bi bi-clock-history"></i> 历史视频搬运
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -339,21 +494,393 @@
 {% endblock %}
 
 {% block extra_js %}
+<!-- 配置数据存储 -->
+<script type="application/json" id="config-data">
+{% if config %}
+{
+    "channel_ids": "{{ config.channel_ids or '' }}",
+    "channel_keywords": "{{ config.channel_keywords or '' }}",
+    "channel_mode": "{{ config.channel_mode or 'latest' }}",
+    "start_date": "{{ config.start_date or '' }}",
+    "end_date": "{{ config.end_date or '' }}",
+    "order_by": "{{ config.order_by or 'viewCount' }}",
+    "schedule_type": "{{ config.schedule_type or 'manual' }}",
+    "schedule_interval": {{ config.schedule_interval or 120 }},
+    "auto_add_to_tasks": {{ 'true' if config.auto_add_to_tasks else 'false' }}
+}
+{% else %}
+null
+{% endif %}
+</script>
+
 <script>
+function initializeFormState() {
+    const configDataElement = document.getElementById('config-data');
+    const configData = configDataElement ? JSON.parse(configDataElement.textContent) : null;
+    
+    if (configData && configData.channel_ids && configData.channel_ids.trim()) {
+        // 频道监控模式
+        document.getElementById('monitor_type_channel').checked = true;
+        
+        // 根据保存的channel_mode设置频道模式
+        if (configData.channel_mode === 'search') {
+            document.getElementById('channel_mode_search').checked = true;
+            if (configData.channel_keywords) {
+                document.getElementById('channel_keywords').value = configData.channel_keywords;
+            }
+        } else if (configData.channel_mode === 'historical') {
+            document.getElementById('channel_mode_historical').checked = true;
+        } else {
+            document.getElementById('channel_mode_latest').checked = true;
+        }
+        
+        // 设置相关字段值
+        if (configData.start_date) {
+            document.getElementById('start_date').value = configData.start_date;
+        }
+        if (configData.end_date) {
+            document.getElementById('end_date').value = configData.end_date;
+        }
+    } else {
+        // YouTube检索模式
+        document.getElementById('monitor_type_youtube').checked = true;
+    }
+    
+    // 恢复调度设置
+    if (configData) {
+        if (configData.schedule_type) {
+            document.getElementById('schedule_type').value = configData.schedule_type;
+        }
+        if (configData.schedule_interval) {
+            document.getElementById('schedule_interval').value = configData.schedule_interval;
+        }
+        if (configData.auto_add_to_tasks !== undefined) {
+            document.getElementById('auto_add_to_tasks').checked = configData.auto_add_to_tasks;
+        }
+        if (configData.order_by) {
+            document.getElementById('order_by').value = configData.order_by;
+        }
+    }
+}
+function toggleMonitorType() {
+    const youtubeRadio = document.getElementById('monitor_type_youtube');
+    const channelRadio = document.getElementById('monitor_type_channel');
+    const youtubeSettings = document.getElementById('youtube_search_settings');
+    const channelSettings = document.getElementById('channel_monitor_settings');
+    const keywordsField = document.getElementById('keywords');
+    const maxResultsGroup = document.getElementById('max_results_group');
+    
+    if (youtubeRadio.checked) {
+        youtubeSettings.classList.remove('d-none');
+        channelSettings.classList.add('d-none');
+        keywordsField.required = true;
+        // YouTube检索模式显示最大结果数
+        if (maxResultsGroup) {
+            maxResultsGroup.classList.remove('d-none');
+        }
+        // 显示所有YouTube检索设置
+        showAllYouTubeSearchSettings();
+    } else if (channelRadio.checked) {
+        youtubeSettings.classList.remove('d-none'); // 频道监控也显示YouTube检索设置，但调整部分内容
+        channelSettings.classList.remove('d-none');
+        keywordsField.required = false;
+        // 频道监控模式隐藏最大结果数（由最大请求数控制）
+        if (maxResultsGroup) {
+            maxResultsGroup.classList.add('d-none');
+        }
+        // 调整YouTube检索设置以适应频道监控
+        adaptYouTubeSearchForChannel();
+        toggleChannelMode();
+    }
+    
+    // 更新最大请求数的描述文本
+    updateRateLimitDescription();
+}
+
+function toggleChannelMode() {
+    const searchMode = document.getElementById('channel_mode_search');
+    const historicalMode = document.getElementById('channel_mode_historical');
+    const latestMode = document.getElementById('channel_mode_latest');
+    
+    const searchSettings = document.getElementById('channel_search_settings');
+    const historicalSettings = document.getElementById('channel_historical_settings');
+    const latestSettings = document.getElementById('channel_latest_settings');
+    
+    // 隐藏所有设置
+    searchSettings.classList.add('d-none');
+    historicalSettings.classList.add('d-none');
+    latestSettings.classList.add('d-none');
+    
+    // 显示对应设置
+    if (searchMode.checked) {
+        searchSettings.classList.remove('d-none');
+    } else if (historicalMode.checked) {
+        historicalSettings.classList.remove('d-none');
+    } else if (latestMode.checked) {
+        latestSettings.classList.remove('d-none');
+    }
+    
+    // 如果当前是频道监控模式，重新适配YouTube检索设置
+    const channelRadio = document.getElementById('monitor_type_channel');
+    if (channelRadio && channelRadio.checked) {
+        adaptYouTubeSearchForChannel();
+    }
+    
+    // 更新最大请求数的描述文本
+    updateRateLimitDescription();
+}
+
+function showAllYouTubeSearchSettings() {
+    // 显示所有YouTube检索设置项
+    const elements = [
+        'region_code', 'category_id', 'time_period', 'order_by', 
+        'keywords', 'exclude_keywords', 'exclude_channel_ids'
+    ];
+    
+    elements.forEach(id => {
+        const element = document.getElementById(id);
+        if (element) {
+            const container = element.closest('.mb-3') || element.closest('.col-md-4') || element.closest('.col-md-6');
+            if (container) {
+                container.classList.remove('d-none');
+                container.style.display = '';
+            }
+        }
+    });
+    
+    // 恢复YouTube检索模式的默认排序方式为观看次数
+    const orderBySelect = document.getElementById('order_by');
+    if (orderBySelect && orderBySelect.value === 'date') {
+        // 只有当前值是date时才改回viewCount，避免覆盖用户已保存的其他选择
+        const configDataElement = document.getElementById('config-data');
+        const configData = configDataElement ? JSON.parse(configDataElement.textContent) : null;
+        if (!configData || !configData.order_by || configData.order_by === 'viewCount') {
+            orderBySelect.value = 'viewCount';
+        }
+    }
+    
+    // 更新标签和提示文本为全YouTube检索模式
+    const keywordsHelp = document.querySelector('#keywords + .form-text');
+    if (keywordsHelp) {
+        keywordsHelp.textContent = '视频标题或描述中必须包含的关键词（全YouTube检索时必填）';
+    }
+    
+    const timePeriodHelp = document.querySelector('#time_period + .form-text');
+    if (timePeriodHelp) {
+        timePeriodHelp.textContent = '搜索多少天内发布的视频';
+    }
+    
+    const excludeChannelHelp = document.querySelector('#exclude_channel_ids + .form-text');
+    if (excludeChannelHelp) {
+        excludeChannelHelp.textContent = '排除这些频道的视频';
+    }
+}
+
+function adaptYouTubeSearchForChannel() {
+    // 根据频道监控模式调整YouTube检索设置
+    const channelMode = getSelectedChannelMode();
+    
+    // 隐藏不适用的设置项
+    const excludeChannelContainer = document.getElementById('exclude_channel_ids').closest('.mb-3');
+    if (excludeChannelContainer) {
+        excludeChannelContainer.classList.add('d-none');
+    }
+    
+    // 设置频道监控模式下的默认排序方式为上传日期
+    const orderBySelect = document.getElementById('order_by');
+    if (orderBySelect) {
+        // 检查是否有已保存的配置
+        const configDataElement = document.getElementById('config-data');
+        const configData = configDataElement ? JSON.parse(configDataElement.textContent) : null;
+        
+        // 只有在没有保存的排序配置或当前是默认的观看次数时，才切换为上传日期
+        if (!configData || !configData.order_by || configData.order_by === 'viewCount') {
+            orderBySelect.value = 'date';
+        }
+    }
+    
+    // 调整关键词设置
+    const keywordsContainer = document.getElementById('keywords').closest('.mb-3');
+    const keywordsHelp = document.querySelector('#keywords + .form-text');
+    
+    if (channelMode === 'search') {
+        // 频道内搜索模式：关键词变为可选，改变提示文本
+        if (keywordsContainer) {
+            keywordsContainer.classList.remove('d-none');
+        }
+        if (keywordsHelp) {
+            keywordsHelp.textContent = '在指定频道内搜索包含这些关键词的视频（可选，留空表示获取所有视频）';
+        }
+    } else if (channelMode === 'historical') {
+        // 历史搬运模式：隐藏关键词和时间段，因为由历史搬运设置控制
+        if (keywordsContainer) {
+            keywordsContainer.classList.add('d-none');
+        }
+        
+        const timePeriodContainer = document.getElementById('time_period').closest('.col-md-4');
+        if (timePeriodContainer) {
+            timePeriodContainer.classList.add('d-none');
+        }
+    } else if (channelMode === 'latest') {
+        // 持续跟进最新模式：隐藏关键词和时间段，因为由调度设置控制
+        if (keywordsContainer) {
+            keywordsContainer.classList.add('d-none');
+        }
+        
+        const timePeriodContainer = document.getElementById('time_period').closest('.col-md-4');
+        if (timePeriodContainer) {
+            timePeriodContainer.classList.add('d-none');
+        }
+    }
+    
+    // 更新标题
+    const youtubeSearchHeader = document.querySelector('#youtube_search_settings .card-header h5');
+    if (youtubeSearchHeader) {
+        youtubeSearchHeader.innerHTML = '<i class="bi bi-gear"></i> 视频筛选与搜索设置';
+    }
+}
+
+function getSelectedChannelMode() {
+    if (document.getElementById('channel_mode_search').checked) return 'search';
+    if (document.getElementById('channel_mode_historical').checked) return 'historical';
+    if (document.getElementById('channel_mode_latest').checked) return 'latest';
+    return 'latest'; // 默认
+}
+
+function updateRateLimitDescription() {
+    const youtubeMode = document.getElementById('monitor_type_youtube');
+    const historicalMode = document.getElementById('channel_mode_historical');
+    
+    const helpYoutube = document.getElementById('rate_limit_help_youtube');
+    const helpHistorical = document.getElementById('rate_limit_help_historical');
+    const hintNormal = document.getElementById('auto_add_hint_normal');
+    const hintHistorical = document.getElementById('auto_add_hint_historical');
+    
+    if (youtubeMode && youtubeMode.checked) {
+        // YouTube检索模式，显示API请求数描述
+        helpYoutube.classList.remove('d-none');
+        helpHistorical.classList.add('d-none');
+        if (hintNormal) {
+            hintNormal.classList.remove('d-none');
+            hintHistorical.classList.add('d-none');
+        }
+    } else if (historicalMode && historicalMode.checked) {
+        // 历史搬运模式，显示任务处理数描述
+        helpYoutube.classList.add('d-none');
+        helpHistorical.classList.remove('d-none');
+        if (hintHistorical) {
+            hintNormal.classList.add('d-none');
+            hintHistorical.classList.remove('d-none');
+        }
+    } else {
+        // 其他模式，显示API请求数描述
+        helpYoutube.classList.remove('d-none');
+        helpHistorical.classList.add('d-none');
+        if (hintNormal) {
+            hintNormal.classList.remove('d-none');
+            hintHistorical.classList.add('d-none');
+        }
+    }
+}
+
 function toggleScheduleInterval() {
     const scheduleType = document.getElementById('schedule_type').value;
     const intervalGroup = document.getElementById('schedule_interval_group');
     
     if (scheduleType === 'auto') {
-        intervalGroup.style.display = 'block';
+        intervalGroup.classList.remove('d-none');
+        updateIntervalDisplay(); // 显示时更新时间显示
     } else {
-        intervalGroup.style.display = 'none';
+        intervalGroup.classList.add('d-none');
     }
+}
+
+function updateIntervalDisplay() {
+    const intervalInput = document.getElementById('schedule_interval');
+    const display = document.getElementById('interval_display');
+    
+    if (!intervalInput || !display) return;
+    
+    const minutes = parseInt(intervalInput.value) || 0;
+    
+    if (minutes === 0) {
+        display.textContent = '';
+        return;
+    }
+    
+    let displayText = '约等于 ';
+    
+    if (minutes < 60) {
+        displayText += `${minutes} 分钟`;
+    } else if (minutes < 1440) {
+        const hours = Math.round(minutes / 60 * 10) / 10;
+        displayText += `${hours} 小时`;
+    } else if (minutes < 10080) {
+        const days = Math.round(minutes / 1440 * 10) / 10;
+        displayText += `${days} 天`;
+    } else {
+        const weeks = Math.round(minutes / 10080 * 10) / 10;
+        displayText += `${weeks} 周`;
+    }
+    
+    display.textContent = displayText;
+}
+
+function loadTemplate(templateType) {
+    switch(templateType) {
+        case 'trending':
+            document.getElementById('monitor_type_youtube').checked = true;
+            document.getElementById('name').value = '热门视频监控';
+            document.getElementById('keywords').value = '';
+            document.getElementById('region_code').value = 'US';
+            document.getElementById('order_by').value = 'viewCount';
+            document.getElementById('min_view_count').value = '10000';
+            document.getElementById('time_period').value = '3';
+            document.getElementById('schedule_type').value = 'auto';
+            document.getElementById('schedule_interval').value = '180';
+            break;
+            
+        case 'channel_latest':
+            document.getElementById('monitor_type_channel').checked = true;
+            document.getElementById('channel_mode_latest').checked = true;
+            document.getElementById('name').value = '频道最新监控';
+            document.getElementById('order_by').value = 'date';
+            document.getElementById('schedule_type').value = 'auto';
+            document.getElementById('schedule_interval').value = '120';
+            document.getElementById('auto_add_to_tasks').checked = true;
+            break;
+            
+        case 'channel_historical':
+            document.getElementById('monitor_type_channel').checked = true;
+            document.getElementById('channel_mode_historical').checked = true;
+            document.getElementById('name').value = '历史视频搬运';
+            document.getElementById('order_by').value = 'date';
+            document.getElementById('schedule_type').value = 'manual';
+            break;
+    }
+    
+    toggleMonitorType();
+    toggleScheduleInterval();
 }
 
 // 页面加载时初始化
 document.addEventListener('DOMContentLoaded', function() {
-    toggleScheduleInterval();
+    // 初始化监控类型选择（基于现有配置）
+    initializeFormState();
+    
+    // 确保状态正确恢复
+    setTimeout(function() {
+        toggleMonitorType();
+        toggleScheduleInterval();
+        updateRateLimitDescription();
+        updateIntervalDisplay(); // 初始化时间显示
+        
+        // 如果是频道监控模式，确保频道模式设置也正确显示
+        const channelRadio = document.getElementById('monitor_type_channel');
+        if (channelRadio && channelRadio.checked) {
+            toggleChannelMode();
+        }
+    }, 50);
     
     // Bootstrap表单验证
     const forms = document.querySelectorAll('.needs-validation');

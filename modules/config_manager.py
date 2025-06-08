@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
+    "YOUTUBE_API_KEY": "",
     "ALIYUN_ACCESS_KEY_ID": "",
     "ALIYUN_ACCESS_KEY_SECRET": "",
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
@@ -42,6 +43,9 @@ DEFAULT_CONFIG = {
     "SUBTITLE_EMBED_IN_VIDEO": True,  # 是否将字幕嵌入视频
     "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
     "SUBTITLE_MAX_WORKERS": 3,  # 字幕翻译最大并发线程数
+    # 并发控制配置
+    "MAX_CONCURRENT_TASKS": 3,  # 最大并发任务数
+    "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
 }
 
 def load_config():

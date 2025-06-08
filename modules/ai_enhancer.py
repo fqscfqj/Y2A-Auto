@@ -109,17 +109,36 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         # 构建翻译提示 - 使用完整文本
         prompt = f"""我需要你将以下文本翻译成{target_language_name}。请遵循以下严格要求：
 
-1. **纯净译文：** 直接输出翻译结果，不含任何额外解释、注释、元数据或前缀（如"翻译："）。
+1. **纯净译文：** 
+   * 只输出翻译后的内容，绝不添加任何说明、注释、括号备注或元数据
+   * 禁止添加"（联系方式已移除）"、"（社交媒体已移除）"、"（链接已移除）"等任何说明性文字
+   * 直接忽略不翻译的内容，让翻译结果看起来自然完整
+
 2. **语言风格：**
    * 使用规范、正式的书面语，避免过度口语化表达
    * 不使用"开整"、"搞起"等网络流行语
    * 不添加不必要的感叹词或表情符号
    * 保持专业、清晰的表达方式
-3. **AcFun规范：**
-   * 移除所有URL、邮箱地址、广告及社交媒体推广信息
+
+3. **内容过滤（严格执行）：**
+   * 直接跳过所有URL链接（包括http、https、www等）
+   * 直接跳过所有域名（如youtube.com、twitter.com、instagram.com等）
+   * 直接跳过所有邮箱地址
+   * 直接跳过所有社交媒体账号引用（如@用户名、#标签）
+   * 直接跳过广告推广信息和商业链接
+   * 直接跳过"订阅"、"关注"、"点赞"等平台互动提示
+   * 直接跳过"更多内容请访问"、"详情见链接"等引导性文字
+
+4. **重要：处理过滤内容时**
+   * 不要留下任何痕迹或说明
+   * 不要用括号、破折号或其他符号标注已移除内容
+   * 让翻译结果读起来自然流畅，仿佛原文就没有这些内容
+
+5. **AcFun规范：**
    * 使用符合中文习惯的表达，但避免过度本地化改写
-4. **格式保留：** 保持原文的段落结构
-5. **内容限制：** 最终标题需<50字，简介需<1000字
+   * 保持内容的核心信息和观点
+
+6. **格式保留：** 保持原文的段落结构
 
 原文:
 {text}
@@ -149,30 +168,117 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             if translated_text.startswith(prefix):
                 translated_text = translated_text[len(prefix):].strip()
         
-        # 移除可能的注释部分 (通常在括号内，且包含"注："等提示词)
+        # 移除各种形式的说明性文字
         import re
-        translated_text = re.sub(r'（注：.*?）', '', translated_text)
-        translated_text = re.sub(r'\(注：.*?\)', '', translated_text)
-        translated_text = re.sub(r'【注：.*?】', '', translated_text)
+        removal_patterns = [
+            r'（注：.*?）',                     # 中文括号注释
+            r'\(注：.*?\)',                     # 英文括号注释
+            r'【注：.*?】',                     # 方括号注释
+            r'（.*?已移除）',                   # 各种"已移除"说明
+            r'\(.*?已移除\)',                   # 英文括号的已移除说明
+            r'（.*?联系方式.*?）',              # 联系方式相关说明
+            r'\(.*?联系方式.*?\)',              # 英文括号联系方式说明
+            r'（.*?社交媒体.*?）',              # 社交媒体相关说明
+            r'\(.*?社交媒体.*?\)',              # 英文括号社交媒体说明
+            r'（.*?标签.*?）',                  # 标签相关说明
+            r'\(.*?标签.*?\)',                  # 英文括号标签说明
+            r'（.*?链接.*?）',                  # 链接相关说明
+            r'\(.*?链接.*?\)',                  # 英文括号链接说明
+            r'（.*?推广.*?）',                  # 推广相关说明
+            r'\(.*?推广.*?\)',                  # 英文括号推广说明
+            r'（.*?广告.*?）',                  # 广告相关说明
+            r'\(.*?广告.*?\)',                  # 英文括号广告说明
+            r'（.*?removed.*?）',               # 英文removed说明
+            r'\(.*?removed.*?\)',               # 英文括号removed说明
+            r'（.*?filtered.*?）',              # 英文filtered说明
+            r'\(.*?filtered.*?\)',              # 英文括号filtered说明
+        ]
+        
+        for pattern in removal_patterns:
+            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
         
         logger.info(f"翻译完成，耗时: {response_time:.2f}秒")
         logger.info(f"翻译结果总长度: {len(translated_text)} 字符")
         logger.info(f"翻译结果 (截取前100字符用于显示): {translated_text[:100]}...")
         
-        # 过滤URL和邮箱地址
+        # 过滤URL、域名和邮箱地址
         import re
-        # URL正则表达式
-        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+        
+        # 更全面的URL正则表达式
+        url_patterns = [
+            r'https?://[^\s\u4e00-\u9fff]+',  # HTTP/HTTPS链接（排除中文字符）
+            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',  # www开头的域名
+            r'ftp://[^\s\u4e00-\u9fff]+',     # FTP链接
+            r'\b[a-zA-Z0-9.-]+\.(?:com|net|org|edu|gov|mil|co|io|me|tv|fm|ly|be|to|cc|ws|biz|info|name|mobi|asia|tel|travel|museum|aero|jobs|cat|pro|xxx|app|dev|ai|tech|online|website|blog|shop|store|host|cloud|site|link|page|youtube|twitter|facebook|instagram|tiktok|linkedin|pinterest|tumblr|flickr|vimeo|twitch|discord|slack|telegram|whatsapp|reddit|github|gitlab|bitbucket|stackoverflow|medium|substack|patreon|ko-fi|paypal|venmo|cashapp|gofundme|kickstarter|indiegogo|etsy|amazon|ebay|aliexpress|shopify|wix|squarespace|wordpress|blogger|weebly|godaddy|namecheap|cloudflare|google|microsoft|apple|adobe|netflix|spotify|hulu|disney|hbo|paramount|peacock|crunchyroll|funimation|vrv|roosterteeth|newgrounds|deviantart|artstation|behance|dribbble|figma|sketch|canva|photoshop|zoom|teams|meet|skype|facetime|snapchat|clubhouse|onlyfans|cameo|twitch|mixer|dlive|caffeine|trovo|nimo|booyah|nonolive|bigo|uplive|liveme|periscope|younow|omegle|chatroulette|discord|teamspeak|mumble|ventrilo|curse|overwolf|steam|epic|origin|uplay|battlenet|gog|itch|humble|greenman|fanatical|chrono|bundlestars|indiegala|groupees|royalgames|gamersgate|direct2drive|impulse|desura|gamefly|onlive|gaikai|stadia|geforce|shadow|parsec|rainway|moonlight|steamlink|nvidia|amd|intel|corsair|razer|logitech|steelseries|hyperx|asus|msi|gigabyte|asrock|evga|zotac|sapphire|xfx|powercolor|his|club3d|gainward|palit|galax|kfa2|inno3d|pny|leadtek|point|view|manli|colorful|maxsun|yeston|mingying|onda|soyo|biostar|elite|foxconn|jetway|ecs|dfi|abit|chaintech|shuttle|via|sis|ali|uli|nvidia|ati|3dfx|matrox|s3|cirrus|tseng|oak|trident|chips|realtek|creative|aureal|ensoniq|yamaha|roland|korg|moog|oberheim|sequential|prophet|jupiter|juno|sh|tr|tb|mc|sp|mpc|mv|fantom|integra|rd|fp|go|bk|jv|xv|vsynth|variphrase|cosm|roli|arturia|novation|akai|native|ableton|steinberg|presonus|avid|digidesign|motu|rme|focusrite|scarlett|clarett|red|saffire|octopre|isa|liquid|voicemaster|twintrack|trackmaster|platinum|onyx|big|knob|studio|live|monitor|reference|truth|reveal|dynaudio|genelec|yamaha|kali|jbl|krk|mackie|behringer|tascam|zoom|roland|boss|tc|eventide|lexicon|alesis|akai|mpc|maschine|push|launchpad|oxygen|keystation|axiom|impulse|code|sl|mk|arturia|keystep|beatstep|drumbrute|microbrute|minibrute|matrixbrute|polybrute|pigments|analog|lab|collection|v|vintage|electric|stage|piano|clavinet|wurlitzer|rhodes|hammond|leslie|vox|continental|farfisa|acetone|combo|compact|drawbar|tonewheel|percussion|vibrato|chorus|reverb|tremolo|distortion|overdrive|fuzz|wah|phaser|flanger|delay|echo|compressor|limiter|gate|expander|eq|filter|synthesizer|sampler|sequencer|arpeggiator|vocoder|talkbox|autotune|melodyne|celemony|antares|waves|plugin|alliance|soundtoys|fabfilter|izotope|ozone|neutron|nectar|rx|insight|tonal|balance|music|rebalance|dialogue|match|de|noise|de|clip|de|click|de|crackle|de|hum|de|rustle|de|wind|spectral|repair|composite|view|advanced|healing|connect|portal|exponential|audio|cedar|sonnox|oxford|inflator|limiter|enhancer|eq|dynamics|reverb|transmod|fraunhofer|pro|codec|toolbox|surcode|dvd|dts|ac3|dolby|atmos|truehd|dtsma|pcm|flac|alac|aac|mp3|ogg|vorbis|opus|speex|gsm|amr|g711|g722|g726|g729|ilbc|silk|celt|wma|ra|rm|au|aiff|wav|bwf|rf64|caf|m4a|m4b|m4p|m4r|3gp|3g2|amv|asf|avi|drc|dv|f4v|flv|gif|gifv|m2v|m4v|mkv|mng|mov|mp2|mp4|mpe|mpeg|mpg|mpv|mxf|nsv|ogv|qt|rm|rmvb|roq|svi|vob|webm|wmv|yuv|divx|xvid|h264|h265|hevc|vp8|vp9|av1|theora|dirac|prores|dnxhd|cineform|blackmagic|raw|braw|r3d|arriraw|cinema|dng|exr|dpx|tiff|tga|bmp|jpg|jpeg|png|gif|webp|svg|eps|pdf|ps|ai|cdr|wmf|emf|cgm|dxf|dwg|step|iges|stl|obj|ply|x3d|collada|fbx|3ds|max|maya|blender|cinema4d|houdini|modo|lightwave|softimage|xsi|katana|nuke|fusion|resolve|premiere|avid|final|cut|pro|x|imovie|quicktime|vlc|media|player|classic|mpc|hc|be|potplayer|kmplayer|gom|player|smplayer|mpv|mplayer|xine|totem|banshee|rhythmbox|amarok|clementine|strawberry|foobar2000|winamp|musicbee|aimp|mediamonkey|jriver|plex|kodi|emby|jellyfin|serviio|universal|media|server|twonky|asset|upnp|dlna|chromecast|airplay|miracast|widi|intel|wireless|display|nvidia|shield|apple|tv|roku|fire|stick|android|tv|smart|tv|samsung|lg|sony|panasonic|philips|tcl|hisense|vizio|insignia|toshiba|sharp|jvc|mitsubishi|pioneer|onkyo|denon|marantz|yamaha|harman|kardon|bose|sonos|klipsch|polk|audio|definitive|technology|martin|logan|magnepan|wilson|audio|focal|kef|bowers|wilkins|paradigm|psa|svs|hsu|research|rythmik|audio|rel|acoustics|velodyne|jl|audio|rockford|fosgate|alpine|kenwood|pioneer|clarion|sony|jvc|panasonic|blaupunkt|continental|bosch|delphi|visteon|harman|becker|grundig|telefunken|nordmende|saba|loewe|metz|bang|olufsen|meridian|arcam|cambridge|audio|creek|cyrus|exposure|rega|naim|linn|chord|electronics|musical|fidelity|rotel|parasound|bryston|classe|audio|research|conrad|johnson|mcintosh|mark|levinson|krell|pass|labs|boulder|amplifiers|wilson|benesch|vandersteen|thiel|revel|infinity|jbl|synthesis|lexicon|proceed|madrigal|cello|spectral|mit|transparent|audioquest|kimber|kable|nordost|cardas|analysis|plus|purist|audio|design|siltech|crystal|cable|synergistic|research|shunyata|power|conditioning|ps|audio|furman|monster|panamax|tripp|lite|apc|cyberpower|eaton|liebert|emerson|network|power|vertiv|schneider|electric|legrand|wiremold|panduit|black|box|belkin|linksys|netgear|dlink|tplink|asus|cisco|juniper|hp|dell|lenovo|ibm|oracle|sun|microsystems|sgi|cray|fujitsu|nec|hitachi|toshiba|mitsubishi|panasonic|sharp|casio|citizen|seiko|epson|canon|nikon|sony|olympus|pentax|ricoh|fujifilm|kodak|polaroid|leica|hasselblad|mamiya|contax|bronica|rollei|voigtlander|zeiss|schneider|kreuznach|rodenstock|cooke|angenieux|fujinon|sigma|tamron|tokina|samyang|rokinon|bower|vivitar|quantaray|promaster|tiffen|hoya|b+w|heliopan|marumi|kenko|cokin|lee|filters|formatt|hitech|singh|ray|breakthrough|photography|polar|pro|nisi|haida|kase|wine|country|benro|gitzo|manfrotto|really|right|stuff|kirk|enterprises|arca|swiss|wimberley|jobu|design|promedia|gear|think|tank|photo|lowepro|billingham|ona|bags|peak|design|f|stop|gear|mindshift|tenba|domke|crumpler|kata|vanguard|gura|gear|pelican|storm|cases|b+h|adorama|amazon|best|buy|walmart|target|costco|sams|club|newegg|micro|center|fry|electronics|tiger|direct|provantage|cdw|insight|connection|zones|pc|mall|tech|data|systems|synnex|ingram|tech|arrow|electronics|avnet|mouser|digikey|newark|element14|rs|components|allied|electronics|future|electronics|quest|components|chip|one|stop|findchips|octopart|datasheets|alldatasheet|electronic|components|distributor|supplier|manufacturer|oem|odm|ems|pcb|assembly|smt|through|hole|bga|qfp|soic|ssop|tssop|msop|dfn|qfn|wlcsp|flip|chip|wire|bond|die|attach|encapsulation|molding|test|burn|programming|functional|boundary|scan|jtag|spi|i2c|uart|usb|ethernet|can|lin|flexray|most|lvds|mipi|csi|dsi|hdmi|displayport|thunderbolt|pcie|sata|sas|scsi|fc|infiniband|roce|iwarp|omnipath|nvlink|ccix|cxl|gen|z|ddr|gddr|hbm|lpddr|nand|nor|flash|eeprom|fram|mram|rram|pcm|3d|xpoint|optane|nvdimm|dimm|sodimm|udimm|rdimm|lrdimm|fbdimm|simm|sipp|dip|sip|zip|plcc|pga|bga|csp|sop|tsop|vsop|ssop|tssop|msop|soic|sol|qfp|lqfp|tqfp|pqfp|bqfp|cqfp|mqfp|sqfp|dfn|qfn|mlf|son|wson|uson|xson|dson|lfcsp|wlcsp|fcbga|pbga|cbga|ccga|lccc|plcc|clcc|cerquad|cerdip|pdip|sdip|shrink|dip|skinny|dip|zip|pga|cpga|fcpga|ppga|spga|bga|pbga|cbga|fcbga|tbga|fbga|lbga|mbga|sbga|ubga|csp|wlcsp|fcsp|lga|land|grid|array|socket|slot|connector|header|receptacle|plug|jack|terminal|block|barrier|strip|wire|to|board|board|to|board|cable|assembly|harness|ribbon|flat|flex|ffc|fpc|coaxial|twinax|triax|twisted|pair|shielded|unshielded|cat5|cat5e|cat6|cat6a|cat7|cat8|fiber|optic|single|mode|multi|mode|om1|om2|om3|om4|om5|os1|os2|lc|sc|st|fc|mtp|mpo|e2000|mu|mt|rj|din|xlr|bnc|sma|smb|smc|mmcx|mcx|u|fl|ipex|hirose|jst|molex|te|connectivity|tyco|amp|deutsch|itt|cannon|amphenol|souriau|glenair|radiall|rosenberger|huber|suhner|times|microwave|southwest|microwave|pasternack|fairview|microwave|mini|circuits|analog|devices|texas|instruments|infineon|stmicroelectronics|nxp|semiconductors|renesas|microchip|technology|maxim|integrated|linear|technology|analog|devices|intersil|idt|integrated|device|technology|cypress|semiconductor|lattice|semiconductor|microsemi|actel|altera|xilinx|intel|psg|programmable|solutions|group|amd|xilinx|zynq|ultrascale|kintex|virtex|artix|spartan|cyclone|arria|stratix|max|ecp5|machxo|crosslink|fpga|cpld|soc|mpsoc|rfsoc|acap|versal|zynq|mpsoc|ultrascale|plus|kintex|ultrascale|virtex|ultrascale|zynq|7000|series|spartan|6|cyclone|v|arria|10|stratix|10|agilex|7|series|ultrascale|plus|versal|acap|adaptive|compute|acceleration|platform|ai|engine|dsp|slice|block|ram|bram|uram|distributed|ram|shift|register|lut|lookup|table|carry|chain|dsp48|dsp58|multiplier|accumulator|mac|fir|filter|iir|filter|fft|dft|cordic|floating|point|fixed|point|arithmetic|logic|unit|alu|processor|core|arm|cortex|a|r|m|series|risc|v|mips|powerpc|x86|intel|atom|core|xeon|pentium|celeron|amd|ryzen|threadripper|epyc|athlon|a|series|fx|series|phenom|opteron|nvidia|geforce|rtx|gtx|titan|quadro|tesla|a100|v100|p100|k80|m40|m60|gtx|1080|1070|1060|1050|rtx|2080|2070|2060|rtx|3090|3080|3070|3060|rtx|4090|4080|4070|4060|radeon|rx|vega|navi|rdna|rdna2|rdna3|gcn|polaris|fiji|hawaii|tahiti|pitcairn|cape|verde|bonaire|oland|hainan|tonga|antigua|grenada|ellesmere|baffin|lexa|vega|10|vega|20|navi|10|navi|14|navi|21|navi|22|navi|23|navi|24|big|navi|small|navi|sienna|cichlid|navy|flounder|dimgrey|cavefish|beige|goby|yellow|carp|navi|31|navi|32|navi|33|plum|bonito|wheat|nas|raphael|rembrandt|barcelo|cezanne|renoir|picasso|raven|ridge|bristol|ridge|carrizo|kaveri|richland|trinity|llano|brazos|ontario|zacate|bobcat|jaguar|puma|excavator|steamroller|piledriver|bulldozer|k10|k8|k7|k6|k5|am4|am3|am2|fm2|fm1|s1|s1g4|s1g3|s1g2|s1g1|asb2|asa|tr4|trx40|sp3|sp4|sp5|lga|1151|1150|1155|1156|1366|2011|2066|3647|4189|bga|1440|1515|1356|1364|1168|956|827|479|478|423|370|socket|a|b|c|d|e|f|g|h|j|k|l|m|n|p|q|r|s|t|u|v|w|x|y|z|0|1|2|3|4|5|6|7|8|9)\b',  # 常见域名
+        ]
+        
         # 邮箱正则表达式
         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
         
-        # 替换URL和邮箱
-        translated_text = re.sub(url_pattern, '', translated_text)
-        translated_text = re.sub(email_pattern, '', translated_text)
-        # 删除可能存在的多余空行
-        translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)
+        # 社交媒体账号引用
+        social_patterns = [
+            r'@[A-Za-z0-9_]+',     # @用户名
+            r'#[A-Za-z0-9_]+',     # #标签
+        ]
         
-        logger.info("已过滤URL和邮箱地址")
+        # 平台互动提示词（中英文）
+        interaction_patterns = [
+            r'订阅[我们的]*[频道]*',
+            r'关注[我们]*',
+            r'点赞[这个]*[视频]*',
+            r'分享[给]*[朋友们]*',
+            r'评论[区]*[见]*',
+            r'更多[内容]*请访问',
+            r'详情见[链接]*',
+            r'链接在[描述]*[中]*',
+            r'访问[我们的]*[网站]*',
+            r'查看[完整]*[版本]*',
+            r'下载[链接]*',
+            r'购买[链接]*',
+            r'subscribe\s+to\s+[our\s]*channel',
+            r'follow\s+[us\s]*',
+            r'like\s+[this\s]*video',
+            r'share\s+[with\s]*[friends\s]*',
+            r'check\s+out\s+[our\s]*[website\s]*',
+            r'visit\s+[our\s]*[site\s]*',
+            r'download\s+[link\s]*',
+            r'buy\s+[link\s]*',
+            r'more\s+info\s+at',
+            r'see\s+[full\s]*[version\s]*',
+        ]
+        
+        # 应用所有URL模式
+        for pattern in url_patterns:
+            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+        
+        # 应用邮箱过滤
+        translated_text = re.sub(email_pattern, '', translated_text)
+        
+        # 应用社交媒体过滤
+        for pattern in social_patterns:
+            translated_text = re.sub(pattern, '', translated_text)
+        
+        # 应用互动提示过滤
+        for pattern in interaction_patterns:
+            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+        
+        # 最终清理：再次确保移除任何残留的说明性文字
+        final_cleanup_patterns = [
+            r'（.*?已.*?除.*?）',               # 匹配"已...除"模式
+            r'\(.*?已.*?除.*?\)',               # 英文括号版本
+            r'（.*?contact.*?）',               # 联系相关
+            r'\(.*?contact.*?\)',               # 英文括号联系相关
+        ]
+        
+        for pattern in final_cleanup_patterns:
+            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+        
+        # 清理多余的空白字符
+        translated_text = re.sub(r'\s+', ' ', translated_text)  # 多个空格合并为一个
+        translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)  # 多个换行合并
+        translated_text = translated_text.strip()  # 去除首尾空白
+        
+        logger.info("已过滤URL、域名、邮箱地址和社交媒体引用")
         
         # 处理字符限制
         if task_id and "title" in task_id.lower():

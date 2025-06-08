@@ -12,10 +12,11 @@ import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
-
+from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.executors.pool import ThreadPoolExecutor
+import queue
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -376,6 +377,15 @@ def delete_task_files(task_id):
 
     return True
 
+# 全局上传队列锁
+upload_queue_lock = threading.Lock()
+upload_semaphore = None
+
+def init_upload_semaphore(max_concurrent_uploads=1):
+    """初始化上传信号量"""
+    global upload_semaphore
+    upload_semaphore = threading.Semaphore(max_concurrent_uploads)
+
 # 任务处理逻辑
 class TaskProcessor:
     """任务处理器，负责任务的执行和状态管理"""
@@ -388,17 +398,25 @@ class TaskProcessor:
             config: 配置字典，包含各种API的配置信息
         """
         self.config = config or {}
+        
+        # 获取并发配置
+        max_concurrent_tasks = self.config.get('MAX_CONCURRENT_TASKS', 3)
+        max_concurrent_uploads = self.config.get('MAX_CONCURRENT_UPLOADS', 1)
+        
+        # 初始化上传信号量
+        init_upload_semaphore(max_concurrent_uploads)
+        
         self.scheduler = BackgroundScheduler(
             executors={
-                'default': ThreadPoolExecutor(max_workers=3)
+                'default': ThreadPoolExecutor(max_workers=max_concurrent_tasks)
             },
             job_defaults={
                 'coalesce': False,
-                'max_instances': 3
+                'max_instances': max_concurrent_tasks
             }
         )
         self.scheduler.start()
-        logger.info("任务处理器初始化完成")
+        logger.info(f"任务处理器初始化完成 - 最大并发任务: {max_concurrent_tasks}, 最大并发上传: {max_concurrent_uploads}")
     
     def shutdown(self):
         """安全关闭调度器"""
@@ -1218,7 +1236,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
     
     def _upload_to_acfun(self, task_id, task_logger):
-        """上传到AcFun"""
+        """上传到AcFun - 带并发控制"""
         from modules.acfun_uploader import AcfunUploader
         
         task = get_task(task_id)
@@ -1226,7 +1244,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.error("任务不存在")
             return
         
-        task_logger.info("开始上传到AcFun")
+        # 使用信号量控制并发上传
+        global upload_semaphore
+        if upload_semaphore is None:
+            task_logger.warning("上传信号量未初始化，使用默认值")
+            init_upload_semaphore(1)
+        
+        task_logger.info("等待获取上传锁...")
+        with upload_semaphore:
+            task_logger.info("获得上传锁，开始上传到AcFun")
+            self._do_upload_to_acfun(task_id, task_logger)
+            task_logger.info("释放上传锁")
+    
+    def _do_upload_to_acfun(self, task_id, task_logger):
+        """实际执行上传到AcFun的逻辑"""
+        from modules.acfun_uploader import AcfunUploader
+        
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在")
+            return
+        
         update_task(task_id, status=TASK_STATES['UPLOADING'])
         
         # 获取任务信息
@@ -1268,6 +1306,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.info("字幕已翻译，跳过字幕翻译步骤")
         else:
             task_logger.info("字幕翻译功能未启用，跳过字幕翻译步骤")
+        
+        # 字幕翻译完成后，重新设置状态为上传中
+        update_task(task_id, status=TASK_STATES['UPLOADING'])
         
         # 解析标签
         tags = []
@@ -1398,8 +1439,8 @@ def start_task(task_id, config=None):
             logger.warning("无法从Flask应用获取配置，使用空配置")
             config = {}
     
-    # 创建任务处理器
-    processor = TaskProcessor(config)
+    # 使用全局任务处理器，确保并发控制生效
+    processor = get_global_task_processor(config)
     
     # 调度任务
     job_id = processor.schedule_task(task_id)
@@ -1440,8 +1481,8 @@ def force_upload_task(task_id, config=None):
             logger.warning("无法从Flask应用获取配置，使用空配置")
             config = {}
     
-    # 创建任务处理器
-    processor = TaskProcessor(config)
+    # 使用全局任务处理器，确保并发控制生效
+    processor = get_global_task_processor(config)
     
     # 创建任务日志记录器
     task_logger = setup_task_logger(task_id)
@@ -1456,6 +1497,40 @@ def force_upload_task(task_id, config=None):
         task_logger.error(traceback.format_exc())
         update_task(task_id, error_message=f"强制上传失败: {str(e)}")
         return False
+
+# 全局任务处理器实例
+_global_task_processor = None
+
+def get_global_task_processor(config=None):
+    """
+    获取全局任务处理器实例，确保并发控制生效
+    
+    Args:
+        config: 配置信息
+        
+    Returns:
+        TaskProcessor: 全局任务处理器实例
+    """
+    global _global_task_processor
+    
+    if _global_task_processor is None:
+        logger.info("创建全局任务处理器实例")
+        _global_task_processor = TaskProcessor(config)
+    elif config and config != _global_task_processor.config:
+        # 如果配置发生变化，重新创建处理器
+        logger.info("配置已更新，重新创建全局任务处理器实例")
+        _global_task_processor.shutdown()
+        _global_task_processor = TaskProcessor(config)
+    
+    return _global_task_processor
+
+def shutdown_global_task_processor():
+    """关闭全局任务处理器"""
+    global _global_task_processor
+    if _global_task_processor:
+        _global_task_processor.shutdown()
+        _global_task_processor = None
+        logger.info("全局任务处理器已关闭")
 
 # 初始化数据库
 init_db() 

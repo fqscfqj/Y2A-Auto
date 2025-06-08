@@ -12,9 +12,47 @@ from googleapiclient.errors import HttpError
 import threading
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
+from logging.handlers import RotatingFileHandler
 from modules.task_manager import add_task
 
-logger = logging.getLogger('Y2A-Auto.YouTube-Monitor')
+def setup_youtube_monitor_logger():
+    """设置YouTube监控专用日志"""
+    logger = logging.getLogger('Y2A-Auto.YouTube-Monitor')
+    
+    # 如果已经设置过处理器，直接返回
+    if logger.handlers:
+        return logger
+    
+    logger.setLevel(logging.INFO)
+    
+    # 创建logs目录
+    logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # 文件处理器 - 使用轮转日志
+    log_file = os.path.join(logs_dir, 'youtube_monitor.log')
+    file_handler = RotatingFileHandler(
+        log_file, 
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    file_handler.setLevel(logging.INFO)
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_formatter = logging.Formatter('%(asctime)s - YouTube监控 - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+logger = setup_youtube_monitor_logger()
 
 class YouTubeMonitor:
     def __init__(self, api_key=None):
@@ -29,6 +67,9 @@ class YouTubeMonitor:
         """初始化数据库"""
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
+        # 检查数据库是否为新建
+        is_new_database = not os.path.exists(self.db_path)
+        
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -42,7 +83,7 @@ class YouTubeMonitor:
                     category_id TEXT DEFAULT '0',
                     time_period INTEGER DEFAULT 7,
                     max_results INTEGER DEFAULT 10,
-                    min_view_count INTEGER DEFAULT 1000,
+                    min_view_count INTEGER DEFAULT 0,
                     min_like_count INTEGER DEFAULT 0,
                     min_comment_count INTEGER DEFAULT 0,
                     keywords TEXT DEFAULT '',
@@ -52,10 +93,10 @@ class YouTubeMonitor:
                     min_duration INTEGER DEFAULT 0,
                     max_duration INTEGER DEFAULT 0,
                     schedule_type TEXT DEFAULT 'manual',
-                    schedule_interval INTEGER DEFAULT 60,
+                    schedule_interval INTEGER DEFAULT 120,
                     order_by TEXT DEFAULT 'viewCount',
                     start_date TEXT DEFAULT '',
-                    rate_limit_requests INTEGER DEFAULT 100,
+                    rate_limit_requests INTEGER DEFAULT 20,
                     rate_limit_window INTEGER DEFAULT 60,
                     last_run_time TEXT,
                     created_time TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -89,6 +130,49 @@ class YouTubeMonitor:
             except sqlite3.OperationalError:
                 pass
             
+            # 添加新的监控类型字段
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN monitor_type TEXT DEFAULT 'youtube_search'")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN channel_mode TEXT DEFAULT 'latest'")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN channel_keywords TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN end_date TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN latest_days INTEGER DEFAULT 7")
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN latest_max_results INTEGER DEFAULT 20")
+            except sqlite3.OperationalError:
+                pass
+            
+            # 添加历史搬运进度记录字段
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN historical_progress_date TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            
+            # 添加当前时间段处理偏移量字段
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN historical_offset INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            
             # 监控历史表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS monitor_history (
@@ -109,6 +193,211 @@ class YouTubeMonitor:
             ''')
             
             conn.commit()
+        
+        # 如果是新数据库或表为空，尝试从配置文件恢复
+        self._restore_configs_from_files()
+    
+    def _restore_configs_from_files(self):
+        """从配置文件恢复监控配置到数据库"""
+        try:
+            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            
+            if not os.path.exists(config_dir):
+                logger.info("配置文件目录不存在，跳过恢复")
+                return
+            
+            # 检查数据库中是否已有配置
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM monitor_configs')
+                existing_count = cursor.fetchone()[0]
+                
+                if existing_count > 0:
+                    logger.info(f"数据库中已有 {existing_count} 个配置，跳过恢复")
+                    return
+            
+            # 扫描配置文件
+            config_files = []
+            for filename in os.listdir(config_dir):
+                if filename.startswith('monitor_config_') and filename.endswith('.json'):
+                    config_files.append(filename)
+            
+            if not config_files:
+                logger.info("未找到配置文件，跳过恢复")
+                return
+            
+            logger.info(f"发现 {len(config_files)} 个配置文件，开始恢复到数据库")
+            
+            restored_count = 0
+            for filename in sorted(config_files):
+                try:
+                    config_file_path = os.path.join(config_dir, filename)
+                    with open(config_file_path, 'r', encoding='utf-8') as f:
+                        config_data = json.load(f)
+                    
+                    # 提取配置ID
+                    original_config_id = config_data.get('config_id')
+                    if not original_config_id:
+                        logger.warning(f"配置文件 {filename} 缺少config_id，跳过")
+                        continue
+                    
+                    # 移除不需要插入数据库的字段
+                    config_data.pop('config_id', None)
+                    config_data.pop('created_time', None)
+                    
+                    # 恢复到数据库，保持原有ID
+                    restored_id = self._restore_single_config(config_data, original_config_id)
+                    if restored_id:
+                        restored_count += 1
+                        logger.info(f"恢复配置: {config_data.get('name', '未命名')} (ID: {original_config_id} -> {restored_id})")
+                    
+                except Exception as e:
+                    logger.error(f"恢复配置文件 {filename} 失败: {str(e)}")
+                    continue
+            
+            if restored_count > 0:
+                logger.info(f"成功恢复 {restored_count} 个监控配置")
+                
+                # 启动已启用的自动调度配置
+                self._restart_restored_schedules()
+            else:
+                logger.warning("没有成功恢复任何配置")
+                
+        except Exception as e:
+            logger.error(f"从配置文件恢复失败: {str(e)}")
+    
+    def _restore_single_config(self, config_data, target_id):
+        """恢复单个配置到数据库，尝试保持原有ID"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 检查目标ID是否可用
+                cursor.execute('SELECT id FROM monitor_configs WHERE id = ?', (target_id,))
+                if cursor.fetchone():
+                    logger.warning(f"ID {target_id} 已存在，使用自动分配的ID")
+                    target_id = None
+                
+                if target_id:
+                    # 尝试使用指定的ID
+                    cursor.execute('''
+                        INSERT INTO monitor_configs (
+                            id, name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
+                            min_view_count, min_like_count, min_comment_count, keywords,
+                            exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
+                            min_duration, max_duration, schedule_type, schedule_interval,
+                            order_by, start_date, end_date, latest_days, latest_max_results,
+                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        target_id,
+                        config_data.get('name'),
+                        config_data.get('enabled', True),
+                        config_data.get('monitor_type', 'youtube_search'),
+                        config_data.get('channel_mode', 'latest'),
+                        config_data.get('region_code', 'US'),
+                        config_data.get('category_id', '0'),
+                        config_data.get('time_period', 7),
+                        config_data.get('max_results', 10),
+                        config_data.get('min_view_count', 0),
+                        config_data.get('min_like_count', 0),
+                        config_data.get('min_comment_count', 0),
+                        config_data.get('keywords', ''),
+                        config_data.get('exclude_keywords', ''),
+                        config_data.get('channel_ids', ''),
+                        config_data.get('channel_keywords', ''),
+                        config_data.get('exclude_channel_ids', ''),
+                        config_data.get('min_duration', 0),
+                        config_data.get('max_duration', 0),
+                        config_data.get('schedule_type', 'manual'),
+                        config_data.get('schedule_interval', 120),
+                        config_data.get('order_by', 'viewCount'),
+                        config_data.get('start_date', ''),
+                        config_data.get('end_date', ''),
+                        config_data.get('latest_days', 7),
+                        config_data.get('latest_max_results', 20),
+                        config_data.get('rate_limit_requests', 100),
+                        config_data.get('rate_limit_window', 60),
+                        config_data.get('auto_add_to_tasks', False),
+                        config_data.get('historical_progress_date', ''),
+                        config_data.get('historical_offset', 0)
+                    ))
+                    
+                    # 使用指定的ID
+                    config_id = target_id
+                else:
+                    # 使用自动分配的ID
+                    cursor.execute('''
+                        INSERT INTO monitor_configs (
+                            name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
+                            min_view_count, min_like_count, min_comment_count, keywords,
+                            exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
+                            min_duration, max_duration, schedule_type, schedule_interval,
+                            order_by, start_date, end_date, latest_days, latest_max_results,
+                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        config_data.get('name'),
+                        config_data.get('enabled', True),
+                        config_data.get('monitor_type', 'youtube_search'),
+                        config_data.get('channel_mode', 'latest'),
+                        config_data.get('region_code', 'US'),
+                        config_data.get('category_id', '0'),
+                        config_data.get('time_period', 7),
+                        config_data.get('max_results', 10),
+                        config_data.get('min_view_count', 0),
+                        config_data.get('min_like_count', 0),
+                        config_data.get('min_comment_count', 0),
+                        config_data.get('keywords', ''),
+                        config_data.get('exclude_keywords', ''),
+                        config_data.get('channel_ids', ''),
+                        config_data.get('channel_keywords', ''),
+                        config_data.get('exclude_channel_ids', ''),
+                        config_data.get('min_duration', 0),
+                        config_data.get('max_duration', 0),
+                        config_data.get('schedule_type', 'manual'),
+                        config_data.get('schedule_interval', 60),
+                        config_data.get('order_by', 'viewCount'),
+                        config_data.get('start_date', ''),
+                        config_data.get('end_date', ''),
+                        config_data.get('latest_days', 7),
+                        config_data.get('latest_max_results', 20),
+                        config_data.get('rate_limit_requests', 100),
+                        config_data.get('rate_limit_window', 60),
+                        config_data.get('auto_add_to_tasks', False),
+                        config_data.get('historical_progress_date', ''),
+                        config_data.get('historical_offset', 0)
+                    ))
+                    
+                    config_id = cursor.lastrowid
+                
+                conn.commit()
+                return config_id
+                
+        except Exception as e:
+            logger.error(f"恢复单个配置失败: {str(e)}")
+            return None
+    
+    def _restart_restored_schedules(self):
+        """重新启动已恢复配置的自动调度"""
+        try:
+            configs = self.get_monitor_configs()
+            restored_schedules = 0
+            
+            for config in configs:
+                if config['enabled'] and config['schedule_type'] == 'auto':
+                    self._schedule_monitor(config['id'], config['schedule_interval'])
+                    restored_schedules += 1
+            
+            if restored_schedules > 0:
+                logger.info(f"重新启动了 {restored_schedules} 个自动调度任务")
+                
+                # 启动调度器
+                if not self.scheduler.running:
+                    self.scheduler.start()
+                    
+        except Exception as e:
+            logger.error(f"重新启动调度任务失败: {str(e)}")
     
     def _init_youtube_api(self):
         """初始化YouTube API"""
@@ -127,53 +416,72 @@ class YouTubeMonitor:
     
     def create_monitor_config(self, config_data):
         """创建监控配置"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO monitor_configs (
-                    name, enabled, region_code, category_id, time_period, max_results,
-                    min_view_count, min_like_count, min_comment_count, keywords,
-                    exclude_keywords, channel_ids, exclude_channel_ids,
-                    min_duration, max_duration, schedule_type, schedule_interval,
-                    order_by, start_date, rate_limit_requests, rate_limit_window, auto_add_to_tasks
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                config_data.get('name'),
-                config_data.get('enabled', True),
-                config_data.get('region_code', 'US'),
-                config_data.get('category_id', '0'),
-                config_data.get('time_period', 7),
-                config_data.get('max_results', 10),
-                config_data.get('min_view_count', 1000),
-                config_data.get('min_like_count', 0),
-                config_data.get('min_comment_count', 0),
-                config_data.get('keywords', ''),
-                config_data.get('exclude_keywords', ''),
-                config_data.get('channel_ids', ''),
-                config_data.get('exclude_channel_ids', ''),
-                config_data.get('min_duration', 0),
-                config_data.get('max_duration', 0),
-                config_data.get('schedule_type', 'manual'),
-                config_data.get('schedule_interval', 60),
-                config_data.get('order_by', 'viewCount'),
-                config_data.get('start_date', ''),
-                config_data.get('rate_limit_requests', 100),
-                config_data.get('rate_limit_window', 60),
-                config_data.get('auto_add_to_tasks', False)
-            ))
-            
-            config_id = cursor.lastrowid
-            conn.commit()
-            
-            # 保存配置到文件
-            self._save_config_to_file(config_id, config_data)
-            
-            # 如果是自动调度，添加到调度器
-            if config_data.get('schedule_type') == 'auto':
-                self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
-            
-            return config_id
+        logger.info(f"开始创建监控配置: {config_data.get('name', '未命名')}")
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    INSERT INTO monitor_configs (
+                        name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
+                        min_view_count, min_like_count, min_comment_count, keywords,
+                        exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
+                        min_duration, max_duration, schedule_type, schedule_interval,
+                        order_by, start_date, end_date, latest_days, latest_max_results,
+                        rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    config_data.get('name'),
+                    config_data.get('enabled', True),
+                    config_data.get('monitor_type', 'youtube_search'),
+                    config_data.get('channel_mode', 'latest'),
+                    config_data.get('region_code', 'US'),
+                    config_data.get('category_id', '0'),
+                    config_data.get('time_period', 7),
+                    config_data.get('max_results', 10),
+                    config_data.get('min_view_count', 0),
+                    config_data.get('min_like_count', 0),
+                    config_data.get('min_comment_count', 0),
+                    config_data.get('keywords', ''),
+                    config_data.get('exclude_keywords', ''),
+                    config_data.get('channel_ids', ''),
+                    config_data.get('channel_keywords', ''),
+                    config_data.get('exclude_channel_ids', ''),
+                    config_data.get('min_duration', 0),
+                    config_data.get('max_duration', 0),
+                    config_data.get('schedule_type', 'manual'),
+                    config_data.get('schedule_interval', 120),
+                    config_data.get('order_by', 'viewCount'),
+                    config_data.get('start_date', ''),
+                    config_data.get('end_date', ''),
+                    config_data.get('latest_days', 7),
+                    config_data.get('latest_max_results', 20),
+                    config_data.get('rate_limit_requests', 100),
+                    config_data.get('rate_limit_window', 60),
+                    config_data.get('auto_add_to_tasks', False),
+                    config_data.get('historical_progress_date', ''),
+                    config_data.get('historical_offset', 0)
+                ))
+                
+                config_id = cursor.lastrowid
+                conn.commit()
+                
+                logger.info(f"监控配置已创建，ID: {config_id}, 名称: {config_data.get('name')}")
+                
+                # 保存配置到文件
+                self._save_config_to_file(config_id, config_data)
+                
+                # 如果是自动调度，添加到调度器
+                if config_data.get('schedule_type') == 'auto':
+                    logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 60)}分钟")
+                    self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
+                
+                return config_id
+                
+        except Exception as e:
+            logger.error(f"创建监控配置失败: {str(e)}")
+            raise
     
     def _save_config_to_file(self, config_id, config_data):
         """保存配置到文件"""
@@ -248,70 +556,109 @@ class YouTubeMonitor:
     
     def update_monitor_config(self, config_id, config_data):
         """更新监控配置"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                UPDATE monitor_configs SET
-                    name = ?, enabled = ?, region_code = ?, category_id = ?,
-                    time_period = ?, max_results = ?, min_view_count = ?,
-                    min_like_count = ?, min_comment_count = ?, keywords = ?,
-                    exclude_keywords = ?, channel_ids = ?, exclude_channel_ids = ?,
-                    min_duration = ?, max_duration = ?, schedule_type = ?,
-                    schedule_interval = ?, order_by = ?, start_date = ?,
-                    rate_limit_requests = ?, rate_limit_window = ?, auto_add_to_tasks = ?,
-                    updated_time = CURRENT_TIMESTAMP
-                WHERE id = ?
-            ''', (
-                config_data.get('name'),
-                config_data.get('enabled', True),
-                config_data.get('region_code', 'US'),
-                config_data.get('category_id', '0'),
-                config_data.get('time_period', 7),
-                config_data.get('max_results', 10),
-                config_data.get('min_view_count', 1000),
-                config_data.get('min_like_count', 0),
-                config_data.get('min_comment_count', 0),
-                config_data.get('keywords', ''),
-                config_data.get('exclude_keywords', ''),
-                config_data.get('channel_ids', ''),
-                config_data.get('exclude_channel_ids', ''),
-                config_data.get('min_duration', 0),
-                config_data.get('max_duration', 0),
-                config_data.get('schedule_type', 'manual'),
-                config_data.get('schedule_interval', 60),
-                config_data.get('order_by', 'viewCount'),
-                config_data.get('start_date', ''),
-                config_data.get('rate_limit_requests', 100),
-                config_data.get('rate_limit_window', 60),
-                config_data.get('auto_add_to_tasks', False),
-                config_id
-            ))
-            
-            conn.commit()
-            
-            # 保存配置到文件
-            self._save_config_to_file(config_id, config_data)
-            
-            # 更新调度
-            self._update_schedule(config_id, config_data)
+        logger.info(f"开始更新监控配置，ID: {config_id}, 名称: {config_data.get('name', '未命名')}")
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    UPDATE monitor_configs SET
+                        name = ?, enabled = ?, monitor_type = ?, channel_mode = ?, region_code = ?, category_id = ?,
+                        time_period = ?, max_results = ?, min_view_count = ?,
+                        min_like_count = ?, min_comment_count = ?, keywords = ?,
+                        exclude_keywords = ?, channel_ids = ?, channel_keywords = ?, exclude_channel_ids = ?,
+                        min_duration = ?, max_duration = ?, schedule_type = ?,
+                        schedule_interval = ?, order_by = ?, start_date = ?, end_date = ?,
+                        latest_days = ?, latest_max_results = ?,
+                        rate_limit_requests = ?, rate_limit_window = ?, auto_add_to_tasks = ?,
+                        historical_progress_date = ?, historical_offset = ?, updated_time = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (
+                    config_data.get('name'),
+                    config_data.get('enabled', True),
+                    config_data.get('monitor_type', 'youtube_search'),
+                    config_data.get('channel_mode', 'latest'),
+                    config_data.get('region_code', 'US'),
+                    config_data.get('category_id', '0'),
+                    config_data.get('time_period', 7),
+                    config_data.get('max_results', 10),
+                    config_data.get('min_view_count', 0),
+                    config_data.get('min_like_count', 0),
+                    config_data.get('min_comment_count', 0),
+                    config_data.get('keywords', ''),
+                    config_data.get('exclude_keywords', ''),
+                    config_data.get('channel_ids', ''),
+                    config_data.get('channel_keywords', ''),
+                    config_data.get('exclude_channel_ids', ''),
+                    config_data.get('min_duration', 0),
+                    config_data.get('max_duration', 0),
+                    config_data.get('schedule_type', 'manual'),
+                    config_data.get('schedule_interval', 120),
+                    config_data.get('order_by', 'viewCount'),
+                    config_data.get('start_date', ''),
+                    config_data.get('end_date', ''),
+                    config_data.get('latest_days', 7),
+                    config_data.get('latest_max_results', 20),
+                    config_data.get('rate_limit_requests', 100),
+                    config_data.get('rate_limit_window', 60),
+                    config_data.get('auto_add_to_tasks', False),
+                    config_data.get('historical_progress_date', ''),
+                    config_data.get('historical_offset', 0),
+                    config_id
+                ))
+                
+                conn.commit()
+                
+                logger.info(f"监控配置已更新: {config_data.get('name')} (ID: {config_id})")
+                
+                # 保存配置到文件
+                self._save_config_to_file(config_id, config_data)
+                
+                # 更新调度
+                logger.info(f"更新调度设置: {config_data.get('schedule_type', 'manual')}")
+                self._update_schedule(config_id, config_data)
+                
+        except Exception as e:
+            logger.error(f"更新监控配置失败，ID: {config_id}, 错误: {str(e)}")
+            raise
     
     def delete_monitor_config(self, config_id):
         """删除监控配置"""
-        # 移除调度
-        self._remove_schedule(config_id)
+        logger.info(f"开始删除监控配置，ID: {config_id}")
         
-        # 删除配置文件
-        self._delete_config_file(config_id)
-        
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM monitor_configs WHERE id = ?', (config_id,))
-            cursor.execute('DELETE FROM monitor_history WHERE config_id = ?', (config_id,))
-            conn.commit()
+        try:
+            # 获取配置信息用于日志
+            config = self.get_monitor_config(config_id)
+            config_name = config['name'] if config else f"ID-{config_id}"
+            
+            # 移除调度
+            self._remove_schedule(config_id)
+            
+            # 删除配置文件
+            self._delete_config_file(config_id)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 获取历史记录数量
+                cursor.execute('SELECT COUNT(*) FROM monitor_history WHERE config_id = ?', (config_id,))
+                history_count = cursor.fetchone()[0]
+                
+                cursor.execute('DELETE FROM monitor_configs WHERE id = ?', (config_id,))
+                cursor.execute('DELETE FROM monitor_history WHERE config_id = ?', (config_id,))
+                conn.commit()
+                
+                logger.info(f"监控配置已删除: {config_name} (ID: {config_id}), 同时删除了 {history_count} 条历史记录")
+                
+        except Exception as e:
+            logger.error(f"删除监控配置失败，ID: {config_id}, 错误: {str(e)}")
+            raise
     
     def run_monitor(self, config_id):
         """执行监控任务"""
+        logger.info(f"开始执行监控任务，配置ID: {config_id}")
+        
         if not self.youtube:
             logger.error("YouTube API未初始化")
             return False, "YouTube API未初始化"
@@ -321,54 +668,132 @@ class YouTubeMonitor:
             logger.error(f"监控配置不存在: {config_id}")
             return False, "监控配置不存在"
         
+        logger.info(f"执行监控配置: {config['name']} (ID: {config_id})")
+        logger.info(f"监控类型: {config.get('monitor_type', 'youtube_search')}, "
+                   f"频道模式: {config.get('channel_mode', 'latest')}")
+        
         try:
-            # 获取热门视频
+            # 获取视频
+            logger.info("开始获取视频数据...")
             videos = self._fetch_trending_videos(config)
+            logger.info(f"获取到 {len(videos)} 个视频")
             
             # 筛选视频
+            logger.info("开始筛选视频...")
             filtered_videos = self._filter_videos(videos, config)
+            logger.info(f"筛选后剩余 {len(filtered_videos)} 个视频")
+            
+            # 历史搬运模式需要考虑偏移量
+            if config.get('channel_mode') == 'historical':
+                current_offset = config.get('historical_offset', 0)
+                if current_offset > 0:
+                    logger.info(f"历史搬运模式，跳过前 {current_offset} 个视频")
+                    filtered_videos = filtered_videos[current_offset:]
+                    logger.info(f"应用偏移量后剩余 {len(filtered_videos)} 个视频")
             
             # 保存到历史记录
             added_count = 0
+            processed_count = 0
             auto_add_enabled = config.get('auto_add_to_tasks', False)
+            
+            # 获取添加到任务队列的数量限制
+            # 所有模式都使用rate_limit_requests来控制每次添加的视频数量
+            max_add_to_tasks = config.get('rate_limit_requests', 20) if auto_add_enabled else 0
+            
+            logger.info(f"开始处理视频，自动添加到任务队列: {'是' if auto_add_enabled else '否'}")
+            if auto_add_enabled:
+                logger.info(f"本次最大添加到任务队列数量: {max_add_to_tasks}")
             
             for video in filtered_videos:
                 # 检查是否已经处理过
                 if not self._is_video_processed(video['id'], config_id):
-                    # 保存到历史记录，如果启用自动添加则直接添加到任务队列
-                    self._save_video_history(video, config_id, auto_add_to_tasks=auto_add_enabled)
+                    # 检查是否还能添加到任务队列
+                    should_add_to_tasks = auto_add_enabled and added_count < max_add_to_tasks
                     
-                    if auto_add_enabled:
+                    # 始终保存到历史记录，但是否添加到任务队列由auto_add_enabled控制
+                    self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                    processed_count += 1
+                    
+                    if should_add_to_tasks:
                         added_count += 1
+                        logger.info(f"视频已添加到任务队列 ({added_count}/{max_add_to_tasks}): {video['title']}")
+                    else:
+                        if auto_add_enabled:
+                            logger.info(f"视频已保存到历史记录: {video['title']}")
+                        else:
+                            logger.info(f"视频已保存到历史记录（未添加到任务队列）: {video['title']}")
+                    
+                    # 如果启用了自动添加且达到上限，跳出循环
+                    if auto_add_enabled and added_count >= max_add_to_tasks:
+                        logger.info(f"已达到本次添加上限 {max_add_to_tasks}，剩余视频将在下次运行时处理")
+                        break
+                else:
+                    logger.debug(f"视频已处理过，跳过: {video['title']}")
             
             # 更新最后运行时间
             self._update_last_run_time(config_id)
             
-            logger.info(f"监控任务完成，共添加 {added_count} 个视频")
-            return True, f"监控完成，添加了 {added_count} 个视频到任务队列"
+            logger.info(f"监控任务完成 - 配置: {config['name']}, "
+                       f"处理新视频: {processed_count}, 添加到任务队列: {added_count}")
+            
+            # 更新历史搬运进度（如果是历史模式）
+            if config.get('channel_mode') == 'historical':
+                # 获取应用偏移量前的完整筛选结果
+                original_filtered = self._filter_videos(videos, config)
+                self._update_historical_progress(config_id, original_filtered, added_count)
+            
+            return True, f"监控完成，处理了 {processed_count} 个新视频，添加了 {added_count} 个到任务队列"
             
         except Exception as e:
-            logger.error(f"监控任务执行失败: {str(e)}")
+            logger.error(f"监控任务执行失败 - 配置: {config['name']} (ID: {config_id}), 错误: {str(e)}")
             return False, f"监控失败: {str(e)}"
     
     def _fetch_trending_videos(self, config):
-        """获取热门视频"""
+        """获取视频"""
         try:
             # 设置时间范围
             published_after = None
-            if config.get('start_date'):
+            published_before = None
+            
+            # 历史搬运模式的智能时间推进
+            if config.get('channel_mode') == 'historical' and config.get('start_date'):
+                published_after, published_before, current_offset = self._get_historical_time_range(config)
+            elif config.get('start_date'):
                 # 如果设置了开始日期，使用开始日期
                 start_date = datetime.strptime(config['start_date'], '%Y-%m-%d')
                 published_after = start_date.isoformat() + 'Z'
+                logger.info(f"使用开始日期: {config['start_date']}")
+                
+                # 检查是否设置了结束日期
+                if config.get('end_date'):
+                    end_date = datetime.strptime(config['end_date'], '%Y-%m-%d')
+                    # 结束日期加一天，确保包含当天的视频
+                    end_date = end_date + timedelta(days=1)
+                    published_before = end_date.isoformat() + 'Z'
+                    logger.info(f"使用结束日期: {config['end_date']}")
             else:
                 # 否则使用时间段
-                published_after = (datetime.now() - timedelta(days=config['time_period'])).isoformat() + 'Z'
+                if config.get('channel_mode') == 'latest':
+                    # 最新跟进模式使用调度间隔的2倍作为时间范围（小时转换为天）
+                    interval_hours = config.get('schedule_interval', 120) / 60 * 2
+                    days = max(1, interval_hours / 24)  # 至少1天
+                else:
+                    # 其他模式使用time_period
+                    days = config.get('time_period', 7)
+                
+                published_after = (datetime.now() - timedelta(days=days)).isoformat() + 'Z'
+                if config.get('channel_mode') == 'latest':
+                    logger.info(f"使用动态时间段: 最近 {days:.1f} 天（基于调度间隔 {config.get('schedule_interval', 120)} 分钟）")
+                else:
+                    logger.info(f"使用时间段: 最近 {days} 天")
             
             # 如果指定了频道，优先使用频道搜索
             if config.get('channel_ids') and config['channel_ids'].strip():
-                return self._fetch_channel_videos(config, published_after)
+                logger.info(f"使用频道监控模式，频道数量: {len([ch.strip() for ch in config['channel_ids'].split(',') if ch.strip()])}")
+                return self._fetch_channel_videos(config, published_after, published_before)
             else:
-                return self._fetch_search_videos(config, published_after)
+                logger.info(f"使用YouTube搜索模式，关键词: {config.get('keywords', '无')}")
+                return self._fetch_search_videos(config, published_after, published_before)
                 
         except HttpError as e:
             logger.error(f"YouTube API错误: {str(e)}")
@@ -377,7 +802,7 @@ class YouTubeMonitor:
             logger.error(f"获取视频数据失败: {str(e)}")
             raise
     
-    def _fetch_search_videos(self, config, published_after):
+    def _fetch_search_videos(self, config, published_after, published_before=None):
         """通过搜索获取视频"""
         # 构建搜索参数
         search_params = {
@@ -388,6 +813,10 @@ class YouTubeMonitor:
             'maxResults': min(config['max_results'] * 2, 50),  # 获取更多结果用于筛选
             'regionCode': config['region_code']
         }
+        
+        # 添加结束日期限制
+        if published_before:
+            search_params['publishedBefore'] = published_before
         
         # 添加关键词搜索
         if config['keywords']:
@@ -413,62 +842,40 @@ class YouTubeMonitor:
         
         return videos_response['items']
     
-    def _fetch_channel_videos(self, config, published_after):
+    def _fetch_channel_videos(self, config, published_after, published_before=None):
         """从指定频道获取视频"""
         all_videos = []
         channel_ids = [ch.strip() for ch in config['channel_ids'].split(',') if ch.strip()]
         
         # 实现请求速率限制
         request_count = 0
-        max_requests = config.get('rate_limit_requests', 100)
-        request_window = config.get('rate_limit_window', 60)
+        max_requests = config.get('rate_limit_requests', 4)
+        # 使用调度间隔作为时间窗口（转换为秒）
+        request_window = config.get('schedule_interval', 60) * 60
         
-        for channel_id in channel_ids:
+        # 根据频道模式调整获取策略
+        channel_mode = config.get('channel_mode', 'latest')
+        logger.info(f"开始处理 {len(channel_ids)} 个频道，模式: {channel_mode}，请求限制: {max_requests}/{config.get('schedule_interval', 60)}分钟")
+        
+        for i, channel_id in enumerate(channel_ids, 1):
             if request_count >= max_requests:
-                logger.warning(f"达到请求限制 {max_requests}/{request_window}秒，跳过剩余频道")
+                logger.warning(f"达到请求限制 {max_requests}/{config.get('schedule_interval', 60)}分钟，跳过剩余 {len(channel_ids) - i + 1} 个频道")
                 break
                 
             try:
-                # 获取频道的上传播放列表ID
-                channel_response = self.youtube.channels().list(
-                    part='contentDetails',
-                    id=channel_id
-                ).execute()
-                request_count += 1
+                logger.info(f"处理频道 {i}/{len(channel_ids)}: {channel_id}")
                 
-                if not channel_response['items']:
-                    logger.warning(f"找不到频道: {channel_id}")
-                    continue
+                if channel_mode == 'search':
+                    # 频道内搜索模式
+                    videos = self._fetch_channel_search_videos(channel_id, config, published_after, published_before)
+                    request_count += 2  # 估算搜索请求数
+                else:
+                    # 历史搬运和最新跟进模式都使用播放列表方式
+                    videos = self._fetch_channel_playlist_videos(channel_id, config, published_after, published_before)
+                    request_count += 3  # 频道信息 + 播放列表 + 视频详情
                 
-                upload_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-                
-                # 获取播放列表中的视频
-                playlist_params = {
-                    'part': 'snippet',
-                    'playlistId': upload_playlist_id,
-                    'maxResults': config['max_results'],
-                    'order': 'date'  # 按日期排序获取最新视频
-                }
-                
-                playlist_response = self.youtube.playlistItems().list(**playlist_params).execute()
-                request_count += 1
-                
-                # 筛选时间范围内的视频
-                video_ids = []
-                for item in playlist_response['items']:
-                    video_published = item['snippet']['publishedAt']
-                    if video_published >= published_after:
-                        video_ids.append(item['snippet']['resourceId']['videoId'])
-                
-                if video_ids:
-                    # 获取视频详细信息
-                    videos_response = self.youtube.videos().list(
-                        part='id,snippet,statistics,contentDetails',
-                        id=','.join(video_ids)
-                    ).execute()
-                    request_count += 1
-                    
-                    all_videos.extend(videos_response['items'])
+                all_videos.extend(videos)
+                logger.info(f"频道 {channel_id} 获取到 {len(videos)} 个视频")
                 
                 # 简单的速率限制
                 if request_count >= max_requests:
@@ -478,7 +885,130 @@ class YouTubeMonitor:
                 logger.error(f"获取频道 {channel_id} 视频失败: {str(e)}")
                 continue
         
+        logger.info(f"频道视频获取完成，总计 {len(all_videos)} 个视频，使用了 {request_count} 个API请求")
         return all_videos
+    
+    def _fetch_channel_search_videos(self, channel_id, config, published_after, published_before=None):
+        """在指定频道内搜索视频"""
+        try:
+            keywords = config.get('channel_keywords', '')
+            if not keywords:
+                logger.warning(f"频道搜索模式但未设置关键词，跳过频道: {channel_id}")
+                return []
+            
+            # 构建搜索参数
+            search_params = {
+                'part': 'id,snippet',
+                'type': 'video',
+                'channelId': channel_id,
+                'q': keywords,
+                'publishedAfter': published_after,
+                'maxResults': config.get('max_results', 10),
+                'order': config.get('order_by', 'relevance')
+            }
+            
+            # 添加结束日期限制
+            if published_before:
+                search_params['publishedBefore'] = published_before
+            
+            logger.info(f"在频道 {channel_id} 内搜索关键词: {keywords}")
+            
+            # 执行搜索
+            search_response = self.youtube.search().list(**search_params).execute()
+            
+            video_ids = [item['id']['videoId'] for item in search_response['items']]
+            
+            if not video_ids:
+                logger.info(f"频道 {channel_id} 搜索无结果")
+                return []
+            
+            # 获取视频详细信息
+            videos_response = self.youtube.videos().list(
+                part='id,snippet,statistics,contentDetails',
+                id=','.join(video_ids)
+            ).execute()
+            
+            return videos_response['items']
+            
+        except Exception as e:
+            logger.error(f"频道搜索失败 {channel_id}: {str(e)}")
+            return []
+    
+    def _fetch_channel_playlist_videos(self, channel_id, config, published_after, published_before=None):
+        """从频道播放列表获取视频"""
+        try:
+            # 获取频道的上传播放列表ID
+            channel_response = self.youtube.channels().list(
+                part='contentDetails',
+                id=channel_id
+            ).execute()
+            
+            if not channel_response['items']:
+                logger.warning(f"找不到频道: {channel_id}")
+                return []
+            
+            upload_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+            logger.debug(f"频道 {channel_id} 上传播放列表ID: {upload_playlist_id}")
+            
+            # 根据频道模式调整获取数量
+            channel_mode = config.get('channel_mode', 'latest')
+            if channel_mode == 'historical':
+                # 历史搬运模式，获取更多视频
+                max_results = min(config.get('max_results', 50), 50)
+            else:
+                # 最新跟进模式
+                max_results = config.get('latest_max_results', 20)
+            
+            # 获取播放列表中的视频
+            playlist_params = {
+                'part': 'snippet',
+                'playlistId': upload_playlist_id,
+                'maxResults': max_results
+                # 注意：playlistItems API不支持order参数，默认按上传时间倒序返回
+            }
+            
+            playlist_response = self.youtube.playlistItems().list(**playlist_params).execute()
+            
+            # 筛选时间范围内的视频
+            video_ids = []
+            for item in playlist_response['items']:
+                video_published = item['snippet']['publishedAt']
+                
+                # 检查开始时间
+                if video_published < published_after:
+                    continue
+                
+                # 检查结束时间
+                if published_before and video_published >= published_before:
+                    continue
+                
+                video_ids.append(item['snippet']['resourceId']['videoId'])
+            
+            logger.info(f"频道 {channel_id} 在时间范围内找到 {len(video_ids)} 个视频")
+            
+            if not video_ids:
+                return []
+            
+            # 获取视频详细信息
+            videos_response = self.youtube.videos().list(
+                part='id,snippet,statistics,contentDetails',
+                id=','.join(video_ids)
+            ).execute()
+            
+            videos = videos_response['items']
+            
+            # 历史搬运模式需要按时间正序排列（从最老到最新）
+            channel_mode = config.get('channel_mode', 'latest')
+            if channel_mode == 'historical':
+                # 按发布时间正序排列（最老的在前）
+                videos.sort(key=lambda x: x['snippet']['publishedAt'])
+                logger.info(f"历史搬运模式：已按时间正序排列视频（从最老到最新）")
+            
+            return videos
+            
+        except Exception as e:
+            logger.error(f"频道播放列表获取失败 {channel_id}: {str(e)}")
+            return []
     
     def _filter_videos(self, videos, config):
         """根据配置筛选视频"""
@@ -619,51 +1149,66 @@ class YouTubeMonitor:
             
             # 如果启用自动添加到任务队列，直接添加
             if auto_add_to_tasks:
-                self._add_video_to_tasks(video_info)
+                task_id = self._add_video_to_tasks(video_info, auto_start=True)
+                if task_id:
+                    # 更新数据库标记为已添加
+                    cursor.execute(
+                        'UPDATE monitor_history SET added_to_tasks = 1 WHERE video_id = ? AND config_id = ?',
+                        (video_info['id'], config_id)
+                    )
     
-    def _add_video_to_tasks(self, video_info):
-        """将视频添加到任务队列并自动启动处理"""
+    def _add_video_to_tasks(self, video_info, auto_start=True):
+        """将视频添加到任务队列"""
         try:
             video_url = f"https://www.youtube.com/watch?v={video_info['id']}"
             task_id = add_task(video_url)
             
             if task_id:
-                logger.info(f"视频已自动添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
+                logger.info(f"视频已添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
                 
-                # 自动启动任务处理
-                try:
-                    from modules.task_manager import start_task
-                    
-                    # 加载配置
-                    import os
-                    import json
-                    config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
-                    config = {}
-                    if os.path.exists(config_file):
-                        with open(config_file, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
-                    
-                    # 启动任务处理
-                    success = start_task(task_id, config)
-                    if success:
-                        logger.info(f"任务已自动启动处理: {task_id}")
-                    else:
-                        logger.warning(f"任务添加成功但启动处理失败: {task_id}")
+                # 是否自动启动任务处理
+                if auto_start:
+                    try:
+                        from modules.task_manager import start_task
                         
-                except Exception as e:
-                    logger.error(f"自动启动任务处理失败: {str(e)}")
+                        # 尝试从Flask应用获取配置
+                        config = {}
+                        try:
+                            from flask import current_app
+                            if hasattr(current_app, 'config') and 'Y2A_SETTINGS' in current_app.config:
+                                config = current_app.config['Y2A_SETTINGS']
+                        except (ImportError, RuntimeError):
+                            # 如果无法从Flask获取，尝试从文件加载
+                            import os
+                            import json
+                            config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
+                            if os.path.exists(config_file):
+                                with open(config_file, 'r', encoding='utf-8') as f:
+                                    config = json.load(f)
+                        
+                        # 启动任务处理
+                        success = start_task(task_id, config)
+                        if success:
+                            logger.info(f"任务已自动启动处理: {task_id}")
+                        else:
+                            logger.warning(f"任务添加成功但启动处理失败: {task_id}")
+                            
+                    except Exception as e:
+                        logger.error(f"自动启动任务处理失败: {str(e)}")
                 
-                return True
+                return task_id  # 返回任务ID而不是布尔值
             else:
                 logger.error("添加任务失败，未返回任务ID")
-                return False
+                return None
                 
         except Exception as e:
             logger.error(f"添加视频到任务队列失败: {str(e)}")
-            return False
+            return None
     
     def add_video_to_tasks_manually(self, video_id, config_id):
         """手动将视频添加到任务队列"""
+        logger.info(f"手动添加视频到任务队列: {video_id}, 配置ID: {config_id}")
+        
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -675,9 +1220,11 @@ class YouTubeMonitor:
             
             row = cursor.fetchone()
             if not row:
+                logger.warning(f"视频不存在: {video_id}, 配置ID: {config_id}")
                 return False, "视频不存在"
             
             if row[8]:  # added_to_tasks
+                logger.warning(f"视频已经添加到任务队列: {row[1]}")
                 return False, "视频已经添加到任务队列"
             
             # 构建视频信息
@@ -692,11 +1239,36 @@ class YouTubeMonitor:
                 'published_at': row[7]
             }
             
-            # 添加到任务队列
-            if self._add_video_to_tasks(video_info):
+            logger.info(f"准备添加视频: {video_info['title']} (频道: {video_info['channel_title']})")
+            
+            # 添加到任务队列，是否自动启动由系统配置决定
+            # 尝试获取系统配置
+            auto_start = False
+            try:
+                from flask import current_app
+                if hasattr(current_app, 'config') and 'Y2A_SETTINGS' in current_app.config:
+                    auto_start = current_app.config['Y2A_SETTINGS'].get('AUTO_MODE_ENABLED', False)
+            except (ImportError, RuntimeError):
+                # 如果无法从Flask获取，尝试从文件加载
+                import os
+                import json
+                config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
+                if os.path.exists(config_file):
+                    try:
+                        with open(config_file, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            auto_start = config.get('AUTO_MODE_ENABLED', False)
+                    except Exception as e:
+                        logger.warning(f"读取配置文件失败: {str(e)}")
+            
+            logger.info(f"手动添加视频，自动启动处理: {'是' if auto_start else '否'}")
+            task_id = self._add_video_to_tasks(video_info, auto_start=auto_start)
+            if task_id:
                 self._mark_video_added_to_tasks(video_id, config_id)
-                return True, "视频已成功添加到任务队列"
+                logger.info(f"视频成功添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
+                return True, f"视频已成功添加到任务队列，任务ID: {task_id}"
             else:
+                logger.error(f"添加视频到任务队列失败: {video_info['title']}")
                 return False, "添加到任务队列失败"
     
     def _mark_video_added_to_tasks(self, video_id, config_id):
@@ -708,6 +1280,72 @@ class YouTubeMonitor:
                 (video_id, config_id)
             )
             conn.commit()
+    
+    def _get_historical_time_range(self, config):
+        """获取历史搬运模式的智能时间范围"""
+        config_id = config.get('config_id') or config.get('id')
+        
+        # 获取当前进度
+        current_offset = config.get('historical_offset', 0)
+        start_date_str = config.get('start_date', '')
+        end_date_str = config.get('end_date', '')
+        
+        if not start_date_str:
+            logger.error("历史搬运模式需要设置开始日期")
+            return None, None, 0
+        
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            published_after = start_date.isoformat() + 'Z'
+            
+            # 设置结束日期
+            published_before = None
+            if end_date_str:
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+                # 结束日期加一天，确保包含当天的视频
+                end_date = end_date + timedelta(days=1)
+                published_before = end_date.isoformat() + 'Z'
+                logger.info(f"历史搬运范围: {start_date_str} 到 {end_date_str}，当前偏移量: {current_offset}")
+            else:
+                # 如果没有结束日期，搬运到当前时间
+                published_before = datetime.now().isoformat() + 'Z'
+                logger.info(f"历史搬运范围: {start_date_str} 到现在，当前偏移量: {current_offset}")
+            
+            return published_after, published_before, current_offset
+            
+        except Exception as e:
+            logger.error(f"计算历史搬运时间范围失败: {str(e)}")
+            return None, None, 0
+    
+    def _update_historical_progress(self, config_id, all_filtered_videos, added_count):
+        """更新历史搬运进度"""
+        try:
+            # 获取当前配置
+            config = self.get_monitor_config(config_id)
+            if not config:
+                return
+            
+            current_offset = config.get('historical_offset', 0)
+            
+            # 更新偏移量
+            new_offset = current_offset + added_count
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE monitor_configs SET historical_offset = ? WHERE id = ?',
+                    (new_offset, config_id)
+                )
+                conn.commit()
+            
+            logger.info(f"历史搬运偏移量更新为: {new_offset} (本次添加 {added_count} 个视频)")
+            
+            # 检查是否已经处理完所有视频
+            if new_offset >= len(all_filtered_videos):
+                logger.info(f"历史搬运已完成！总共处理了 {new_offset} 个视频")
+                
+        except Exception as e:
+            logger.error(f"更新历史搬运进度失败: {str(e)}")
     
     def _update_last_run_time(self, config_id):
         """更新最后运行时间"""
@@ -724,6 +1362,9 @@ class YouTubeMonitor:
         job_id = f"monitor_{config_id}"
         
         try:
+            config = self.get_monitor_config(config_id)
+            config_name = config['name'] if config else f"ID-{config_id}"
+            
             self.scheduler.add_job(
                 func=self.run_monitor,
                 trigger='interval',
@@ -735,8 +1376,9 @@ class YouTubeMonitor:
             
             if not self.scheduler.running:
                 self.scheduler.start()
+                logger.info("调度器已启动")
                 
-            logger.info(f"添加监控调度任务: {job_id}, 间隔: {interval_minutes}分钟")
+            logger.info(f"添加监控调度任务: {config_name} ({job_id}), 间隔: {interval_minutes}分钟")
         except Exception as e:
             logger.error(f"添加调度任务失败: {str(e)}")
     
@@ -793,21 +1435,168 @@ class YouTubeMonitor:
             
             return history
     
+    def clear_monitor_history(self, config_id):
+        """清除指定配置的监控历史记录"""
+        logger.info(f"开始清除监控历史记录，配置ID: {config_id}")
+        
+        try:
+            # 获取配置信息用于日志
+            config = self.get_monitor_config(config_id)
+            config_name = config['name'] if config else f"ID-{config_id}"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 获取要删除的记录数
+                cursor.execute('SELECT COUNT(*) FROM monitor_history WHERE config_id = ?', (config_id,))
+                count = cursor.fetchone()[0]
+                
+                if count > 0:
+                    # 删除历史记录
+                    cursor.execute('DELETE FROM monitor_history WHERE config_id = ?', (config_id,))
+                    conn.commit()
+                    logger.info(f"已清除配置 {config_name} (ID: {config_id}) 的 {count} 条监控历史记录")
+                    return True, f"成功清除 {count} 条历史记录"
+                else:
+                    logger.info(f"配置 {config_name} (ID: {config_id}) 没有历史记录需要清除")
+                    return True, "没有历史记录需要清除"
+                    
+        except Exception as e:
+            logger.error(f"清除监控历史记录失败，配置ID: {config_id}, 错误: {str(e)}")
+            return False, f"清除历史记录失败: {str(e)}"
+    
+    def clear_all_monitor_history(self):
+        """清除所有监控历史记录"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 获取要删除的记录数
+                cursor.execute('SELECT COUNT(*) FROM monitor_history')
+                count = cursor.fetchone()[0]
+                
+                if count > 0:
+                    # 删除所有历史记录
+                    cursor.execute('DELETE FROM monitor_history')
+                    conn.commit()
+                    logger.info(f"已清除所有 {count} 条监控历史记录")
+                    return True, f"成功清除所有 {count} 条历史记录"
+                else:
+                    return True, "没有历史记录需要清除"
+                    
+        except Exception as e:
+            logger.error(f"清除所有监控历史记录失败: {str(e)}")
+            return False, f"清除历史记录失败: {str(e)}"
+    
     def start_all_schedules(self):
         """启动所有自动调度的监控任务"""
-        configs = self.get_monitor_configs()
+        logger.info("开始启动所有自动调度的监控任务")
         
-        for config in configs:
-            if config['enabled'] and config['schedule_type'] == 'auto':
-                self._schedule_monitor(config['id'], config['schedule_interval'])
+        configs = self.get_monitor_configs()
+        auto_configs = [config for config in configs if config['enabled'] and config['schedule_type'] == 'auto']
+        
+        logger.info(f"找到 {len(auto_configs)} 个启用的自动调度配置")
+        
+        for config in auto_configs:
+            logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {config['schedule_interval']}分钟")
+            self._schedule_monitor(config['id'], config['schedule_interval'])
         
         if not self.scheduler.running:
             self.scheduler.start()
+            logger.info("调度器已启动")
+        
+        logger.info(f"所有自动调度任务启动完成，共 {len(auto_configs)} 个任务")
     
     def stop_all_schedules(self):
         """停止所有调度任务"""
         if self.scheduler.running:
             self.scheduler.shutdown()
+    
+    def restore_configs_from_files_manually(self):
+        """手动从配置文件恢复监控配置"""
+        logger.info("手动触发配置恢复...")
+        
+        try:
+            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            
+            if not os.path.exists(config_dir):
+                logger.warning("配置文件目录不存在")
+                return False, "配置文件目录不存在"
+            
+            # 扫描配置文件
+            config_files = []
+            for filename in os.listdir(config_dir):
+                if filename.startswith('monitor_config_') and filename.endswith('.json'):
+                    config_files.append(filename)
+            
+            if not config_files:
+                logger.warning("未找到配置文件")
+                return False, "未找到配置文件"
+            
+            logger.info(f"发现 {len(config_files)} 个配置文件，开始恢复")
+            
+            restored_count = 0
+            skipped_count = 0
+            error_count = 0
+            
+            for filename in sorted(config_files):
+                try:
+                    config_file_path = os.path.join(config_dir, filename)
+                    with open(config_file_path, 'r', encoding='utf-8') as f:
+                        config_data = json.load(f)
+                    
+                    # 提取配置ID
+                    original_config_id = config_data.get('config_id')
+                    if not original_config_id:
+                        logger.warning(f"配置文件 {filename} 缺少config_id，跳过")
+                        skipped_count += 1
+                        continue
+                    
+                    # 检查是否已存在
+                    existing_config = self.get_monitor_config(original_config_id)
+                    if existing_config:
+                        logger.info(f"配置 ID {original_config_id} 已存在，跳过恢复")
+                        skipped_count += 1
+                        continue
+                    
+                    # 移除不需要插入数据库的字段
+                    config_data_copy = config_data.copy()
+                    config_data_copy.pop('config_id', None)
+                    config_data_copy.pop('created_time', None)
+                    
+                    # 恢复到数据库
+                    restored_id = self._restore_single_config(config_data_copy, original_config_id)
+                    if restored_id:
+                        restored_count += 1
+                        logger.info(f"恢复配置: {config_data.get('name', '未命名')} (ID: {original_config_id} -> {restored_id})")
+                        
+                        # 如果是启用的自动调度，立即启动
+                        if config_data.get('enabled') and config_data.get('schedule_type') == 'auto':
+                            self._schedule_monitor(restored_id, config_data.get('schedule_interval', 60))
+                    else:
+                        error_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"恢复配置文件 {filename} 失败: {str(e)}")
+                    error_count += 1
+                    continue
+            
+            # 启动调度器（如果有自动调度任务）
+            if restored_count > 0:
+                configs = self.get_monitor_configs()
+                auto_configs = [c for c in configs if c['enabled'] and c['schedule_type'] == 'auto']
+                if auto_configs and not self.scheduler.running:
+                    self.scheduler.start()
+            
+            message = f"恢复完成：成功 {restored_count} 个，跳过 {skipped_count} 个，失败 {error_count} 个"
+            logger.info(message)
+            
+            return True, message
+            
+        except Exception as e:
+            error_msg = f"手动恢复配置失败: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
 
 # 全局监控实例
 youtube_monitor = YouTubeMonitor()

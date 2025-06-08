@@ -88,6 +88,13 @@
         <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-warning">
             <i class="bi bi-pencil"></i> 编辑配置
         </a>
+        {% if history %}
+        <form method="POST" action="{{ url_for('youtube_monitor_clear_history', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要清除该配置的所有历史记录吗？此操作不可恢复！')">
+            <button type="submit" class="btn btn-danger">
+                <i class="bi bi-trash"></i> 清除历史记录
+            </button>
+        </form>
+        {% endif %}
     </div>
 </div>
 
