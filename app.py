@@ -487,6 +487,23 @@ def force_upload_task_route(task_id):
     
     return redirect(url_for('manual_review'))
 
+@app.route('/tasks/reset_stuck', methods=['POST'])
+def reset_stuck_tasks_route():
+    """重置卡住的任务"""
+    from modules.task_manager import reset_stuck_tasks
+    
+    try:
+        reset_count = reset_stuck_tasks()
+        if reset_count > 0:
+            flash(f'已重置 {reset_count} 个卡住的任务', 'success')
+        else:
+            flash('没有发现卡住的任务', 'info')
+    except Exception as e:
+        logger.error(f"重置卡住任务失败: {str(e)}")
+        flash('重置卡住任务失败', 'danger')
+    
+    return redirect(url_for('tasks'))
+
 @app.route('/tasks/<task_id>/abandon', methods=['POST'])
 def abandon_task_route(task_id):
     """放弃任务"""
@@ -502,6 +519,97 @@ def abandon_task_route(task_id):
     
     flash('任务已放弃', 'warning')
     return redirect(url_for('manual_review'))
+
+@app.route('/system_health')
+def system_health():
+    """系统健康检查"""
+    from modules.task_manager import get_db_connection, validate_cookies
+    import sqlite3
+    
+    health_status = {
+        'database': {'status': 'unknown', 'message': ''},
+        'youtube_cookies': {'status': 'unknown', 'message': ''},
+        'acfun_cookies': {'status': 'unknown', 'message': ''},
+        'stuck_tasks': {'count': 0, 'tasks': []},
+        'recent_errors': []
+    }
+    
+    # 检查数据库
+    try:
+        conn = get_db_connection()
+        cursor = conn.execute('SELECT COUNT(*) FROM tasks')
+        task_count = cursor.fetchone()[0]
+        health_status['database'] = {
+            'status': 'ok',
+            'message': f'数据库正常，共有 {task_count} 个任务'
+        }
+        
+        # 检查卡住的任务
+        stuck_cursor = conn.execute('''
+            SELECT id, status, created_at, updated_at, error_message
+            FROM tasks 
+            WHERE status IN ('processing', 'downloading', 'uploading', 'fetching_info', 'translating')
+            AND datetime(updated_at) < datetime('now', '-30 minutes')
+        ''')
+        stuck_tasks = stuck_cursor.fetchall()
+        health_status['stuck_tasks'] = {
+            'count': len(stuck_tasks),
+            'tasks': [{'id': t[0][:8] + '...', 'status': t[1], 'updated': t[3]} for t in stuck_tasks]
+        }
+        
+        # 检查最近的错误
+        error_cursor = conn.execute('''
+            SELECT id, error_message, updated_at
+            FROM tasks 
+            WHERE status = 'failed' AND error_message IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 5
+        ''')
+        error_tasks = error_cursor.fetchall()
+        health_status['recent_errors'] = [
+            {'id': t[0][:8] + '...', 'error': t[1][:100] + '...' if len(t[1]) > 100 else t[1], 'time': t[2]}
+            for t in error_tasks
+        ]
+        
+        conn.close()
+    except Exception as e:
+        health_status['database'] = {
+            'status': 'error',
+            'message': f'数据库错误: {str(e)}'
+        }
+    
+    # 检查cookies
+    config = load_config()
+    
+    # YouTube cookies
+    yt_cookies_path = config.get('YOUTUBE_COOKIES_PATH', 'cookies/yt_cookies.txt')
+    if yt_cookies_path:
+        is_valid, message = validate_cookies(yt_cookies_path, "YouTube")
+        health_status['youtube_cookies'] = {
+            'status': 'ok' if is_valid else 'error',
+            'message': message
+        }
+    else:
+        health_status['youtube_cookies'] = {
+            'status': 'warning',
+            'message': '未配置YouTube cookies路径'
+        }
+    
+    # AcFun cookies
+    ac_cookies_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.txt')
+    if ac_cookies_path:
+        is_valid, message = validate_cookies(ac_cookies_path, "AcFun")
+        health_status['acfun_cookies'] = {
+            'status': 'ok' if is_valid else 'error',
+            'message': message
+        }
+    else:
+        health_status['acfun_cookies'] = {
+            'status': 'warning',
+            'message': '未配置AcFun cookies路径'
+        }
+    
+    return jsonify(health_status)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -935,6 +1043,38 @@ def clear_specific_logs():
             "error": str(e)
         }
 
+def auto_start_pending_tasks(config):
+    """自动启动所有pending状态的任务"""
+    try:
+        from modules.task_manager import get_all_tasks, start_task, TASK_STATES
+        
+        # 获取所有pending任务
+        all_tasks = get_all_tasks()
+        pending_tasks = [task for task in all_tasks if task['status'] == TASK_STATES['PENDING']]
+        
+        if not pending_tasks:
+            logger.info("没有pending状态的任务需要启动")
+            return
+        
+        logger.info(f"发现 {len(pending_tasks)} 个pending任务，正在启动...")
+        
+        started_count = 0
+        for task in pending_tasks:
+            try:
+                success = start_task(task['id'], config)
+                if success:
+                    started_count += 1
+                    logger.info(f"已启动任务: {task['id'][:8]}... ({task.get('youtube_url', 'Unknown URL')[-30:]})")
+                else:
+                    logger.warning(f"启动任务失败: {task['id'][:8]}...")
+            except Exception as e:
+                logger.error(f"启动任务 {task['id'][:8]}... 时出错: {str(e)}")
+        
+        logger.info(f"自动启动完成，成功启动了 {started_count}/{len(pending_tasks)} 个任务")
+        
+    except Exception as e:
+        logger.error(f"自动启动pending任务时出错: {str(e)}")
+
 def schedule_log_cleanup():
     """根据配置设置日志清理定时任务"""
     config = load_config()
@@ -1264,6 +1404,129 @@ def youtube_monitor_restore_configs():
     
     return redirect(url_for('youtube_monitor_index'))
 
+@app.route('/api/cookies/sync', methods=['POST'])
+def sync_cookies():
+    """接收来自油猴脚本的cookie同步请求"""
+    try:
+        if not request.is_json:
+            return jsonify({'error': '请求必须是JSON格式'}), 400
+        
+        data = request.get_json()
+        
+        # 验证必要字段
+        required_fields = ['source', 'timestamp', 'cookies', 'cookieCount']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'缺少必要字段: {field}'}), 400
+        
+        # 验证来源
+        if data['source'] != 'userscript':
+            return jsonify({'error': '不支持的cookie来源'}), 400
+        
+        # 验证cookie数据
+        cookies_content = data['cookies']
+        if not cookies_content or not isinstance(cookies_content, str):
+            return jsonify({'error': 'cookie数据无效'}), 400
+        
+        # 保存cookie到文件
+        cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
+        os.makedirs(cookies_dir, exist_ok=True)
+        
+        youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
+        
+        # 备份原有cookie文件
+        if os.path.exists(youtube_cookies_path):
+            backup_path = youtube_cookies_path + f'.backup.{int(time.time())}'
+            try:
+                shutil.copy2(youtube_cookies_path, backup_path)
+                logger.info(f"已备份原有cookie文件到: {backup_path}")
+            except Exception as e:
+                logger.warning(f"备份cookie文件失败: {str(e)}")
+        
+        # 写入新的cookie文件
+        try:
+            with open(youtube_cookies_path, 'w', encoding='utf-8') as f:
+                f.write(cookies_content)
+            
+            # 记录同步信息
+            sync_info = {
+                'timestamp': data['timestamp'],
+                'sync_time': time.time(),
+                'cookie_count': data['cookieCount'],
+                'user_agent': data.get('userAgent', ''),
+                'source_url': data.get('url', ''),
+                'file_size': len(cookies_content)
+            }
+            
+            logger.info(f"Cookie同步成功 - 来源: 油猴脚本, 数量: {data['cookieCount']}, 大小: {len(cookies_content)} bytes")
+            
+            # 可选：清理旧的备份文件（保留最近5个）
+            try:
+                backup_files = []
+                for file in os.listdir(cookies_dir):
+                    if file.startswith('yt_cookies.txt.backup.'):
+                        backup_path = os.path.join(cookies_dir, file)
+                        backup_files.append((os.path.getmtime(backup_path), backup_path))
+                
+                # 按时间排序，删除多余的备份
+                if len(backup_files) > 5:
+                    backup_files.sort()
+                    for _, old_backup in backup_files[:-5]:
+                        try:
+                            os.remove(old_backup)
+                            logger.debug(f"已删除旧备份文件: {old_backup}")
+                        except Exception as e:
+                            logger.warning(f"删除旧备份文件失败: {str(e)}")
+            except Exception as e:
+                logger.warning(f"清理备份文件失败: {str(e)}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Cookie同步成功',
+                'sync_info': sync_info
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"写入cookie文件失败: {str(e)}")
+            return jsonify({'error': f'保存cookie失败: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Cookie同步API异常: {str(e)}")
+        return jsonify({'error': f'服务器内部错误: {str(e)}'}), 500
+
+@app.route('/api/cookies/status', methods=['GET'])
+def get_cookie_status():
+    """获取cookie状态信息"""
+    try:
+        cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
+        youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
+        
+        status = {
+            'youtube_cookies_exists': os.path.exists(youtube_cookies_path),
+            'last_modified': None,
+            'file_size': 0,
+            'line_count': 0
+        }
+        
+        if status['youtube_cookies_exists']:
+            stat_info = os.stat(youtube_cookies_path)
+            status['last_modified'] = stat_info.st_mtime
+            status['file_size'] = stat_info.st_size
+            
+            # 统计行数
+            try:
+                with open(youtube_cookies_path, 'r', encoding='utf-8') as f:
+                    status['line_count'] = sum(1 for line in f if line.strip() and not line.startswith('#'))
+            except Exception as e:
+                logger.warning(f"读取cookie文件失败: {str(e)}")
+                status['line_count'] = -1
+        
+        return jsonify(status), 200
+        
+    except Exception as e:
+        logger.error(f"获取cookie状态失败: {str(e)}")
+        return jsonify({'error': f'获取状态失败: {str(e)}'}), 500
+
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")
     
@@ -1279,6 +1542,11 @@ if __name__ == '__main__':
     from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
     get_global_task_processor(config)
     logger.info("全局任务处理器已初始化")
+    
+    # 自动启动所有pending任务（如果启用了自动模式）
+    if config.get('AUTO_MODE_ENABLED', False):
+        logger.info("自动模式已启用，正在启动所有pending任务...")
+        auto_start_pending_tasks(config)
     
     # 初始化YouTube监控API
     if config.get('YOUTUBE_API_KEY'):

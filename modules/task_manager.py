@@ -148,11 +148,25 @@ def init_db():
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
+        upload_progress TEXT,  -- 上传进度
         acfun_upload_response TEXT
     )
     ''')
     
     conn.commit()
+    
+    # 检查并添加新字段（用于数据库升级）
+    try:
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'upload_progress' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN upload_progress TEXT")
+            logger.info("数据库升级：添加upload_progress字段")
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
+    
     conn.close()
     
     logger.info("数据库初始化完成")
@@ -183,6 +197,26 @@ def add_task(youtube_url):
         )
         conn.commit()
         logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}")
+        
+        # 新任务添加后，触发全局任务处理器检查是否需要启动任务
+        try:
+            from modules.config_manager import load_config
+            config = load_config()
+            processor = get_global_task_processor(config)
+            if processor:
+                # 延迟触发，确保数据库事务已提交
+                import threading
+                import time
+                
+                def delayed_trigger():
+                    time.sleep(0.5)  # 等待0.5秒确保事务提交
+                    processor._check_and_start_next_pending_task()
+                
+                threading.Thread(target=delayed_trigger, daemon=True).start()
+                logger.info(f"已触发检查pending任务: {task_id}")
+        except Exception as e:
+            logger.warning(f"触发任务检查失败，但任务已成功添加: {str(e)}")
+            
     except Exception as e:
         logger.error(f"添加任务失败: {str(e)}")
         task_id = None
@@ -191,12 +225,13 @@ def add_task(youtube_url):
     
     return task_id
 
-def update_task(task_id, **kwargs):
+def update_task(task_id, silent=False, **kwargs):
     """
     更新任务信息
     
     Args:
         task_id: 任务ID
+        silent: 是否静默更新（不记录到主日志）
         **kwargs: 要更新的字段及其值
     
     Returns:
@@ -224,7 +259,8 @@ def update_task(task_id, **kwargs):
             values
         )
         conn.commit()
-        logger.info(f"任务 {task_id} 更新成功: {kwargs}")
+        if not silent:  # 只有非静默模式才记录到主日志
+            logger.info(f"任务 {task_id} 更新成功: {kwargs}")
         return True
     except Exception as e:
         logger.error(f"更新任务 {task_id} 失败: {str(e)}")
@@ -386,6 +422,96 @@ def init_upload_semaphore(max_concurrent_uploads=1):
     global upload_semaphore
     upload_semaphore = threading.Semaphore(max_concurrent_uploads)
 
+def reset_stuck_tasks():
+    """重置卡住的任务"""
+    import time
+    current_time = time.time()
+    
+    # 定义超时时间（30分钟）
+    timeout_seconds = 30 * 60
+    
+    conn = get_db_connection()
+    try:
+        # 查找可能卡住的任务（状态为处理中但长时间未更新）
+        cursor = conn.execute('''
+            SELECT id, status, updated_at 
+            FROM tasks 
+            WHERE status IN (?, ?, ?, ?, ?) 
+            AND datetime(updated_at) < datetime('now', '-30 minutes')
+        ''', ('processing', 'downloading', 'uploading', 'fetching_info', 'translating'))
+        
+        stuck_tasks = cursor.fetchall()
+        
+        if stuck_tasks:
+            logger.warning(f"发现 {len(stuck_tasks)} 个可能卡住的任务，正在重置...")
+            
+            for task in stuck_tasks:
+                task_id = task[0]
+                old_status = task[1]
+                updated_at = task[2]
+                
+                # 重置为失败状态
+                conn.execute('''
+                    UPDATE tasks 
+                    SET status = ?, error_message = ?, updated_at = ?
+                    WHERE id = ?
+                ''', (TASK_STATES['FAILED'], 
+                      f"任务超时重置 (原状态: {old_status})",
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                      task_id))
+                
+                logger.info(f"重置任务 {task_id[:8]}... 从 {old_status} 到 failed")
+            
+            conn.commit()
+            return len(stuck_tasks)
+        else:
+            logger.info("没有发现卡住的任务")
+            return 0
+            
+    except Exception as e:
+        logger.error(f"重置卡住任务时出错: {str(e)}")
+        return 0
+    finally:
+        conn.close()
+
+def validate_cookies(cookies_path, service_name="Unknown"):
+    """验证cookies文件的有效性"""
+    if not cookies_path or not os.path.exists(cookies_path):
+        logger.warning(f"{service_name} Cookies文件不存在: {cookies_path}")
+        return False, f"Cookies文件不存在: {cookies_path}"
+    
+    try:
+        with open(cookies_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        
+        if not content:
+            logger.warning(f"{service_name} Cookies文件为空")
+            return False, "Cookies文件为空"
+        
+        # 基本格式验证
+        if content.startswith('# Netscape HTTP Cookie File') or '\t' in content:
+            # Netscape格式
+            lines = [line for line in content.split('\n') if line.strip() and not line.startswith('#')]
+            if not lines:
+                return False, "Netscape格式cookies文件没有有效的cookie条目"
+            logger.debug(f"{service_name} Netscape格式cookies, {len(lines)} 个条目")
+        elif content.startswith('[') or content.startswith('{'):
+            # JSON格式
+            import json
+            cookies_data = json.loads(content)
+            if not cookies_data:
+                return False, "JSON格式cookies文件为空数组"
+            logger.debug(f"{service_name} JSON格式cookies, {len(cookies_data)} 个条目")
+        else:
+            logger.warning(f"{service_name} Cookies文件格式不明")
+            return False, "Cookies文件格式不明"
+        
+        return True, "Cookies文件格式正确"
+        
+    except Exception as e:
+        logger.error(f"验证{service_name} Cookies文件时出错: {str(e)}")
+        return False, f"验证cookies文件出错: {str(e)}"
+
 # 任务处理逻辑
 class TaskProcessor:
     """任务处理器，负责任务的执行和状态管理"""
@@ -412,7 +538,7 @@ class TaskProcessor:
             },
             job_defaults={
                 'coalesce': False,
-                'max_instances': max_concurrent_tasks
+                'max_instances': 1  # 每个任务只能有一个实例在运行，避免重复执行同一任务
             }
         )
         self.scheduler.start()
@@ -434,15 +560,56 @@ class TaskProcessor:
             job_id: 调度作业ID
         """
         try:
-            job = self.scheduler.add_job(
-                self.process_task,
-                args=[task_id],
-                id=f"task_{task_id}"
+            # 检查任务是否已在调度器中
+            existing_job_id = f"task_{task_id}"
+            existing_job = None
+            try:
+                existing_job = self.scheduler.get_job(existing_job_id)
+            except:
+                pass
+            
+            if existing_job:
+                logger.warning(f"任务 {task_id} 已在调度器中，跳过重复调度")
+                return existing_job_id
+            
+            # 检查任务当前状态
+            task = get_task(task_id)
+            if not task:
+                logger.error(f"任务 {task_id} 不存在")
+                return None
+                
+            if task['status'] not in [TASK_STATES['PENDING'], TASK_STATES['FAILED']]:
+                logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能调度")
+                return None
+            
+            # 直接在新线程中执行，避免调度器冲突
+            import threading
+            
+            def run_task_wrapper():
+                try:
+                    logger.info(f"任务 {task_id} 开始在线程中执行")
+                    self.process_task(task_id)
+                except Exception as e:
+                    logger.error(f"任务 {task_id} 执行出错: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"执行出错: {str(e)}")
+            
+            # 启动后台线程
+            thread = threading.Thread(
+                target=run_task_wrapper, 
+                name=f"task_{task_id}",
+                daemon=True
             )
-            logger.info(f"任务 {task_id} 已调度, 作业ID: {job.id}")
-            return job.id
+            thread.start()
+            
+            logger.info(f"任务 {task_id} 已在后台线程启动")
+            return f"thread_{task_id}"
+            
         except Exception as e:
             logger.error(f"调度任务 {task_id} 失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             # 更新任务状态为失败
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"调度失败: {str(e)}")
             return None
@@ -516,6 +683,68 @@ class TaskProcessor:
             import traceback
             task_logger.error(traceback.format_exc())
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=str(e))
+        finally:
+            # 任务完成后，检查是否有其他pending任务需要启动
+            task_logger.info("任务处理完成，检查是否有其他pending任务...")
+            # 延迟1秒后检查，确保数据库状态更新完成
+            import threading
+            import time
+            
+            def delayed_check():
+                time.sleep(1)  # 等待1秒确保状态已更新
+                self._check_and_start_next_pending_task()
+            
+            threading.Thread(target=delayed_check, daemon=True).start()
+    
+    def _check_and_start_next_pending_task(self):
+        """检查并启动下一个pending任务"""
+        try:
+            # 获取所有pending任务
+            pending_tasks = get_tasks_by_status(TASK_STATES['PENDING'])
+            
+            if not pending_tasks:
+                logger.info("没有pending任务需要启动")
+                return
+            
+            # 检查当前是否有正在运行的任务
+            processing_states = [
+                'fetching_info',
+                'info_fetched', 
+                TASK_STATES['TRANSLATING'], 
+                TASK_STATES['TAGGING'],
+                TASK_STATES['PARTITIONING'],
+                TASK_STATES['MODERATING'],
+                TASK_STATES['DOWNLOADING'], 
+                TASK_STATES['DOWNLOADED'],
+                TASK_STATES['TRANSLATING_SUBTITLE'],
+                TASK_STATES['UPLOADING']
+            ]
+            
+            running_tasks = []
+            for state in processing_states:
+                running_tasks.extend(get_tasks_by_status(state))
+            
+            # 如果有任务正在运行且并发限制为1，则不启动新任务
+            max_concurrent = self.config.get('MAX_CONCURRENT_TASKS', 3)
+            if len(running_tasks) >= max_concurrent:
+                logger.info(f"当前有 {len(running_tasks)} 个任务正在运行，达到并发限制 {max_concurrent}，暂不启动新任务")
+                return
+            
+            # 按创建时间排序，启动最早的pending任务
+            pending_tasks.sort(key=lambda x: x['created_at'])
+            next_task = pending_tasks[0]
+            
+            logger.info(f"发现pending任务，准备启动: {next_task['id'][:8]}... ({next_task.get('youtube_url', 'Unknown URL')[-30:]})")
+            
+            # 调度下一个任务
+            job_id = self.schedule_task(next_task['id'])
+            if job_id:
+                logger.info(f"下一个pending任务已自动启动: {next_task['id'][:8]}...")
+            else:
+                logger.error(f"启动下一个pending任务失败: {next_task['id'][:8]}...")
+                
+        except Exception as e:
+            logger.error(f"检查和启动下一个pending任务时出错: {str(e)}")
     
     def _fetch_video_info(self, task_id, youtube_url, task_logger):
         """只采集视频元数据和封面，不下载视频文件"""
@@ -536,9 +765,24 @@ class TaskProcessor:
             if not os.path.exists(cookies_path):
                 task_logger.warning(f"指定的YouTube Cookies文件不存在: {cookies_path}")
                 cookies_path = None
+        
+        # 验证cookies文件
+        if cookies_path:
+            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
+            if not is_valid:
+                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
+                # 尝试不使用cookies继续
+                task_logger.info("尝试不使用cookies继续采集信息...")
+                cookies_path = None
                 
         # 只采集信息
-        success, result = download_video_data(youtube_url, task_id, cookies_path, skip_download=True)
+        try:
+            success, result = download_video_data(youtube_url, task_id, cookies_path, skip_download=True)
+        except Exception as e:
+            task_logger.error(f"采集视频信息时发生异常: {str(e)}")
+            update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息异常: {str(e)}")
+            return
+            
         if success:
             task_logger.info("视频信息采集成功")
             metadata_path = result.get('metadata_path')
@@ -583,9 +827,23 @@ class TaskProcessor:
             if not os.path.exists(cookies_path):
                 task_logger.warning(f"指定的YouTube Cookies文件不存在: {cookies_path}")
                 cookies_path = None
+        
+        # 验证cookies文件
+        if cookies_path:
+            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
+            if not is_valid:
+                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
+                # 尝试不使用cookies继续
+                task_logger.info("尝试不使用cookies继续下载...")
+                cookies_path = None
                 
         # 只下载视频文件
-        success, result = download_video_data(youtube_url, task_id, cookies_path, only_video=True)
+        try:
+            success, result = download_video_data(youtube_url, task_id, cookies_path, only_video=True)
+        except Exception as e:
+            task_logger.error(f"下载视频文件时发生异常: {str(e)}")
+            update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
+            return
         if success:
             task_logger.info("视频文件下载成功")
             
@@ -1290,24 +1548,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task = get_task(task_id)
             video_path = task.get('video_path_local', '')
         
-        # 检查是否需要执行字幕翻译（如果启用了字幕翻译且还没有翻译）
-        if (self.config.get('SUBTITLE_TRANSLATION_ENABLED', False) and 
-            not task.get('subtitle_path_translated')):
-            task_logger.info("检测到启用了字幕翻译功能且尚未翻译，开始执行字幕翻译...")
-            try:
-                self._translate_subtitle(task_id, task_logger)
-                # 重新获取任务信息（可能包含新的视频路径，如果字幕被嵌入）
-                task = get_task(task_id)
-                video_path = task.get('video_path_local', '')
-                task_logger.info("字幕翻译完成，继续上传流程")
-            except Exception as e:
-                task_logger.warning(f"字幕翻译失败，继续上传流程: {str(e)}")
-        elif task.get('subtitle_path_translated'):
-            task_logger.info("字幕已翻译，跳过字幕翻译步骤")
-        else:
-            task_logger.info("字幕翻译功能未启用，跳过字幕翻译步骤")
-        
-        # 字幕翻译完成后，重新设置状态为上传中
+        # 重新设置状态为上传中（字幕翻译已在主流程中完成）
         update_task(task_id, status=TASK_STATES['UPLOADING'])
         
         # 解析标签
@@ -1363,9 +1604,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         cookie_file_exists = os.path.exists(acfun_cookies_path)
         has_credentials = acfun_username and acfun_password
         
-        if not cookie_file_exists and not has_credentials:
-            task_logger.error("AcFun登录信息不完整，需要Cookie文件或用户名密码")
-            update_task(task_id, error_message="AcFun登录信息不完整，需要Cookie文件或用户名密码")
+        # 验证cookies文件（如果存在）
+        cookies_valid = False
+        if cookie_file_exists:
+            is_valid, error_msg = validate_cookies(acfun_cookies_path, "AcFun")
+            if is_valid:
+                cookies_valid = True
+                task_logger.info("AcFun Cookies文件验证通过")
+            else:
+                task_logger.warning(f"AcFun Cookies文件验证失败: {error_msg}")
+                if not has_credentials:
+                    task_logger.error("AcFun Cookies无效且没有提供用户名密码")
+                    update_task(task_id, error_message=f"AcFun Cookies无效且没有提供用户名密码: {error_msg}")
+                    return
+        
+        if not cookies_valid and not has_credentials:
+            task_logger.error("AcFun登录信息不完整，需要有效的Cookie文件或用户名密码")
+            update_task(task_id, error_message="AcFun登录信息不完整，需要有效的Cookie文件或用户名密码")
             return
         
         # 创建上传器

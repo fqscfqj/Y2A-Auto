@@ -6,6 +6,58 @@
 <div class="settings-container">
     <h2>系统设置</h2>
     
+    <!-- 系统健康检查 -->
+    <div class="settings-section">
+        <h3>系统健康检查</h3>
+        <div id="health-status" class="mb-3">
+            <button type="button" class="btn btn-info" onclick="checkSystemHealth()">
+                <i class="bi bi-heart-pulse"></i> 检查系统状态
+            </button>
+        </div>
+        <div id="health-results" class="d-none">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">基础组件</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="database-status" class="health-item mb-2">
+                                <span class="health-label">数据库:</span>
+                                <span class="health-value">检查中...</span>
+                            </div>
+                            <div id="youtube-cookies-status" class="health-item mb-2">
+                                <span class="health-label">YouTube Cookies:</span>
+                                <span class="health-value">检查中...</span>
+                            </div>
+                            <div id="acfun-cookies-status" class="health-item">
+                                <span class="health-label">AcFun Cookies:</span>
+                                <span class="health-value">检查中...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">任务状态</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="stuck-tasks-status" class="health-item mb-2">
+                                <span class="health-label">卡住的任务:</span>
+                                <span class="health-value">检查中...</span>
+                            </div>
+                            <div id="recent-errors" class="health-item">
+                                <span class="health-label">最近错误:</span>
+                                <div class="health-value">检查中...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <form method="post" enctype="multipart/form-data">
         <div class="settings-section">
             <h3>基本设置</h3>
@@ -370,6 +422,101 @@
 
 {% block extra_js %}
 <script>
+    // 系统健康检查功能
+    function checkSystemHealth() {
+        const button = document.querySelector('#health-status button');
+        const results = document.getElementById('health-results');
+        
+        // 显示加载状态
+        button.innerHTML = '<i class="bi bi-arrow-repeat"></i> 检查中...';
+        button.disabled = true;
+        results.classList.remove('d-none');
+        
+        // 重置所有状态为检查中
+        document.getElementById('database-status').querySelector('.health-value').innerHTML = '检查中...';
+        document.getElementById('youtube-cookies-status').querySelector('.health-value').innerHTML = '检查中...';
+        document.getElementById('acfun-cookies-status').querySelector('.health-value').innerHTML = '检查中...';
+        document.getElementById('stuck-tasks-status').querySelector('.health-value').innerHTML = '检查中...';
+        document.getElementById('recent-errors').querySelector('.health-value').innerHTML = '检查中...';
+        
+        // 发送健康检查请求
+        fetch('/system_health')
+            .then(response => response.json())
+            .then(data => {
+                // 更新数据库状态
+                updateHealthStatus('database-status', data.database);
+                
+                // 更新YouTube cookies状态
+                updateHealthStatus('youtube-cookies-status', data.youtube_cookies);
+                
+                // 更新AcFun cookies状态
+                updateHealthStatus('acfun-cookies-status', data.acfun_cookies);
+                
+                // 更新卡住任务状态
+                const stuckTasksElement = document.getElementById('stuck-tasks-status').querySelector('.health-value');
+                if (data.stuck_tasks.count > 0) {
+                    stuckTasksElement.innerHTML = `<span class="text-warning">${data.stuck_tasks.count} 个任务卡住</span>`;
+                    if (data.stuck_tasks.tasks.length > 0) {
+                        const taskList = data.stuck_tasks.tasks.map(t => `${t.id} (${t.status})`).join(', ');
+                        stuckTasksElement.innerHTML += `<br><small>${taskList}</small>`;
+                    }
+                } else {
+                    stuckTasksElement.innerHTML = '<span class="text-success">无卡住任务</span>';
+                }
+                
+                // 更新最近错误
+                const errorsElement = document.getElementById('recent-errors').querySelector('.health-value');
+                if (data.recent_errors.length > 0) {
+                    let errorHtml = `<span class="text-warning">${data.recent_errors.length} 个最近错误</span><br>`;
+                    data.recent_errors.forEach(error => {
+                        errorHtml += `<small>${error.id}: ${error.error}</small><br>`;
+                    });
+                    errorsElement.innerHTML = errorHtml;
+                } else {
+                    errorsElement.innerHTML = '<span class="text-success">无最近错误</span>';
+                }
+                
+                // 恢复按钮状态
+                button.innerHTML = '<i class="bi bi-heart-pulse"></i> 检查系统状态';
+                button.disabled = false;
+            })
+            .catch(error => {
+                console.error('健康检查失败:', error);
+                
+                // 显示错误状态
+                document.getElementById('database-status').querySelector('.health-value').innerHTML = '<span class="text-danger">检查失败</span>';
+                document.getElementById('youtube-cookies-status').querySelector('.health-value').innerHTML = '<span class="text-danger">检查失败</span>';
+                document.getElementById('acfun-cookies-status').querySelector('.health-value').innerHTML = '<span class="text-danger">检查失败</span>';
+                document.getElementById('stuck-tasks-status').querySelector('.health-value').innerHTML = '<span class="text-danger">检查失败</span>';
+                document.getElementById('recent-errors').querySelector('.health-value').innerHTML = '<span class="text-danger">检查失败</span>';
+                
+                // 恢复按钮状态
+                button.innerHTML = '<i class="bi bi-heart-pulse"></i> 检查系统状态';
+                button.disabled = false;
+            });
+    }
+    
+    function updateHealthStatus(elementId, status) {
+        const element = document.getElementById(elementId).querySelector('.health-value');
+        let statusClass = '';
+        
+        switch(status.status) {
+            case 'ok':
+                statusClass = 'text-success';
+                break;
+            case 'warning':
+                statusClass = 'text-warning';
+                break;
+            case 'error':
+                statusClass = 'text-danger';
+                break;
+            default:
+                statusClass = 'text-muted';
+        }
+        
+        element.innerHTML = `<span class="${statusClass}">${status.message}</span>`;
+    }
+
     // 确保只绑定一次事件监听器
     (function() {
         var initialized = false;
@@ -542,6 +689,35 @@
         background-color: #f8d7da;
         color: #721c24;
         border: 1px solid #f5c6cb;
+    }
+    
+    /* 健康检查样式 */
+    .health-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        padding: 8px 0;
+        border-bottom: 1px solid #eee;
+    }
+    
+    .health-item:last-child {
+        border-bottom: none;
+    }
+    
+    .health-label {
+        font-weight: bold;
+        min-width: 120px;
+    }
+    
+    .health-value {
+        flex: 1;
+        text-align: right;
+    }
+    
+    .health-value small {
+        display: block;
+        font-size: 0.8em;
+        margin-top: 2px;
     }
 </style>
 {% endblock %} 

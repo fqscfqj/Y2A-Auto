@@ -468,16 +468,16 @@ class YouTubeMonitor:
                 conn.commit()
                 
                 logger.info(f"监控配置已创建，ID: {config_id}, 名称: {config_data.get('name')}")
-                
-                # 保存配置到文件
-                self._save_config_to_file(config_id, config_data)
-                
-                # 如果是自动调度，添加到调度器
-                if config_data.get('schedule_type') == 'auto':
-                    logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 60)}分钟")
-                    self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
-                
-                return config_id
+            
+            # 保存配置到文件
+            self._save_config_to_file(config_id, config_data)
+            
+            # 如果是自动调度，添加到调度器
+            if config_data.get('schedule_type') == 'auto':
+                logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 60)}分钟")
+                self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
+            
+            return config_id
                 
         except Exception as e:
             logger.error(f"创建监控配置失败: {str(e)}")
@@ -611,13 +611,13 @@ class YouTubeMonitor:
                 conn.commit()
                 
                 logger.info(f"监控配置已更新: {config_data.get('name')} (ID: {config_id})")
-                
-                # 保存配置到文件
-                self._save_config_to_file(config_id, config_data)
-                
-                # 更新调度
-                logger.info(f"更新调度设置: {config_data.get('schedule_type', 'manual')}")
-                self._update_schedule(config_id, config_data)
+            
+            # 保存配置到文件
+            self._save_config_to_file(config_id, config_data)
+            
+            # 更新调度
+            logger.info(f"更新调度设置: {config_data.get('schedule_type', 'manual')}")
+            self._update_schedule(config_id, config_data)
                 
         except Exception as e:
             logger.error(f"更新监控配置失败，ID: {config_id}, 错误: {str(e)}")
@@ -953,25 +953,57 @@ class YouTubeMonitor:
             # 根据频道模式调整获取数量
             channel_mode = config.get('channel_mode', 'latest')
             if channel_mode == 'historical':
-                # 历史搬运模式，获取更多视频
-                max_results = min(config.get('max_results', 50), 50)
+                # 历史搬运模式，获取更多视频，支持分页
+                max_results_per_page = 50  # YouTube API单次最大50
+                max_total_videos = 500  # 最多检查500个视频
             else:
                 # 最新跟进模式
-                max_results = config.get('latest_max_results', 20)
+                max_results_per_page = config.get('latest_max_results', 20)
+                max_total_videos = max_results_per_page
             
-            # 获取播放列表中的视频
-            playlist_params = {
-                'part': 'snippet',
-                'playlistId': upload_playlist_id,
-                'maxResults': max_results
-                # 注意：playlistItems API不支持order参数，默认按上传时间倒序返回
-            }
+            # 分页获取播放列表中的视频
+            all_playlist_items = []
+            next_page_token = None
+            videos_fetched = 0
             
-            playlist_response = self.youtube.playlistItems().list(**playlist_params).execute()
+            while videos_fetched < max_total_videos:
+                # 计算本次请求的数量
+                current_page_size = min(max_results_per_page, max_total_videos - videos_fetched)
+                
+                playlist_params = {
+                    'part': 'snippet',
+                    'playlistId': upload_playlist_id,
+                    'maxResults': current_page_size
+                }
+                
+                if next_page_token:
+                    playlist_params['pageToken'] = next_page_token
+                
+                playlist_response = self.youtube.playlistItems().list(**playlist_params).execute()
+                current_items = playlist_response['items']
+                all_playlist_items.extend(current_items)
+                videos_fetched += len(current_items)
+                
+                # 检查是否还有更多页面
+                next_page_token = playlist_response.get('nextPageToken')
+                if not next_page_token or len(current_items) == 0:
+                    break
+                
+                # 在历史搬运模式下，如果我们已经找到足够的时间范围内的视频，可以提前停止
+                if channel_mode == 'historical':
+                    # 快速检查当前这批视频中最早的时间
+                    if current_items:
+                        earliest_video_time = min(item['snippet']['publishedAt'] for item in current_items)
+                        # 如果最早的视频都比我们的开始时间还早，说明后面的视频都不会在范围内了
+                        if earliest_video_time < published_after:
+                            logger.info(f"找到了早于开始时间的视频，停止获取更多视频")
+                            break
+            
+            logger.info(f"频道 {channel_id} 总共获取了 {len(all_playlist_items)} 个播放列表项目")
             
             # 筛选时间范围内的视频
             video_ids = []
-            for item in playlist_response['items']:
+            for item in all_playlist_items:
                 video_published = item['snippet']['publishedAt']
                 
                 # 检查开始时间
@@ -1005,7 +1037,7 @@ class YouTubeMonitor:
                 logger.info(f"历史搬运模式：已按时间正序排列视频（从最老到最新）")
             
             return videos
-            
+                    
         except Exception as e:
             logger.error(f"频道播放列表获取失败 {channel_id}: {str(e)}")
             return []
@@ -1166,35 +1198,9 @@ class YouTubeMonitor:
             if task_id:
                 logger.info(f"视频已添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
                 
-                # 是否自动启动任务处理
-                if auto_start:
-                    try:
-                        from modules.task_manager import start_task
-                        
-                        # 尝试从Flask应用获取配置
-                        config = {}
-                        try:
-                            from flask import current_app
-                            if hasattr(current_app, 'config') and 'Y2A_SETTINGS' in current_app.config:
-                                config = current_app.config['Y2A_SETTINGS']
-                        except (ImportError, RuntimeError):
-                            # 如果无法从Flask获取，尝试从文件加载
-                            import os
-                            import json
-                            config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
-                            if os.path.exists(config_file):
-                                with open(config_file, 'r', encoding='utf-8') as f:
-                                    config = json.load(f)
-                        
-                        # 启动任务处理
-                        success = start_task(task_id, config)
-                        if success:
-                            logger.info(f"任务已自动启动处理: {task_id}")
-                        else:
-                            logger.warning(f"任务添加成功但启动处理失败: {task_id}")
-                            
-                    except Exception as e:
-                        logger.error(f"自动启动任务处理失败: {str(e)}")
+                # 移除自动启动逻辑，让全局任务处理器的队列管理机制来处理
+                # 这样避免重复调度和冲突
+                logger.info(f"任务已添加，将由队列管理器自动处理: {task_id}")
                 
                 return task_id  # 返回任务ID而不是布尔值
             else:
@@ -1261,8 +1267,8 @@ class YouTubeMonitor:
                     except Exception as e:
                         logger.warning(f"读取配置文件失败: {str(e)}")
             
-            logger.info(f"手动添加视频，自动启动处理: {'是' if auto_start else '否'}")
-            task_id = self._add_video_to_tasks(video_info, auto_start=auto_start)
+            logger.info(f"手动添加视频到任务队列")
+            task_id = self._add_video_to_tasks(video_info, auto_start=False)
             if task_id:
                 self._mark_video_added_to_tasks(video_id, config_id)
                 logger.info(f"视频成功添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
