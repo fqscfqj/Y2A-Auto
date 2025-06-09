@@ -32,7 +32,20 @@
                 <strong>地区：</strong> {{ config.region_code }}
             </div>
             <div class="col-md-2">
-                <strong>时间段：</strong> {{ config.time_period }}天
+                <strong>时间段：</strong>
+                {% if config.monitor_type == 'channel_monitor' and config.channel_mode == 'historical' %}
+                    {% if config.start_date and config.end_date %}
+                        {{ config.start_date }} 至 {{ config.end_date }}
+                    {% elif config.start_date %}
+                        从 {{ config.start_date }} 开始
+                    {% else %}
+                        历史搬运模式
+                    {% endif %}
+                {% elif config.monitor_type == 'channel_monitor' and config.channel_mode == 'latest' %}
+                    最新 {{ config.latest_days or 7 }} 天
+                {% else %}
+                    {{ config.time_period or 7 }} 天
+                {% endif %}
             </div>
             <div class="col-md-2">
                 <strong>最大结果：</strong> {{ config.max_results }}

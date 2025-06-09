@@ -50,6 +50,9 @@
                             <td>
                                 <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                     {{ task_status_display(task.status) }}
+                                    {% if task.status == 'uploading' and task.upload_progress %}
+                                        <br><small>{{ task.upload_progress }}</small>
+                                    {% endif %}
                                 </span>
                             </td>
                             <td>

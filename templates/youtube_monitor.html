@@ -54,7 +54,21 @@
                             {% endif %}
                         </td>
                         <td>{{ config.region_code }}</td>
-                        <td>{{ config.time_period }}天</td>
+                        <td>
+                            {% if config.monitor_type == 'channel_monitor' and config.channel_mode == 'historical' %}
+                                {% if config.start_date and config.end_date %}
+                                    {{ config.start_date }} 至 {{ config.end_date }}
+                                {% elif config.start_date %}
+                                    从 {{ config.start_date }} 开始
+                                {% else %}
+                                    历史搬运模式
+                                {% endif %}
+                            {% elif config.monitor_type == 'channel_monitor' and config.channel_mode == 'latest' %}
+                                最新 {{ config.latest_days or 7 }} 天
+                            {% else %}
+                                {{ config.time_period or 7 }} 天
+                            {% endif %}
+                        </td>
                         <td>
                             {% if config.monitor_type == 'youtube_search' %}
                                 {{ config.max_results }}
@@ -121,7 +135,7 @@
 <div class="row">
     <div class="col-12">
         <div class="d-flex justify-content-between align-items-center mb-3">
-            <h4><i class="bi bi-clock-history"></i> 最近的监控记录</h4>
+        <h4><i class="bi bi-clock-history"></i> 最近的监控记录</h4>
             {% if history %}
             <form method="POST" action="{{ url_for('youtube_monitor_clear_all_history') }}" class="d-inline" onsubmit="return confirm('确定要清除所有监控历史记录吗？此操作不可恢复！')">
                 <button type="submit" class="btn btn-outline-danger btn-sm">
@@ -171,8 +185,8 @@
                             <div class="btn-group" role="group">
                                 <a href="https://www.youtube.com/watch?v={{ record.video_id }}" 
                                    target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
-                                    <i class="bi bi-youtube"></i>
-                                </a>
+                                <i class="bi bi-youtube"></i>
+                            </a>
                                 {% if not record.added_to_tasks %}
                                 <button type="button" class="btn btn-outline-success btn-sm" 
                                         onclick="addToTasks('{{ record.video_id }}', '{{ record.config_id }}')" 

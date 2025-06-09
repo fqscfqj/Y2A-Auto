@@ -127,20 +127,36 @@ class AcfunUploader:
                 # Netscape格式
                 cookie_count = self._load_netscape_cookies(content)
                 self.log(f"从Netscape格式文件加载了 {cookie_count} 个cookie")
+                if cookie_count == 0:
+                    self.log("警告: Netscape格式文件中没有有效的cookie条目")
+                    return False
             else:
-                # JSON格式
-                cookies_data = json.loads(content)
-                for cookie in cookies_data:
-                    self.session.cookies.set(
-                        cookie['name'], 
-                        cookie['value'], 
-                        domain=cookie.get('domain', ''),
-                        path=cookie.get('path', '/')
-                    )
-                self.log(f"从JSON格式文件加载了 {len(cookies_data)} 个cookie")
+                try:
+                    # JSON格式
+                    cookies_data = json.loads(content)
+                    if not cookies_data:
+                        self.log("JSON格式cookies文件为空数组")
+                        return False
+                    for cookie in cookies_data:
+                        self.session.cookies.set(
+                            cookie['name'], 
+                            cookie['value'], 
+                            domain=cookie.get('domain', ''),
+                            path=cookie.get('path', '/')
+                        )
+                    self.log(f"从JSON格式文件加载了 {len(cookies_data)} 个cookie")
+                except json.JSONDecodeError as e:
+                    self.log(f"JSON格式解析失败: {e}")
+                    return False
             
             # 测试cookie是否有效
-            return self.test_login()
+            login_success = self.test_login()
+            if login_success:
+                self.log("Cookie登录测试成功")
+            else:
+                self.log("Cookie登录测试失败，可能已过期或无效")
+            return login_success
+            
         except Exception as e:
             self.log(f"加载cookie文件失败: {e}")
             return False
@@ -541,6 +557,14 @@ class AcfunUploader:
                     self.log(f"分块 {fragment_id + 1} 上传失败")
                     return False, "分块上传失败"
                 
+                # 计算和报告上传进度
+                progress = ((fragment_id + 1) / fragment_count) * 100
+                self.log(f"上传进度: {progress:.1f}% ({fragment_id + 1}/{fragment_count})")
+                
+                # 静默更新任务进度到数据库（如果有task_id），不记录到主日志
+                if hasattr(self, 'task_id') and self.task_id:
+                    from modules.task_manager import update_task
+                    update_task(self.task_id, upload_progress=f"{progress:.1f}%", silent=True)
 
         
         # 完成上传
@@ -615,7 +639,8 @@ class AcfunUploader:
         Returns:
             tuple: (成功标志, 结果数据或错误信息)
         """
-        # 设置任务日志
+        # 设置任务日志和task_id
+        self.task_id = task_id
         self.logger = setup_task_logger(task_id or "unknown")
         self.log(f"开始上传视频: {video_file_path}")
         

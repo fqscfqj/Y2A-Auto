@@ -14,41 +14,17 @@ from alibabacloud_tea_util.models import RuntimeOptions
 
 def setup_task_logger(task_id):
     """
-    为具体任务设置专用日志器
+    使用现有的任务日志器，不创建单独的内容审核日志文件
     
     Args:
         task_id: 任务ID
         
     Returns:
-        logging.Logger: 配置好的日志器
+        logging.Logger: 任务日志器
     """
-    logger = logging.getLogger(f'content_moderator_{task_id}')
-    
-    if not logger.handlers:
-        logger.setLevel(logging.INFO)
-        
-        # 创建文件处理器
-        log_dir = "logs"
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        
-        log_file = os.path.join(log_dir, f'content_moderator_{task_id}.log')
-        handler = RotatingFileHandler(
-            log_file, 
-            maxBytes=10*1024*1024,  # 10MB
-            backupCount=5,
-            encoding='utf-8'
-        )
-        
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        
-        logger.propagate = False
-    
-    return logger
+    # 导入task_manager中的setup_task_logger
+    from modules.task_manager import setup_task_logger as task_setup_logger
+    return task_setup_logger(task_id)
 
 class AlibabaCloudModerator:
     """阿里云内容审核类"""
