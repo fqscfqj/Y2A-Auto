@@ -556,11 +556,32 @@ class YouTubeMonitor:
     
     def update_monitor_config(self, config_id, config_data):
         """更新监控配置"""
-        logger.info(f"开始更新监控配置，ID: {config_id}, 名称: {config_data.get('name', '未命名')}")
+        logger.info(f"更新监控配置，ID: {config_id}")
         
         try:
+            # 获取原有配置
+            old_config = self.get_monitor_config(config_id)
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                
+                # 检查历史搬运模式下时间范围是否发生变化
+                should_reset_offset = False
+                if (config_data.get('channel_mode') == 'historical' and old_config and 
+                    old_config.get('channel_mode') == 'historical'):
+                    # 检查开始日期或结束日期是否变化
+                    old_start = old_config.get('start_date', '')
+                    old_end = old_config.get('end_date', '')
+                    new_start = config_data.get('start_date', '')
+                    new_end = config_data.get('end_date', '')
+                    
+                    if old_start != new_start or old_end != new_end:
+                        should_reset_offset = True
+                        logger.info(f"检测到历史搬运模式时间范围变化，将重置偏移量：{old_start}-{old_end} → {new_start}-{new_end}")
+                
+                # 如果需要重置偏移量，将其设为0
+                if should_reset_offset:
+                    config_data['historical_offset'] = 0
                 
                 cursor.execute('''
                     UPDATE monitor_configs SET
@@ -604,11 +625,14 @@ class YouTubeMonitor:
                     config_data.get('rate_limit_window', 60),
                     config_data.get('auto_add_to_tasks', False),
                     config_data.get('historical_progress_date', ''),
-                    config_data.get('historical_offset', 0),
+                    config_data.get('historical_offset', old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0),
                     config_id
                 ))
                 
                 conn.commit()
+                
+                if should_reset_offset:
+                    logger.info(f"历史搬运偏移量已重置为0")
                 
                 logger.info(f"监控配置已更新: {config_data.get('name')} (ID: {config_id})")
             
@@ -1523,86 +1547,49 @@ class YouTubeMonitor:
         logger.info("手动触发配置恢复...")
         
         try:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            # 停止所有现有调度
+            self.stop_all_schedules()
             
-            if not os.path.exists(config_dir):
-                logger.warning("配置文件目录不存在")
-                return False, "配置文件目录不存在"
+            # 重新恢复配置
+            self._restore_configs_from_files()
             
-            # 扫描配置文件
-            config_files = []
-            for filename in os.listdir(config_dir):
-                if filename.startswith('monitor_config_') and filename.endswith('.json'):
-                    config_files.append(filename)
+            # 重新启动调度
+            self._restart_restored_schedules()
             
-            if not config_files:
-                logger.warning("未找到配置文件")
-                return False, "未找到配置文件"
-            
-            logger.info(f"发现 {len(config_files)} 个配置文件，开始恢复")
-            
-            restored_count = 0
-            skipped_count = 0
-            error_count = 0
-            
-            for filename in sorted(config_files):
-                try:
-                    config_file_path = os.path.join(config_dir, filename)
-                    with open(config_file_path, 'r', encoding='utf-8') as f:
-                        config_data = json.load(f)
-                    
-                    # 提取配置ID
-                    original_config_id = config_data.get('config_id')
-                    if not original_config_id:
-                        logger.warning(f"配置文件 {filename} 缺少config_id，跳过")
-                        skipped_count += 1
-                        continue
-                    
-                    # 检查是否已存在
-                    existing_config = self.get_monitor_config(original_config_id)
-                    if existing_config:
-                        logger.info(f"配置 ID {original_config_id} 已存在，跳过恢复")
-                        skipped_count += 1
-                        continue
-                    
-                    # 移除不需要插入数据库的字段
-                    config_data_copy = config_data.copy()
-                    config_data_copy.pop('config_id', None)
-                    config_data_copy.pop('created_time', None)
-                    
-                    # 恢复到数据库
-                    restored_id = self._restore_single_config(config_data_copy, original_config_id)
-                    if restored_id:
-                        restored_count += 1
-                        logger.info(f"恢复配置: {config_data.get('name', '未命名')} (ID: {original_config_id} -> {restored_id})")
-                        
-                        # 如果是启用的自动调度，立即启动
-                        if config_data.get('enabled') and config_data.get('schedule_type') == 'auto':
-                            self._schedule_monitor(restored_id, config_data.get('schedule_interval', 60))
-                    else:
-                        error_count += 1
-                    
-                except Exception as e:
-                    logger.error(f"恢复配置文件 {filename} 失败: {str(e)}")
-                    error_count += 1
-                    continue
-            
-            # 启动调度器（如果有自动调度任务）
-            if restored_count > 0:
-                configs = self.get_monitor_configs()
-                auto_configs = [c for c in configs if c['enabled'] and c['schedule_type'] == 'auto']
-                if auto_configs and not self.scheduler.running:
-                    self.scheduler.start()
-            
-            message = f"恢复完成：成功 {restored_count} 个，跳过 {skipped_count} 个，失败 {error_count} 个"
-            logger.info(message)
-            
-            return True, message
+            logger.info("配置恢复完成")
+            return True, "配置恢复完成"
             
         except Exception as e:
-            error_msg = f"手动恢复配置失败: {str(e)}"
-            logger.error(error_msg)
-            return False, error_msg
+            logger.error(f"配置恢复失败: {str(e)}")
+            return False, f"配置恢复失败: {str(e)}"
+    
+    def reset_historical_offset(self, config_id):
+        """重置历史搬运偏移量"""
+        logger.info(f"重置历史搬运偏移量，配置ID: {config_id}")
+        
+        try:
+            # 获取配置信息用于日志
+            config = self.get_monitor_config(config_id)
+            if not config:
+                return False, "配置不存在"
+            
+            config_name = config['name']
+            current_offset = config.get('historical_offset', 0)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE monitor_configs SET historical_offset = 0 WHERE id = ?',
+                    (config_id,)
+                )
+                conn.commit()
+            
+            logger.info(f"配置 {config_name} (ID: {config_id}) 的历史搬运偏移量已从 {current_offset} 重置为 0")
+            return True, f"偏移量已从 {current_offset} 重置为 0，将重新开始历史搬运"
+            
+        except Exception as e:
+            logger.error(f"重置历史搬运偏移量失败，配置ID: {config_id}, 错误: {str(e)}")
+            return False, f"重置偏移量失败: {str(e)}"
 
 # 全局监控实例
 youtube_monitor = YouTubeMonitor()

@@ -328,25 +328,47 @@ python app.py
 
 ## 浏览器插件
 
-为了提升使用体验，Y2A-Auto 提供了两个实用的油猴脚本：
+为了提升使用体验，Y2A-Auto 提供了浏览器扩展和用户脚本：
 
-### 🍪 Cookie 自动同步脚本
+### 🔥 Y2A-Auto 浏览器扩展（推荐）
 
-自动从 YouTube 获取并同步 cookies 到 Y2A-Auto，确保认证状态始终有效。
+完整的浏览器扩展，提供 Cookie 同步和视频推送功能的一体化解决方案。
 
 **主要功能**：
 
-- ✅ 自动检测 cookie 变化并同步
-- ✅ 定时同步到服务器
-- ✅ 可视化状态指示器
-- ✅ 错误处理和重试机制
+- 🍪 **自动 Cookie 同步** - 访问包括 HttpOnly 在内的所有认证 Cookie
+- 📤 **一键视频推送** - 在 YouTube 页面直接添加视频到处理队列
+- 🔄 **后台自动同步** - 定时同步 Cookie，确保认证状态有效
+- 📊 **实时状态显示** - 可视化同步状态和操作反馈
+- ⚙️ **灵活配置** - 支持自定义服务器地址和同步间隔
 
-**安装和使用**：
-📄 [详细使用说明](docs/userscripts/Cookie-Sync-README.md)
+**安装方式**：
+
+1. **加载扩展到浏览器**
+   - 打开浏览器扩展管理页面
+   - 启用"开发者模式"
+   - 点击"加载已解压的扩展程序"
+   - 选择 `userscripts/browser-extension/` 目录
+
+2. **配置服务器地址**
+   - 方式一（推荐）：右键扩展图标 → "选项" → 在设置页面配置
+   - 方式二：编辑 `background.js` 中的服务器配置
+   ```javascript
+   const Y2A_AUTO_SERVER = 'http://localhost:5000'; // 修改为实际地址
+   ```
+
+**技术优势**：
+- ✅ 可访问 HttpOnly Cookie（用户脚本无法实现）
+- ✅ 更稳定的后台运行机制
+- ✅ 更好的 YouTube 页面集成
+- ✅ 无需安装额外的脚本管理器
+
+**详细使用说明**：
+📄 [浏览器扩展详细文档](docs/userscripts/Browser-Extension-README.md)
 
 ### 📤 YouTube 视频推送脚本
 
-在 YouTube 视频页面添加推送按钮，一键将视频发送到 Y2A-Auto 处理队列。
+轻量级的油猴脚本，专门用于在 YouTube 页面添加视频推送功能。
 
 **主要功能**：
 
@@ -358,15 +380,21 @@ python app.py
 **安装和使用**：
 📄 [详细使用说明](docs/userscripts/PushTo-README.md)
 
-### 快速安装指南
+### 安装指南
+
+#### 方式一：浏览器扩展（推荐）
+
+直接使用 `userscripts/browser-extension/` 目录中的完整扩展。
+
+#### 方式二：用户脚本
 
 1. **安装 Tampermonkey 扩展**
    - [Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
    - [Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
    - [Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
 
-2. **安装脚本**
-   - 复制 [`userscripts/`](userscripts/) 目录中的脚本文件内容
+2. **安装推送脚本**
+   - 复制 `userscripts/PushToY2AAuto.user.js` 内容
    - 在 Tampermonkey 中创建新脚本并粘贴
 
 3. **配置服务器地址**
@@ -497,10 +525,10 @@ python app.py
 
 ### 后端技术
 
-- **Flask 2.3.3** - Web 框架
-- **yt-dlp ≥2025.5.22** - YouTube 下载器
+- **Flask 3.1.1** - Web 框架
+- **yt-dlp ≥2025.6.9** - YouTube 下载器
 - **OpenAI ≥1.0.0** - AI 翻译和增强
-- **APScheduler 3.10.1** - 任务调度
+- **APScheduler 3.11.0** - 任务调度
 - **FFmpeg** - 视频处理
 - **SQLite** - 数据存储
 
@@ -528,13 +556,22 @@ Y2A-Auto/
 │   ├── content_moderator.py    # 内容审核
 │   ├── task_manager.py         # 任务管理器
 │   └── config_manager.py       # 配置管理
-├── userscripts/                # 浏览器插件脚本
-│   ├── Y2A-Auto-Cookie-Sync.user.js  # Cookie同步脚本
-│   ├── PushToY2AAuto.user.js   # 视频推送脚本
-│   └── README.md               # 脚本使用说明
+├── userscripts/                # 浏览器插件和脚本
+│   ├── browser-extension/      # 浏览器扩展（推荐）
+│   │   ├── manifest.json       # 扩展清单文件
+│   │   ├── background.js       # 后台服务脚本
+│   │   ├── content.js          # 内容脚本
+│   │   ├── popup.html          # 扩展弹窗页面
+│   │   ├── popup.js            # 弹窗逻辑
+│   │   ├── options.html        # 扩展设置页面
+│   │   ├── options.js          # 设置页面逻辑
+│   │   ├── styles.css          # 样式文件
+│   │   └── README.md           # 扩展使用说明
+│   ├── PushToY2AAuto.user.js   # 视频推送用户脚本
+│   └── README.md               # 插件使用说明
 ├── docs/                       # 项目文档
 │   ├── userscripts/            # 插件详细文档
-│   │   ├── Cookie-Sync-README.md    # Cookie同步详细说明
+│   │   ├── Browser-Extension-README.md  # 浏览器扩展详细说明
 │   │   └── PushTo-README.md         # 推送脚本详细说明
 │   └── README.md               # 文档中心
 ├── templates/                  # HTML 模板

@@ -108,6 +108,13 @@
                                 <a href="{{ url_for('youtube_monitor_history', config_id=config.id) }}" class="btn btn-info btn-sm" title="查看历史">
                                     <i class="bi bi-clock-history"></i>
                                 </a>
+                                {% if config.channel_mode == 'historical' %}
+                                <form method="POST" action="{{ url_for('youtube_monitor_reset_offset', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要重置历史搬运偏移量吗？这将重新开始搬运历史视频。')">
+                                    <button type="submit" class="btn btn-secondary btn-sm" title="重置偏移量">
+                                        <i class="bi bi-arrow-clockwise"></i>
+                                    </button>
+                                </form>
+                                {% endif %}
                                 <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-warning btn-sm" title="编辑">
                                     <i class="bi bi-pencil"></i>
                                 </a>
