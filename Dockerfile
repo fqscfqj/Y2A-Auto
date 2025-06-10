@@ -43,7 +43,25 @@ COPY --chown=y2a:y2a . .
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \
     && chown -R y2a:y2a /app \
     && chown -R y2a:y2a /home/y2a/.local \
-    && chmod +x /home/y2a/.local/bin/* 2>/dev/null || true
+    && chmod +x /home/y2a/.local/bin/* 2>/dev/null || true \
+    && chmod 755 /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp
+
+# 创建内联启动脚本
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Y2A-Auto Docker 容器启动中..."\n\
+export PYTHONUNBUFFERED=1\n\
+export PYTHONIOENCODING=utf-8\n\
+\n\
+# 确保目录权限\n\
+for dir in /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp; do\n\
+    [ -d "$dir" ] || mkdir -p "$dir"\n\
+    [ -w "$dir" ] || chmod 755 "$dir" 2>/dev/null || true\n\
+done\n\
+\n\
+echo "🎯 启动 Y2A-Auto 应用..."\n\
+exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # 确保本地包在PATH中
 ENV PATH=/home/y2a/.local/bin:$PATH
@@ -61,6 +79,9 @@ EXPOSE 5000
 # 添加健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5000/ || exit 1
+
+# 设置入口点
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # 启动应用
 CMD ["python", "app.py"] 

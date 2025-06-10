@@ -1,0 +1,270 @@
+/* Y2A-Auto Browser Extension Styles */
+
+/* Status indicator styles */
+.y2a-status-indicator {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Status indicator states */
+.y2a-status-indicator.synced {
+  background-color: #4caf50;
+}
+
+.y2a-status-indicator.syncing {
+  background-color: #2196f3;
+}
+
+.y2a-status-indicator.pending {
+  background-color: #ff9800;
+}
+
+.y2a-status-indicator.error {
+  background-color: #f44336;
+}
+
+/* Push button styles */
+.y2a-push-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  margin: 8px 8px 8px 0;
+  background-color: #ff0000;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-decoration: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.y2a-push-button:hover {
+  background-color: #d32f2f;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.y2a-push-button:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.y2a-push-button:disabled {
+  background-color: #666;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Push button states */
+.y2a-push-button.pushing {
+  background-color: #ff9800;
+}
+
+.y2a-push-button.success {
+  background-color: #4caf50;
+}
+
+.y2a-push-button.error {
+  background-color: #f44336;
+}
+
+/* Button icon styles */
+.y2a-push-button .icon {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+}
+
+/* Floating button for fallback */
+.y2a-floating-button {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 10000;
+  width: 56px;
+  height: 56px;
+  background-color: #ff0000;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.y2a-floating-button:hover {
+  background-color: #d32f2f;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.y2a-floating-button:active {
+  transform: translateY(0);
+}
+
+/* Notification styles */
+.y2a-notification {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10001;
+  padding: 16px 24px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  max-width: 400px;
+  text-align: center;
+}
+
+.y2a-notification.success {
+  border-left: 4px solid #4caf50;
+  color: #2e7d32;
+}
+
+.y2a-notification.error {
+  border-left: 4px solid #f44336;
+  color: #c62828;
+}
+
+.y2a-notification.info {
+  border-left: 4px solid #2196f3;
+  color: #1565c0;
+}
+
+/* Animation classes */
+.y2a-fade-in {
+  animation: y2aFadeIn 0.3s ease-out;
+}
+
+.y2a-fade-out {
+  animation: y2aFadeOut 0.3s ease-out;
+}
+
+@keyframes y2aFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -60%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@keyframes y2aFadeOut {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -40%);
+  }
+}
+
+/* Spinner animation for loading states */
+.y2a-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: white;
+  animation: y2aSpin 1s ease-in-out infinite;
+}
+
+@keyframes y2aSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Generic helper classes */
+.y2a-hidden {
+  display: none !important;
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .y2a-status-indicator {
+    top: 10px;
+    right: 10px;
+    font-size: 11px;
+    padding: 6px 10px;
+  }
+
+  .y2a-floating-button {
+    bottom: 15px;
+    right: 15px;
+    width: 48px;
+    height: 48px;
+    font-size: 16px;
+  }
+
+  .y2a-push-button {
+    font-size: 13px;
+    padding: 6px 12px;
+  }
+
+  .y2a-notification {
+    max-width: 300px;
+    font-size: 13px;
+    padding: 12px 18px;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .y2a-notification {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+  }
+
+  .y2a-notification.success {
+    color: #81c784;
+  }
+
+  .y2a-notification.error {
+    color: #e57373;
+  }
+
+  .y2a-notification.info {
+    color: #64b5f6;
+  }
+}
+
+/* Options page specific styles */
+.btn-spaced {
+  margin-left: 10px;
+}
+
+.hidden {
+  display: none;
+}
+
+.diag-result-spaced {
+  display: none;
+  margin-top: 20px;
+} 

@@ -517,31 +517,210 @@ def abandon_task_route(task_id):
         from modules.task_manager import delete_task_files
         delete_task_files(task_id)
     
-    flash('任务已放弃', 'warning')
-    return redirect(url_for('manual_review'))
+    flash('任务已废弃', 'success')
+    return redirect(url_for('tasks'))
+
+# 系统健康检查辅助函数
+
+def check_docker_volumes():
+    """检查Docker挂载卷状态"""
+    volumes = {}
+    app_root = os.path.dirname(os.path.abspath(__file__))
+    
+    volume_paths = [
+        ('config', 'config'),
+        ('db', 'db'),
+        ('downloads', 'downloads'),
+        ('logs', 'logs'),
+        ('cookies', 'cookies'),
+        ('temp', 'temp')
+    ]
+    
+    for name, path in volume_paths:
+        full_path = os.path.join(app_root, path)
+        volumes[name] = {
+            'path': full_path,
+            'exists': os.path.exists(full_path),
+            'is_mount': os.path.ismount(full_path),
+            'writable': os.access(full_path, os.W_OK) if os.path.exists(full_path) else False,
+            'size_mb': get_directory_size(full_path) if os.path.exists(full_path) else 0
+        }
+    
+    return volumes
+
+def get_directory_size(path):
+    """获取目录大小(MB)"""
+    try:
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if os.path.exists(fp):
+                    total_size += os.path.getsize(fp)
+        return round(total_size / 1024 / 1024, 2)
+    except:
+        return 0
+
+def get_database_info():
+    """获取数据库文件信息"""
+    try:
+        from modules.task_manager import get_db_path
+        db_path = get_db_path()
+        
+        if os.path.exists(db_path):
+            stat_info = os.stat(db_path)
+            return {
+                'path': db_path,
+                'size': stat_info.st_size,
+                'writable': os.access(db_path, os.W_OK),
+                'last_modified': stat_info.st_mtime
+            }
+        else:
+            return {
+                'path': db_path,
+                'size': 0,
+                'writable': False,
+                'last_modified': None
+            }
+    except Exception as e:
+        return {
+            'path': 'unknown',
+            'size': 0,
+            'writable': False,
+            'error': str(e)
+        }
+
+def get_database_debug_info():
+    """获取数据库调试信息"""
+    try:
+        from modules.task_manager import get_db_path
+        db_path = get_db_path()
+        
+        debug_info = {
+            'db_path': db_path,
+            'db_exists': os.path.exists(db_path),
+            'db_dir': os.path.dirname(db_path),
+            'db_dir_exists': os.path.exists(os.path.dirname(db_path)),
+            'db_dir_writable': os.access(os.path.dirname(db_path), os.W_OK) if os.path.exists(os.path.dirname(db_path)) else False,
+            'current_user': os.environ.get('USER', 'unknown'),
+            'current_uid': os.getuid() if hasattr(os, 'getuid') else 'unknown',
+            'current_gid': os.getgid() if hasattr(os, 'getgid') else 'unknown'
+        }
+        
+        if os.path.exists(db_path):
+            stat_info = os.stat(db_path)
+            debug_info.update({
+                'db_size': stat_info.st_size,
+                'db_mode': oct(stat_info.st_mode)[-3:],
+                'db_uid': stat_info.st_uid,
+                'db_gid': stat_info.st_gid
+            })
+        
+        return debug_info
+    except Exception as e:
+        return {'error': str(e)}
+
+def get_file_info(file_path):
+    """获取文件详细信息"""
+    try:
+        info = {
+            'exists': os.path.exists(file_path),
+            'size': 0,
+            'readable': False,
+            'last_modified': None
+        }
+        
+        if info['exists']:
+            stat_info = os.stat(file_path)
+            info.update({
+                'size': stat_info.st_size,
+                'readable': os.access(file_path, os.R_OK),
+                'last_modified': stat_info.st_mtime
+            })
+        
+        return info
+    except Exception as e:
+        return {
+            'exists': False,
+            'size': 0,
+            'readable': False,
+            'last_modified': None,
+            'error': str(e)
+        }
+
+def get_path_debug_info(file_path):
+    """获取路径调试信息"""
+    try:
+        debug_info = {
+            'path': file_path,
+            'dirname': os.path.dirname(file_path),
+            'basename': os.path.basename(file_path),
+            'dirname_exists': os.path.exists(os.path.dirname(file_path)),
+            'dirname_readable': os.access(os.path.dirname(file_path), os.R_OK) if os.path.exists(os.path.dirname(file_path)) else False,
+            'dirname_writable': os.access(os.path.dirname(file_path), os.W_OK) if os.path.exists(os.path.dirname(file_path)) else False
+        }
+        
+        # 列出目录内容
+        if debug_info['dirname_exists'] and debug_info['dirname_readable']:
+            try:
+                debug_info['directory_contents'] = os.listdir(os.path.dirname(file_path))
+            except:
+                debug_info['directory_contents'] = 'permission_denied'
+        
+        return debug_info
+    except Exception as e:
+        return {'error': str(e)}
 
 @app.route('/system_health')
 def system_health():
-    """系统健康检查"""
+    """系统健康检查 - 增强Docker环境兼容性"""
     from modules.task_manager import get_db_connection, validate_cookies
     import sqlite3
+    import os
+    import platform
+    import sys
+    
+    # 检测运行环境
+    is_docker = os.path.exists('/.dockerenv') or os.environ.get('CONTAINER') == 'docker'
     
     health_status = {
+        'environment': {
+            'platform': platform.system(),
+            'python_version': sys.version.split()[0],
+            'is_docker': is_docker,
+            'user': os.environ.get('USER', 'unknown'),
+            'working_directory': os.getcwd()
+        },
         'database': {'status': 'unknown', 'message': ''},
         'youtube_cookies': {'status': 'unknown', 'message': ''},
         'acfun_cookies': {'status': 'unknown', 'message': ''},
         'stuck_tasks': {'count': 0, 'tasks': []},
-        'recent_errors': []
+        'recent_errors': [],
+        'docker_volumes': {}
     }
+    
+    # Docker环境特殊检查
+    if is_docker:
+        health_status['docker_volumes'] = check_docker_volumes()
     
     # 检查数据库
     try:
+        logger.info("开始数据库健康检查...")
         conn = get_db_connection()
+        
+        # 测试基本连接
         cursor = conn.execute('SELECT COUNT(*) FROM tasks')
         task_count = cursor.fetchone()[0]
+        
+        # 检查数据库文件权限和位置
+        db_info = get_database_info()
+        
         health_status['database'] = {
             'status': 'ok',
-            'message': f'数据库正常，共有 {task_count} 个任务'
+            'message': f'数据库正常，共有 {task_count} 个任务',
+            'location': db_info['path'],
+            'size_mb': round(db_info['size'] / 1024 / 1024, 2),
+            'writable': db_info['writable']
         }
         
         # 检查卡住的任务
@@ -572,41 +751,110 @@ def system_health():
         ]
         
         conn.close()
+        logger.info("数据库健康检查完成")
     except Exception as e:
+        logger.error(f"数据库健康检查失败: {str(e)}")
         health_status['database'] = {
             'status': 'error',
-            'message': f'数据库错误: {str(e)}'
+            'message': f'数据库错误: {str(e)}',
+            'details': get_database_debug_info()
         }
     
-    # 检查cookies
-    config = load_config()
-    
-    # YouTube cookies
-    yt_cookies_path = config.get('YOUTUBE_COOKIES_PATH', 'cookies/yt_cookies.txt')
-    if yt_cookies_path:
-        is_valid, message = validate_cookies(yt_cookies_path, "YouTube")
+    # 检查cookies - 使用更健壮的路径处理
+    try:
+        logger.info("开始cookies健康检查...")
+        config = load_config()
+        
+        # 获取应用根目录
+        app_root = os.path.dirname(os.path.abspath(__file__))
+        
+        # YouTube cookies
+        yt_cookies_path = config.get('YOUTUBE_COOKIES_PATH', 'cookies/yt_cookies.txt')
+        if yt_cookies_path:
+            # 如果是相对路径，转换为绝对路径
+            if not os.path.isabs(yt_cookies_path):
+                yt_cookies_path = os.path.join(app_root, yt_cookies_path)
+            
+            try:
+                logger.debug(f"检查YouTube cookies文件: {yt_cookies_path}")
+                is_valid, message = validate_cookies(yt_cookies_path, "YouTube")
+                
+                # 获取文件详细信息
+                file_info = get_file_info(yt_cookies_path)
+                
+                health_status['youtube_cookies'] = {
+                    'status': 'ok' if is_valid else 'error',
+                    'message': message,
+                    'path': yt_cookies_path,
+                    'exists': file_info['exists'],
+                    'size': file_info['size'],
+                    'readable': file_info['readable'],
+                    'last_modified': file_info['last_modified']
+                }
+            except Exception as e:
+                logger.error(f"YouTube cookies检查异常: {str(e)}")
+                health_status['youtube_cookies'] = {
+                    'status': 'error',
+                    'message': f'检查失败: {str(e)}',
+                    'path': yt_cookies_path,
+                    'debug_info': get_path_debug_info(yt_cookies_path)
+                }
+        else:
+            health_status['youtube_cookies'] = {
+                'status': 'warning',
+                'message': '未配置YouTube cookies路径'
+            }
+        
+        # AcFun cookies
+        ac_cookies_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.txt')
+        if ac_cookies_path:
+            # 如果是相对路径，转换为绝对路径
+            if not os.path.isabs(ac_cookies_path):
+                ac_cookies_path = os.path.join(app_root, ac_cookies_path)
+            
+            try:
+                logger.debug(f"检查AcFun cookies文件: {ac_cookies_path}")
+                is_valid, message = validate_cookies(ac_cookies_path, "AcFun")
+                
+                # 获取文件详细信息
+                file_info = get_file_info(ac_cookies_path)
+                
+                health_status['acfun_cookies'] = {
+                    'status': 'ok' if is_valid else 'error',
+                    'message': message,
+                    'path': ac_cookies_path,
+                    'exists': file_info['exists'],
+                    'size': file_info['size'],
+                    'readable': file_info['readable'],
+                    'last_modified': file_info['last_modified']
+                }
+            except Exception as e:
+                logger.error(f"AcFun cookies检查异常: {str(e)}")
+                health_status['acfun_cookies'] = {
+                    'status': 'error',
+                    'message': f'检查失败: {str(e)}',
+                    'path': ac_cookies_path,
+                    'debug_info': get_path_debug_info(ac_cookies_path)
+                }
+        else:
+            health_status['acfun_cookies'] = {
+                'status': 'warning',
+                'message': '未配置AcFun cookies路径'
+            }
+        
+        logger.info("cookies健康检查完成")
+            
+    except Exception as e:
+        logger.error(f"检查cookies时发生错误: {str(e)}")
         health_status['youtube_cookies'] = {
-            'status': 'ok' if is_valid else 'error',
-            'message': message
+            'status': 'error',
+            'message': f'检查失败: {str(e)}',
+            'debug_info': str(e)
         }
-    else:
-        health_status['youtube_cookies'] = {
-            'status': 'warning',
-            'message': '未配置YouTube cookies路径'
-        }
-    
-    # AcFun cookies
-    ac_cookies_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.txt')
-    if ac_cookies_path:
-        is_valid, message = validate_cookies(ac_cookies_path, "AcFun")
         health_status['acfun_cookies'] = {
-            'status': 'ok' if is_valid else 'error',
-            'message': message
-        }
-    else:
-        health_status['acfun_cookies'] = {
-            'status': 'warning',
-            'message': '未配置AcFun cookies路径'
+            'status': 'error',
+            'message': f'检查失败: {str(e)}',
+            'debug_info': str(e)
         }
     
     return jsonify(health_status)
@@ -1404,6 +1652,22 @@ def youtube_monitor_restore_configs():
     
     return redirect(url_for('youtube_monitor_index'))
 
+@app.route('/youtube_monitor/config/<int:config_id>/reset_offset', methods=['POST'])
+def youtube_monitor_reset_offset(config_id):
+    """重置历史搬运偏移量"""
+    try:
+        success, message = youtube_monitor.reset_historical_offset(config_id)
+        if success:
+            flash(message, 'success')
+        else:
+            flash(message, 'danger')
+            
+    except Exception as e:
+        logger.error(f"重置偏移量失败: {str(e)}")
+        flash(f'重置偏移量失败: {str(e)}', 'danger')
+    
+    return redirect(url_for('youtube_monitor_index'))
+
 @app.route('/api/cookies/sync', methods=['POST'])
 def sync_cookies():
     """接收来自油猴脚本的cookie同步请求"""
@@ -1420,7 +1684,7 @@ def sync_cookies():
                 return jsonify({'error': f'缺少必要字段: {field}'}), 400
         
         # 验证来源
-        if data['source'] != 'userscript':
+        if data['source'] not in ['userscript', 'extension']:
             return jsonify({'error': '不支持的cookie来源'}), 400
         
         # 验证cookie数据
@@ -1434,8 +1698,8 @@ def sync_cookies():
         
         youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
         
-        # 备份原有cookie文件
-        if os.path.exists(youtube_cookies_path):
+        # 仅在来源为油猴脚本时备份cookie文件（浏览器扩展频繁更新不需要备份）
+        if data['source'] == 'userscript' and os.path.exists(youtube_cookies_path):
             backup_path = youtube_cookies_path + f'.backup.{int(time.time())}'
             try:
                 shutil.copy2(youtube_cookies_path, backup_path)
@@ -1458,7 +1722,8 @@ def sync_cookies():
                 'file_size': len(cookies_content)
             }
             
-            logger.info(f"Cookie同步成功 - 来源: 油猴脚本, 数量: {data['cookieCount']}, 大小: {len(cookies_content)} bytes")
+            source_name = '浏览器扩展' if data['source'] == 'extension' else '油猴脚本'
+            logger.info(f"Cookie同步成功 - 来源: {source_name}, 数量: {data['cookieCount']}, 大小: {len(cookies_content)} bytes")
             
             # 可选：清理旧的备份文件（保留最近5个）
             try:
@@ -1526,6 +1791,31 @@ def get_cookie_status():
     except Exception as e:
         logger.error(f"获取cookie状态失败: {str(e)}")
         return jsonify({'error': f'获取状态失败: {str(e)}'}), 500
+
+@app.route('/api/cookies/refresh-needed', methods=['POST'])
+def cookie_refresh_needed():
+    """接收Cookie刷新需求通知"""
+    try:
+        data = request.get_json()
+        reason = data.get('reason', 'unknown')
+        video_url = data.get('video_url', '')
+        
+        logger.warning(f"收到Cookie刷新需求 - 原因: {reason}, 视频: {video_url}")
+        
+        # 这里可以实现通知机制，比如：
+        # 1. 发送到浏览器扩展
+        # 2. 在Web界面显示提示
+        # 3. 发送邮件通知等
+        
+        return jsonify({
+            'success': True,
+            'message': 'Cookie刷新需求已记录',
+            'suggestion': '请使用浏览器扩展重新同步Cookie'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"处理Cookie刷新需求失败: {str(e)}")
+        return jsonify({'error': f'处理失败: {str(e)}'}), 500
 
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")

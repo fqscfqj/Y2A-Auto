@@ -189,6 +189,30 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 首先测试视频可用性
         available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_path, cookies_path, logger)
         if not available:
+            # 检查是否是cookie相关的错误
+            bot_indicators = [
+                "Sign in to confirm",
+                "not a bot", 
+                "Signature extraction failed",
+                "Some formats may be missing",
+                "HTTP Error 403",
+                "Requested format is not available",
+                "player",
+                "decodeURIComponent"
+            ]
+            if error_msg and any(indicator in str(error_msg) for indicator in bot_indicators):
+                logger.warning("检测到YouTube反机器人验证，可能需要更新Cookie")
+                # 发送cookie更新通知到Web界面
+                try:
+                    import requests
+                    # 尝试通知Web界面显示cookie更新提示
+                    requests.post('http://localhost:5000/api/cookies/refresh-needed', 
+                                json={'reason': 'bot_detection', 'video_url': youtube_url}, 
+                                timeout=1)
+                    logger.info("已发送Cookie刷新通知")
+                except:
+                    pass  # 忽略请求失败，不影响主流程
+            
             logger.error(f"视频不可用或无法访问: {error_msg}")
             return False, f"视频不可用或无法访问: {error_msg}"
         

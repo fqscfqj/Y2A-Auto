@@ -171,6 +171,10 @@ def init_db():
     
     logger.info("数据库初始化完成")
 
+def get_db_path():
+    """获取数据库文件路径"""
+    return DB_PATH
+
 def get_db_connection():
     """获取数据库连接"""
     conn = sqlite3.connect(DB_PATH)

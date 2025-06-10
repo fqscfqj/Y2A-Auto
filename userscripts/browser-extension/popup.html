@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Y2A-Auto Assistant</title>
+  <style>
+    body {
+      width: 300px;
+      min-height: 200px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #f5f5f5;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 16px;
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: bold;
+      color: #ff0000;
+      margin-bottom: 8px;
+    }
+
+    .version {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .status-section {
+      background: white;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .status-label {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-dot.success { background-color: #4caf50; }
+    .status-dot.error { background-color: #f44336; }
+    .status-dot.pending { background-color: #ff9800; }
+    .status-dot.info { background-color: #2196f3; }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .btn-primary {
+      background-color: #ff0000;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #d32f2f;
+    }
+
+    .btn-secondary {
+      background-color: #e0e0e0;
+      color: #333;
+    }
+
+    .btn-secondary:hover {
+      background-color: #d0d0d0;
+    }
+
+
+
+    .btn:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
+    .config-info {
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">Y2A-Auto Assistant</div>
+    <div class="version">v1.0.0</div>
+  </div>
+
+  <div class="status-section">
+    <div class="status-label">Cookie 同步状态</div>
+    <div class="status-indicator">
+      <div class="status-dot" id="cookieStatusDot"></div>
+      <span id="cookieStatusText">检查中...</span>
+    </div>
+  </div>
+
+  <div class="status-section">
+    <div class="status-label">服务器连接状态</div>
+    <div class="status-indicator">
+      <div class="status-dot" id="serverStatusDot"></div>
+      <span id="serverStatusText">检查中...</span>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="syncNowBtn">🔄 立即同步 Cookie</button>
+    <button class="btn btn-secondary" id="openSettingsBtn">扩展设置</button>
+  </div>
+
+  <div class="config-info">
+    服务器地址: <span id="serverAddress">加载中...</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html> 

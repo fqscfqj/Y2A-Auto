@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Y2A-Auto Assistant",
+  "version": "1.0.0",
+  "description": "YouTube视频自动处理助手 - 同步Cookie并快速添加任务到Y2A-Auto",
+  
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "storage",
+    "background"
+  ],
+  
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Y2A-Auto Assistant"
+  },
+  
+  "options_page": "options.html"
+} 
