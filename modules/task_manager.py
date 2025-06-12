@@ -841,9 +841,33 @@ class TaskProcessor:
                 task_logger.info("尝试不使用cookies继续下载...")
                 cookies_path = None
                 
+        # 定义进度回调函数
+        def progress_callback(progress_info):
+            percent = progress_info.get('percent', 0)
+            file_size = progress_info.get('file_size', '')
+            speed = progress_info.get('speed', '')
+            eta = progress_info.get('eta', '')
+            
+            # 只显示百分比，简洁明了
+            progress_msg = f"{percent:.1f}%"
+            
+            # 详细信息记录到日志
+            detailed_msg = progress_msg
+            if file_size:
+                detailed_msg += f" / {file_size}"
+            if speed:
+                detailed_msg += f" @ {speed}"
+            if eta:
+                detailed_msg += f" ETA {eta}"
+            
+            task_logger.info(f"下载进度: {detailed_msg}")
+            
+            # 更新任务的上传进度字段用于显示（只显示百分比）
+            update_task(task_id, upload_progress=progress_msg, silent=True)
+        
         # 只下载视频文件
         try:
-            success, result = download_video_data(youtube_url, task_id, cookies_path, only_video=True)
+            success, result = download_video_data(youtube_url, task_id, cookies_path, only_video=True, progress_callback=progress_callback)
         except Exception as e:
             task_logger.error(f"下载视频文件时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
@@ -856,7 +880,8 @@ class TaskProcessor:
             
             update_data = {
                 'status': TASK_STATES['DOWNLOADED'],
-                'video_path_local': result.get('video_path', '')
+                'video_path_local': result.get('video_path', ''),
+                'upload_progress': None  # 清除进度显示
             }
             
             # 如果结果中包含元数据和封面信息，保存这些信息

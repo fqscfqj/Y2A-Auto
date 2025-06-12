@@ -78,6 +78,55 @@
                 <input type="file" id="youtube-cookies-file" name="youtube_cookies_file">
                 <p class="help-text">上传新文件将覆盖原有文件</p>
             </div>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="YOUTUBE_PROXY_ENABLED" {% if config.get('YOUTUBE_PROXY_ENABLED', False) %}checked{% endif %}>
+                    启用代理下载
+                </label>
+                <p class="help-text">在中国境内访问YouTube时通常需要代理</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="youtube-proxy-url">代理地址:</label>
+                <input type="text" id="youtube-proxy-url" name="YOUTUBE_PROXY_URL" value="{{ config.get('YOUTUBE_PROXY_URL', '') }}" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                <p class="help-text">支持HTTP和SOCKS5代理，格式如：http://proxy.example.com:8080 或 socks5://127.0.0.1:1080</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="youtube-download-threads">下载线程数:</label>
+                <input type="number" id="youtube-download-threads" name="YOUTUBE_DOWNLOAD_THREADS" value="{{ config.get('YOUTUBE_DOWNLOAD_THREADS', 4) }}" min="1" max="16">
+                <p class="help-text">yt-dlp并发下载片段的线程数，建议1-8，过高可能被YouTube限速</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="youtube-throttled-rate">下载速度限制:</label>
+                <input type="text" id="youtube-throttled-rate" name="YOUTUBE_THROTTLED_RATE" value="{{ config.get('YOUTUBE_THROTTLED_RATE', '') }}" placeholder="如：1M、500K、2.5M">
+                <p class="help-text">限制下载速度以避免被限流，格式如：1M（1MB/s）、500K（500KB/s），留空不限制</p>
+            </div>
+            
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle"></i> 
+                <strong>YouTube下载设置说明：</strong>
+                <ul class="mb-0 mt-2">
+                    <li><strong>代理设置：</strong>
+                        <ul>
+                            <li>HTTP代理：http://服务器地址:端口 (如：http://127.0.0.1:7890)</li>
+                            <li>SOCKS5代理：socks5://服务器地址:端口 (如：socks5://127.0.0.1:1080)</li>
+                            <li>认证代理：http://用户名:密码@服务器地址:端口</li>
+                        </ul>
+                    </li>
+                    <li><strong>下载优化：</strong>
+                        <ul>
+                            <li>线程数1-4：适合网络较慢或被限速的环境</li>
+                            <li>线程数5-8：适合正常网络环境，下载速度较快</li>
+                            <li>线程数过高可能触发YouTube反爬虫机制</li>
+                            <li>可配合速度限制避免被限流</li>
+                        </ul>
+                    </li>
+                    <li><strong>注意：</strong>代理和下载设置仅影响yt-dlp，不影响网页访问</li>
+                </ul>
+            </div>
         </div>
         
         <div class="settings-section">

@@ -7,6 +7,9 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>任务列表</h2>
         <div>
+            <button type="button" class="btn btn-outline-secondary me-2" id="autoRefreshBtn" onclick="toggleAutoRefresh()">
+                <i class="bi bi-arrow-clockwise"></i> 开启自动刷新
+            </button>
             <button type="button" class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#addTaskModal">
                 <i class="bi bi-plus-circle"></i> 新建任务
             </button>
@@ -23,12 +26,22 @@
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-striped table-hover mb-0 tasks-table">
+                    <colgroup>
+                        <col style="width: 120px;">
+                        <col style="width: 300px;">
+                        <col style="width: 100px;">
+                        <col style="width: 120px;">
+                        <col style="width: 120px;">
+                        <col style="width: 150px;">
+                        <col style="width: 200px;">
+                        <col style="width: 200px;">
+                    </colgroup>
                     <thead class="table-light">
                         <tr>
                             <th class="col-id">ID</th>
                             <th class="col-title">视频标题</th>
                             <th class="col-status">状态</th>
-                            <th class="col-time">创建时间</th>
+                            <th class="col-time">时间</th>
                             <th class="col-partition">分区</th>
                             <th class="col-tags">标签</th>
                             <th class="col-result">上传结果</th>
@@ -50,14 +63,17 @@
                             <td>
                                 <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                     {{ task_status_display(task.status) }}
-                                    {% if task.status == 'uploading' and task.upload_progress %}
+                                    {% if (task.status == 'uploading' or task.status == 'downloading') and task.upload_progress %}
                                         <br><small>{{ task.upload_progress }}</small>
                                     {% endif %}
                                 </span>
                             </td>
                             <td>
-                                <span class="task-updated-time">{{ task.updated_at or task.created_at }}</span>
-                                <div class="small text-muted">创建: {{ task.created_at }}</div>
+                                <span class="task-datetime" 
+                                      data-datetime="{{ task.updated_at or task.created_at }}"
+                                      title="点击查看详细时间">
+                                    {{ task.updated_at or task.created_at }}
+                                </span>
                             </td>
                             <td>
                                 {% if task.selected_partition_id %}
@@ -85,6 +101,7 @@
                                 {% endif %}
                             </td>
                             <td>
+                                <div class="upload-result-container">
                                 {% if task.status == 'completed' and task.acfun_upload_response %}
                                     {% set upload_result = parse_json(task.acfun_upload_response) %}
                                     {% if upload_result and upload_result.ac_number %}
@@ -96,10 +113,21 @@
                                         <span class="badge bg-secondary">未获取AC号</span>
                                     {% endif %}
                                 {% elif task.status == 'failed' %}
-                                    <span class="badge bg-danger">{{ task.error_message or '未知错误' }}</span>
+                                    {% set error_msg = task.error_message or '未知错误' %}
+                                    {% if error_msg|length > 30 %}
+                                        <span class="badge bg-danger error-message-badge" 
+                                              title="{{ error_msg }}" 
+                                              data-bs-toggle="tooltip" 
+                                              data-bs-placement="top">
+                                            {{ error_msg[:27] }}...
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-danger">{{ error_msg }}</span>
+                                    {% endif %}
                                 {% else %}
                                     <span class="badge bg-secondary">未上传</span>
                                 {% endif %}
+                                </div>
                             </td>
                             <td>
                                 <div class="d-flex justify-content-end gap-1">
@@ -243,6 +271,121 @@
 
 {% block extra_css %}
 <!-- 任务页面样式已移至 static/css/style.css -->
+<style>
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.error-message-badge {
+    max-width: 180px;
+    cursor: help;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    display: inline-block;
+}
+
+.tasks-table {
+    table-layout: auto;
+    width: 100%;
+    min-width: 1200px;
+}
+
+.tasks-table td, .tasks-table th {
+    vertical-align: middle;
+    padding: 0.5rem;
+}
+
+.tasks-table .col-id {
+    width: 120px;
+    min-width: 120px;
+}
+
+.tasks-table .col-title {
+    width: 300px;
+    min-width: 250px;
+}
+
+.tasks-table .col-status {
+    width: 100px;
+    min-width: 100px;
+    text-align: center;
+}
+
+.tasks-table .col-time {
+    width: 120px;
+    min-width: 120px;
+    text-align: center;
+}
+
+.tasks-table .col-partition {
+    width: 120px;
+    min-width: 100px;
+    text-align: center;
+}
+
+.tasks-table .col-tags {
+    width: 150px;
+    min-width: 120px;
+}
+
+.tasks-table .col-result {
+    width: 200px;
+    min-width: 180px;
+}
+
+.tasks-table .col-actions {
+    width: 200px;
+    min-width: 180px;
+    text-align: right;
+}
+
+.upload-result-container {
+    max-width: 200px;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.task-datetime {
+    cursor: help;
+    border-bottom: 1px dotted #6c757d;
+    display: inline-block;
+    white-space: nowrap;
+}
+
+.table-responsive {
+    overflow-x: auto;
+}
+
+.tasks-table .text-monospace {
+    font-size: 0.875rem;
+}
+
+.tags-container {
+    max-width: 150px;
+    overflow: hidden;
+}
+
+.tasks-table .badge {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tasks-table .col-result .badge {
+    max-width: 120px;
+}
+
+.tasks-table .btn-sm {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+}
+</style>
 {% endblock %}
 
 {% block extra_js %}
@@ -271,5 +414,319 @@
         // 显示模态框
         new bootstrap.Modal(document.getElementById('clearAllTasksModal')).show();
     }
+    
+    // 自动刷新功能
+    let autoRefreshEnabled = false;
+    let autoRefreshInterval = null;
+    let refreshInProgress = false;
+    
+    function updateTasksTable(newContent) {
+        // 使用AJAX更新任务表格，避免整页刷新
+        const parser = new DOMParser();
+        const newDoc = parser.parseFromString(newContent, 'text/html');
+        const newTasksContainer = newDoc.querySelector('.tasks-container');
+        
+        if (newTasksContainer) {
+            const currentContainer = document.querySelector('.tasks-container');
+            if (currentContainer) {
+                // 保存自动刷新按钮状态
+                const autoRefreshBtn = document.getElementById('autoRefreshBtn');
+                const currentBtnState = {
+                    innerHTML: autoRefreshBtn.innerHTML,
+                    classes: Array.from(autoRefreshBtn.classList)
+                };
+                
+                // 更新内容
+                currentContainer.innerHTML = newTasksContainer.innerHTML;
+                
+                // 恢复自动刷新按钮状态
+                const newAutoRefreshBtn = document.getElementById('autoRefreshBtn');
+                if (newAutoRefreshBtn) {
+                    newAutoRefreshBtn.innerHTML = currentBtnState.innerHTML;
+                    newAutoRefreshBtn.className = currentBtnState.classes.join(' ');
+                    newAutoRefreshBtn.onclick = toggleAutoRefresh;
+                }
+                
+                // 重新绑定事件
+                bindTasksEvents();
+                
+                // 更新时间显示
+                updateTaskDateTimes();
+            }
+        }
+    }
+    
+    function bindTasksEvents() {
+        // 重新绑定删除按钮事件
+        document.querySelectorAll('[onclick*="confirmDelete"]').forEach(btn => {
+            btn.onclick = function() {
+                confirmDelete(this.dataset.taskId, this.dataset.taskTitle);
+            };
+        });
+        
+        // 重新绑定清除所有任务按钮事件
+        const clearAllBtn = document.querySelector('[onclick*="confirmClearAll"]');
+        if (clearAllBtn) {
+            clearAllBtn.onclick = confirmClearAll;
+        }
+        
+        // 重新初始化tooltips
+        initTooltips();
+        
+        // 更新时间显示
+        updateTaskDateTimes();
+    }
+    
+    function initTooltips() {
+        // 销毁旧的tooltips
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.map(function (tooltipTriggerEl) {
+            const existingTooltip = bootstrap.Tooltip.getInstance(tooltipTriggerEl);
+            if (existingTooltip) {
+                existingTooltip.dispose();
+            }
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+    }
+    
+    function formatLocalDateTime(dateTimeString) {
+        try {
+            // 解析服务器时间（假设为UTC或服务器时区）
+            const date = new Date(dateTimeString);
+            
+            // 如果日期无效，返回原始字符串
+            if (isNaN(date.getTime())) {
+                return dateTimeString;
+            }
+            
+            // 格式化为本地时间
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMinutes = Math.floor(diffMs / (1000 * 60));
+            const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            
+            // 如果是刚刚（5分钟内）
+            if (diffMinutes < 5) {
+                return '刚刚';
+            }
+            // 如果是今天且在1小时内
+            else if (diffMinutes < 60) {
+                return diffMinutes + '分钟前';
+            }
+            // 如果是今天且在24小时内
+            else if (diffHours < 24 && date.toDateString() === now.toDateString()) {
+                return diffHours + '小时前';
+            }
+            // 如果是昨天
+            else if (diffDays === 1) {
+                return '昨天 ' + date.toLocaleTimeString('zh-CN', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+            // 如果是本周内（7天内）
+            else if (diffDays < 7) {
+                return diffDays + '天前';
+            }
+            // 如果是本年
+            else if (date.getFullYear() === now.getFullYear()) {
+                return date.toLocaleDateString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit'
+                }) + ' ' + date.toLocaleTimeString('zh-CN', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+            // 其他情况显示完整日期
+            else {
+                return date.toLocaleDateString('zh-CN', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit'
+                });
+            }
+        } catch (error) {
+            console.error('时间格式化错误:', error);
+            return dateTimeString;
+        }
+    }
+    
+    function updateTaskDateTimes() {
+        document.querySelectorAll('.task-datetime').forEach(function(element) {
+            const originalDateTime = element.getAttribute('data-datetime');
+            if (originalDateTime) {
+                const formattedTime = formatLocalDateTime(originalDateTime);
+                element.textContent = formattedTime;
+                
+                // 设置详细的tooltip
+                const fullDateTime = new Date(originalDateTime).toLocaleString('zh-CN', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    weekday: 'long'
+                });
+                element.title = fullDateTime;
+            }
+        });
+    }
+    
+    async function refreshTasksData() {
+        if (refreshInProgress) return;
+        refreshInProgress = true;
+        
+        // 添加加载指示器
+        const autoRefreshBtn = document.getElementById('autoRefreshBtn');
+        const originalContent = autoRefreshBtn.innerHTML;
+        autoRefreshBtn.innerHTML = '<i class="bi bi-arrow-repeat" style="animation: spin 1s linear infinite;"></i> 刷新中...';
+        
+        try {
+            const response = await fetch(window.location.href, {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            
+            if (response.ok) {
+                const content = await response.text();
+                updateTasksTable(content);
+            } else {
+                console.error('刷新失败，状态码:', response.status);
+            }
+        } catch (error) {
+            console.error('刷新任务数据失败:', error);
+            // 网络错误时不频繁重试，避免影响用户体验
+        } finally {
+            refreshInProgress = false;
+            // 恢复按钮状态
+            setTimeout(function() {
+                if (autoRefreshEnabled) {
+                    autoRefreshBtn.innerHTML = '<i class="bi bi-stop-circle"></i> 关闭自动刷新';
+                } else {
+                    autoRefreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 开启自动刷新';
+                }
+            }, 500);
+        }
+    }
+    
+    function hasProcessingTasks() {
+        const statusBadges = document.querySelectorAll('.task-status-badge');
+        let hasProcessing = false;
+        
+        statusBadges.forEach(function(badge) {
+            const statusText = badge.textContent.trim();
+            if (statusText.includes('下载中') || statusText.includes('上传中') || 
+                statusText.includes('翻译中') || statusText.includes('生成标签中') || 
+                statusText.includes('推荐分区中') || statusText.includes('内容审核中') ||
+                statusText.includes('翻译字幕中') || statusText.includes('处理中') ||
+                statusText.includes('等待') || statusText.includes('队列中')) {
+                hasProcessing = true;
+            }
+        });
+        
+        return hasProcessing;
+    }
+    
+    function toggleAutoRefresh() {
+        const button = document.getElementById('autoRefreshBtn');
+        
+        if (autoRefreshEnabled) {
+            // 关闭自动刷新
+            autoRefreshEnabled = false;
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            button.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 开启自动刷新';
+            button.classList.remove('btn-success');
+            button.classList.add('btn-outline-secondary');
+            
+            // 保存状态到localStorage
+            localStorage.setItem('tasksAutoRefresh', 'false');
+        } else {
+            // 开启自动刷新
+            autoRefreshEnabled = true;
+            autoRefreshInterval = setInterval(function() {
+                // 检查是否有正在处理中的任务，或者无条件刷新（用户手动开启）
+                if (hasProcessingTasks() || localStorage.getItem('tasksAutoRefreshForced') === 'true') {
+                    refreshTasksData();
+                }
+            }, 2000); // 每2秒刷新一次，更加及时
+            
+            button.innerHTML = '<i class="bi bi-stop-circle"></i> 关闭自动刷新';
+            button.classList.remove('btn-outline-secondary');
+            button.classList.add('btn-success');
+            
+            // 保存状态到localStorage
+            localStorage.setItem('tasksAutoRefresh', 'true');
+            localStorage.setItem('tasksAutoRefreshForced', 'true');
+            
+            // 立即执行一次刷新
+            setTimeout(refreshTasksData, 500);
+        }
+    }
+    
+    // 页面加载完成后初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        // 检查localStorage中的自动刷新状态
+        const savedAutoRefresh = localStorage.getItem('tasksAutoRefresh');
+        const hasActiveTasks = hasProcessingTasks();
+        
+        // 如果之前开启了自动刷新，或者有正在处理的任务，则自动开启
+        if (savedAutoRefresh === 'true' || hasActiveTasks) {
+            setTimeout(function() {
+                toggleAutoRefresh(); // 自动开启刷新
+            }, 500); // 减少延迟时间
+        }
+        
+        // 绑定初始事件
+        bindTasksEvents();
+        
+        // 初始化tooltips
+        initTooltips();
+        
+        // 初始化时间显示
+        updateTaskDateTimes();
+        
+        // 清理强制刷新标记（5分钟后）
+        setTimeout(function() {
+            localStorage.removeItem('tasksAutoRefreshForced');
+        }, 300000);
+        
+        // 每分钟更新一次相对时间显示
+        setInterval(function() {
+            updateTaskDateTimes();
+        }, 60000);
+        
+        // 处理页面可见性变化，页面隐藏时暂停刷新，恢复时继续
+        document.addEventListener('visibilitychange', function() {
+            if (autoRefreshEnabled) {
+                if (document.hidden) {
+                    // 页面隐藏时清除定时器
+                    if (autoRefreshInterval) {
+                        clearInterval(autoRefreshInterval);
+                        autoRefreshInterval = null;
+                    }
+                } else {
+                    // 页面恢复时重新启动定时器
+                    if (!autoRefreshInterval) {
+                        autoRefreshInterval = setInterval(function() {
+                            if (hasProcessingTasks() || localStorage.getItem('tasksAutoRefreshForced') === 'true') {
+                                refreshTasksData();
+                            }
+                        }, 2000);
+                        
+                        // 页面恢复时立即刷新一次
+                        setTimeout(refreshTasksData, 100);
+                    }
+                }
+            }
+        });
+    });
 </script>
 {% endblock %} 

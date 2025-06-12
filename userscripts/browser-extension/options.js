@@ -126,6 +126,46 @@ async function saveSettings() {
   }
 }
 
+// 解析服务器URL，提取认证信息
+function parseServerUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const credentials = {
+      username: urlObj.username,
+      password: urlObj.password
+    };
+    
+    // 移除URL中的认证信息
+    urlObj.username = '';
+    urlObj.password = '';
+    const cleanUrl = urlObj.toString();
+    
+    return { cleanUrl, credentials };
+  } catch (error) {
+    console.error('解析服务器URL失败:', error);
+    return { cleanUrl: url, credentials: { username: '', password: '' } };
+  }
+}
+
+// 创建带认证的fetch选项
+function createFetchOptions(url, method = 'GET', body = null) {
+  const { cleanUrl, credentials } = parseServerUrl(url);
+  const headers = { 'Content-Type': 'application/json' };
+  
+  // 如果有认证信息，添加Authorization头
+  if (credentials.username && credentials.password) {
+    const auth = btoa(`${credentials.username}:${credentials.password}`);
+    headers['Authorization'] = `Basic ${auth}`;
+  }
+  
+  const options = { method, headers };
+  if (body) {
+    options.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  
+  return { url: cleanUrl, options };
+}
+
 async function testConnection() {
   const testBtn = document.getElementById('testConnectionBtn');
   const testResult = document.getElementById('testResult');
@@ -142,11 +182,12 @@ async function testConnection() {
       throw new Error('请先输入服务器地址');
     }
     
-    const cleanUrl = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
+    const cleanServerUrl = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
+    const { url, options } = createFetchOptions(cleanServerUrl, 'GET');
     
-    const response = await fetch(`${cleanUrl}/system_health`, {
-      method: 'GET',
-      timeout: 10000
+    const response = await fetch(`${url}/system_health`, {
+      ...options,
+      signal: AbortSignal.timeout(10000)
     });
     
     testResult.classList.remove('hidden');
@@ -250,6 +291,11 @@ async function updateStatus() {
     }
   } catch (error) {
     console.error('Update status failed:', error);
+    // 显示错误信息而不是"加载中..."
+    document.getElementById('currentServerUrl').textContent = '获取失败';
+    document.getElementById('autoSyncStatus').textContent = '获取失败';
+    document.getElementById('currentCookieCount').textContent = '获取失败';
+    document.getElementById('lastSyncTime').textContent = '获取失败';
   }
 }
 

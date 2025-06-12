@@ -264,8 +264,15 @@
             <option value="600000">10 分钟</option>
             <option value="1800000">30 分钟</option>
             <option value="3600000">1 小时</option>
+            <option value="7200000">2 小时</option>
+            <option value="21600000">6 小时</option>
+            <option value="43200000">12 小时</option>
+            <option value="86400000">1 天</option>
+            <option value="259200000">3 天</option>
+            <option value="604800000">7 天</option>
+            <option value="2592000000">30 天</option>
           </select>
-          <div class="help-text">Cookie 自动同步的时间间隔</div>
+          <div class="help-text">Cookie 自动同步的时间间隔，可设置从5分钟到30天</div>
         </div>
       </div>
       
@@ -283,7 +290,7 @@
           </div>
           <div class="status-item">
             <span class="label">Cookie 数量:</span>
-            <span class="value" id="cookieCount">加载中...</span>
+            <span class="value" id="currentCookieCount">加载中...</span>
           </div>
           <div class="status-item">
             <span class="label">自动同步:</span>

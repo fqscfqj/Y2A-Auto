@@ -65,6 +65,15 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
         '--simulate'
     ]
     
+    # 检查是否需要使用代理
+    from modules.config_manager import load_config
+    config = load_config()
+    if config.get('YOUTUBE_PROXY_ENABLED', False) and config.get('YOUTUBE_PROXY_URL', '').strip():
+        proxy_url = config.get('YOUTUBE_PROXY_URL').strip()
+        cmd.extend(['--proxy', proxy_url])
+        if logger:
+            logger.info(f"测试视频可用性时使用代理: {proxy_url}")
+    
     if cookies_path and os.path.exists(cookies_path):
         cmd.extend(['--cookies', cookies_path])
     
@@ -87,7 +96,7 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
         logger.error(f"格式检查出错: {str(e)}")
         return False, None, str(e)
 
-def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False):
+def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False, progress_callback=None):
     """
     下载YouTube视频数据
     
@@ -232,6 +241,25 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',  # 设置User-Agent
         ]
         
+        # 检查是否需要使用代理
+        from modules.config_manager import load_config
+        config = load_config()
+        if config.get('YOUTUBE_PROXY_ENABLED', False) and config.get('YOUTUBE_PROXY_URL', '').strip():
+            proxy_url = config.get('YOUTUBE_PROXY_URL').strip()
+            cmd.extend(['--proxy', proxy_url])
+            logger.info(f"使用代理: {proxy_url}")
+        
+        # 配置下载线程数
+        download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)
+        cmd.extend(['--concurrent-fragments', str(download_threads)])
+        logger.info(f"使用下载线程数: {download_threads}")
+        
+        # 配置下载速度限制
+        throttled_rate = config.get('YOUTUBE_THROTTLED_RATE', '').strip()
+        if throttled_rate:
+            cmd.extend(['--throttled-rate', throttled_rate])
+            logger.info(f"启用下载速度限制: {throttled_rate}")
+        
         # 添加格式选择策略 - 改进的格式选择
         if not skip_download:
             # 优先选择高质量视频格式，回退到可用格式
@@ -270,21 +298,86 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if cookies_path:
             cmd.extend(['--cookies', cookies_path])
         
+        # 添加进度显示选项
+        if progress_callback and not skip_download:
+            cmd.extend(['--progress'])
+        
         # 重试机制
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
-                process = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+                
+                if progress_callback and not skip_download:
+                    # 使用Popen实时获取进度
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+                    
+                    output_lines = []
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        line = line.strip()
+                        logger.debug(f"yt-dlp输出: {line}")
+                        
+                        # 解析进度信息
+                        if '[download]' in line and '%' in line:
+                            try:
+                                # 解析进度百分比，例如: [download]  45.2% of 123.45MiB at 1.23MiB/s ETA 00:30
+                                if 'of' in line and 'at' in line:
+                                    parts = line.split()
+                                    for i, part in enumerate(parts):
+                                        if part.endswith('%'):
+                                            percent_str = part.replace('%', '')
+                                            progress_percent = float(percent_str)
+                                            
+                                            # 提取文件大小和下载速度
+                                            file_size = ""
+                                            download_speed = ""
+                                            eta = ""
+                                            
+                                            if i + 2 < len(parts) and parts[i + 1] == 'of':
+                                                file_size = parts[i + 2]
+                                            
+                                            for j in range(i + 3, len(parts)):
+                                                if parts[j] == 'at' and j + 1 < len(parts):
+                                                    download_speed = parts[j + 1]
+                                                elif parts[j] == 'ETA' and j + 1 < len(parts):
+                                                    eta = parts[j + 1]
+                                                    break
+                                            
+                                            progress_info = {
+                                                'percent': progress_percent,
+                                                'file_size': file_size,
+                                                'speed': download_speed,
+                                                'eta': eta
+                                            }
+                                            
+                                            progress_callback(progress_info)
+                                            break
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"解析进度信息失败: {e}")
+                    
+                    process.wait()
+                    output = ''.join(output_lines)
+                    
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd, output)
+                else:
+                    # 不需要进度回调时使用原来的方式
+                    process = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+                    output = process.stdout
+                
                 break  # 成功执行，跳出重试循环
                 
             except subprocess.CalledProcessError as e:
                 logger.warning(f"尝试 {attempt + 1} 失败: {str(e)}")
-                logger.warning(f"标准输出: {e.stdout}")
-                logger.warning(f"标准错误: {e.stderr}")
+                error_output = output if 'output' in locals() else (e.stdout or "")
+                error_stderr = getattr(e, 'stderr', "") or ""
+                logger.warning(f"标准输出: {error_output}")
+                logger.warning(f"标准错误: {error_stderr}")
                 
                 # 检查是否是格式问题
-                if "Requested format is not available" in e.stderr or "Only images are available" in e.stderr:
+                combined_error = error_output + error_stderr
+                if "Requested format is not available" in combined_error or "Only images are available" in combined_error:
                     if attempt < max_retries - 1:
                         # 降级格式选择策略
                         if '--format' in cmd:
@@ -310,8 +403,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     # 最后一次尝试也失败
                     error_msg = f"yt-dlp执行错误: {str(e)}"
                     logger.error(error_msg)
-                    logger.error(f"标准输出: {e.stdout}")
-                    logger.error(f"标准错误: {e.stderr}")
+                    logger.error(f"标准输出: {error_output}")
+                    logger.error(f"标准错误: {error_stderr}")
                     return False, error_msg
                     
             except subprocess.TimeoutExpired:
@@ -410,8 +503,10 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         else:
             error_msg = f"yt-dlp返回非零状态码: {process.returncode}"
             logger.error(error_msg)
-            logger.error(f"标准输出: {process.stdout}")
-            logger.error(f"标准错误: {process.stderr}")
+            final_output = output if 'output' in locals() else getattr(process, 'stdout', "")
+            final_stderr = getattr(process, 'stderr', "") or ""
+            logger.error(f"标准输出: {final_output}")
+            logger.error(f"标准错误: {final_stderr}")
             return False, error_msg
         
     except Exception as e:
