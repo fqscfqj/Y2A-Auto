@@ -871,7 +871,7 @@ def settings():
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL'
+            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -881,7 +881,7 @@ def settings():
         numeric_fields = [
             'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
             'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
-            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS'
+            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS'
         ]
         for field in numeric_fields:
             if field in form_data:
@@ -897,7 +897,8 @@ def settings():
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 3
+                        'SUBTITLE_MAX_WORKERS': 3,
+                        'YOUTUBE_DOWNLOAD_THREADS': 4
                     }
                     form_data[field] = defaults.get(field, 1)
         
@@ -1698,14 +1699,14 @@ def sync_cookies():
         
         youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
         
-        # 仅在来源为油猴脚本时备份cookie文件（浏览器扩展频繁更新不需要备份）
-        if data['source'] == 'userscript' and os.path.exists(youtube_cookies_path):
-            backup_path = youtube_cookies_path + f'.backup.{int(time.time())}'
-            try:
-                shutil.copy2(youtube_cookies_path, backup_path)
-                logger.info(f"已备份原有cookie文件到: {backup_path}")
-            except Exception as e:
-                logger.warning(f"备份cookie文件失败: {str(e)}")
+        # 不再创建备份文件（用户要求禁用备份功能）
+        # if data['source'] == 'userscript' and os.path.exists(youtube_cookies_path):
+        #     backup_path = youtube_cookies_path + f'.backup.{int(time.time())}'
+        #     try:
+        #         shutil.copy2(youtube_cookies_path, backup_path)
+        #         logger.info(f"已备份原有cookie文件到: {backup_path}")
+        #     except Exception as e:
+        #         logger.warning(f"备份cookie文件失败: {str(e)}")
         
         # 写入新的cookie文件
         try:
@@ -1725,25 +1726,25 @@ def sync_cookies():
             source_name = '浏览器扩展' if data['source'] == 'extension' else '油猴脚本'
             logger.info(f"Cookie同步成功 - 来源: {source_name}, 数量: {data['cookieCount']}, 大小: {len(cookies_content)} bytes")
             
-            # 可选：清理旧的备份文件（保留最近5个）
-            try:
-                backup_files = []
-                for file in os.listdir(cookies_dir):
-                    if file.startswith('yt_cookies.txt.backup.'):
-                        backup_path = os.path.join(cookies_dir, file)
-                        backup_files.append((os.path.getmtime(backup_path), backup_path))
-                
-                # 按时间排序，删除多余的备份
-                if len(backup_files) > 5:
-                    backup_files.sort()
-                    for _, old_backup in backup_files[:-5]:
-                        try:
-                            os.remove(old_backup)
-                            logger.debug(f"已删除旧备份文件: {old_backup}")
-                        except Exception as e:
-                            logger.warning(f"删除旧备份文件失败: {str(e)}")
-            except Exception as e:
-                logger.warning(f"清理备份文件失败: {str(e)}")
+            # 备份文件功能已禁用，不再需要清理逻辑
+            # try:
+            #     backup_files = []
+            #     for file in os.listdir(cookies_dir):
+            #         if file.startswith('yt_cookies.txt.backup.'):
+            #             backup_path = os.path.join(cookies_dir, file)
+            #             backup_files.append((os.path.getmtime(backup_path), backup_path))
+            #     
+            #     # 按时间排序，删除多余的备份
+            #     if len(backup_files) > 5:
+            #         backup_files.sort()
+            #         for _, old_backup in backup_files[:-5]:
+            #             try:
+            #                 os.remove(old_backup)
+            #                 logger.debug(f"已删除旧备份文件: {old_backup}")
+            #             except Exception as e:
+            #                 logger.warning(f"删除旧备份文件失败: {str(e)}")
+            # except Exception as e:
+            #     logger.warning(f"清理备份文件失败: {str(e)}")
             
             return jsonify({
                 'success': True,

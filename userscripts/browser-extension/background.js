@@ -105,7 +105,7 @@ class Y2AAutoBackground {
                 case 'getSyncStatus':
                 case 'GET_STATUS':
                     const status = await this.getExtensionStatus();
-                    sendResponse(status);
+                    sendResponse({ success: true, ...status });
                     break;
                     
                 default:
@@ -207,6 +207,46 @@ class Y2AAutoBackground {
         }
     }
     
+    // 解析服务器URL，提取认证信息
+    parseServerUrl(url) {
+        try {
+            const urlObj = new URL(url);
+            const credentials = {
+                username: urlObj.username,
+                password: urlObj.password
+            };
+            
+            // 移除URL中的认证信息
+            urlObj.username = '';
+            urlObj.password = '';
+            const cleanUrl = urlObj.toString();
+            
+            return { cleanUrl, credentials };
+        } catch (error) {
+            console.error('解析服务器URL失败:', error);
+            return { cleanUrl: url, credentials: { username: '', password: '' } };
+        }
+    }
+    
+    // 创建带认证的fetch选项
+    createFetchOptions(method = 'GET', body = null) {
+        const { cleanUrl, credentials } = this.parseServerUrl(this.config.serverUrl);
+        const headers = { 'Content-Type': 'application/json' };
+        
+        // 如果有认证信息，添加Authorization头
+        if (credentials.username && credentials.password) {
+            const auth = btoa(`${credentials.username}:${credentials.password}`);
+            headers['Authorization'] = `Basic ${auth}`;
+        }
+        
+        const options = { method, headers };
+        if (body) {
+            options.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+        
+        return { url: cleanUrl, options };
+    }
+
     async syncCookies(force = false) {
         try {
             const cookies = await this.getAllYouTubeCookies();
@@ -219,15 +259,14 @@ class Y2AAutoBackground {
             const currentHash = this.calculateCookieHash(cookies);
             
             // 发送到服务器
-            const response = await fetch(`${this.config.serverUrl}/api/cookies/sync`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    cookies: cookieData,
-                    source: 'extension',
-                    timestamp: Date.now()
-                })
+            const { url, options } = this.createFetchOptions('POST', {
+                cookies: cookieData,
+                source: 'extension',
+                timestamp: Date.now(),
+                cookieCount: cookies.length
             });
+            
+            const response = await fetch(`${url}/api/cookies/sync`, options);
             
             if (!response.ok) {
                 throw new Error(`服务器返回 ${response.status}`);
@@ -258,14 +297,12 @@ class Y2AAutoBackground {
     
     async addVideoTask(videoUrl, videoData) {
         try {
-            const response = await fetch(`${this.config.serverUrl}/tasks/add_via_extension`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    video_url: videoUrl,
-                    video_data: videoData
-                })
+            const { url, options } = this.createFetchOptions('POST', {
+                video_url: videoUrl,
+                video_data: videoData
             });
+            
+            const response = await fetch(`${url}/tasks/add_via_extension`, options);
             
             if (!response.ok) {
                 throw new Error(`服务器返回 ${response.status}`);
@@ -301,9 +338,10 @@ class Y2AAutoBackground {
     async getExtensionStatus() {
         try {
             // 检查服务器连接
-            const response = await fetch(`${this.config.serverUrl}/system_health`, {
-                method: 'GET',
-                timeout: 5000
+            const { url, options } = this.createFetchOptions('GET');
+            const response = await fetch(`${url}/system_health`, {
+                ...options,
+                signal: AbortSignal.timeout(5000)
             });
             
             const serverStatus = response.ok ? 'success' : 'error';
@@ -328,7 +366,7 @@ class Y2AAutoBackground {
         } catch (error) {
             return {
                 serverStatus: 'error',
-                serverMessage: '连接失败',
+                serverMessage: `连接失败: ${error.message}`,
                 cookieStatus: 'error',
                 cookieMessage: '状态检查失败',
                 lastSyncTime: this.lastSyncTime,

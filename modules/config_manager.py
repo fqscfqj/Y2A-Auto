@@ -32,6 +32,11 @@ DEFAULT_CONFIG = {
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
     "ALIYUN_TEXT_MODERATION_SERVICE": "comment_detection_pro",
     "COVER_PROCESSING_MODE": "crop",
+    # YouTube下载相关配置
+    "YOUTUBE_PROXY_ENABLED": False,  # 是否启用代理
+    "YOUTUBE_PROXY_URL": "",  # 代理地址，格式：http://proxy.example.com:8080 或 socks5://127.0.0.1:1080
+    "YOUTUBE_DOWNLOAD_THREADS": 4,  # yt-dlp下载线程数（并发片段数）
+    "YOUTUBE_THROTTLED_RATE": "",  # 限制下载速度，格式如：1M、500K等，留空不限制
     # 字幕翻译相关配置
     "SUBTITLE_TRANSLATION_ENABLED": False,  # 是否启用字幕翻译
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
