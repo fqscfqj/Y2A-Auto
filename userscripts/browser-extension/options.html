@@ -285,6 +285,10 @@
             <span class="value" id="currentServerUrl">加载中...</span>
           </div>
           <div class="status-item">
+            <span class="label">登录状态:</span>
+            <span class="value" id="loginStatus">检查中...</span>
+          </div>
+          <div class="status-item">
             <span class="label">上次同步:</span>
             <span class="value" id="lastSyncTime">加载中...</span>
           </div>
@@ -297,16 +301,26 @@
             <span class="value" id="autoSyncStatus">加载中...</span>
           </div>
         </div>
+        
+        <div class="form-group" style="margin-top: 15px;">
+          <div class="help-text">
+            <strong>💡 使用提示：</strong><br>
+            • <strong>左键点击</strong>扩展图标可打开弹窗进行登录和快速操作<br>
+            • <strong>右键点击</strong>扩展图标选择"选项"可打开此设置页面<br>
+            • 如果服务器启用了密码保护，请在弹窗中登录后使用功能
+          </div>
+          <button type="button" class="btn btn-secondary" id="openPopupBtn" style="margin-top: 10px;">打开登录弹窗</button>
+        </div>
       </div>
       
-              <div class="button-group">
-          <button type="button" class="btn btn-secondary" id="networkDiagBtn">网络诊断</button>
-          <button type="button" class="btn btn-secondary" id="resetBtn">重置为默认</button>
-          <button type="button" class="btn btn-secondary" id="syncNowBtn">立即同步</button>
-          <button type="button" class="btn btn-primary" id="saveBtn">保存设置</button>
-        </div>
-        
-        <div id="diagResult" class="test-result diag-result-spaced"></div>
+      <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="networkDiagBtn">网络诊断</button>
+        <button type="button" class="btn btn-secondary" id="resetBtn">重置为默认</button>
+        <button type="button" class="btn btn-secondary" id="syncNowBtn">立即同步</button>
+        <button type="button" class="btn btn-primary" id="saveBtn">保存设置</button>
+      </div>
+      
+      <div id="diagResult" class="test-result diag-result-spaced"></div>
     </div>
   </div>
   

@@ -13,3 +13,4 @@ urllib3>=1.26.0
 python-dotenv==1.1.0
 pytz==2025.2
 google-api-python-client==2.116.0
+websockets

@@ -9,6 +9,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   // Start status updates
   startStatusUpdates();
+  
+  // Check authentication status
+  await checkAuthStatus();
 });
 
 async function initializePopup() {
@@ -27,7 +30,55 @@ async function initializePopup() {
   }
 }
 
+async function checkAuthStatus() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'CHECK_AUTH' });
+    
+    if (response && response.needsAuth) {
+      showLoginSection();
+    } else {
+      showMainContent();
+    }
+  } catch (error) {
+    console.error('Failed to check auth status:', error);
+    // Assume no auth needed if check fails
+    showMainContent();
+  }
+}
+
+function showLoginSection() {
+  document.getElementById('loginSection').classList.add('show');
+  document.getElementById('mainContent').classList.add('hidden');
+  // Focus on password input
+  setTimeout(() => {
+    document.getElementById('passwordInput').focus();
+  }, 100);
+}
+
+function showMainContent() {
+  document.getElementById('loginSection').classList.remove('show');
+  document.getElementById('mainContent').classList.remove('hidden');
+}
+
 function setupEventListeners() {
+  // Login button
+  document.getElementById('loginBtn').addEventListener('click', async () => {
+    await handleLogin();
+  });
+
+  // Enter key in password field
+  document.getElementById('passwordInput').addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      await handleLogin();
+    }
+  });
+
+  // Web login button
+  document.getElementById('openWebLoginBtn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ action: 'openLoginPage' });
+    window.close();
+  });
+
   // Sync now button - 合并了原来的立即同步和紧急修复功能
   document.getElementById('syncNowBtn').addEventListener('click', async () => {
     const button = document.getElementById('syncNowBtn');
@@ -90,6 +141,47 @@ function setupEventListeners() {
       }
     }
   });
+}
+
+async function handleLogin() {
+  const loginBtn = document.getElementById('loginBtn');
+  const passwordInput = document.getElementById('passwordInput');
+  const password = passwordInput.value.trim();
+
+  if (!password) {
+    passwordInput.focus();
+    return;
+  }
+
+  const originalText = loginBtn.textContent;
+  loginBtn.textContent = '登录中...';
+  loginBtn.disabled = true;
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'login',
+      password: password
+    });
+
+    if (response && response.success) {
+      // Login successful
+      passwordInput.value = '';
+      showMainContent();
+      await updateStatus(); // Refresh status after login
+    } else {
+      // Login failed
+      const errorMsg = response ? response.error : '登录失败';
+      alert(errorMsg);
+      passwordInput.select();
+    }
+  } catch (error) {
+    console.error('Login failed:', error);
+    alert('登录失败: ' + error.message);
+    passwordInput.select();
+  } finally {
+    loginBtn.textContent = originalText;
+    loginBtn.disabled = false;
+  }
 }
 
 function startStatusUpdates() {

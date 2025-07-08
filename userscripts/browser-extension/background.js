@@ -98,7 +98,7 @@ class Y2AAutoBackground {
                     break;
                     
                 case 'addVideoTask':
-                    const taskResult = await this.addVideoTask(message.videoUrl, message.videoData);
+                    const taskResult = await this.addVideoTask(message.videoUrl);
                     sendResponse(taskResult);
                     break;
                     
@@ -106,6 +106,21 @@ class Y2AAutoBackground {
                 case 'GET_STATUS':
                     const status = await this.getExtensionStatus();
                     sendResponse({ success: true, ...status });
+                    break;
+                    
+                case 'openLoginPage':
+                    chrome.tabs.create({ url: `${this.config.serverUrl}/login` });
+                    sendResponse({success: true});
+                    break;
+                    
+                case 'CHECK_AUTH':
+                    const authStatus = await this.checkAuthenticationStatus();
+                    sendResponse(authStatus);
+                    break;
+                    
+                case 'login':
+                    const loginResult = await this.performLogin(message.password);
+                    sendResponse(loginResult);
                     break;
                     
                 default:
@@ -295,22 +310,33 @@ class Y2AAutoBackground {
         }
     }
     
-    async addVideoTask(videoUrl, videoData) {
+    async addVideoTask(videoUrl) {
         try {
             const { url, options } = this.createFetchOptions('POST', {
-                video_url: videoUrl,
-                video_data: videoData
+                youtube_url: videoUrl
             });
             
-            const response = await fetch(`${url}/tasks/add_via_extension`, options);
+            const response = await fetch(`${this.config.serverUrl}/tasks/add_via_extension`, {
+                ...options,
+                credentials: 'include' // Include session cookies
+            });
             
             if (!response.ok) {
+                if (response.status === 401) {
+                    const data = await response.json();
+                    const error = new Error(data.message || '需要登录');
+                    error.action = data.action || 'login_required';
+                    throw error;
+                }
                 throw new Error(`服务器返回 ${response.status}`);
             }
             
             return await response.json();
         } catch (error) {
             console.error('添加视频任务失败:', error);
+            if (error.action) {
+                return { success: false, error: error.message, action: error.action };
+            }
             return { success: false, error: error.message };
         }
     }
@@ -372,6 +398,62 @@ class Y2AAutoBackground {
                 lastSyncTime: this.lastSyncTime,
                 config: this.config
             };
+        }
+    }
+
+    async checkAuthenticationStatus() {
+        try {
+            // Try to access a protected endpoint to check auth status
+            const { url, options } = this.createFetchOptions('GET');
+            const response = await fetch(`${this.config.serverUrl}/tasks`, {
+                ...options,
+                credentials: 'include',
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (response.status === 401) {
+                return { success: true, needsAuth: true };
+            }
+            
+            return { success: true, needsAuth: false };
+        } catch (error) {
+            console.error('检查认证状态失败:', error);
+            return { success: true, needsAuth: false }; // Assume no auth needed if check fails
+        }
+    }
+
+    async performLogin(password) {
+        try {
+            // Use form data for login
+            const formData = new FormData();
+            formData.append('password', password);
+            
+            const response = await fetch(`${this.config.serverUrl}/login`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'include', // Important for session cookies
+                signal: AbortSignal.timeout(10000)
+            });
+            
+            if (response.ok) {
+                // Successful login usually redirects, so check if we got redirected away from login
+                if (response.redirected && !response.url.includes('/login')) {
+                    return { success: true };
+                }
+                
+                // Check if the response contains success indicators
+                const text = await response.text();
+                if (text.includes('登录成功') || text.includes('首页') || !text.includes('密码错误')) {
+                    return { success: true };
+                }
+                
+                return { success: false, error: '密码错误' };
+            } else {
+                return { success: false, error: '登录失败' };
+            }
+        } catch (error) {
+            console.error('登录失败:', error);
+            return { success: false, error: error.message };
         }
     }
 }

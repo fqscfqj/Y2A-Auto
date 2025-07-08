@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}登录 - Y2A-Auto{% endblock %}
+
+{% block extra_css %}
+<style>
+    body {
+        background-color: #f8f9fa;
+        min-height: 100vh;
+        margin: 0;
+        padding: 0;
+    }
+    header, footer {
+        display: none;
+    }
+    main.container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0 !important;
+        padding: 0 !important;
+        max-width: 100% !important;
+    }
+    .login-container {
+        max-width: 400px;
+        width: 90%;
+        margin: 0;
+    }
+    .card {
+        border: none;
+        border-radius: 10px;
+    }
+    .card-body {
+        padding: 2rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <div class="text-center mb-4">
+                <h1 class="h3 mb-3 fw-normal">Y2A-Auto 登录</h1>
+                <p class="text-muted">请输入密码以继续</p>
+            </div>
+            
+            <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
+                <div class="form-floating mb-3">
+                    <input type="password" class="form-control" id="password" name="password" placeholder="密码" required>
+                    <label for="password">密码</label>
+                </div>
+                <button class="w-100 btn btn-lg btn-primary" type="submit">登录</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 聚焦密码输入框
+    document.getElementById('password').focus();
+</script>
+{% endblock %} 

@@ -65,6 +65,35 @@
         </div>
         
         <div class="settings-section">
+            <h3><i class="bi bi-shield-lock"></i> 密码保护</h3>
+            
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="password_protection_enabled" id="password_protection_enabled" {% if config.password_protection_enabled %}checked{% endif %}>
+                    启用Web界面密码保护
+                </label>
+                <p class="help-text">启用后，访问Web界面需要输入密码。浏览器插件也将需要登录才能使用。</p>
+            </div>
+            
+            <div id="password-fields">
+                <div class="form-group">
+                    <label for="new_password">新密码:</label>
+                    <input type="password" id="new_password" name="new_password" class="form-control">
+                    <p class="help-text">设置或更改您的登录密码。如果留空，密码将不会被更改。</p>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirm_password">确认新密码:</label>
+                    <input type="password" id="confirm_password" name="confirm_password" class="form-control">
+                    <p class="help-text">请再次输入新密码。</p>
+                </div>
+                <div id="password-match-error" class="alert alert-danger mt-2" style="display: none;">
+                    <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
+                </div>
+            </div>
+        </div>
+        
+        <div class="settings-section">
             <h3>YouTube设置</h3>
             
             <div class="form-group">
@@ -94,6 +123,18 @@
             </div>
             
             <div class="form-group">
+                <label for="youtube-proxy-username">代理用户名:</label>
+                <input type="text" id="youtube-proxy-username" name="YOUTUBE_PROXY_USERNAME" value="{{ config.get('YOUTUBE_PROXY_USERNAME', '') }}" placeholder="代理服务器用户名（可选）">
+                <p class="help-text">如果代理服务器需要身份验证，请填写用户名</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="youtube-proxy-password">代理密码:</label>
+                <input type="password" id="youtube-proxy-password" name="YOUTUBE_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_PROXY_PASSWORD', '') }}" placeholder="代理服务器密码（可选）">
+                <p class="help-text">如果代理服务器需要身份验证，请填写密码</p>
+            </div>
+            
+            <div class="form-group">
                 <label for="youtube-download-threads">下载线程数:</label>
                 <input type="number" id="youtube-download-threads" name="YOUTUBE_DOWNLOAD_THREADS" value="{{ config.get('YOUTUBE_DOWNLOAD_THREADS', 4) }}" min="1" max="16">
                 <p class="help-text">yt-dlp并发下载片段的线程数，建议1-8，过高可能被YouTube限速</p>
@@ -113,7 +154,7 @@
                         <ul>
                             <li>HTTP代理：http://服务器地址:端口 (如：http://127.0.0.1:7890)</li>
                             <li>SOCKS5代理：socks5://服务器地址:端口 (如：socks5://127.0.0.1:1080)</li>
-                            <li>认证代理：http://用户名:密码@服务器地址:端口</li>
+                            <li>认证代理：请分别在"代理地址"、"代理用户名"和"代理密码"字段中填写</li>
                         </ul>
                     </li>
                     <li><strong>下载优化：</strong>
