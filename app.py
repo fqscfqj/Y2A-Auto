@@ -10,7 +10,8 @@ import time
 import datetime
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session
+from functools import wraps
 from flask_cors import CORS, cross_origin
 from modules.youtube_handler import download_video_data
 from modules.utils import parse_id_md_to_json, process_cover
@@ -22,6 +23,18 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
+
+# 登录验证装饰器
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        config = load_config()
+        if config.get('password_protection_enabled'):
+            if 'logged_in' not in session:
+                flash('请先登录以访问此页面。', 'info')
+                return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # 配置CORS，允许来自YouTube的跨域请求
 CORS(app, resources={
@@ -246,13 +259,50 @@ app.jinja_env.globals.update(
     get_aliyun_label_chinese=get_aliyun_label_chinese # 添加新的辅助函数
 )
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    config = load_config()
+    # 如果密码保护未启用，或已登录，则重定向到首页
+    if not config.get('password_protection_enabled'):
+        return redirect(url_for('index'))
+    if 'logged_in' in session:
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        password = request.form.get('password')
+        stored_password = config.get('password')
+
+        # 检查是否有设置密码
+        if not stored_password:
+            flash('系统尚未设置密码，无法登录。请在禁用密码保护的情况下，进入设置页面设置密码。', 'danger')
+            return render_template('login.html')
+
+        if password and password == stored_password:
+            session['logged_in'] = True
+            session.permanent = True  # session持久化
+            flash('登录成功', 'success')
+            next_url = request.args.get('next')
+            return redirect(next_url or url_for('index'))
+        else:
+            flash('密码错误', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    flash('您已成功退出。', 'info')
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
     """首页"""
     logger.info("访问首页")
     return render_template('index.html')
 
 @app.route('/tasks')
+@login_required
 def tasks():
     """任务列表页面"""
     logger.info("访问任务列表页面")
@@ -260,6 +310,7 @@ def tasks():
     return render_template('tasks.html', tasks=tasks_list)
 
 @app.route('/manual_review')
+@login_required
 def manual_review():
     """人工审核列表页面"""
     logger.info("访问人工审核列表页面")
@@ -270,6 +321,7 @@ def manual_review():
     return render_template('manual_review.html', tasks=review_tasks)
 
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
+@login_required
 def edit_task(task_id):
     """任务编辑页面"""
     task = get_task(task_id)
@@ -368,11 +420,13 @@ def edit_task(task_id):
     )
 
 @app.route('/tasks/<task_id>/review')
+@login_required
 def review_task(task_id):
     """重定向到任务编辑页面"""
     return redirect(url_for('edit_task', task_id=task_id))
 
 @app.route('/tasks/add', methods=['POST'])
+@login_required
 def add_task_route():
     """添加新任务"""
     youtube_url = request.form.get('youtube_url')
@@ -400,6 +454,7 @@ def add_task_route():
     return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/start', methods=['POST'])
+@login_required
 def start_task_route(task_id):
     """开始处理任务"""
     task = get_task(task_id)
@@ -435,6 +490,7 @@ def start_task_route(task_id):
     return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/delete', methods=['POST'])
+@login_required
 def delete_task_route(task_id):
     """删除任务"""
     delete_files = request.form.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
@@ -449,6 +505,7 @@ def delete_task_route(task_id):
     return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/force_upload', methods=['POST'])
+@login_required
 def force_upload_task_route(task_id):
     """强制上传任务"""
     task = get_task(task_id)
@@ -488,6 +545,7 @@ def force_upload_task_route(task_id):
     return redirect(url_for('manual_review'))
 
 @app.route('/tasks/reset_stuck', methods=['POST'])
+@login_required
 def reset_stuck_tasks_route():
     """重置卡住的任务"""
     from modules.task_manager import reset_stuck_tasks
@@ -505,6 +563,7 @@ def reset_stuck_tasks_route():
     return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/abandon', methods=['POST'])
+@login_required
 def abandon_task_route(task_id):
     """放弃任务"""
     delete_files = request.form.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
@@ -860,18 +919,34 @@ def system_health():
     return jsonify(health_status)
 
 @app.route('/settings', methods=['GET', 'POST'])
+@login_required
 def settings():
     """设置页面，用于管理配置"""
     if request.method == 'POST':
         # 处理表单提交
         form_data = request.form.to_dict()
         
+        # --- 密码保护 ---
+        # 处理密码更新
+        new_password = form_data.get('new_password')
+        confirm_password = form_data.get('confirm_password')
+
+        if new_password:
+            if new_password == confirm_password:
+                form_data['password'] = new_password
+            else:
+                flash('新密码两次输入不一致，密码未更新。', 'danger')
+        
+        # 从字典中移除密码字段，防止重复保存
+        form_data.pop('new_password', None)
+        form_data.pop('confirm_password', None)
+
         # 处理复选框（未选中时不会提交）
         checkboxes = [
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED'
+            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -958,6 +1033,7 @@ def settings():
     return render_template('settings.html', config=config)
 
 @app.route('/settings/update_cover_mode', methods=['POST'])
+@login_required
 def update_cover_mode():
     """更新封面处理模式"""
     try:
@@ -986,6 +1062,7 @@ def update_cover_mode():
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/test_download')
+@login_required
 def test_download():
     """测试YouTube视频下载功能"""
     url = request.args.get('url')
@@ -1023,6 +1100,16 @@ def add_task_via_extension():
     """
     接收来自浏览器扩展的任务添加请求
     """
+    # 检查是否需要登录
+    config = load_config()
+    if config.get('password_protection_enabled'):
+        if 'logged_in' not in session:
+            return jsonify({
+                "success": False,
+                "message": "需要登录",
+                "action": "login_required"
+            }), 401
+
     if request.method == 'OPTIONS':
         # 预检请求处理
         return '', 204
@@ -1073,6 +1160,7 @@ def add_task_via_extension():
         }), 500
 
 @app.route('/tasks/clear_all', methods=['POST'])
+@login_required
 def clear_all_tasks_route():
     """清除所有任务"""
     delete_files = request.form.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
@@ -1087,6 +1175,7 @@ def clear_all_tasks_route():
     return redirect(url_for('tasks'))
 
 @app.route('/covers/<task_id>')
+@login_required
 def get_task_cover(task_id):
     """获取任务封面图片"""
     try:
@@ -1354,6 +1443,7 @@ def schedule_log_cleanup():
         return None
 
 @app.route('/maintenance/cleanup_logs', methods=['POST'])
+@login_required
 def cleanup_logs_route():
     """手动触发日志清理"""
     config = load_config()
@@ -1369,6 +1459,7 @@ def cleanup_logs_route():
     return redirect(url_for('settings'))
 
 @app.route('/maintenance/clear_logs', methods=['POST'])
+@login_required
 def clear_logs_route():
     """立即清空特定日志文件"""
     result = clear_specific_logs()
@@ -1383,6 +1474,7 @@ def clear_logs_route():
 
 # YouTube监控系统路由
 @app.route('/youtube_monitor')
+@login_required
 def youtube_monitor_index():
     """YouTube监控主页"""
     configs = youtube_monitor.get_monitor_configs()
@@ -1390,6 +1482,7 @@ def youtube_monitor_index():
     return render_template('youtube_monitor.html', configs=configs, history=history)
 
 @app.route('/youtube_monitor/config', methods=['GET', 'POST'])
+@login_required
 def youtube_monitor_config():
     """监控配置页面"""
     if request.method == 'POST':
@@ -1453,6 +1546,7 @@ def youtube_monitor_config():
     return render_template('youtube_monitor_config.html')
 
 @app.route('/youtube_monitor/config/<int:config_id>/edit', methods=['GET', 'POST'])
+@login_required
 def youtube_monitor_config_edit(config_id):
     """编辑监控配置"""
     config = youtube_monitor.get_monitor_config(config_id)
@@ -1521,6 +1615,7 @@ def youtube_monitor_config_edit(config_id):
     return render_template('youtube_monitor_config.html', config=config, is_edit=True)
 
 @app.route('/youtube_monitor/config/<int:config_id>/delete', methods=['POST'])
+@login_required
 def youtube_monitor_config_delete(config_id):
     """删除监控配置"""
     try:
@@ -1536,22 +1631,17 @@ def youtube_monitor_config_delete(config_id):
     return redirect(url_for('youtube_monitor_index'))
 
 @app.route('/youtube_monitor/config/<int:config_id>/run', methods=['POST'])
+@login_required
 def youtube_monitor_run(config_id):
-    """手动执行监控任务"""
-    try:
-        success, message = youtube_monitor.run_monitor(config_id)
-        if success:
-            flash(message, 'success')
-        else:
-            flash(message, 'danger')
-    except Exception as e:
-        flash(f'执行监控任务失败: {str(e)}', 'danger')
+    """立即执行一次监控任务"""
+    youtube_monitor.run_monitor_task(config_id, manual=True)
     
-    return redirect(url_for('youtube_monitor_index'))
+    return redirect(url_for('youtube_monitor_history', config_id=config_id))
 
 @app.route('/youtube_monitor/history/<int:config_id>')
+@login_required
 def youtube_monitor_history(config_id):
-    """查看指定配置的监控历史"""
+    """查看指定监控配置的发现历史"""
     config = youtube_monitor.get_monitor_config(config_id)
     if not config:
         flash('监控配置不存在', 'danger')
@@ -1580,98 +1670,69 @@ def youtube_monitor_history(config_id):
         stats['avg_views'] = int(total_views / len(history))
         stats['avg_likes'] = int(total_likes / len(history))
     
-    return render_template('youtube_monitor_history.html', config=config, history=history, stats=stats)
+    return render_template('youtube_monitor_history.html', history=history, config=config)
 
 @app.route('/youtube_monitor/add_to_tasks', methods=['POST'])
+@login_required
 def youtube_monitor_add_to_tasks():
-    """手动将视频添加到任务队列"""
-    try:
-        data = request.get_json()
-        video_id = data.get('video_id')
-        config_id = data.get('config_id')
-        
-        if not video_id or not config_id:
-            return jsonify({'success': False, 'message': '参数不完整'})
-        
-        success, message = youtube_monitor.add_video_to_tasks_manually(video_id, config_id)
-        return jsonify({'success': success, 'message': message})
-        
-    except Exception as e:
-        logger.error(f"添加视频到任务队列失败: {str(e)}")
-        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'})
+    """从监控历史中添加视频到任务列表"""
+    video_urls = request.json.get('video_urls', [])
+    
+    if not video_urls:
+        return jsonify({'success': False, 'message': '参数不完整'})
+    
+    success, message, added_count = youtube_monitor.add_videos_to_tasks_from_history(video_urls)
+    
+    if success:
+        return jsonify({
+            'success': True,
+            'message': f'成功添加了 {added_count} 个视频到任务列表',
+            'added_count': added_count
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'message': f'操作失败: {message}'
+        })
 
 @app.route('/youtube_monitor/history/<int:config_id>/clear', methods=['POST'])
+@login_required
 def youtube_monitor_clear_history(config_id):
-    """清除指定配置的监控历史记录"""
-    try:
-        config = youtube_monitor.get_monitor_config(config_id)
-        if not config:
-            flash('监控配置不存在', 'danger')
-            return redirect(url_for('youtube_monitor_index'))
-        
-        success, message = youtube_monitor.clear_monitor_history(config_id)
-        if success:
-            flash(message, 'success')
-        else:
-            flash(message, 'danger')
-            
-    except Exception as e:
-        logger.error(f"清除监控历史失败: {str(e)}")
-        flash(f'清除历史记录失败: {str(e)}', 'danger')
+    """清空指定监控任务的历史记录"""
+    youtube_monitor.clear_monitor_history(config_id)
     
-    return redirect(url_for('youtube_monitor_history', config_id=config_id))
+    return redirect(url_for('youtube_monitor_index'))
 
 @app.route('/youtube_monitor/history/clear_all', methods=['POST'])
+@login_required
 def youtube_monitor_clear_all_history():
-    """清除所有监控历史记录"""
-    try:
-        success, message = youtube_monitor.clear_all_monitor_history()
-        if success:
-            flash(message, 'success')
-        else:
-            flash(message, 'danger')
-            
-    except Exception as e:
-        logger.error(f"清除所有监控历史失败: {str(e)}")
-        flash(f'清除历史记录失败: {str(e)}', 'danger')
+    """清空所有历史记录"""
+    youtube_monitor.clear_all_monitor_history()
     
     return redirect(url_for('youtube_monitor_index'))
 
 @app.route('/youtube_monitor/restore_configs', methods=['POST'])
+@login_required
 def youtube_monitor_restore_configs():
-    """从配置文件恢复监控配置"""
-    try:
-        success, message = youtube_monitor.restore_configs_from_files_manually()
-        if success:
-            flash(message, 'success')
-        else:
-            flash(message, 'warning')
-            
-    except Exception as e:
-        logger.error(f"恢复配置失败: {str(e)}")
-        flash(f'恢复配置失败: {str(e)}', 'danger')
+    """恢复默认监控配置"""
+    youtube_monitor.restore_default_configs()
     
     return redirect(url_for('youtube_monitor_index'))
 
 @app.route('/youtube_monitor/config/<int:config_id>/reset_offset', methods=['POST'])
+@login_required
 def youtube_monitor_reset_offset(config_id):
-    """重置历史搬运偏移量"""
-    try:
-        success, message = youtube_monitor.reset_historical_offset(config_id)
-        if success:
-            flash(message, 'success')
-        else:
-            flash(message, 'danger')
-            
-    except Exception as e:
-        logger.error(f"重置偏移量失败: {str(e)}")
-        flash(f'重置偏移量失败: {str(e)}', 'danger')
+    """重置频道监控的视频偏移量"""
+    youtube_monitor.reset_channel_video_offset(config_id)
     
     return redirect(url_for('youtube_monitor_index'))
 
 @app.route('/api/cookies/sync', methods=['POST'])
+@login_required
 def sync_cookies():
-    """接收来自油猴脚本的cookie同步请求"""
+    """
+    接收从浏览器扩展同步过来的Cookie
+    """
     try:
         if not request.is_json:
             return jsonify({'error': '请求必须是JSON格式'}), 400
@@ -1761,8 +1822,11 @@ def sync_cookies():
         return jsonify({'error': f'服务器内部错误: {str(e)}'}), 500
 
 @app.route('/api/cookies/status', methods=['GET'])
+@login_required
 def get_cookie_status():
-    """获取cookie状态信息"""
+    """
+    提供Cookie状态给浏览器扩展
+    """
     try:
         cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
         youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
@@ -1794,8 +1858,11 @@ def get_cookie_status():
         return jsonify({'error': f'获取状态失败: {str(e)}'}), 500
 
 @app.route('/api/cookies/refresh-needed', methods=['POST'])
+@login_required
 def cookie_refresh_needed():
-    """接收Cookie刷新需求通知"""
+    """
+    接收浏览器扩展的通知，标记某个网站的Cookie需要刷新
+    """
     try:
         data = request.get_json()
         reason = data.get('reason', 'unknown')

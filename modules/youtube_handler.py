@@ -10,6 +10,40 @@ import subprocess
 import time
 from logging.handlers import RotatingFileHandler
 
+def build_proxy_url(config):
+    """
+    构建代理URL，包含认证信息（如果有）
+    
+    Args:
+        config (dict): 配置字典
+        
+    Returns:
+        str: 完整的代理URL，如果没有启用代理则返回None
+    """
+    if not config.get('YOUTUBE_PROXY_ENABLED', False):
+        return None
+        
+    proxy_url = config.get('YOUTUBE_PROXY_URL', '').strip()
+    if not proxy_url:
+        return None
+        
+    proxy_username = config.get('YOUTUBE_PROXY_USERNAME', '').strip()
+    proxy_password = config.get('YOUTUBE_PROXY_PASSWORD', '').strip()
+    
+    # 如果有用户名和密码，构建认证代理URL
+    if proxy_username and proxy_password:
+        # 解析原始代理URL
+        if '://' in proxy_url:
+            protocol, rest = proxy_url.split('://', 1)
+            # 构建包含认证的代理URL
+            auth_proxy_url = f"{protocol}://{proxy_username}:{proxy_password}@{rest}"
+            return auth_proxy_url
+        else:
+            # 如果没有协议前缀，默认添加http://
+            return f"http://{proxy_username}:{proxy_password}@{proxy_url}"
+    
+    return proxy_url
+
 def setup_task_logger(task_id):
     """
     为特定任务设置日志记录器
@@ -68,8 +102,8 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     # 检查是否需要使用代理
     from modules.config_manager import load_config
     config = load_config()
-    if config.get('YOUTUBE_PROXY_ENABLED', False) and config.get('YOUTUBE_PROXY_URL', '').strip():
-        proxy_url = config.get('YOUTUBE_PROXY_URL').strip()
+    proxy_url = build_proxy_url(config)
+    if proxy_url:
         cmd.extend(['--proxy', proxy_url])
         if logger:
             logger.info(f"测试视频可用性时使用代理: {proxy_url}")
@@ -244,8 +278,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 检查是否需要使用代理
         from modules.config_manager import load_config
         config = load_config()
-        if config.get('YOUTUBE_PROXY_ENABLED', False) and config.get('YOUTUBE_PROXY_URL', '').strip():
-            proxy_url = config.get('YOUTUBE_PROXY_URL').strip()
+        proxy_url = build_proxy_url(config)
+        if proxy_url:
             cmd.extend(['--proxy', proxy_url])
             logger.info(f"使用代理: {proxy_url}")
         
@@ -512,4 +546,4 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
     except Exception as e:
         error_msg = f"下载过程中发生未预期的错误: {str(e)}"
         logger.error(error_msg)
-        return False, error_msg 
+        return False, error_msg

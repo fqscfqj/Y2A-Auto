@@ -186,7 +186,13 @@ class Y2AAutoContent {
                     addTaskBtn.disabled = false;
                 }, 2000);
             } else {
-                throw new Error(response ? response.error : '添加失败');
+                if (response && response.action === 'login_required') {
+                    this.showMessage('需要登录，请在Y2A-Auto页面登录后重试。', 'error');
+                    // 请求后台打开登录页面
+                    chrome.runtime.sendMessage({ action: 'openLoginPage' });
+                } else {
+                    throw new Error(response ? response.error : '添加失败');
+                }
             }
             
         } catch (error) {

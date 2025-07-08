@@ -33,6 +33,7 @@ function setupEventListeners() {
   document.getElementById('resetBtn').addEventListener('click', resetSettings);
   document.getElementById('syncNowBtn').addEventListener('click', syncNow);
   document.getElementById('encodeUrlBtn').addEventListener('click', encodeUrl);
+  document.getElementById('openPopupBtn').addEventListener('click', openPopup);
   
   // 服务器地址输入框回车事件
   document.getElementById('serverUrl').addEventListener('keypress', (e) => {
@@ -277,10 +278,12 @@ async function updateStatus() {
     const serverUrl = await getCurrentServerUrl();
     const autoSyncStatus = await getAutoSyncStatus();
     const cookieCount = await getCookieCount();
+    const loginStatus = await checkLoginStatus();
     
     document.getElementById('currentServerUrl').textContent = serverUrl;
     document.getElementById('autoSyncStatus').textContent = autoSyncStatus;
     document.getElementById('currentCookieCount').textContent = cookieCount;
+    document.getElementById('loginStatus').textContent = loginStatus;
     
     // 更新最后同步时间
     const response = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
@@ -295,6 +298,7 @@ async function updateStatus() {
     document.getElementById('currentServerUrl').textContent = '获取失败';
     document.getElementById('autoSyncStatus').textContent = '获取失败';
     document.getElementById('currentCookieCount').textContent = '获取失败';
+    document.getElementById('loginStatus').textContent = '获取失败';
     document.getElementById('lastSyncTime').textContent = '获取失败';
   }
 }
@@ -360,4 +364,26 @@ function showMessage(message, type) {
   setTimeout(() => {
     statusMessageDiv.classList.add('hidden');
   }, 5000);
+}
+
+async function checkLoginStatus() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'CHECK_AUTH' });
+    if (response && response.success) {
+      return response.needsAuth ? '需要登录' : '已登录';
+    } else {
+      return '未启用密码保护';
+    }
+  } catch (error) {
+    return '检查失败';
+  }
+}
+
+async function openPopup() {
+  try {
+    // 由于浏览器限制，我们不能直接打开弹窗，但可以指导用户
+    showMessage('请点击浏览器工具栏中的扩展图标打开弹窗进行登录', 'info');
+  } catch (error) {
+    showMessage('操作失败: ' + error.message, 'error');
+  }
 } 

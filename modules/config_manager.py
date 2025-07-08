@@ -19,6 +19,8 @@ DEFAULT_CONFIG = {
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
     "LOG_CLEANUP_HOURS": 168, # 保留最近多少小时的日志 (7天=168小时)
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
+    "password_protection_enabled": False,
+    "password": "",
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt", # AcFun Cookie文件路径
     "ACFUN_USERNAME": "",
@@ -35,6 +37,8 @@ DEFAULT_CONFIG = {
     # YouTube下载相关配置
     "YOUTUBE_PROXY_ENABLED": False,  # 是否启用代理
     "YOUTUBE_PROXY_URL": "",  # 代理地址，格式：http://proxy.example.com:8080 或 socks5://127.0.0.1:1080
+    "YOUTUBE_PROXY_USERNAME": "",  # 代理用户名（可选）
+    "YOUTUBE_PROXY_PASSWORD": "",  # 代理密码（可选）
     "YOUTUBE_DOWNLOAD_THREADS": 4,  # yt-dlp下载线程数（并发片段数）
     "YOUTUBE_THROTTLED_RATE": "",  # 限制下载速度，格式如：1M、500K等，留空不限制
     # 字幕翻译相关配置
@@ -50,8 +54,11 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MAX_WORKERS": 3,  # 字幕翻译最大并发线程数
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 3,  # 最大并发任务数
-    "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
+    "MAX_CONCURRENT_UPLOADS": 1  # 最大并发上传数
 }
+
+CONFIG_FILE = "config.json"
+config = {}
 
 def load_config():
     """
@@ -111,12 +118,12 @@ def save_config(config, config_path=None):
         logger.error(f"保存配置文件时出错: {str(e)}")
         return False
 
-def update_config(new_settings):
+def update_config(new_config):
     """
     更新配置
     
     Args:
-        new_settings (dict): 新的配置项
+        new_config (dict): 新的配置项
         
     Returns:
         dict: 更新后的完整配置
@@ -127,18 +134,21 @@ def update_config(new_settings):
     current_config = load_config()
     
     # 更新配置
-    for key, value in new_settings.items():
-        if key in DEFAULT_CONFIG: # 只更新DEFAULT_CONFIG中存在的键
-            # 处理布尔值（表单提交的可能是字符串）
-            if isinstance(DEFAULT_CONFIG[key], bool) and isinstance(value, str):
-                current_config[key] = value.lower() in ('true', 'yes', 'y', '1', 'on')
+    for key in DEFAULT_CONFIG:
+        if key in new_config:
+            # 特殊处理布尔值
+            if isinstance(DEFAULT_CONFIG[key], bool):
+                current_config[key] = str(new_config[key]).lower() in ['true', '1', 'on']
+            elif key == 'password':
+                if new_config[key]: # Only update password if a new one is provided
+                    current_config[key] = new_config[key]
             else:
-                current_config[key] = value
-        elif key in current_config: # 如果键不在DEFAULT_CONFIG但在current_config中，也更新（可能是一些动态添加的或旧的配置）
-             current_config[key] = value
+                current_config[key] = new_config[key]
 
-    
     # 保存更新后的配置
     save_config(current_config, config_path)
     
-    return current_config 
+    return current_config
+
+# 初始化时加载配置
+load_config() 
