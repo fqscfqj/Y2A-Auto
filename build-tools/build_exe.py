@@ -7,6 +7,7 @@ Y2A-Auto Windows 可执行文件构建工具
 
 import os
 import sys
+import json
 import shutil
 import subprocess
 import zipfile
@@ -304,13 +305,8 @@ def create_portable_package():
         os.makedirs(dir_path, exist_ok=True)
         print(f"✓ 创建目录: {dir_path}")
     
-    # 复制配置文件示例
-    config_source = '../config'
-    if os.path.exists(config_source):
-        for file in os.listdir(config_source):
-            if file.endswith('.json'):
-                shutil.copy2(f'{config_source}/{file}', f'dist/Y2A-Auto/config/')
-                print(f"✓ 复制配置文件: {file}")
+    # 创建示例配置文件（不包含敏感信息）
+    create_example_config()
     
     # 创建启动脚本
     create_start_script()
@@ -319,6 +315,65 @@ def create_portable_package():
     create_readme()
     
     print("✓ 便携式包创建完成")
+
+def create_example_config():
+    """创建示例配置文件（不包含敏感信息）"""
+    print("创建示例配置文件...")
+    
+    # 默认配置模板（不包含任何敏感信息）
+    example_config = {
+        "AUTO_MODE_ENABLED": False,
+        "TRANSLATE_TITLE": False,
+        "TRANSLATE_DESCRIPTION": False,
+        "GENERATE_TAGS": False,
+        "RECOMMEND_PARTITION": False,
+        "CONTENT_MODERATION_ENABLED": False,
+        "LOG_CLEANUP_ENABLED": True,
+        "LOG_CLEANUP_HOURS": 168,
+        "LOG_CLEANUP_INTERVAL": 12,
+        "password_protection_enabled": False,
+        "password": "",
+        "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt",
+        "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt",
+        "ACFUN_USERNAME": "",
+        "ACFUN_PASSWORD": "",
+        "OPENAI_API_KEY": "",
+        "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
+        "YOUTUBE_API_KEY": "",
+        "ALIYUN_ACCESS_KEY_ID": "",
+        "ALIYUN_ACCESS_KEY_SECRET": "",
+        "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
+        "ALIYUN_TEXT_MODERATION_SERVICE": "comment_detection_pro",
+        "COVER_PROCESSING_MODE": "crop",
+        "YOUTUBE_PROXY_ENABLED": False,
+        "YOUTUBE_PROXY_URL": "",
+        "YOUTUBE_PROXY_USERNAME": "",
+        "YOUTUBE_PROXY_PASSWORD": "",
+        "YOUTUBE_DOWNLOAD_THREADS": 4,
+        "YOUTUBE_THROTTLED_RATE": "",
+        "SUBTITLE_TRANSLATION_ENABLED": False,
+        "SUBTITLE_SOURCE_LANGUAGE": "auto",
+        "SUBTITLE_TARGET_LANGUAGE": "zh",
+        "SUBTITLE_API_PROVIDER": "openai",
+        "SUBTITLE_BATCH_SIZE": 5,
+        "SUBTITLE_MAX_RETRIES": 3,
+        "SUBTITLE_RETRY_DELAY": 2,
+        "SUBTITLE_EMBED_IN_VIDEO": True,
+        "SUBTITLE_KEEP_ORIGINAL": True,
+        "SUBTITLE_MAX_WORKERS": 3,
+        "MAX_CONCURRENT_TASKS": 3,
+        "MAX_CONCURRENT_UPLOADS": 1
+    }
+    
+    # 保存示例配置文件
+    config_path = 'dist/Y2A-Auto/config/config.json'
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(example_config, f, ensure_ascii=False, indent=4)
+        print(f"✓ 创建示例配置文件: {config_path}")
+    except Exception as e:
+        print(f"创建配置文件失败: {e}")
 
 def create_start_script():
     """创建启动脚本"""
