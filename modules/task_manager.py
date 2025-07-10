@@ -1251,7 +1251,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     capture_output=True, 
                     text=True, 
                     cwd=temp_dir,  # 在临时目录执行
-                    timeout=3600  # 1小时超时
+                    timeout=3600,  # 1小时超时
+                    encoding='utf-8',
+                    errors='replace'  # 遇到无法解码的字符时用?替换
                 )
                 
                 if process.returncode == 0 and os.path.exists(simple_output):

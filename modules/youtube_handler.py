@@ -113,7 +113,14 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     
     try:
         logger.info("测试视频可用性和格式...")
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        process = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=30,
+            encoding='utf-8',
+            errors='replace'  # 遇到无法解码的字符时用?替换
+        )
         
         if process.returncode == 0:
             formats = process.stdout
@@ -178,7 +185,13 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 在Linux/Docker环境中，首先检查系统PATH中的yt-dlp
         try:
             # 尝试使用which命令查找yt-dlp
-            result = subprocess.run(['which', 'yt-dlp'], capture_output=True, text=True)
+            result = subprocess.run(
+                ['which', 'yt-dlp'], 
+                capture_output=True, 
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             if result.returncode == 0 and result.stdout.strip():
                 yt_dlp_path = result.stdout.strip()
                 logger.info(f"找到系统中的yt-dlp: {yt_dlp_path}")
@@ -208,10 +221,14 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             
             # 检查python目录下的yt-dlp
             try:
-                python_dir = os.path.dirname(os.path.dirname(subprocess.run(['where', 'python'], 
-                                                           capture_output=True, 
-                                                           text=True, 
-                                                           shell=True).stdout.strip()))
+                python_dir = os.path.dirname(os.path.dirname(subprocess.run(
+                    ['where', 'python'], 
+                    capture_output=True, 
+                    text=True, 
+                    shell=True,
+                    encoding='utf-8',
+                    errors='replace'
+                ).stdout.strip()))
                 python_scripts = os.path.join(python_dir, 'Scripts', 'yt-dlp.exe')
                 if os.path.exists(python_scripts):
                     yt_dlp_path = python_scripts
@@ -343,8 +360,17 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
                 
                 if progress_callback and not skip_download:
-                    # 使用Popen实时获取进度
-                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+                    # 使用Popen实时获取进度，设置UTF-8编码
+                    process = subprocess.Popen(
+                        cmd, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.STDOUT, 
+                        text=True, 
+                        bufsize=1, 
+                        universal_newlines=True,
+                        encoding='utf-8',
+                        errors='replace'  # 遇到无法解码的字符时用?替换
+                    )
                     
                     output_lines = []
                     for line in process.stdout:
@@ -396,8 +422,16 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     if process.returncode != 0:
                         raise subprocess.CalledProcessError(process.returncode, cmd, output)
                 else:
-                    # 不需要进度回调时使用原来的方式
-                    process = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+                    # 不需要进度回调时使用原来的方式，设置UTF-8编码
+                    process = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        check=True, 
+                        timeout=300,
+                        encoding='utf-8',
+                        errors='replace'  # 遇到无法解码的字符时用?替换
+                    )
                     output = process.stdout
                 
                 break  # 成功执行，跳出重试循环
