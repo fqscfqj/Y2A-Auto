@@ -1,10 +1,49 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import json
+import shutil
+import logging
+from datetime import datetime
+from PIL import Image, ImageOps
+
+def get_app_root_dir():
+    """
+    获取应用根目录，兼容开发环境和打包环境
+    
+    Returns:
+        str: 应用根目录路径
+    """
+    if getattr(sys, 'frozen', False):
+        # 在PyInstaller打包环境中
+        # sys.executable 指向的是实际的可执行文件
+        app_root = os.path.dirname(sys.executable)
+    else:
+        # 在开发环境中
+        # __file__ 是当前文件的路径，需要向上两级找到项目根目录
+        app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    return app_root
+
+def get_app_subdir(subdir_name):
+    """
+    获取应用子目录路径
+    
+    Args:
+        subdir_name (str): 子目录名称，如 'config', 'logs', 'db' 等
+        
+    Returns:
+        str: 子目录的完整路径
+    """
+    return os.path.join(get_app_root_dir(), subdir_name)
+
 """
 工具函数模块
 """
 
-import os
 import re
-import json
 from PIL import Image
 
 def init_app():

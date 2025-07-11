@@ -14,6 +14,7 @@ import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from logging.handlers import RotatingFileHandler
 from modules.task_manager import add_task
+from .utils import get_app_subdir
 
 def setup_youtube_monitor_logger():
     """设置YouTube监控专用日志"""
@@ -26,7 +27,7 @@ def setup_youtube_monitor_logger():
     logger.setLevel(logging.INFO)
     
     # 创建logs目录
-    logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    logs_dir = get_app_subdir('logs')
     os.makedirs(logs_dir, exist_ok=True)
     
     # 文件处理器 - 使用轮转日志
@@ -59,7 +60,7 @@ class YouTubeMonitor:
         self.api_key = api_key
         self.youtube = None
         self.scheduler = BackgroundScheduler()
-        self.db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'db', 'youtube_monitor.db')
+        self.db_path = os.path.join(get_app_subdir('db'), 'youtube_monitor.db')
         self._init_database()
         self._init_youtube_api()
         
@@ -200,7 +201,7 @@ class YouTubeMonitor:
     def _restore_configs_from_files(self):
         """从配置文件恢复监控配置到数据库"""
         try:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             
             if not os.path.exists(config_dir):
                 logger.info("配置文件目录不存在，跳过恢复")
@@ -288,7 +289,7 @@ class YouTubeMonitor:
                             min_duration, max_duration, schedule_type, schedule_interval,
                             order_by, start_date, end_date, latest_days, latest_max_results,
                             rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         target_id,
                         config_data.get('name'),
@@ -486,7 +487,7 @@ class YouTubeMonitor:
     def _save_config_to_file(self, config_id, config_data):
         """保存配置到文件"""
         try:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             os.makedirs(config_dir, exist_ok=True)
             
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
@@ -506,7 +507,7 @@ class YouTubeMonitor:
     def _load_config_from_file(self, config_id):
         """从文件加载配置"""
         try:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
             
             if os.path.exists(config_file):
@@ -519,7 +520,7 @@ class YouTubeMonitor:
     def _delete_config_file(self, config_id):
         """删除配置文件"""
         try:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'youtube_monitor')
+            config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
             
             if os.path.exists(config_file):

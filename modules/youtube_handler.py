@@ -2,13 +2,24 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import json
+import time
 import uuid
 import shutil
+import hashlib
 import logging
 import subprocess
-import time
+import requests
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+from datetime import datetime
+from modules.config_manager import load_config
 from logging.handlers import RotatingFileHandler
+from .utils import get_app_subdir
+
+# 其他导入和常量定义
+logger = logging.getLogger(__name__)
 
 def build_proxy_url(config):
     """
@@ -54,7 +65,7 @@ def setup_task_logger(task_id):
     Returns:
         logger: 配置好的日志记录器
     """
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    log_dir = get_app_subdir('logs')
     os.makedirs(log_dir, exist_ok=True)
     
     log_file = os.path.join(log_dir, f'task_{task_id}.log')
@@ -100,7 +111,6 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     ]
     
     # 检查是否需要使用代理
-    from modules.config_manager import load_config
     config = load_config()
     proxy_url = build_proxy_url(config)
     if proxy_url:
@@ -160,7 +170,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
     logger.info(f"开始下载视频: {youtube_url}, 任务ID: {task_id}")
     
     # 创建任务目录
-    task_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'downloads', task_id)
+    task_dir = os.path.join(get_app_subdir('downloads'), task_id)
     if os.path.exists(task_dir):
         if only_video:
             # 当只下载视频文件时不清空目录，保留之前的元数据和封面
@@ -293,7 +303,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         ]
         
         # 检查是否需要使用代理
-        from modules.config_manager import load_config
         config = load_config()
         proxy_url = build_proxy_url(config)
         if proxy_url:

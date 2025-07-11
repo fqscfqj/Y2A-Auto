@@ -14,7 +14,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from functools import wraps
 from flask_cors import CORS, cross_origin
 from modules.youtube_handler import download_video_data
-from modules.utils import parse_id_md_to_json, process_cover
+from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
 from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
 from modules.youtube_monitor import youtube_monitor
@@ -46,7 +46,7 @@ CORS(app, resources={
 })
 
 # 确保日志目录存在
-log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+log_dir = get_app_subdir('logs')
 os.makedirs(log_dir, exist_ok=True)
 
 # 配置日志
@@ -90,7 +90,7 @@ logger = logging.getLogger('Y2A-Auto')
 logger.setLevel(logging.WARNING)
 
 # 静态目录变量（保留用于兼容性）
-covers_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'covers')
+covers_dir = os.path.join(get_app_subdir('static'), 'covers')
 
 def init_id_mapping():
     """
@@ -148,7 +148,7 @@ def get_partition_name(partition_id):
         return None
     
     # 读取分区映射数据 - 修改路径为 acfunid
-    id_mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'acfunid', 'id_mapping.json')
+    id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
     try:
         with open(id_mapping_path, 'r', encoding='utf-8') as f:
             id_mapping = json.load(f)
