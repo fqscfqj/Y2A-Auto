@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+from .utils import get_app_subdir
 
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
@@ -67,7 +68,10 @@ def load_config():
     Returns:
         dict: 配置字典
     """
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
+    config_path = os.path.join(get_app_subdir('config'), 'config.json')
+    
+    # 确保config目录存在
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
     
     try:
         # 尝试读取配置文件
@@ -107,7 +111,10 @@ def save_config(config, config_path=None):
         bool: 保存是否成功
     """
     if not config_path:
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
+        config_path = os.path.join(get_app_subdir('config'), 'config.json')
+    
+    # 确保config目录存在
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
     
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -128,7 +135,7 @@ def update_config(new_config):
     Returns:
         dict: 更新后的完整配置
     """
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.json')
+    config_path = os.path.join(get_app_subdir('config'), 'config.json')
     
     # 加载当前配置
     current_config = load_config()

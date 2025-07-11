@@ -123,6 +123,7 @@ datas = [
     ('../modules', 'modules'),
     ('../userscripts', 'userscripts'),
     ('../docs', 'docs'),
+    ('../acfunid', 'acfunid'),
     ('../app.py', '.'),
 ]
 
@@ -210,6 +211,15 @@ hiddenimports = [
     'secretstorage',
     'keyring',
     'jeepney',
+    
+    # 阿里云内容审核相关
+    'alibabacloud_green20220302',
+    'alibabacloud_green20220302.client',
+    'alibabacloud_green20220302.models',
+    'alibabacloud_tea_openapi',
+    'alibabacloud_tea_openapi.models',
+    'alibabacloud_tea_util',
+    'alibabacloud_tea_util.models',
 ]
 
 a = Analysis(
@@ -283,6 +293,21 @@ def build_executable():
         print(f"构建失败: {e}")
         sys.exit(1)
 
+def copy_id_mapping_file():
+    """复制id_mapping.json文件到打包目录"""
+    source_file = '../acfunid/id_mapping.json'
+    target_file = 'dist/Y2A-Auto/acfunid/id_mapping.json'
+    
+    try:
+        if os.path.exists(source_file):
+            import shutil
+            shutil.copy2(source_file, target_file)
+            print(f"✓ 复制id_mapping.json文件: {target_file}")
+        else:
+            print(f"⚠ 源文件不存在: {source_file}")
+    except Exception as e:
+        print(f"✗ 复制id_mapping.json文件失败: {e}")
+
 def create_portable_package():
     """创建便携式包"""
     print("创建便携式包...")
@@ -305,8 +330,8 @@ def create_portable_package():
         os.makedirs(dir_path, exist_ok=True)
         print(f"✓ 创建目录: {dir_path}")
     
-    # 创建示例配置文件（不包含敏感信息）
-    create_example_config()
+    # 复制id_mapping.json文件
+    copy_id_mapping_file()
     
     # 创建启动脚本
     create_start_script()
@@ -443,7 +468,7 @@ Y2A-Auto/
 │   ├── ffmpeg.exe
 │   ├── ffprobe.exe
 │   └── ffplay.exe
-├── config/             # 配置文件
+├── config/             # 配置文件（首次运行时自动创建）
 ├── db/                 # 数据库文件
 ├── downloads/          # 下载文件
 ├── logs/               # 日志文件
@@ -482,7 +507,7 @@ Y2A-Auto/
 ### 首次运行
 1. 确保有稳定的网络连接
 2. 双击 `start.bat` 启动程序
-3. 等待程序初始化完成
+3. 等待程序初始化完成（会自动创建配置文件）
 4. 浏览器会自动打开管理界面
 
 ### 配置步骤
@@ -526,7 +551,7 @@ Y2A-Auto/
 - `upload.log` - 上传任务日志
 
 ### 配置文件
-所有配置保存在 `config/config.json` 中，可以手动编辑。
+所有配置保存在 `config/config.json` 中，首次运行时会自动创建，可以手动编辑。
 
 ### 获取帮助
 - 项目主页: https://github.com/fqscfqj/Y2A-Auto

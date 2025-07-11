@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
 from threading import Lock
+from .utils import get_app_subdir
 
 logger = logging.getLogger('subtitle_translator')
 
@@ -25,7 +26,7 @@ def setup_task_logger(task_id):
     Returns:
         logger: 配置好的日志记录器
     """
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    log_dir = get_app_subdir('logs')
     os.makedirs(log_dir, exist_ok=True)
     
     log_file = os.path.join(log_dir, f'task_{task_id}.log')

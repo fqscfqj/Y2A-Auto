@@ -17,6 +17,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.executors.pool import ThreadPoolExecutor
 import queue
+from .utils import get_app_subdir
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -26,11 +27,11 @@ import queue
 # from modules.acfun_uploader import AcfunUploader
 
 # 全局变量
-DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'db')
+DB_DIR = get_app_subdir('db')
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, 'tasks.db')
-LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
-DOWNLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'downloads')
+LOGS_DIR = get_app_subdir('logs')
+DOWNLOADS_DIR = get_app_subdir('downloads')
 
 # 确保目录存在
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -997,6 +998,8 @@ class TaskProcessor:
             # 定义进度回调函数
             def progress_callback(progress, current, total):
                 task_logger.info(f"字幕翻译进度: {progress:.1f}% ({current}/{total})")
+                # 更新任务进度显示到网页
+                update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
             
             # 执行翻译
             success = translator.translate_file(
@@ -1007,6 +1010,8 @@ class TaskProcessor:
             
             if success:
                 task_logger.info("字幕翻译完成")
+                # 清除翻译进度显示
+                update_task(task_id, upload_progress=None, silent=True)
                 
                 # 如果配置了将字幕嵌入视频
                 if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
@@ -1044,12 +1049,16 @@ class TaskProcessor:
                 return True
             else:
                 task_logger.error("字幕翻译失败")
+                # 清除进度显示
+                update_task(task_id, upload_progress=None, silent=True)
                 return False
                 
         except Exception as e:
             task_logger.error(f"字幕翻译过程中发生错误: {str(e)}")
             import traceback
             task_logger.error(traceback.format_exc())
+            # 清除进度显示
+            update_task(task_id, upload_progress=None, silent=True)
             return False
     
     def _detect_subtitle_language(self, subtitle_path):
@@ -1200,6 +1209,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             import os
             import tempfile
             import shutil
+            import re
             
             # 如果是VTT格式，先转换为SRT
             if subtitle_path.lower().endswith('.vtt'):
@@ -1220,6 +1230,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.info(f"视频路径: {video_path}")
             task_logger.info(f"字幕路径: {subtitle_path}")
             
+            # 获取视频时长用于计算进度
+            video_duration = self._get_video_duration(video_path, task_logger)
+            
             # 使用简化路径方式（已测试成功）
             temp_dir = tempfile.mkdtemp()
             simple_video = os.path.join(temp_dir, "input.mp4")
@@ -1239,31 +1252,66 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     '-crf', '23.5',
                     '-c:a', 'copy',
                     '-preset', 'medium',
+                    '-progress', 'pipe:1',  # 输出进度信息到stdout
                     'output.mp4'
                 ]
                 
                 task_logger.info(f"FFmpeg命令: {' '.join(cmd)}")
                 task_logger.info(f"临时目录: {temp_dir}")
                 
-                # 执行FFmpeg命令
-                process = subprocess.run(
+                # 执行FFmpeg命令并实时获取进度
+                process = subprocess.Popen(
                     cmd, 
-                    capture_output=True, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE, 
                     text=True, 
                     cwd=temp_dir,  # 在临时目录执行
-                    timeout=3600,  # 1小时超时
                     encoding='utf-8',
                     errors='replace'  # 遇到无法解码的字符时用?替换
                 )
+                
+                # 实时解析进度
+                last_time = 0
+                while True:
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    
+                    line = line.strip()
+                    if line.startswith('out_time_us='):
+                        try:
+                            # 解析当前处理时间（微秒）
+                            time_us = int(line.split('=')[1])
+                            current_time = time_us / 1000000.0  # 转换为秒
+                            
+                            if video_duration and current_time > last_time:
+                                progress = min((current_time / video_duration) * 100, 100)
+                                progress_msg = f"转码进度: {progress:.1f}%"
+                                task_logger.info(progress_msg)
+                                
+                                # 更新任务进度显示
+                                update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
+                                last_time = current_time
+                        except (ValueError, IndexError):
+                            continue
+                
+                # 等待进程完成
+                process.wait()
                 
                 if process.returncode == 0 and os.path.exists(simple_output):
                     # 成功！复制输出文件回原位置
                     shutil.copy2(simple_output, embedded_video_path)
                     task_logger.info("字幕嵌入完成（使用简化路径方式）")
                     task_logger.info(f"嵌入字幕的视频已保存: {embedded_video_path}")
+                    
+                    # 清除进度显示
+                    update_task(task_id, upload_progress=None, silent=True)
                     return embedded_video_path
                 else:
-                    task_logger.error(f"字幕嵌入失败: {process.stderr}")
+                    # 读取错误信息
+                    stderr_output = process.stderr.read()
+                    task_logger.error(f"字幕嵌入失败: {stderr_output}")
+                    update_task(task_id, upload_progress=None, silent=True)
                     return None
             
             finally:
@@ -1275,12 +1323,46 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     
         except subprocess.TimeoutExpired:
             task_logger.error("FFmpeg执行超时")
+            update_task(task_id, upload_progress=None, silent=True)
             return None
         except FileNotFoundError:
             task_logger.error("FFmpeg未安装或不在PATH中")
+            update_task(task_id, upload_progress=None, silent=True)
             return None
         except Exception as e:
             task_logger.error(f"嵌入字幕时发生错误: {str(e)}")
+            update_task(task_id, upload_progress=None, silent=True)
+            return None
+
+    def _get_video_duration(self, video_path, task_logger):
+        """获取视频时长（秒）"""
+        try:
+            import subprocess
+            
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+                '-show_format', video_path
+            ]
+            
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                encoding='utf-8',
+                errors='replace'
+            )
+            
+            if result.returncode == 0:
+                import json
+                data = json.loads(result.stdout)
+                duration = float(data['format']['duration'])
+                task_logger.info(f"视频时长: {duration:.2f} 秒")
+                return duration
+            else:
+                task_logger.warning("无法获取视频时长，将无法显示转码进度")
+                return None
+        except Exception as e:
+            task_logger.warning(f"获取视频时长失败: {str(e)}")
             return None
 
     def _generate_tags(self, task_id, task_logger):
@@ -1344,7 +1426,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         description = task.get('description_translated', '') or task.get('description_original', '')
         
         # 读取分区ID映射
-        id_mapping_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'acfunid', 'id_mapping.json')
+        from .utils import get_app_subdir
+        id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
         task_logger.info(f"尝试读取分区映射文件: {id_mapping_path}")
         
         try:

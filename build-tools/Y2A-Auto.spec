@@ -11,6 +11,7 @@ datas = [
     ('../modules', 'modules'),
     ('../userscripts', 'userscripts'),
     ('../docs', 'docs'),
+    ('../acfunid', 'acfunid'),
     ('../app.py', '.'),
 ]
 
@@ -98,6 +99,15 @@ hiddenimports = [
     'secretstorage',
     'keyring',
     'jeepney',
+    
+    # 阿里云内容审核相关
+    'alibabacloud_green20220302',
+    'alibabacloud_green20220302.client',
+    'alibabacloud_green20220302.models',
+    'alibabacloud_tea_openapi',
+    'alibabacloud_tea_openapi.models',
+    'alibabacloud_tea_util',
+    'alibabacloud_tea_util.models',
 ]
 
 a = Analysis(
