@@ -43,6 +43,7 @@ TASK_STATES = {
     'DOWNLOADING': 'downloading',         # 正在下载
     'DOWNLOADED': 'downloaded',           # 下载完成
     'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
+    'ENCODING_VIDEO': 'encoding_video',   # 正在转码视频
     'TRANSLATING': 'translating',         # 正在翻译
     'TAGGING': 'tagging',                 # 正在生成标签
     'PARTITIONING': 'partitioning',       # 正在推荐分区
@@ -441,9 +442,9 @@ def reset_stuck_tasks():
         cursor = conn.execute('''
             SELECT id, status, updated_at 
             FROM tasks 
-            WHERE status IN (?, ?, ?, ?, ?) 
+            WHERE status IN (?, ?, ?, ?, ?, ?, ?) 
             AND datetime(updated_at) < datetime('now', '-30 minutes')
-        ''', ('processing', 'downloading', 'uploading', 'fetching_info', 'translating'))
+        ''', ('processing', 'downloading', 'uploading', 'fetching_info', 'translating', 'translating_subtitle', 'encoding_video'))
         
         stuck_tasks = cursor.fetchall()
         
@@ -722,6 +723,7 @@ class TaskProcessor:
                 TASK_STATES['DOWNLOADING'], 
                 TASK_STATES['DOWNLOADED'],
                 TASK_STATES['TRANSLATING_SUBTITLE'],
+                TASK_STATES['ENCODING_VIDEO'],
                 TASK_STATES['UPLOADING']
             ]
             
@@ -1203,13 +1205,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             return False
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
-        """使用FFmpeg将字幕嵌入视频（修复版本）"""
+        """使用FFmpeg将字幕嵌入视频（修复版本 - 添加超时机制）"""
+        # 保存当前状态，稍后恢复
+        task_before_encoding = get_task(task_id)
+        previous_status = task_before_encoding['status'] if task_before_encoding else TASK_STATES['TRANSLATING_SUBTITLE']
+        
         try:
             import subprocess
             import os
             import tempfile
             import shutil
             import re
+            import time
+            import threading
+            import queue
             
             # 如果是VTT格式，先转换为SRT
             if subtitle_path.lower().endswith('.vtt'):
@@ -1229,6 +1238,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.info("开始将字幕嵌入视频...")
             task_logger.info(f"视频路径: {video_path}")
             task_logger.info(f"字幕路径: {subtitle_path}")
+            
+            # 设置任务状态为转码视频中
+            update_task(task_id, status=TASK_STATES['ENCODING_VIDEO'])
             
             # 获取视频时长用于计算进度
             video_duration = self._get_video_duration(video_path, task_logger)
@@ -1259,6 +1271,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 task_logger.info(f"FFmpeg命令: {' '.join(cmd)}")
                 task_logger.info(f"临时目录: {temp_dir}")
                 
+                # 设置超时时间（根据视频时长计算，最少30分钟，最多3小时）
+                if video_duration:
+                    # 估算处理时间：实际时长的2-5倍，取决于视频长度
+                    estimated_time = video_duration * 3 if video_duration < 1800 else video_duration * 2
+                    timeout = max(1800, min(estimated_time, 10800))  # 最少30分钟，最多3小时
+                else:
+                    timeout = 3600  # 默认1小时
+                
+                task_logger.info(f"设置处理超时时间: {timeout//60} 分钟")
+                
                 # 执行FFmpeg命令并实时获取进度
                 process = subprocess.Popen(
                     cmd, 
@@ -1270,33 +1292,100 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     errors='replace'  # 遇到无法解码的字符时用?替换
                 )
                 
+                # 创建线程来读取输出，避免管道阻塞
+                output_queue = queue.Queue()
+                error_queue = queue.Queue()
+                
+                def read_output():
+                    try:
+                        for line in process.stdout:
+                            output_queue.put(('stdout', line.strip()))
+                    except:
+                        pass
+                    finally:
+                        output_queue.put(('stdout', None))
+                
+                def read_error():
+                    try:
+                        for line in process.stderr:
+                            error_queue.put(('stderr', line.strip()))
+                    except:
+                        pass
+                    finally:
+                        error_queue.put(('stderr', None))
+                
+                # 启动读取线程
+                output_thread = threading.Thread(target=read_output, daemon=True)
+                error_thread = threading.Thread(target=read_error, daemon=True)
+                output_thread.start()
+                error_thread.start()
+                
                 # 实时解析进度
                 last_time = 0
+                start_time = time.time()
+                last_progress_time = start_time
+                error_messages = []
+                
                 while True:
-                    line = process.stdout.readline()
-                    if not line:
+                    # 检查超时
+                    current_time = time.time()
+                    if current_time - start_time > timeout:
+                        task_logger.error(f"FFmpeg处理超时（{timeout//60}分钟），强制终止")
+                        process.terminate()
+                        time.sleep(5)
+                        if process.poll() is None:
+                            process.kill()
                         break
                     
-                    line = line.strip()
-                    if line.startswith('out_time_us='):
-                        try:
-                            # 解析当前处理时间（微秒）
-                            time_us = int(line.split('=')[1])
-                            current_time = time_us / 1000000.0  # 转换为秒
-                            
-                            if video_duration and current_time > last_time:
-                                progress = min((current_time / video_duration) * 100, 100)
-                                progress_msg = f"转码进度: {progress:.1f}%"
-                                task_logger.info(progress_msg)
+                    # 检查进程状态
+                    if process.poll() is not None:
+                        break
+                    
+                    # 读取输出
+                    try:
+                        msg_type, line = output_queue.get(timeout=1)
+                        if line is None:
+                            break
+                        
+                        if line.startswith('out_time_us='):
+                            try:
+                                # 解析当前处理时间（微秒）
+                                time_us = int(line.split('=')[1])
+                                current_time = time_us / 1000000.0  # 转换为秒
                                 
-                                # 更新任务进度显示
-                                update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
-                                last_time = current_time
-                        except (ValueError, IndexError):
-                            continue
+                                if video_duration and current_time > last_time:
+                                    progress = min((current_time / video_duration) * 100, 100)
+                                    progress_msg = f"转码进度: {progress:.1f}%"
+                                    task_logger.info(progress_msg)
+                                    
+                                    # 更新任务进度显示
+                                    update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
+                                    last_time = current_time
+                                    last_progress_time = time.time()
+                            except (ValueError, IndexError):
+                                continue
+                    except queue.Empty:
+                        # 检查是否长时间没有进度更新（可能卡死了）
+                        if time.time() - last_progress_time > 300:  # 5分钟没有进度更新
+                            task_logger.warning("长时间没有进度更新，可能处理卡死")
+                        continue
+                    
+                    # 读取错误信息
+                    try:
+                        msg_type, error_line = error_queue.get_nowait()
+                        if error_line:
+                            error_messages.append(error_line)
+                            if len(error_messages) > 50:  # 限制错误信息数量
+                                error_messages.pop(0)
+                    except queue.Empty:
+                        pass
                 
                 # 等待进程完成
-                process.wait()
+                try:
+                    process.wait(timeout=30)  # 最多等待30秒
+                except subprocess.TimeoutExpired:
+                    task_logger.error("进程未能在30秒内正常结束，强制终止")
+                    process.kill()
                 
                 if process.returncode == 0 and os.path.exists(simple_output):
                     # 成功！复制输出文件回原位置
@@ -1304,34 +1393,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.info("字幕嵌入完成（使用简化路径方式）")
                     task_logger.info(f"嵌入字幕的视频已保存: {embedded_video_path}")
                     
-                    # 清除进度显示
-                    update_task(task_id, upload_progress=None, silent=True)
+                    # 清除进度显示并恢复之前的状态
+                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return embedded_video_path
                 else:
-                    # 读取错误信息
-                    stderr_output = process.stderr.read()
-                    task_logger.error(f"字幕嵌入失败: {stderr_output}")
-                    update_task(task_id, upload_progress=None, silent=True)
+                    # 收集错误信息
+                    error_output = '\n'.join(error_messages[-10:]) if error_messages else "无详细错误信息"
+                    task_logger.error(f"字幕嵌入失败 (返回码: {process.returncode})")
+                    task_logger.error(f"错误信息: {error_output}")
+                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
             
             finally:
                 # 清理临时目录
                 try:
                     shutil.rmtree(temp_dir)
-                except:
-                    pass
+                except Exception as e:
+                    task_logger.warning(f"清理临时目录失败: {e}")
                     
         except subprocess.TimeoutExpired:
             task_logger.error("FFmpeg执行超时")
-            update_task(task_id, upload_progress=None, silent=True)
+            update_task(task_id, upload_progress=None, status=previous_status, silent=True)
             return None
         except FileNotFoundError:
             task_logger.error("FFmpeg未安装或不在PATH中")
-            update_task(task_id, upload_progress=None, silent=True)
+            update_task(task_id, upload_progress=None, status=previous_status, silent=True)
             return None
         except Exception as e:
             task_logger.error(f"嵌入字幕时发生错误: {str(e)}")
-            update_task(task_id, upload_progress=None, silent=True)
+            update_task(task_id, upload_progress=None, status=previous_status, silent=True)
             return None
 
     def _get_video_duration(self, video_path, task_logger):
@@ -1349,7 +1439,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 capture_output=True, 
                 text=True, 
                 encoding='utf-8',
-                errors='replace'
+                errors='replace',
+                timeout=60  # 添加60秒超时
             )
             
             if result.returncode == 0:
@@ -1361,6 +1452,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             else:
                 task_logger.warning("无法获取视频时长，将无法显示转码进度")
                 return None
+        except subprocess.TimeoutExpired:
+            task_logger.warning("获取视频时长超时")
+            return None
         except Exception as e:
             task_logger.warning(f"获取视频时长失败: {str(e)}")
             return None
