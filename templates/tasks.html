@@ -63,7 +63,7 @@
                             <td>
                                 <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                     {{ task_status_display(task.status) }}
-                                    {% if (task.status == 'uploading' or task.status == 'downloading' or task.status == 'translating_subtitle') and task.upload_progress %}
+                                    {% if (task.status == 'uploading' or task.status == 'downloading' or task.status == 'translating_subtitle' or task.status == 'encoding_video') and task.upload_progress %}
                                         <br><small>{{ task.upload_progress }}</small>
                                     {% endif %}
                                 </span>
@@ -623,8 +623,9 @@
             if (statusText.includes('下载中') || statusText.includes('上传中') || 
                 statusText.includes('翻译中') || statusText.includes('生成标签中') || 
                 statusText.includes('推荐分区中') || statusText.includes('内容审核中') ||
-                statusText.includes('翻译字幕中') || statusText.includes('处理中') ||
-                statusText.includes('等待') || statusText.includes('队列中')) {
+                statusText.includes('翻译字幕中') || statusText.includes('转码视频中') || 
+                statusText.includes('处理中') || statusText.includes('等待') || 
+                statusText.includes('队列中')) {
                 hasProcessing = true;
             }
         });

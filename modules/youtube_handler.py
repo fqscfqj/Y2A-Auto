@@ -199,6 +199,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 ['which', 'yt-dlp'], 
                 capture_output=True, 
                 text=True,
+                timeout=10,  # 添加10秒超时
                 encoding='utf-8',
                 errors='replace'
             )
@@ -236,6 +237,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     capture_output=True, 
                     text=True, 
                     shell=True,
+                    timeout=10,  # 添加10秒超时
                     encoding='utf-8',
                     errors='replace'
                 ).stdout.strip()))
