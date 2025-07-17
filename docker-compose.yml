@@ -2,7 +2,8 @@ version: '3.8'
 
 services:
   y2a-auto:
-    image: fqscfqj/y2a-auto:latest
+    image: fqscfqj/y2a-auto:latest #DockerHub
+    # image: ghcr.io/fqscfqj/y2a-auto:latest #GHCR
     container_name: y2a-auto
     restart: unless-stopped
     ports:
@@ -17,18 +18,3 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
-    networks:
-      - y2a-network
-    labels:
-      - "com.docker.compose.project=y2a-auto"
-      - "traefik.enable=false"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-networks:
-  y2a-network:
-    driver: bridge 
