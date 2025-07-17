@@ -4,11 +4,28 @@ on:
   push:
     branches: [ "main" ]
     tags: [ "v*" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'userscripts/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.github/**'
+      - '!.github/workflows/docker-publish.yml'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'userscripts/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.github/**'
+      - '!.github/workflows/docker-publish.yml'
 
 env:
-  REGISTRY: docker.io
+  REGISTRY_DOCKERHUB: docker.io
+  REGISTRY_GHCR: ghcr.io
   IMAGE_NAME: y2a-auto
 
 jobs:
@@ -29,14 +46,37 @@ jobs:
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
+        registry: ${{ env.REGISTRY_DOCKERHUB }}
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Extract metadata
-      id: meta
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY_GHCR }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata for Docker Hub
+      id: meta-dockerhub
       uses: docker/metadata-action@v5
       with:
         images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=sha,prefix={{branch}}-
+
+    - name: Extract metadata for GHCR
+      id: meta-ghcr
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -53,14 +93,18 @@ jobs:
         file: ./Dockerfile
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: |
+          ${{ steps.meta-dockerhub.outputs.tags }}
+          ${{ steps.meta-ghcr.outputs.tags }}
+        labels: |
+          ${{ steps.meta-dockerhub.outputs.labels }}
+          ${{ steps.meta-ghcr.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         build-args: |
-          BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-          REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+          BUILDTIME=${{ fromJSON(steps.meta-dockerhub.outputs.json).labels['org.opencontainers.image.created'] }}
+          VERSION=${{ fromJSON(steps.meta-dockerhub.outputs.json).labels['org.opencontainers.image.version'] }}
+          REVISION=${{ fromJSON(steps.meta-dockerhub.outputs.json).labels['org.opencontainers.image.revision'] }}
 
   test:
     runs-on: ubuntu-latest
@@ -68,13 +112,13 @@ jobs:
     if: github.event_name != 'pull_request'
     
     steps:
-    - name: Test Docker image
+    - name: Test Docker Hub image
       run: |
         # 等待镜像可用
         sleep 30
         
         # 测试镜像启动
-        docker run --rm -d --name test-y2a-auto \
+        docker run --rm -d --name test-y2a-auto-dockerhub \
           -p 5001:5000 \
           ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:latest
         
@@ -85,7 +129,26 @@ jobs:
         curl -f http://localhost:5001/ || exit 1
         
         # 检查 yt-dlp 是否可用
-        docker exec test-y2a-auto yt-dlp --version || exit 1
+        docker exec test-y2a-auto-dockerhub yt-dlp --version || exit 1
         
         # 清理
-        docker stop test-y2a-auto
+        docker stop test-y2a-auto-dockerhub
+
+    - name: Test GHCR image
+      run: |
+        # 测试 GHCR 镜像启动
+        docker run --rm -d --name test-y2a-auto-ghcr \
+          -p 5002:5000 \
+          ghcr.io/fqscfqj/y2a-auto:latest
+        
+        # 等待应用启动
+        sleep 30
+        
+        # 测试健康检查
+        curl -f http://localhost:5002/ || exit 1
+        
+        # 检查 yt-dlp 是否可用
+        docker exec test-y2a-auto-ghcr yt-dlp --version || exit 1
+        
+        # 清理
+        docker stop test-y2a-auto-ghcr
