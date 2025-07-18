@@ -99,7 +99,6 @@ def init_id_mapping():
     此函数仅记录一条信息，不再执行文件生成或检查逻辑。
     """
     logger.info("AcFun分区ID映射 (id_mapping.json) 应由 'acfunid/' 目录提供。")
-    # 旧的检查和生成逻辑已被移除
 
 # 模板辅助函数
 def task_status_display(status):
