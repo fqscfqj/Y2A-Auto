@@ -14,6 +14,10 @@ import zipfile
 import requests
 from pathlib import Path
 
+# 修复 Windows 控制台输出中文时报 UnicodeEncodeError
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 def setup_build_environment():
     """设置构建环境"""
     print("设置构建环境...")

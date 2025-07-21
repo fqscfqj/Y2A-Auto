@@ -2,18 +2,7 @@ name: Docker Image CI/CD
 
 on:
   push:
-    branches: [ "main" ]
     tags: [ "v*" ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'userscripts/**'
-      - '.gitignore'
-      - 'LICENSE'
-      - '.github/**'
-      - '!.github/workflows/docker-publish.yml'
-  pull_request:
-    branches: [ "main" ]
     paths-ignore:
       - '**.md'
       - 'docs/**'
