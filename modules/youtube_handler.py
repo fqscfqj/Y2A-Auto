@@ -592,3 +592,45 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         error_msg = f"下载过程中发生未预期的错误: {str(e)}"
         logger.error(error_msg)
         return False, error_msg
+
+def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
+    """
+    提取YouTube播放列表中的所有视频URL
+    Args:
+        playlist_url (str): 播放列表URL
+        cookies_file_path (str, optional): cookies.txt文件路径
+    Returns:
+        list: 视频URL列表
+    """
+    import subprocess
+    import sys
+    video_urls = []
+    try:
+        yt_dlp_path = 'yt-dlp'
+        # 处理cookies路径
+        cookies_path = None
+        if cookies_file_path:
+            cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cookies_file_path)
+            if not os.path.exists(cookies_path):
+                cookies_path = None
+        cmd = [
+            yt_dlp_path,
+            '--flat-playlist',
+            '--dump-single-json',
+            playlist_url
+        ]
+        if cookies_path:
+            cmd.extend(['--cookies', cookies_path])
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            entries = data.get('entries', [])
+            for entry in entries:
+                video_id = entry.get('id')
+                if video_id:
+                    video_urls.append(f'https://www.youtube.com/watch?v={video_id}')
+        else:
+            logger.error(f"yt-dlp提取播放列表失败: {result.stderr}")
+    except Exception as e:
+        logger.error(f"extract_video_urls_from_playlist异常: {str(e)}")
+    return video_urls
