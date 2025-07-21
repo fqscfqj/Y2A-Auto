@@ -1,0 +1,42 @@
+name: Build and Release Windows Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # 仅在推送tag时自动发布
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install pip dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build Windows EXE
+        run: |
+          cd build-tools
+          python build_exe.py
+
+      - name: Archive build output
+        run: |
+          Compress-Archive -Path build-tools/dist/Y2A-Auto/* -DestinationPath Y2A-Auto-win64.zip
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: Y2A-Auto-win64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

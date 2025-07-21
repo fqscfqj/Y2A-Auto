@@ -13,7 +13,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session
 from functools import wraps
 from flask_cors import CORS, cross_origin
-from modules.youtube_handler import download_video_data
+from modules.youtube_handler import download_video_data, extract_video_urls_from_playlist
 from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
 from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
@@ -429,30 +429,42 @@ def review_task(task_id):
 @app.route('/tasks/add', methods=['POST'])
 @login_required
 def add_task_route():
-    """添加新任务"""
+    """添加新任务，支持播放列表批量添加"""
     youtube_url = request.form.get('youtube_url')
     
     if not youtube_url:
         flash('YouTube URL不能为空', 'danger')
         return redirect(url_for('tasks'))
-    
-    task_id = add_task(youtube_url)
-    
-    if task_id:
-        # 获取当前配置
+
+    # 判断是否为播放列表URL
+    if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
+        # 提取所有视频URL
         config = load_config()
-        
-        # 如果启用了自动模式，立即开始处理任务
-        if config.get('AUTO_MODE_ENABLED', False):
-            logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
-            start_task(task_id, config)
-            flash(f'任务已添加并开始处理: {youtube_url}', 'success')
-        else:
-            flash(f'任务已添加: {youtube_url}', 'success')
+        cookies_path = config.get('YOUTUBE_COOKIES_PATH')
+        video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
+        if not video_urls:
+            flash('未能提取到播放列表中的视频', 'danger')
+            return redirect(url_for('tasks'))
+        added_count = 0
+        for url in video_urls:
+            task_id = add_task(url)
+            if task_id:
+                added_count += 1
+        flash(f'已批量添加 {added_count} 个视频任务（来自播放列表）', 'success')
+        return redirect(url_for('tasks'))
     else:
-        flash(f'添加任务失败: {youtube_url}', 'danger')
-    
-    return redirect(url_for('tasks'))
+        task_id = add_task(youtube_url)
+        if task_id:
+            config = load_config()
+            if config.get('AUTO_MODE_ENABLED', False):
+                logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
+                start_task(task_id, config)
+                flash(f'任务已添加并开始处理: {youtube_url}', 'success')
+            else:
+                flash(f'任务已添加: {youtube_url}', 'success')
+        else:
+            flash(f'添加任务失败: {youtube_url}', 'danger')
+        return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/start', methods=['POST'])
 @login_required
@@ -1099,9 +1111,8 @@ def test_download():
 @cross_origin(origins=["*://www.youtube.com", "*://youtube.com", "https://www.youtube.com", "https://youtube.com"])
 def add_task_via_extension():
     """
-    接收来自浏览器扩展的任务添加请求
+    接收来自浏览器扩展的任务添加请求，支持播放列表批量添加
     """
-    # 检查是否需要登录
     config = load_config()
     if config.get('password_protection_enabled'):
         if 'logged_in' not in session:
@@ -1112,9 +1123,7 @@ def add_task_via_extension():
             }), 401
 
     if request.method == 'OPTIONS':
-        # 预检请求处理
         return '', 204
-    
     try:
         data = request.get_json()
         if not data or 'youtube_url' not in data:
@@ -1123,36 +1132,47 @@ def add_task_via_extension():
                 "success": False,
                 "message": "请求格式错误，缺少youtube_url字段"
             }), 400
-        
         youtube_url = data['youtube_url']
         logger.info(f"从浏览器扩展接收到添加任务请求: {youtube_url}")
-        
-        # 调用任务管理器添加任务
-        task_id = add_task(youtube_url)
-        
-        if task_id:
-            # 获取当前配置
-            config = load_config()
-            
-            # 如果启用了自动模式，立即开始处理任务
-            if config.get('AUTO_MODE_ENABLED', False):
-                logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
-                start_task(task_id, config)
-                status_message = "任务已添加并开始处理"
-            else:
-                status_message = "任务已添加到队列"
-            
+        # 判断是否为播放列表URL
+        if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
+            cookies_path = config.get('YOUTUBE_COOKIES_PATH')
+            video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
+            if not video_urls:
+                return jsonify({
+                    "success": False,
+                    "message": "未能提取到播放列表中的视频"
+                }), 400
+            added_count = 0
+            for url in video_urls:
+                task_id = add_task(url)
+                if task_id:
+                    added_count += 1
             return jsonify({
                 "success": True,
-                "message": status_message,
-                "task_id": task_id
+                "message": f"已批量添加 {added_count} 个视频任务（来自播放列表）",
+                "added_count": added_count
             })
         else:
-            return jsonify({
-                "success": False,
-                "message": "添加任务失败，请检查服务器日志"
-            }), 500
-    
+            task_id = add_task(youtube_url)
+            if task_id:
+                config = load_config()
+                if config.get('AUTO_MODE_ENABLED', False):
+                    logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
+                    start_task(task_id, config)
+                    status_message = "任务已添加并开始处理"
+                else:
+                    status_message = "任务已添加到队列"
+                return jsonify({
+                    "success": True,
+                    "message": status_message,
+                    "task_id": task_id
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "message": "添加任务失败，请检查服务器日志"
+                }), 500
     except Exception as e:
         logger.error(f"处理扩展请求时发生错误: {str(e)}")
         return jsonify({
