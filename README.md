@@ -16,6 +16,19 @@
 
 </div>
 
+<p align="center">
+  <a href="https://t.me/Y2AAuto_bot" target="_blank">
+    <img src="https://img.shields.io/badge/Telegram%20Bot-%40Y2AAuto__bot-2CA5E0?logo=telegram&logoColor=white" alt="Telegram Bot" />
+  </a>
+  <br/>
+  <strong>📣 Telegram 转发机器人已上线：</strong>
+  <a href="https://t.me/Y2AAuto_bot">@Y2AAuto_bot</a>
+  <br/>
+  <sub>可先行测试，但可能随时关停或不稳定。可自行部署：
+    <a href="https://github.com/fqscfqj/Y2A-Auto-tgbot">Y2A-Auto-tgbot</a>
+  </sub>
+</p>
+
 ## 项目简介
 
 Y2A-Auto 是基于 Flask 的 YouTube 到 AcFun 视频搬运工具，提供完整的自动化处理流程。
