@@ -645,13 +645,20 @@ def create_translator_from_config(app_config: Dict, task_id: str = None) -> Opti
         if isinstance(max_workers, str):
             max_workers = int(max_workers)
         
+        # 计算字幕翻译专用Base URL（优先使用SUBTITLE_OPENAI_BASE_URL，否则回退到OPENAI_BASE_URL）
+        subtitle_base_url = app_config.get('SUBTITLE_OPENAI_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+
+        # 计算字幕翻译专用Key/模型，未配置则回退通用值
+        subtitle_api_key = app_config.get('SUBTITLE_OPENAI_API_KEY') or app_config.get('OPENAI_API_KEY', '')
+        subtitle_model = app_config.get('SUBTITLE_OPENAI_MODEL_NAME') or app_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
+
         translation_config = TranslationConfig(
             source_language=app_config.get('SUBTITLE_SOURCE_LANGUAGE', 'auto'),
             target_language=app_config.get('SUBTITLE_TARGET_LANGUAGE', 'zh'),
             api_provider=app_config.get('SUBTITLE_API_PROVIDER', 'openai'),
-            api_key=app_config.get('OPENAI_API_KEY', ''),
-            base_url=app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-            model_name=app_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            api_key=subtitle_api_key,
+            base_url=subtitle_base_url,
+            model_name=subtitle_model,
             batch_size=batch_size,
             max_retries=max_retries,
             retry_delay=retry_delay,

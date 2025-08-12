@@ -43,10 +43,21 @@ document.addEventListener('DOMContentLoaded', function() {
     // --- 设置页面的日志清理按钮逻辑 ---
     // 绑定手动日志清理按钮
     const manualCleanupBtn = document.getElementById('manual-cleanup-btn');
+    const logCleanupHoursField = document.getElementById('log-cleanup-hours');
+    const cleanupHoursHidden = document.getElementById('cleanup-hours-input');
     if(manualCleanupBtn) {
         manualCleanupBtn.addEventListener('click', function() {
-            if (confirm('确定要手动清理旧日志吗？此操作将根据当前设置保留最近的日志文件。')) {
-                document.getElementById('cleanup-form').submit();
+            // 使用当前输入的小时数（若存在）
+            if (logCleanupHoursField && cleanupHoursHidden) {
+                const hours = parseInt(logCleanupHoursField.value, 10);
+                if (!isNaN(hours) && hours > 0) {
+                    cleanupHoursHidden.value = hours;
+                }
+            }
+            const confirmMsg = `确定要手动清理旧日志吗？将删除 ${cleanupHoursHidden ? cleanupHoursHidden.value : ''} 小时前的日志文件。`;
+            if (confirm(confirmMsg)) {
+                const form = document.getElementById('cleanup-form');
+                if (form) form.submit();
             }
         });
     }
