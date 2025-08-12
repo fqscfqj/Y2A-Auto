@@ -1275,10 +1275,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 except Exception as e:
                     task_logger.warning(f"复制默认字幕字体失败: {e}")
                 
-                # 使用libass渲染字幕，并通过fontsdir指定临时字体目录；强制样式使用指定字体
-                # 在参数中对空格进行转义，避免被解析为分隔符
-                font_family_escaped = 'Source\\ Han\\ Sans\\ HW\\ SC'
-                vf_filter = f"subtitles=sub.srt:fontsdir=fonts:force_style=FontName={font_family_escaped}"
+                # 使用libass渲染字幕，并通过fontsdir指定临时字体目录
+                # 为避免因字体家族名不匹配导致缺字（渲染为方框），动态读取字体家族名
+                font_family = None
+                try:
+                    from PIL import ImageFont  # Pillow 已在 requirements 中
+                    font_path = os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.ttf')
+                    if os.path.exists(font_path):
+                        try:
+                            pil_font = ImageFont.truetype(font_path, size=18)
+                            family_name, style_name = pil_font.getname()
+                            font_family = family_name
+                            task_logger.info(f"检测到字幕字体: family={family_name}, style={style_name}")
+                        except Exception as e:
+                            task_logger.warning(f"读取字体信息失败，将回退到预设名称: {e}")
+                except Exception as e:
+                    task_logger.warning(f"Pillow未能读取字体信息: {e}")
+
+                if not font_family:
+                    # 回退到常见的中文字体家族名称。优先使用你当前字体显示的家族名
+                    fallback_families = [
+                        'Source Han Sans HW SC VF',
+                        'Source Han Sans HW SC',
+                        'Source Han Sans SC',
+                        'Source Han Sans',
+                        'Noto Sans CJK SC',
+                        'Microsoft YaHei',
+                        'SimHei'
+                    ]
+                    font_family = fallback_families[0]
+                    task_logger.info(f"使用回退字体家族名称: {font_family}")
+
+                # 在参数中对空格进行转义，避免被解析为分隔符，并强制使用 UTF-8 字符集
+                font_family_escaped = font_family.replace(' ', '\\ ')
+                vf_filter = (
+                    f"subtitles=sub.srt:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
+                )
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', 'input.mp4',
