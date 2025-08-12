@@ -332,35 +332,38 @@ class LLMRequester:
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
         
-        return f"""你是一个专业的字幕翻译专家。请将提供的字幕文本翻译成{target_lang_name}。
+        return f"""你是一个专业的字幕翻译专家。请将提供的字幕文本逐条翻译成{target_lang_name}。
 
-翻译要求：
-1. 保持字幕的自然流畅，符合口语表达习惯
-2. 准确传达原文含义，避免逐字翻译
-3. 保持适合字幕显示的简洁性
-4. 保留必要的语气和情感表达
-5. 确保翻译质量和一致性
+严格要求：
+1. 只输出与原句对应的译文本身，不要添加任何与内容无关的信息（不得添加序号、项目符号、解释、注释、引号包裹、前后缀、额外括号等）。
+2. 译文应口语自然、准确传达含义，并保持简洁以适合字幕展示。
+3. 保留原文中已有的场景说明或音效标注（如“(audience laughing)”），但禁止新增未出现的说明。
+4. 每个输入对应一个输出，长度与顺序严格一致。
 
-输出格式：必须返回有效的JSON格式，结构如下：
+输出格式：必须返回有效的JSON，结构如下（仅此一个对象）：
 {{
   "translations": [
-    "翻译结果1",
-    "翻译结果2",
-    "翻译结果3"
+    "句子1的翻译",
+    "句子2的翻译",
+    "句子3的翻译"
   ]
 }}
 
-注意：请严格按照JSON格式输出，不要添加任何其他说明文字。"""
+注意：
+- 严禁输出JSON对象以外的任何文字。
+- 严禁在译文前后添加序号（如“1.”、“2.”、“3:”、“1、”等）或任何列表标记。"""
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
         """构建结构化用户提示词"""
-        numbered_texts = [f"{i+1}. {text}" for i, text in enumerate(texts)]
-        
-        return f"""请翻译以下字幕内容，按顺序返回JSON格式的翻译结果：
-
-{chr(10).join(numbered_texts)}
-
-请返回包含 {len(texts)} 个翻译结果的JSON数组。"""
+        # 以JSON形式提供输入，避免模型受列表编号干扰而生成带编号的输出
+        payload = {
+            "texts": texts
+        }
+        return (
+            "请将下面JSON中texts数组的每个元素翻译为目标语言。"
+            "仅返回包含等长translations数组的JSON对象，不要输出任何其他文字。\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
     
     def _parse_structured_translation_result(self, result: str, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
@@ -416,7 +419,10 @@ class LLMRequester:
                     continue
                 
                 # 移除可能的序号前缀
-                line = re.sub(r'^\d+\.\s*', '', line)
+                line = re.sub(r'^(\d+\.|\d+、|\(|（)?\d+(\)|）)?\s*[-–—·•]*\s*', '', line)
+                # 去除引号包裹
+                if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
+                    line = line[1:-1].strip()
                 if line:
                     translations.append(line)
             
@@ -484,7 +490,12 @@ class SubtitleTranslator:
         try:
             total_items = len(items)
             batch_size = self.config.batch_size
-            max_workers = min(self.config.max_workers, (total_items + batch_size - 1) // batch_size)
+            # 允许不设上限：当配置为0或小于1时，按需要的批次数动态分配
+            required_workers = max(1, (total_items + batch_size - 1) // batch_size)
+            if isinstance(self.config.max_workers, int) and self.config.max_workers > 0:
+                max_workers = min(self.config.max_workers, required_workers)
+            else:
+                max_workers = required_workers
             
             self.logger.info(f"开始并发翻译，批次大小: {batch_size}, 并发线程数: {max_workers}")
             
@@ -532,7 +543,7 @@ class SubtitleTranslator:
                         # 将翻译结果赋值给字幕项
                         for j, translation in enumerate(translations):
                             if j < len(batch_items):
-                                batch_items[j].translated_text = translation
+                                batch_items[j].translated_text = self._sanitize_translated_text(translation)
                         
                         # 更新进度
                         update_progress(len(batch_items))
@@ -579,6 +590,48 @@ class SubtitleTranslator:
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+
+    def _sanitize_translated_text(self, text: str) -> str:
+        """清洗译文：移除无关的序号/项目符号/引号，合并重复行"""
+        if not text:
+            return text
+        try:
+            # 标准化换行
+            lines = [line.strip() for line in str(text).split('\n')]
+            cleaned_lines: List[str] = []
+            seen: set = set()
+
+            for line in lines:
+                if not line:
+                    continue
+                original = line
+                # 反复移除前置编号或项目符号
+                while True:
+                    new_line = re.sub(r'^(?:[\(（]?\s*\d+\s*[\)）.:、]\s*|[-–—·•]\s+)', '', line)
+                    if new_line == line:
+                        break
+                    line = new_line.strip()
+
+                # 去除整行包裹引号
+                if ((line.startswith('"') and line.endswith('"')) or
+                    (line.startswith("'") and line.endswith("'")) or
+                    (line.startswith('“') and line.endswith('”')) or
+                    (line.startswith('‘') and line.endswith('’'))):
+                    line = line[1:-1].strip()
+
+                if not line:
+                    continue
+
+                # 去重（基于标准化后的小写文本）
+                key = line.strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned_lines.append(line)
+
+            return '\n'.join(cleaned_lines).strip()
+        except Exception:
+            return text.strip()
     
     def _write_translated_file(self, items: List[SubtitleItem], output_path: str) -> bool:
         """写入翻译后的文件"""

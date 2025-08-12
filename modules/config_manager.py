@@ -22,6 +22,9 @@ DEFAULT_CONFIG = {
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
     "password_protection_enabled": False,
     "password": "",
+    # 登录安全控制
+    "LOGIN_MAX_FAILED_ATTEMPTS": 5,  # 达到该失败次数后触发锁定
+    "LOGIN_LOCKOUT_MINUTES": 15,     # 被锁定后持续的分钟数
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt", # AcFun Cookie文件路径
     "ACFUN_USERNAME": "",
@@ -57,7 +60,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_RETRY_DELAY": 2,  # 重试延迟(秒)
     "SUBTITLE_EMBED_IN_VIDEO": True,  # 是否将字幕嵌入视频
     "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
-    "SUBTITLE_MAX_WORKERS": 3,  # 字幕翻译最大并发线程数
+    "SUBTITLE_MAX_WORKERS": 0,  # 字幕翻译最大并发线程数（0 表示不设上限，按任务量动态分配）
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 3,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1  # 最大并发上传数

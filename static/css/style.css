@@ -134,15 +134,20 @@ body {
     transition: all 0.3s ease-in-out;
 }
 
-/* 表格列宽设置 */
+/* 表格列宽设置（总和≤100%，避免出现横向滚动条） */
 .tasks-table th.col-id { width: 8%; }
-.tasks-table th.col-title { width: 22%; }
+.tasks-table th.col-title { width: 24%; }
 .tasks-table th.col-status { width: 8%; }
 .tasks-table th.col-time { width: 12%; }
 .tasks-table th.col-partition { width: 8%; }
 .tasks-table th.col-tags { width: 12%; }
-.tasks-table th.col-result { width: 15%; }
-.tasks-table th.col-actions { width: 18%; }
+.tasks-table th.col-result { width: 12%; }
+.tasks-table th.col-actions { width: 16%; }
+
+/* 防止首列内容外溢覆盖后续列（例如复制按钮与标题行重叠） */
+.tasks-table td.col-id, .tasks-table th.col-id {
+    overflow: hidden;
+}
 
 /* 操作按钮样式 */
 .task-action-btn {

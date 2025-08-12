@@ -143,6 +143,23 @@
                                     <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
                                 </div>
                             </div>
+
+                              <div class="row g-3 mt-1">
+                                  <div class="col-md-6">
+                                      <div class="form-group">
+                                          <label for="login-max-attempts">最大连续错误次数（触发锁定）:</label>
+                                          <input type="number" id="login-max-attempts" name="LOGIN_MAX_FAILED_ATTEMPTS" value="{{ config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) }}" min="1" max="20" class="form-control">
+                                          <p class="help-text">连续密码错误达到该次数后，将临时锁定登录</p>
+                                      </div>
+                                  </div>
+                                  <div class="col-md-6">
+                                      <div class="form-group">
+                                          <label for="login-lock-minutes">锁定时长（分钟）:</label>
+                                          <input type="number" id="login-lock-minutes" name="LOGIN_LOCKOUT_MINUTES" value="{{ config.get('LOGIN_LOCKOUT_MINUTES', 15) }}" min="1" max="1440" class="form-control">
+                                          <p class="help-text">被锁定后需要等待的时间，默认15分钟</p>
+                                      </div>
+                                  </div>
+                              </div>
                         </div>
                     </div>
 
@@ -336,8 +353,8 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label for="subtitleMaxWorkers" class="form-label">最大并发线程数</label>
-                                        <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 3) }}" min="1" max="8">
-                                        <div class="form-text">多线程并发翻译的最大线程数，提高翻译速度</div>
+                                        <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 0) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
+                                        <div class="form-text">设置字幕翻译的并发线程数；设置为 <strong>0</strong> 表示不设上限，按任务量动态分配</div>
                                     </div>
                                 </div>
                             </div>

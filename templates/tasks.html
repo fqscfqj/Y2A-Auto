@@ -22,19 +22,18 @@
     </div>
 
     {% if tasks %}
-    <div class="card">
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-striped table-hover mb-0 tasks-table">
+    <div class="modern-list">
+        <div class="table-responsive modern-table">
+                <table class="table table-striped table-hover table-borderless table-sm align-middle mb-0 tasks-table no-min-width">
                     <colgroup>
-                        <col style="width: 120px;">
-                        <col style="width: 300px;">
-                        <col style="width: 100px;">
-                        <col style="width: 120px;">
-                        <col style="width: 120px;">
-                        <col style="width: 150px;">
-                        <col style="width: 200px;">
-                        <col style="width: 200px;">
+                        <col class="col-id">
+                        <col class="col-title">
+                        <col class="col-status">
+                        <col class="col-time">
+                        <col class="col-partition">
+                        <col class="col-tags">
+                        <col class="col-result">
+                        <col class="col-actions">
                     </colgroup>
                     <thead class="table-light">
                         <tr>
@@ -50,23 +49,43 @@
                     </thead>
                     <tbody>
                         {% for task in tasks %}
-                        <tr data-task-id="{{ task.id }}">
-                            <td><span class="text-monospace">{{ task.id[:8] }}...</span></td>
+                        <tr data-task-id="{{ task.id }}" class="status-{{ task.status }}">
                             <td>
-                                {% if task.video_title_translated %}
-                                    {{ task.video_title_translated }}
-                                    <div class="small text-muted">原标题: {{ task.video_title_original }}</div>
-                                {% else %}
-                                    {{ task.video_title_original or '未获取标题' }}
+                                <div class="id-cell d-flex align-items-center gap-1">
+                                    <span class="text-monospace" title="{{ task.id }}">{{ task.id[:8] }}...</span>
+                                    <button type="button" class="btn btn-link p-0 ms-1 copy-id-btn" title="复制ID" data-full-id="{{ task.id }}">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                            </td>
+                            <td>
+                                {% set display_title = task.video_title_translated or task.video_title_original or '未获取标题' %}
+                                <div class="title-clamp title-clamp-3" title="{{ display_title }}">{{ display_title }}</div>
+                                {% if task.video_title_translated and task.video_title_original %}
+                                    <div class="small text-muted text-truncate" title="原标题: {{ task.video_title_original }}">原标题: {{ task.video_title_original }}</div>
                                 {% endif %}
                             </td>
                             <td>
-                                <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
-                                    {{ task_status_display(task.status) }}
-                                    {% if (task.status == 'uploading' or task.status == 'downloading' or task.status == 'translating_subtitle' or task.status == 'encoding_video') and task.upload_progress %}
-                                        <br><small>{{ task.upload_progress }}</small>
+                                {% set icon = 'circle' %}
+                                {% if task.status == 'downloading' %}{% set icon = 'download' %}
+                                {% elif task.status == 'uploading' %}{% set icon = 'cloud-upload' %}
+                                {% elif task.status == 'translating' or task.status == 'translating_subtitle' %}{% set icon = 'translate' %}
+                                {% elif task.status == 'encoding_video' %}{% set icon = 'cpu' %}
+                                {% elif task.status == 'awaiting_manual_review' %}{% set icon = 'eye' %}
+                                {% elif task.status == 'completed' %}{% set icon = 'check-circle' %}
+                                {% elif task.status == 'failed' %}{% set icon = 'x-circle' %}
+                                {% elif task.status == 'ready_for_upload' %}{% set icon = 'cloud-arrow-up' %}
+                                {% elif task.status == 'pending' %}{% set icon = 'pause-circle' %}
+                                {% endif %}
+
+                                <div class="d-flex flex-column align-items-center">
+                                    <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
+                                        <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
+                                    </span>
+                                    {% if (task.status in ['uploading','downloading','translating_subtitle','encoding_video']) and task.upload_progress %}
+                                        <small class="text-muted mt-1">{{ task.upload_progress }}</small>
                                     {% endif %}
-                                </span>
+                                </div>
                             </td>
                             <td>
                                 <span class="task-datetime" 
@@ -105,10 +124,10 @@
                                 {% if task.status == 'completed' and task.acfun_upload_response %}
                                     {% set upload_result = parse_json(task.acfun_upload_response) %}
                                     {% if upload_result and upload_result.ac_number %}
-                                        <span class="badge bg-success">AC{{ upload_result.ac_number }}</span>
-                                        <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success ms-1">
-                                            <i class="bi bi-box-arrow-up-right"></i> 查看
-                                        </a>
+                                        <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开AC页面">AC{{ upload_result.ac_number }}</a>
+                                        <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-ac-btn" title="复制AC号" data-ac-number="{{ upload_result.ac_number }}">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
                                     {% else %}
                                         <span class="badge bg-secondary">未获取AC号</span>
                                     {% endif %}
@@ -163,7 +182,6 @@
                         {% endfor %}
                     </tbody>
                 </table>
-            </div>
         </div>
     </div>
     {% else %}
@@ -287,9 +305,8 @@
 }
 
 .tasks-table {
-    table-layout: auto;
+    table-layout: fixed; /* 固定布局，避免内容撑破导致横向滚动 */
     width: 100%;
-    min-width: 1200px;
 }
 
 .tasks-table td, .tasks-table th {
@@ -297,49 +314,27 @@
     padding: 0.5rem;
 }
 
-.tasks-table .col-id {
-    width: 120px;
-    min-width: 120px;
+/* ID列溢出防护，避免图标与标题列重叠 */
+.tasks-table tbody td:first-child .id-cell {
+    max-width: 100%;
+    overflow: hidden;
+}
+.tasks-table tbody td:first-child .id-cell .text-monospace {
+    display: inline-block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tasks-table tbody td:first-child .id-cell .copy-id-btn {
+    flex: 0 0 auto;
 }
 
-.tasks-table .col-title {
-    width: 300px;
-    min-width: 250px;
-}
-
-.tasks-table .col-status {
-    width: 100px;
-    min-width: 100px;
-    text-align: center;
-}
-
-.tasks-table .col-time {
-    width: 120px;
-    min-width: 120px;
-    text-align: center;
-}
-
-.tasks-table .col-partition {
-    width: 120px;
-    min-width: 100px;
-    text-align: center;
-}
-
-.tasks-table .col-tags {
-    width: 150px;
-    min-width: 120px;
-}
-
-.tasks-table .col-result {
-    width: 200px;
-    min-width: 180px;
-}
-
-.tasks-table .col-actions {
-    width: 200px;
-    min-width: 180px;
-    text-align: right;
-}
+/* 统一列宽在全局样式中设置为百分比，避免像素宽度导致超出 */
+.tasks-table .col-status { text-align: center; }
+.tasks-table .col-time { text-align: center; }
+.tasks-table .col-partition { text-align: center; }
+.tasks-table .col-actions { width: 160px; text-align: right; }
 
 .upload-result-container {
     max-width: 200px;
@@ -361,6 +356,9 @@
     overflow-x: auto;
 }
 
+/* 当屏幕较窄时允许表格收缩，避免出现底部横向滚动条 */
+.tasks-table.no-min-width { min-width: 0; }
+
 .tasks-table .text-monospace {
     font-size: 0.875rem;
 }
@@ -378,18 +376,67 @@
 }
 
 .tasks-table .col-result .badge {
-    max-width: 120px;
+    max-width: 140px;
 }
 
-.tasks-table .btn-sm {
-    font-size: 0.75rem;
-    padding: 0.25rem 0.5rem;
+.tasks-table .btn-sm { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
+
+/* 新增：标题多行省略显示（默认两行） */
+.title-clamp {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-clamp: 2; /* 标准属性，兼容部分浏览器 */
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
+
+/* 保守换行：三行省略，减少出现横向滚动条概率 */
+.title-clamp-3 {
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    max-height: 4.2em; /* 3行 * 1.4 行高，进一步限制高度，配合table-layout: fixed */
+    line-height: 1.4;
+}
+
+/* 更细的进度条以节省空间 */
+.progress.progress-thin { height: 4px; }
+.progress.progress-thin .progress-bar { background-color: #0d6efd; }
+
+/* 行状态轻微高亮 */
+tr.status-downloading td { background-color: rgba(13,110,253,0.03); }
+tr.status-uploading td { background-color: rgba(25,135,84,0.03); }
+tr.status-failed td { background-color: rgba(220,53,69,0.03); }
+tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
+
+/* 去边框现代化风格 */
+.modern-list { border: none; box-shadow: none; }
+.modern-table table { border-collapse: separate; border-spacing: 0 8px; }
+.modern-table table tbody tr { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.modern-table table thead th { border-bottom: 1px solid #e9ecef; }
+.modern-table table tbody tr td { border-top: none; }
+.modern-table .table-hover tbody tr:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); transition: all .15s ease; }
+.modern-table .table { background: transparent; }
+.table-borderless>:not(caption)>*>* { border-bottom-width: 0; }
 </style>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+    // 复制到剪贴板
+    function copyToClipboard(text) {
+        if (!text) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {});
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+        }
+    }
+
     // 删除任务确认框
     function confirmDelete(taskId, taskTitle) {
         document.getElementById('deleteTaskTitle').textContent = taskTitle;
@@ -452,6 +499,14 @@
                 
                 // 更新时间显示
                 updateTaskDateTimes();
+
+                // 设置动态进度条宽度（避免模板内联样式导致的lint警告）
+                document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
+                    var v = parseInt(el.getAttribute('data-pct') || '0', 10);
+                    v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+                    el.style.width = v + '%';
+                    el.setAttribute('aria-valuenow', String(v));
+                });
             }
         }
     }
@@ -475,6 +530,22 @@
         
         // 更新时间显示
         updateTaskDateTimes();
+
+        // 设置动态进度条宽度
+        document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
+            var v = parseInt(el.getAttribute('data-pct') || '0', 10);
+            v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+            el.style.width = v + '%';
+            el.setAttribute('aria-valuenow', String(v));
+        });
+
+        // 绑定复制按钮
+        document.querySelectorAll('.copy-id-btn').forEach(btn => {
+            btn.addEventListener('click', () => copyToClipboard(btn.dataset.fullId));
+        });
+        document.querySelectorAll('.copy-ac-btn').forEach(btn => {
+            btn.addEventListener('click', () => copyToClipboard('AC' + btn.dataset.acNumber));
+        });
     }
     
     function initTooltips() {
@@ -693,6 +764,14 @@
         
         // 初始化时间显示
         updateTaskDateTimes();
+
+        // 初次设置动态进度条宽度
+        document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
+            var v = parseInt(el.getAttribute('data-pct') || '0', 10);
+            v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+            el.style.width = v + '%';
+            el.setAttribute('aria-valuenow', String(v));
+        });
         
         // 清理强制刷新标记（5分钟后）
         setTimeout(function() {
