@@ -1091,15 +1091,16 @@ def settings():
                 logger.info(f"AcFun cookies文件已上传并保存到: {ac_cookies_path}")
         
         # 更新配置
-        update_config(form_data)
+        updated_config = update_config(form_data)
         
-        # 如果并发配置有更新，重新初始化全局任务处理器
-        if 'MAX_CONCURRENT_TASKS' in form_data or 'MAX_CONCURRENT_UPLOADS' in form_data:
+        # 始终同步到应用配置并刷新任务处理器配置（若配置变更则内部会安全重建）
+        try:
             from modules.task_manager import get_global_task_processor
-            updated_config = load_config()
             app.config['Y2A_SETTINGS'] = updated_config
             get_global_task_processor(updated_config)
-            logger.info("并发配置已更新，全局任务处理器已重新初始化")
+            logger.info("配置已更新并同步到任务处理器")
+        except Exception as e:
+            logger.warning(f"同步任务处理器配置失败: {e}")
         
         # 如果YouTube API密钥有更新，同步到监控系统
         if 'YOUTUBE_API_KEY' in form_data:

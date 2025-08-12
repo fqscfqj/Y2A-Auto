@@ -326,7 +326,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if not skip_download:
             # 优先选择高质量视频格式，回退到可用格式
             cmd.extend([
-                '--format', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo+bestaudio/best',
+                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
                 '--merge-output-format', 'mp4'
             ])
         

@@ -106,6 +106,8 @@
                                 </select>
                                 <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
                             </div>
+
+                            
                         </div>
                     </div>
 
@@ -339,6 +341,18 @@
                                             将字幕嵌入视频
                                         </label>
                                         <p class="help-text">使用FFmpeg将翻译后的字幕硬编码到视频中</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="video-encoder">视频编码器（用于嵌字转码）:</label>
+                                        <select name="VIDEO_ENCODER" id="video-encoder" class="form-select">
+                                            <option value="cpu" {% if config.get('VIDEO_ENCODER', 'cpu') == 'cpu' %}selected{% endif %}>CPU 软编码（x264/x265）</option>
+                                            <option value="nvenc" {% if config.get('VIDEO_ENCODER', 'cpu') == 'nvenc' %}selected{% endif %}>NVIDIA NVENC</option>
+                                            <option value="qsv" {% if config.get('VIDEO_ENCODER', 'cpu') == 'qsv' %}selected{% endif %}>Intel QSV</option>
+                                            <option value="amf" {% if config.get('VIDEO_ENCODER', 'cpu') == 'amf' %}selected{% endif %}>AMD AMF</option>
+                                        </select>
+                                        <p class="help-text">仅在勾选“将字幕嵌入视频”时生效；分辨率自动匹配1080p/4K 档位，音频直接复制。</p>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
