@@ -1242,8 +1242,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # 设置任务状态为转码视频中
             update_task(task_id, status=TASK_STATES['ENCODING_VIDEO'])
             
-            # 获取视频时长用于计算进度
+            # 获取视频时长和流信息用于计算进度与参数
             video_duration = self._get_video_duration(video_path, task_logger)
+            stream_info = self._get_video_stream_info(video_path, task_logger)
+            input_width = stream_info.get('width') or 0
+            input_height = stream_info.get('height') or 0
+            input_fps = stream_info.get('fps') or 30
+            # 档位选择：≤1440 走 1080p 档；>1440 走 4K 档
+            is_4k_tier = input_height > 1440
+            # GOP 取 2 秒一关键帧
+            gop = max(24, int(round(2 * input_fps)))
             
             # 使用简化路径方式（已测试成功）
             temp_dir = tempfile.mkdtemp()
@@ -1262,14 +1270,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # 将默认字体复制到临时字体目录，确保libass可用
                 try:
                     from .utils import get_app_subdir, get_app_root_dir
-                    candidates = [
-                        os.path.join(get_app_subdir('fonts'), 'SourceHanSansHWSC-VF.ttf'),
-                        os.path.join(get_app_root_dir(), 'SourceHanSansHWSC-VF.ttf'),
+                    search_paths = [
+                        os.path.join(get_app_subdir('fonts'), 'SourceHanSansHWSC-VF.otf'),
+                        os.path.join(get_app_root_dir(), 'SourceHanSansHWSC-VF.otf'),
                     ]
-                    default_font_src = next((p for p in candidates if os.path.exists(p)), None)
+                    default_font_src = next((p for p in search_paths if os.path.exists(p)), None)
+                    temp_font_path = None
                     if default_font_src:
-                        shutil.copy2(default_font_src, os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.ttf'))
-                        task_logger.info("已将默认字幕字体复制到临时目录")
+                        temp_font_path = os.path.join(temp_fonts_dir, os.path.basename(default_font_src))
+                        shutil.copy2(default_font_src, temp_font_path)
+                        task_logger.info(f"已将默认字幕字体复制到临时目录: {os.path.basename(default_font_src)}")
                     else:
                         task_logger.warning("未找到默认字幕字体（fonts/ 或 根目录），将使用系统默认字体")
                 except Exception as e:
@@ -1280,15 +1290,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 font_family = None
                 try:
                     from PIL import ImageFont  # Pillow 已在 requirements 中
-                    font_path = os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.ttf')
-                    if os.path.exists(font_path):
-                        try:
-                            pil_font = ImageFont.truetype(font_path, size=18)
-                            family_name, style_name = pil_font.getname()
-                            font_family = family_name
-                            task_logger.info(f"检测到字幕字体: family={family_name}, style={style_name}")
-                        except Exception as e:
-                            task_logger.warning(f"读取字体信息失败，将回退到预设名称: {e}")
+                    # 如果前面复制了字体，则尝试读取其家族名
+                    try_font_paths = []
+                    try:
+                        if 'temp_font_path' in locals() and temp_font_path and os.path.exists(temp_font_path):
+                            try_font_paths.append(temp_font_path)
+                    except Exception:
+                        pass
+                    try_font_paths.append(os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.otf'))
+                    for fpath in try_font_paths:
+                        if os.path.exists(fpath):
+                            try:
+                                pil_font = ImageFont.truetype(fpath, size=18)
+                                family_name, style_name = pil_font.getname()
+                                font_family = family_name
+                                task_logger.info(f"检测到字幕字体: family={family_name}, style={style_name}")
+                                break
+                            except Exception as e:
+                                task_logger.warning(f"读取字体信息失败，尝试下一个：{e}")
                 except Exception as e:
                     task_logger.warning(f"Pillow未能读取字体信息: {e}")
 
@@ -1308,18 +1327,144 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 # 在参数中对空格进行转义，避免被解析为分隔符，并强制使用 UTF-8 字符集
                 font_family_escaped = font_family.replace(' ', '\\ ')
-                vf_filter = (
+                # 构建滤镜链：字幕 + 需要时的降分辨率
+                vf_parts = [
                     f"subtitles=sub.srt:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
-                )
+                ]
+                if not is_4k_tier and input_height > 1080:
+                    vf_parts.append("scale=-2:1080:flags=lanczos")
+                if is_4k_tier and input_height > 2160:
+                    vf_parts.append("scale=-2:2160:flags=lanczos")
+                vf_filter = ",".join(vf_parts)
+
+                # 读取编码器设置
+                encoder_pref = str(self.config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
+
+                # 针对不同后端与档位生成参数
+                def build_cpu_params():
+                    if is_4k_tier:
+                        # HEVC/x265, 10Mbps VBV 约束 + CRF
+                        return [
+                            '-c:v', 'libx265',
+                            '-pix_fmt', 'yuv420p',
+                            '-preset', 'slow',
+                            '-crf', '23',
+                            '-x265-params', f"vbv-maxrate=10000:vbv-bufsize=20000:keyint={gop}:min-keyint={gop}:scenecut=0:profile=main:level=5.1:high-tier=1"
+                        ]
+                    else:
+                        # H.264/x264, 6Mbps 上限 + CRF
+                        return [
+                            '-c:v', 'libx264',
+                            '-pix_fmt', 'yuv420p',
+                            '-preset', 'slow',
+                            '-profile:v', 'high',
+                            '-level', '4.1',
+                            '-crf', '19',
+                            '-maxrate', '6000k',
+                            '-bufsize', '12000k',
+                            '-g', str(gop),
+                            '-keyint_min', str(gop),
+                            '-sc_threshold', '0'
+                        ]
+
+                def build_nvenc_params():
+                    if is_4k_tier:
+                        return [
+                            '-c:v', 'hevc_nvenc',
+                            '-pix_fmt', 'yuv420p',
+                            '-rc:v', 'vbr_hq',
+                            '-b:v', '8000k',
+                            '-maxrate', '10000k',
+                            '-bufsize', '20000k',
+                            '-preset', 'p5',
+                            '-profile:v', 'main',
+                            '-g', str(gop),
+                            '-bf', '4',
+                            '-spatial_aq', '1',
+                            '-aq-strength', '8',
+                            '-look_ahead', '1'
+                        ]
+                    else:
+                        return [
+                            '-c:v', 'h264_nvenc',
+                            '-pix_fmt', 'yuv420p',
+                            '-rc:v', 'vbr_hq',
+                            '-b:v', '4500k',
+                            '-maxrate', '6000k',
+                            '-bufsize', '12000k',
+                            '-preset', 'p5',
+                            '-profile:v', 'high',
+                            '-g', str(gop),
+                            '-bf', '3',
+                            '-spatial_aq', '1',
+                            '-aq-strength', '8'
+                        ]
+
+                def build_qsv_params():
+                    if is_4k_tier:
+                        return [
+                            '-c:v', 'hevc_qsv',
+                            '-pix_fmt', 'yuv420p',
+                            '-b:v', '8000k',
+                            '-maxrate', '10000k',
+                            '-bufsize', '20000k',
+                            '-preset', 'slow',
+                            '-g', str(gop),
+                            '-bf', '4'
+                        ]
+                    else:
+                        return [
+                            '-c:v', 'h264_qsv',
+                            '-pix_fmt', 'yuv420p',
+                            '-b:v', '4500k',
+                            '-maxrate', '6000k',
+                            '-bufsize', '12000k',
+                            '-preset', 'slow',
+                            '-g', str(gop),
+                            '-bf', '3'
+                        ]
+
+                def build_amf_params():
+                    if is_4k_tier:
+                        return [
+                            '-c:v', 'hevc_amf',
+                            '-pix_fmt', 'yuv420p',
+                            '-rc', 'vbr',
+                            '-b:v', '8000k',
+                            '-maxrate', '10000k',
+                            '-bufsize', '20000k',
+                            '-quality', 'quality',
+                            '-g', str(gop)
+                        ]
+                    else:
+                        return [
+                            '-c:v', 'h264_amf',
+                            '-pix_fmt', 'yuv420p',
+                            '-rc', 'vbr',
+                            '-b:v', '4500k',
+                            '-maxrate', '6000k',
+                            '-bufsize', '12000k',
+                            '-quality', 'quality',
+                            '-g', str(gop)
+                        ]
+
+                if encoder_pref == 'nvenc':
+                    vparams = build_nvenc_params()
+                elif encoder_pref == 'qsv':
+                    vparams = build_qsv_params()
+                elif encoder_pref == 'amf':
+                    vparams = build_amf_params()
+                else:
+                    vparams = build_cpu_params()
+
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', 'input.mp4',
                     '-vf', vf_filter,
-                    '-c:v', 'libx264',
-                    '-crf', '23.5',
+                    *vparams,
                     '-c:a', 'copy',
-                    '-preset', 'medium',
-                    '-progress', 'pipe:1',  # 输出进度信息到stdout
+                    '-movflags', '+faststart',
+                    '-progress', 'pipe:1',
                     'output.mp4'
                 ]
                 
@@ -1510,9 +1655,46 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         except subprocess.TimeoutExpired:
             task_logger.warning("获取视频时长超时")
             return None
+
+    def _get_video_stream_info(self, video_path, task_logger):
+        """获取视频流分辨率与帧率等信息"""
+        info = {"width": None, "height": None, "fps": None}
+        try:
+            import subprocess, json
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-select_streams', 'v:0', '-show_streams', video_path
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=30
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                streams = data.get('streams', [])
+                if streams:
+                    s = streams[0]
+                    info['width'] = s.get('width')
+                    info['height'] = s.get('height')
+                    r = s.get('avg_frame_rate') or s.get('r_frame_rate')
+                    if r and r != '0/0':
+                        try:
+                            num, den = r.split('/')
+                            fps = float(num) / float(den) if float(den) != 0 else 0
+                            if fps > 1:
+                                info['fps'] = fps
+                        except Exception:
+                            pass
+            task_logger.info(f"视频流信息: {info}")
+        except subprocess.TimeoutExpired:
+            task_logger.warning("获取视频流信息超时")
         except Exception as e:
-            task_logger.warning(f"获取视频时长失败: {str(e)}")
-            return None
+            task_logger.warning(f"获取视频流信息失败: {str(e)}")
+        return info
 
     def _generate_tags(self, task_id, task_logger):
         """生成视频标签"""

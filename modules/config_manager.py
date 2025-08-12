@@ -63,7 +63,9 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MAX_WORKERS": 0,  # 字幕翻译最大并发线程数（0 表示不设上限，按任务量动态分配）
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 3,  # 最大并发任务数
-    "MAX_CONCURRENT_UPLOADS": 1  # 最大并发上传数
+    "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
+    # 视频转码相关
+    "VIDEO_ENCODER": "cpu"  # 选择视频编码器：cpu / nvenc / qsv / amf
 }
 
 CONFIG_FILE = "config.json"
