@@ -556,6 +556,160 @@ python app.py
 - **Docker Compose** - 多容器编排
 - **GitHub Actions** - 自动构建
 
+## 显卡转码（GPU 加速）
+
+Y2A-Auto 支持在嵌字转码阶段使用 GPU 加速，减少处理时间并降低 CPU 占用。可在 Web 界面 `设置 → 视频编码器` 选择：`cpu` / `nvenc` / `qsv` / `amf`。
+
+- `cpu`: 软编码（x264/x265），兼容性最好但速度较慢
+- `nvenc`: NVIDIA 显卡（Linux/Windows 均可；Docker 需特别配置）
+- `qsv`: Intel Quick Sync（Linux/Windows；Docker 需映射 `/dev/dri`）
+- `amf`: AMD AMF（主要在 Windows 原生运行有效；Linux Docker 通常使用 VAAPI 而非 AMF，当前未内置 VAAPI 方案）
+
+> 提示：GPU 是否可用取决于宿主机驱动与容器内 FFmpeg 的编译选项。若在容器内执行 `ffmpeg -encoders` 未看到目标编码器（如 `h264_nvenc`/`hevc_nvenc`/`h264_qsv`/`hevc_qsv`），请参考下文的“自定义镜像（可选）”。
+
+### Docker（NVIDIA NVENC）
+
+前置条件：
+- 已安装并正确加载 NVIDIA 驱动，宿主机可执行 `nvidia-smi`
+- 已安装 NVIDIA Container Toolkit（参考官方文档）
+  - 文档链接：`https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html`
+  - 常用命令：
+    - `sudo nvidia-ctk runtime configure --runtime=docker`
+    - `sudo systemctl restart docker`
+
+Compose 示例（方式一：基于 compose v2 的设备保留声明）
+
+```yaml
+services:
+  y2a-auto:
+    image: fqscfqj/y2a-auto:latest
+    container_name: y2a-auto
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config:/app/config
+      - ./db:/app/db
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+      - ./cookies:/app/cookies
+      - ./temp:/app/temp
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONIOENCODING=utf-8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [compute, video, utility]
+```
+
+Compose 示例（方式二：兼容旧版 compose 的运行时与环境变量）
+
+```yaml
+services:
+  y2a-auto:
+    image: fqscfqj/y2a-auto:latest
+    container_name: y2a-auto
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config:/app/config
+      - ./db:/app/db
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+      - ./cookies:/app/cookies
+      - ./temp:/app/temp
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONIOENCODING=utf-8
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    runtime: nvidia
+```
+
+容器内验证：
+- `ffmpeg -hwaccels` 应包含 `cuda`
+- `ffmpeg -hide_banner -encoders | grep nvenc` 应显示 `h264_nvenc/hev c_nvenc`
+
+在 Web 界面选择 `视频编码器 = NVIDIA NVENC`（或在 `config/config.json` 中将 `VIDEO_ENCODER` 设为 `nvenc`）。
+
+### Docker（Intel QSV）
+
+前置条件：
+- BIOS 中启用核显 / iGPU
+- 宿主机安装 Intel 媒体驱动（常见为 `iHD`），并存在 `/dev/dri`
+
+Compose 示例：
+
+```yaml
+services:
+  y2a-auto:
+    image: fqscfqj/y2a-auto:latest
+    container_name: y2a-auto
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONIOENCODING=utf-8
+      - LIBVA_DRIVER_NAME=iHD
+    volumes:
+      - ./config:/app/config
+      - ./db:/app/db
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+      - ./cookies:/app/cookies
+      - ./temp:/app/temp
+```
+
+容器内验证：
+- `ffmpeg -hwaccels` 应包含 `qsv`/`vaapi`
+- `ffmpeg -hide_banner -encoders | grep qsv` 应显示 `h264_qsv/hevc_qsv`
+
+在 Web 界面选择 `视频编码器 = Intel QSV`（或在 `config/config.json` 中将 `VIDEO_ENCODER` 设为 `qsv`）。
+
+### AMD AMF（说明）
+
+- AMF 编码器（`h264_amf`/`hevc_amf`）主要在 Windows 原生环境有效。Linux 下通常通过 VAAPI，但当前应用未内置 VAAPI 编码路径，Docker 下不建议选择 `amf`。
+
+### 自定义镜像（可选）
+
+若容器内 FFmpeg 不包含所需硬件编码器，可自定义镜像。例如为 NVIDIA 基础环境构建：
+
+```dockerfile
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3 python3-pip ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+COPY . .
+
+EXPOSE 5000
+CMD ["python3", "app.py"]
+```
+
+然后使用对应的 Compose 文件构建并运行：
+
+```bash
+docker compose -f docker-compose-build.yml up -d --build
+```
+
+> 注意：不同发行版的 `ffmpeg` 是否启用 `nvenc/qsv` 会有差异，请在容器内用 `ffmpeg -encoders` 检查。如仍缺失，请选择具备对应功能的基础镜像或采用社区提供的 FFmpeg 预编译镜像。
+
 ## 项目结构
 
 ```

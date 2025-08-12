@@ -35,10 +35,13 @@ jobs:
         run: |
           Compress-Archive -Path build-tools/dist/Y2A-Auto/* -DestinationPath Y2A-Auto-win64.zip
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+      - name: Create or Update GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
         with:
-          files: Y2A-Auto-win64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+          artifacts: Y2A-Auto-win64.zip
+          allowUpdates: true
+          removeArtifacts: true
+          generateReleaseNotes: true
+          token: ${{ secrets.GITHUB_TOKEN }}
