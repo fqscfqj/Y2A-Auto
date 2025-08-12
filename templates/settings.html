@@ -5,457 +5,572 @@
 {% block content %}
 <div class="settings-container">
     <h2>系统设置</h2>
-    
-    <form method="post" enctype="multipart/form-data">
-        <div class="settings-section">
-            <h3>基本设置</h3>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="AUTO_MODE_ENABLED" {% if config.AUTO_MODE_ENABLED %}checked{% endif %}>
-                    启用无人值守自动投稿模式
-                </label>
-                <p class="help-text">自动完成从下载到投稿的全流程，无需人工干预</p>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="TRANSLATE_TITLE" {% if config.TRANSLATE_TITLE %}checked{% endif %}>
-                    自动翻译标题
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="TRANSLATE_DESCRIPTION" {% if config.TRANSLATE_DESCRIPTION %}checked{% endif %}>
-                    自动翻译描述
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="GENERATE_TAGS" {% if config.GENERATE_TAGS %}checked{% endif %}>
-                    自动生成标签
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
-                    自动推荐分区
-                </label>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
-                    启用内容审核
-                </label>
-                <p class="help-text">使用阿里云内容安全服务自动审核标题、描述和封面</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="cover-mode">封面处理模式:</label>
-                <select name="COVER_PROCESSING_MODE" id="cover-mode">
-                    <option value="crop" {% if config.COVER_PROCESSING_MODE == 'crop' %}selected{% endif %}>裁剪模式 (保持清晰度)</option>
-                    <option value="pad" {% if config.COVER_PROCESSING_MODE == 'pad' %}selected{% endif %}>填充模式 (保持完整性)</option>
-                </select>
-                <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
+
+    <div class="row settings-layout">
+        <div class="col-lg-3 mb-3">
+            <div class="nav flex-column nav-pills settings-nav" id="settings-nav" role="tablist" aria-orientation="vertical">
+                <a class="nav-link active" id="vtab-general-tab" data-bs-toggle="pill" href="#vtab-general" role="tab" aria-controls="vtab-general" aria-selected="true">
+                    <i class="bi bi-sliders"></i> 通用
+                </a>
+                <a class="nav-link" id="vtab-security-tab" data-bs-toggle="pill" href="#vtab-security" role="tab" aria-controls="vtab-security" aria-selected="false">
+                    <i class="bi bi-shield-lock"></i> 账号与安全
+                </a>
+                <a class="nav-link" id="vtab-youtube-tab" data-bs-toggle="pill" href="#vtab-youtube" role="tab" aria-controls="vtab-youtube" aria-selected="false">
+                    <i class="bi bi-download"></i> 下载与代理
+                </a>
+                <a class="nav-link" id="vtab-acfun-tab" data-bs-toggle="pill" href="#vtab-acfun" role="tab" aria-controls="vtab-acfun" aria-selected="false">
+                    <i class="bi bi-person-badge"></i> AcFun账号
+                </a>
+                <a class="nav-link" id="vtab-subtitle-tab" data-bs-toggle="pill" href="#vtab-subtitle" role="tab" aria-controls="vtab-subtitle" aria-selected="false">
+                    <i class="bi bi-translate"></i> 字幕翻译
+                </a>
+                <a class="nav-link" id="vtab-concurrency-tab" data-bs-toggle="pill" href="#vtab-concurrency" role="tab" aria-controls="vtab-concurrency" aria-selected="false">
+                    <i class="bi bi-cpu"></i> 并发与日志
+                </a>
+                <a class="nav-link" id="vtab-openai-tab" data-bs-toggle="pill" href="#vtab-openai" role="tab" aria-controls="vtab-openai" aria-selected="false">
+                    <i class="bi bi-robot"></i> OpenAI
+                </a>
+                <a class="nav-link" id="vtab-aliyun-tab" data-bs-toggle="pill" href="#vtab-aliyun" role="tab" aria-controls="vtab-aliyun" aria-selected="false">
+                    <i class="bi bi-shield-check"></i> 内容安全
+                </a>
+                <a class="nav-link" id="vtab-ytmonitor-tab" data-bs-toggle="pill" href="#vtab-ytmonitor" role="tab" aria-controls="vtab-ytmonitor" aria-selected="false">
+                    <i class="bi bi-youtube"></i> YouTube监控
+                </a>
             </div>
         </div>
-        
-        <div class="settings-section">
-            <h3><i class="bi bi-shield-lock"></i> 密码保护</h3>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="password_protection_enabled" id="password_protection_enabled" {% if config.password_protection_enabled %}checked{% endif %}>
-                    启用Web界面密码保护
-                </label>
-                <p class="help-text">启用后，访问Web界面需要输入密码。浏览器插件也将需要登录才能使用。</p>
-            </div>
-            
-            <div id="password-fields">
-                <div class="form-group">
-                    <label for="new_password">新密码:</label>
-                    <input type="password" id="new_password" name="new_password" class="form-control">
-                    <p class="help-text">设置或更改您的登录密码。如果留空，密码将不会被更改。</p>
-                </div>
-                
-                <div class="form-group">
-                    <label for="confirm_password">确认新密码:</label>
-                    <input type="password" id="confirm_password" name="confirm_password" class="form-control">
-                    <p class="help-text">请再次输入新密码。</p>
-                </div>
-                <div id="password-match-error" class="alert alert-danger mt-2" style="display: none;">
-                    <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
-                </div>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>YouTube设置</h3>
-            
-            <div class="form-group">
-                <label for="youtube-cookies">YouTube Cookies文件路径:</label>
-                <input type="text" id="youtube-cookies" name="YOUTUBE_COOKIES_PATH" value="{{ config.YOUTUBE_COOKIES_PATH }}">
-                <p class="help-text">用于访问受限制的YouTube视频</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-cookies-file">上传新的YouTube Cookies文件:</label>
-                <input type="file" id="youtube-cookies-file" name="youtube_cookies_file">
-                <p class="help-text">上传新文件将覆盖原有文件</p>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="YOUTUBE_PROXY_ENABLED" {% if config.get('YOUTUBE_PROXY_ENABLED', False) %}checked{% endif %}>
-                    启用代理下载
-                </label>
-                <p class="help-text">在中国境内访问YouTube时通常需要代理</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-proxy-url">代理地址:</label>
-                <input type="text" id="youtube-proxy-url" name="YOUTUBE_PROXY_URL" value="{{ config.get('YOUTUBE_PROXY_URL', '') }}" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
-                <p class="help-text">支持HTTP和SOCKS5代理，格式如：http://proxy.example.com:8080 或 socks5://127.0.0.1:1080</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-proxy-username">代理用户名:</label>
-                <input type="text" id="youtube-proxy-username" name="YOUTUBE_PROXY_USERNAME" value="{{ config.get('YOUTUBE_PROXY_USERNAME', '') }}" placeholder="代理服务器用户名（可选）">
-                <p class="help-text">如果代理服务器需要身份验证，请填写用户名</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-proxy-password">代理密码:</label>
-                <input type="password" id="youtube-proxy-password" name="YOUTUBE_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_PROXY_PASSWORD', '') }}" placeholder="代理服务器密码（可选）">
-                <p class="help-text">如果代理服务器需要身份验证，请填写密码</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-download-threads">下载线程数:</label>
-                <input type="number" id="youtube-download-threads" name="YOUTUBE_DOWNLOAD_THREADS" value="{{ config.get('YOUTUBE_DOWNLOAD_THREADS', 4) }}" min="1" max="16">
-                <p class="help-text">yt-dlp并发下载片段的线程数，建议1-8，过高可能被YouTube限速</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="youtube-throttled-rate">下载速度限制:</label>
-                <input type="text" id="youtube-throttled-rate" name="YOUTUBE_THROTTLED_RATE" value="{{ config.get('YOUTUBE_THROTTLED_RATE', '') }}" placeholder="如：1M、500K、2.5M">
-                <p class="help-text">限制下载速度以避免被限流，格式如：1M（1MB/s）、500K（500KB/s），留空不限制</p>
-            </div>
-            
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> 
-                <strong>YouTube下载设置说明：</strong>
-                <ul class="mb-0 mt-2">
-                    <li><strong>代理设置：</strong>
-                        <ul>
-                            <li>HTTP代理：http://服务器地址:端口 (如：http://127.0.0.1:7890)</li>
-                            <li>SOCKS5代理：socks5://服务器地址:端口 (如：socks5://127.0.0.1:1080)</li>
-                            <li>认证代理：请分别在"代理地址"、"代理用户名"和"代理密码"字段中填写</li>
-                        </ul>
-                    </li>
-                    <li><strong>下载优化：</strong>
-                        <ul>
-                            <li>线程数1-4：适合网络较慢或被限速的环境</li>
-                            <li>线程数5-8：适合正常网络环境，下载速度较快</li>
-                            <li>线程数过高可能触发YouTube反爬虫机制</li>
-                            <li>可配合速度限制避免被限流</li>
-                        </ul>
-                    </li>
-                    <li><strong>注意：</strong>代理和下载设置仅影响yt-dlp，不影响网页访问</li>
-                </ul>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>AcFun账号设置</h3>
-            
-            <div class="form-group">
-                <label for="acfun-cookies">AcFun Cookies文件路径:</label>
-                <input type="text" id="acfun-cookies" name="ACFUN_COOKIES_PATH" value="{{ config.ACFUN_COOKIES_PATH }}">
-                <p class="help-text">推荐使用Cookie登录，支持Netscape和JSON格式</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="acfun-cookies-file">上传新的AcFun Cookies文件:</label>
-                <input type="file" id="acfun-cookies-file" name="acfun_cookies_file">
-                <p class="help-text">上传新文件将覆盖原有文件。Cookie优先级高于用户名密码</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="acfun-username">AcFun用户名（备用）:</label>
-                <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}">
-                <p class="help-text">当Cookie文件不存在或失效时使用</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="acfun-password">AcFun密码（备用）:</label>
-                <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}">
-                <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>任务并发控制</h3>
-            
-            <div class="form-group">
-                <label for="max-concurrent-tasks">最大并发任务数:</label>
-                <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 3) }}" min="1" max="10">
-                <p class="help-text">同时处理的最大任务数量（包括下载、翻译等操作）</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="max-concurrent-uploads">最大并发上传数:</label>
-                <input type="number" id="max-concurrent-uploads" name="MAX_CONCURRENT_UPLOADS" value="{{ config.get('MAX_CONCURRENT_UPLOADS', 1) }}" min="1" max="5">
-                <p class="help-text">同时上传到AcFun的最大视频数量，建议设置为1避免高并发触发限制</p>
-            </div>
-            
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> 
-                <strong>并发控制说明：</strong>
-                <ul class="mb-0 mt-2">
-                    <li><strong>任务并发：</strong>控制整体任务处理的并发数，影响系统资源使用</li>
-                    <li><strong>上传并发：</strong>控制同时上传到AcFun的视频数，建议设置为1</li>
-                    <li><strong>推荐配置：</strong>任务并发3，上传并发1（避免触发AcFun限制）</li>
-                </ul>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>日志清理设置</h3>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="LOG_CLEANUP_ENABLED" {% if config.LOG_CLEANUP_ENABLED %}checked{% endif %}>
-                    启用自动日志清理
-                </label>
-                <p class="help-text">定期自动清理旧日志文件</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="log-cleanup-hours">保留日志小时数:</label>
-                <input type="number" id="log-cleanup-hours" name="LOG_CLEANUP_HOURS" value="{{ config.LOG_CLEANUP_HOURS }}" min="1" max="8760">
-                <p class="help-text">保留最近多少小时的日志，超过小时数的日志将被删除 (24小时=1天, 168小时=7天)</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="log-cleanup-interval">清理间隔(小时):</label>
-                <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168">
-                <p class="help-text">每隔多少小时执行一次日志清理</p>
-            </div>
-            
-            <div class="form-group">
-                <!-- 手动清理按钮，但不在主表单内 -->
-                <div class="mt-3">
-                    <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
-                        <i class="bi bi-trash"></i> 按时间清理日志
-                    </button>
-                    <p class="help-text mt-2">手动触发日志清理，将删除{{ config.LOG_CLEANUP_HOURS }}小时前的日志文件</p>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <!-- 立即清空日志按钮 -->
-                <div class="mt-3">
-                    <button type="button" id="clear-logs-btn" class="btn btn-danger">
-                        <i class="bi bi-trash-fill"></i> 立即清空日志
-                    </button>
-                    <button type="button" id="confirm-clear-btn" class="btn btn-outline-danger ms-2 d-none">
-                        <i class="bi bi-check-lg"></i> 确认清空
-                    </button>
-                    <button type="button" id="cancel-clear-btn" class="btn btn-outline-secondary ms-2 d-none">
-                        <i class="bi bi-x-lg"></i> 取消
-                    </button>
-                    <p class="help-text mt-2">立即清空task_manager.log、app.log的内容，删除所有task_xxx.log文件</p>
-                    <div id="clear-warning" class="alert alert-warning mt-2 d-none">
-                        <i class="bi bi-exclamation-triangle"></i>
-                        <strong>警告：</strong>此操作将立即清空所有日志文件，无法恢复！<br>
-                        将执行以下操作：<br>
-                        • 清空 task_manager.log 和 app.log 的内容<br>
-                        • 删除所有 task_xxx.log 文件<br>
-                        <strong>确定要继续吗？</strong>
+
+        <div class="col-lg-9">
+            <form method="post" enctype="multipart/form-data">
+                <div class="tab-content" id="settings-tabContent">
+                    <!-- 通用设置 -->
+                    <div class="tab-pane fade show active" id="vtab-general" role="tabpanel" aria-labelledby="vtab-general-tab">
+                        <div class="settings-section">
+                            <h3>基本设置</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="AUTO_MODE_ENABLED" {% if config.AUTO_MODE_ENABLED %}checked{% endif %}>
+                                    启用无人值守自动投稿模式
+                                </label>
+                                <p class="help-text">自动完成从下载到投稿的全流程，无需人工干预</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="TRANSLATE_TITLE" {% if config.TRANSLATE_TITLE %}checked{% endif %}>
+                                            自动翻译标题
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="TRANSLATE_DESCRIPTION" {% if config.TRANSLATE_DESCRIPTION %}checked{% endif %}>
+                                            自动翻译描述
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="GENERATE_TAGS" {% if config.GENERATE_TAGS %}checked{% endif %}>
+                                            自动生成标签
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
+                                            自动推荐分区
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-group mt-2">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
+                                    启用内容审核
+                                </label>
+                                <p class="help-text">使用阿里云内容安全服务自动审核标题、描述和封面</p>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="cover-mode">封面处理模式:</label>
+                                <select name="COVER_PROCESSING_MODE" id="cover-mode" class="form-select">
+                                    <option value="crop" {% if config.COVER_PROCESSING_MODE == 'crop' %}selected{% endif %}>裁剪模式 (保持清晰度)</option>
+                                    <option value="pad" {% if config.COVER_PROCESSING_MODE == 'pad' %}selected{% endif %}>填充模式 (保持完整性)</option>
+                                </select>
+                                <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 账号与安全 -->
+                    <div class="tab-pane fade" id="vtab-security" role="tabpanel" aria-labelledby="vtab-security-tab">
+                        <div class="settings-section">
+                            <h3><i class="bi bi-shield-lock"></i> 密码保护</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="password_protection_enabled" id="password_protection_enabled" {% if config.password_protection_enabled %}checked{% endif %}>
+                                    启用Web界面密码保护
+                                </label>
+                                <p class="help-text">启用后，访问Web界面需要输入密码。浏览器插件也将需要登录才能使用。</p>
+                            </div>
+
+                            <div id="password-fields">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="new_password">新密码:</label>
+                                            <input type="password" id="new_password" name="new_password" class="form-control" autocomplete="new-password">
+                                            <p class="help-text">设置或更改您的登录密码。如果留空，密码将不会被更改。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="confirm_password">确认新密码:</label>
+                                            <input type="password" id="confirm_password" name="confirm_password" class="form-control" autocomplete="new-password">
+                                            <p class="help-text">请再次输入新密码。</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="password-match-error" class="alert alert-danger mt-2 d-none">
+                                    <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 下载与代理（YouTube设置） -->
+                    <div class="tab-pane fade" id="vtab-youtube" role="tabpanel" aria-labelledby="vtab-youtube-tab">
+                        <div class="settings-section">
+                            <h3>YouTube下载与代理</h3>
+
+                            <div class="form-group">
+                                <label for="youtube-cookies">YouTube Cookies文件路径:</label>
+                                <input type="text" id="youtube-cookies" name="YOUTUBE_COOKIES_PATH" value="{{ config.YOUTUBE_COOKIES_PATH }}" class="form-control">
+                                <p class="help-text">用于访问受限制的YouTube视频</p>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="youtube-cookies-file">上传新的YouTube Cookies文件:</label>
+                                <input type="file" id="youtube-cookies-file" name="youtube_cookies_file" class="form-control">
+                                <p class="help-text">上传新文件将覆盖原有文件</p>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="YOUTUBE_PROXY_ENABLED" {% if config.get('YOUTUBE_PROXY_ENABLED', False) %}checked{% endif %}>
+                                    启用代理下载
+                                </label>
+                                <p class="help-text">在中国境内访问YouTube时通常需要代理</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-8">
+                                    <div class="form-group">
+                                        <label for="youtube-proxy-url">代理地址:</label>
+                                        <input type="text" id="youtube-proxy-url" name="YOUTUBE_PROXY_URL" value="{{ config.get('YOUTUBE_PROXY_URL', '') }}" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                                        <p class="help-text">支持HTTP和SOCKS5代理</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="youtube-download-threads">下载线程数:</label>
+                                        <input type="number" id="youtube-download-threads" name="YOUTUBE_DOWNLOAD_THREADS" value="{{ config.get('YOUTUBE_DOWNLOAD_THREADS', 4) }}" min="1" max="16" class="form-control">
+                                        <p class="help-text">建议1-8，过高可能被限速</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="youtube-proxy-username">代理用户名:</label>
+                                        <input type="text" id="youtube-proxy-username" name="YOUTUBE_PROXY_USERNAME" value="{{ config.get('YOUTUBE_PROXY_USERNAME', '') }}" class="form-control" placeholder="可选">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="youtube-proxy-password">代理密码:</label>
+                                        <input type="password" id="youtube-proxy-password" name="YOUTUBE_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_PROXY_PASSWORD', '') }}" class="form-control" placeholder="可选">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="youtube-throttled-rate">下载速度限制:</label>
+                                        <input type="text" id="youtube-throttled-rate" name="YOUTUBE_THROTTLED_RATE" value="{{ config.get('YOUTUBE_THROTTLED_RATE', '') }}" class="form-control" placeholder="如：1M、500K、2.5M">
+                                        <p class="help-text">限制下载速度以避免被限流，留空不限制</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i>
+                                <strong class="ms-1">YouTube下载设置说明</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>HTTP代理：http://服务器地址:端口 (如：http://127.0.0.1:7890)</li>
+                                    <li>SOCKS5代理：socks5://服务器地址:端口 (如：socks5://127.0.0.1:1080)</li>
+                                    <li>线程数过高可能触发反爬虫；可配合速度限制避免限流</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AcFun账号设置 -->
+                    <div class="tab-pane fade" id="vtab-acfun" role="tabpanel" aria-labelledby="vtab-acfun-tab">
+                        <div class="settings-section">
+                            <h3>AcFun账号设置</h3>
+
+                            <div class="form-group">
+                                <label for="acfun-cookies">AcFun Cookies文件路径:</label>
+                                <input type="text" id="acfun-cookies" name="ACFUN_COOKIES_PATH" value="{{ config.ACFUN_COOKIES_PATH }}" class="form-control">
+                                <p class="help-text">推荐使用Cookie登录，支持Netscape和JSON格式</p>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="acfun-cookies-file">上传新的AcFun Cookies文件:</label>
+                                <input type="file" id="acfun-cookies-file" name="acfun_cookies_file" class="form-control">
+                                <p class="help-text">上传新文件将覆盖原有文件。Cookie优先级高于用户名密码</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="acfun-username">AcFun用户名（备用）:</label>
+                                        <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="acfun-password">AcFun密码（备用）:</label>
+                                        <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}" class="form-control">
+                                        <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 字幕翻译设置 -->
+                    <div class="tab-pane fade" id="vtab-subtitle" role="tabpanel" aria-labelledby="vtab-subtitle-tab">
+                        <div class="settings-section">
+                            <h3>字幕翻译设置</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="SUBTITLE_TRANSLATION_ENABLED" {% if config.SUBTITLE_TRANSLATION_ENABLED %}checked{% endif %}>
+                                    启用字幕翻译
+                                </label>
+                                <p class="help-text">自动翻译YouTube视频字幕</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-source-lang">源语言:</label>
+                                        <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang" class="form-select">
+                                            <option value="auto" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'auto' %}selected{% endif %}>自动检测</option>
+                                            <option value="en" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
+                                            <option value="ja" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
+                                            <option value="ko" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
+                                            <option value="zh" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-target-lang">目标语言:</label>
+                                        <select name="SUBTITLE_TARGET_LANGUAGE" id="subtitle-target-lang" class="form-select">
+                                            <option value="zh" {% if config.SUBTITLE_TARGET_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
+                                            <option value="en" {% if config.SUBTITLE_TARGET_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
+                                            <option value="ja" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
+                                            <option value="ko" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="subtitle-batch-size">批次大小:</label>
+                                        <input type="number" id="subtitle-batch-size" name="SUBTITLE_BATCH_SIZE" value="{{ config.SUBTITLE_BATCH_SIZE }}" min="1" max="20" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="subtitle-max-retries">最大重试次数:</label>
+                                        <input type="number" id="subtitle-max-retries" name="SUBTITLE_MAX_RETRIES" value="{{ config.SUBTITLE_MAX_RETRIES }}" min="1" max="10" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="subtitle-retry-delay">重试延迟(秒):</label>
+                                        <input type="number" id="subtitle-retry-delay" name="SUBTITLE_RETRY_DELAY" value="{{ config.SUBTITLE_RETRY_DELAY }}" min="1" max="30" class="form-control">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="SUBTITLE_EMBED_IN_VIDEO" {% if config.SUBTITLE_EMBED_IN_VIDEO %}checked{% endif %}>
+                                            将字幕嵌入视频
+                                        </label>
+                                        <p class="help-text">使用FFmpeg将翻译后的字幕硬编码到视频中</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="SUBTITLE_KEEP_ORIGINAL" {% if config.SUBTITLE_KEEP_ORIGINAL %}checked{% endif %}>
+                                            保留原始字幕文件
+                                        </label>
+                                        <p class="help-text">保留原始和翻译后的字幕文件</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitleMaxWorkers" class="form-label">最大并发线程数</label>
+                                        <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 3) }}" min="1" max="8">
+                                        <div class="form-text">多线程并发翻译的最大线程数，提高翻译速度</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 并发与日志 -->
+                    <div class="tab-pane fade" id="vtab-concurrency" role="tabpanel" aria-labelledby="vtab-concurrency-tab">
+                        <div class="settings-section">
+                            <h3>任务并发控制</h3>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="max-concurrent-tasks">最大并发任务数:</label>
+                                        <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 3) }}" min="1" max="10" class="form-control">
+                                        <p class="help-text">同时处理的最大任务数量（包括下载、翻译等操作）</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="max-concurrent-uploads">最大并发上传数:</label>
+                                        <input type="number" id="max-concurrent-uploads" name="MAX_CONCURRENT_UPLOADS" value="{{ config.get('MAX_CONCURRENT_UPLOADS', 1) }}" min="1" max="5" class="form-control">
+                                        <p class="help-text">同时上传到AcFun的最大视频数量，建议设置为1</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i>
+                                <strong class="ms-1">并发控制说明</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>任务并发：控制整体任务处理的并发数，影响系统资源使用</li>
+                                    <li>上传并发：控制同时上传到AcFun的视频数，建议设置为1</li>
+                                    <li>推荐配置：任务并发3，上传并发1（避免触发AcFun限制）</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>日志清理设置</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="LOG_CLEANUP_ENABLED" {% if config.LOG_CLEANUP_ENABLED %}checked{% endif %}>
+                                    启用自动日志清理
+                                </label>
+                                <p class="help-text">定期自动清理旧日志文件</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="log-cleanup-hours">保留日志小时数:</label>
+                                        <input type="number" id="log-cleanup-hours" name="LOG_CLEANUP_HOURS" value="{{ config.LOG_CLEANUP_HOURS }}" min="1" max="8760" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="log-cleanup-interval">清理间隔(小时):</label>
+                                        <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168" class="form-control">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
+                                <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
+                                    <i class="bi bi-trash"></i> 按时间清理日志
+                                </button>
+                                <span class="help-text">将删除 <span class="text-primary">{{ config.LOG_CLEANUP_HOURS }}</span> 小时前的日志文件</span>
+                            </div>
+
+                            <div class="mt-3">
+                                <button type="button" id="clear-logs-btn" class="btn btn-danger">
+                                    <i class="bi bi-trash-fill"></i> 立即清空日志
+                                </button>
+                                <button type="button" id="confirm-clear-btn" class="btn btn-outline-danger ms-2 d-none">
+                                    <i class="bi bi-check-lg"></i> 确认清空
+                                </button>
+                                <button type="button" id="cancel-clear-btn" class="btn btn-outline-secondary ms-2 d-none">
+                                    <i class="bi bi-x-lg"></i> 取消
+                                </button>
+                                <p class="help-text mt-2">立即清空 task_manager.log、app.log 内容并删除所有 task_xxx.log 文件</p>
+                                <div id="clear-warning" class="alert alert-warning mt-2 d-none">
+                                    <i class="bi bi-exclamation-triangle"></i>
+                                    <strong>警告：</strong>此操作将立即清空所有日志文件，无法恢复！<br>
+                                    将执行以下操作：<br>
+                                    • 清空 task_manager.log 和 app.log 的内容<br>
+                                    • 删除所有 task_xxx.log 文件<br>
+                                    <strong>确定要继续吗？</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- OpenAI 设置 -->
+                    <div class="tab-pane fade" id="vtab-openai" role="tabpanel" aria-labelledby="vtab-openai-tab">
+                        <div class="settings-section">
+                            <h3>OpenAI API设置</h3>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="openai-key">OpenAI API Key:</label>
+                                        <input type="password" id="openai-key" name="OPENAI_API_KEY" value="{{ config.OPENAI_API_KEY }}" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="openai-model">OpenAI模型:</label>
+                                        <input type="text" id="openai-model" name="OPENAI_MODEL_NAME" value="{{ config.OPENAI_MODEL_NAME }}" class="form-control" placeholder="如 gpt-3.5-turbo / gpt-4">
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-group">
+                                        <label for="openai-url">OpenAI API Base URL:</label>
+                                        <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control">
+                                        <p class="help-text">可设置为国内中转API或官方API</p>
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-group">
+                                        <label for="subtitle-openai-url">字幕翻译专用 Base URL（可选）:</label>
+                                        <input type="text" id="subtitle-openai-url" name="SUBTITLE_OPENAI_BASE_URL" value="{{ config.get('SUBTITLE_OPENAI_BASE_URL', '') }}" class="form-control" placeholder="留空则与上方一致">
+                                        <p class="help-text">留空时使用上方的 Base URL。填写后，字幕翻译将走该地址，视频信息翻译/标签/分区仍走上方地址。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-openai-key">字幕翻译专用 API Key（可选）:</label>
+                                        <input type="password" id="subtitle-openai-key" name="SUBTITLE_OPENAI_API_KEY" value="{{ config.get('SUBTITLE_OPENAI_API_KEY', '') }}" class="form-control" placeholder="留空沿用通用Key">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-openai-model">字幕翻译专用模型名（可选）:</label>
+                                        <input type="text" id="subtitle-openai-model" name="SUBTITLE_OPENAI_MODEL_NAME" value="{{ config.get('SUBTITLE_OPENAI_MODEL_NAME', '') }}" class="form-control" placeholder="留空沿用通用模型名">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 内容安全（阿里云） -->
+                    <div class="tab-pane fade" id="vtab-aliyun" role="tabpanel" aria-labelledby="vtab-aliyun-tab">
+                        <div class="settings-section">
+                            <h3>阿里云内容安全设置</h3>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="aliyun-key">阿里云AccessKey ID:</label>
+                                        <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="aliyun-secret">阿里云AccessKey Secret:</label>
+                                        <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}" class="form-control">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="aliyun-region">阿里云区域:</label>
+                                        <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}" class="form-control" placeholder="默认 cn-shanghai">
+                                        <p class="help-text">默认为 cn-shanghai</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="aliyun-text-service">文本审核服务类型:</label>
+                                        <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection, ugc_moderation_byllm">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- YouTube 监控设置 -->
+                    <div class="tab-pane fade" id="vtab-ytmonitor" role="tabpanel" aria-labelledby="vtab-ytmonitor-tab">
+                        <div class="settings-section">
+                            <h3><i class="bi bi-youtube text-danger"></i> YouTube监控设置</h3>
+
+                            <div class="form-group">
+                                <label for="youtube-api-key">YouTube Data API v3 密钥:</label>
+                                <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
+                                <p class="help-text">
+                                    请在 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> 获取API密钥。
+                                    配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面使用自动监控功能。
+                                </p>
+                            </div>
+
+                            {% if config.YOUTUBE_API_KEY %}
+                            <div class="alert alert-success">
+                                <i class="bi bi-check-circle"></i> YouTube API密钥已配置，监控功能可正常使用
+                            </div>
+                            {% else %}
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i> 尚未配置YouTube API密钥，请先设置才能使用监控功能
+                            </div>
+                            {% endif %}
+
+                            <div class="alert alert-info">
+                                <strong><i class="bi bi-info-circle"></i> 使用说明：</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>1. 访问 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a></li>
+                                    <li>2. 创建项目并启用 YouTube Data API v3</li>
+                                    <li>3. 创建API密钥并设置适当的限制</li>
+                                    <li>4. 将密钥填入上方输入框并保存</li>
+                                    <li>5. 前往 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面配置监控任务</li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>OpenAI API设置</h3>
-            
-            <div class="form-group">
-                <label for="openai-key">OpenAI API Key:</label>
-                <input type="password" id="openai-key" name="OPENAI_API_KEY" value="{{ config.OPENAI_API_KEY }}">
-            </div>
-            
-            <div class="form-group">
-                <label for="openai-url">OpenAI API Base URL:</label>
-                <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}">
-                <p class="help-text">可以设置为国内中转API或使用官方API</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="openai-model">OpenAI模型:</label>
-                <input type="text" id="openai-model" name="OPENAI_MODEL_NAME" value="{{ config.OPENAI_MODEL_NAME }}">
-                <p class="help-text">推荐使用gpt-3.5-turbo或gpt-4</p>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3>字幕翻译设置</h3>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="SUBTITLE_TRANSLATION_ENABLED" {% if config.SUBTITLE_TRANSLATION_ENABLED %}checked{% endif %}>
-                    启用字幕翻译
-                </label>
-                <p class="help-text">自动翻译YouTube视频字幕</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="subtitle-source-lang">源语言:</label>
-                <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang">
-                    <option value="auto" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'auto' %}selected{% endif %}>自动检测</option>
-                    <option value="en" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
-                    <option value="ja" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
-                    <option value="ko" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
-                    <option value="zh" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
-                </select>
-                <p class="help-text">字幕的原始语言</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="subtitle-target-lang">目标语言:</label>
-                <select name="SUBTITLE_TARGET_LANGUAGE" id="subtitle-target-lang">
-                    <option value="zh" {% if config.SUBTITLE_TARGET_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
-                    <option value="en" {% if config.SUBTITLE_TARGET_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
-                    <option value="ja" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
-                    <option value="ko" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
-                </select>
-                <p class="help-text">翻译的目标语言</p>
-            </div>
-            
 
-            
-            <div class="form-group">
-                <label for="subtitle-batch-size">批次大小:</label>
-                <input type="number" id="subtitle-batch-size" name="SUBTITLE_BATCH_SIZE" value="{{ config.SUBTITLE_BATCH_SIZE }}" min="1" max="20">
-                <p class="help-text">每次翻译的字幕条数，较大的值可以提高效率但可能增加API成本</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="subtitle-max-retries">最大重试次数:</label>
-                <input type="number" id="subtitle-max-retries" name="SUBTITLE_MAX_RETRIES" value="{{ config.SUBTITLE_MAX_RETRIES }}" min="1" max="10">
-                <p class="help-text">翻译失败时的重试次数</p>
-            </div>
-            
-            <div class="form-group">
-                <label for="subtitle-retry-delay">重试延迟(秒):</label>
-                <input type="number" id="subtitle-retry-delay" name="SUBTITLE_RETRY_DELAY" value="{{ config.SUBTITLE_RETRY_DELAY }}" min="1" max="30">
-                <p class="help-text">重试之间的等待时间</p>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="SUBTITLE_EMBED_IN_VIDEO" {% if config.SUBTITLE_EMBED_IN_VIDEO %}checked{% endif %}>
-                    将字幕嵌入视频
-                </label>
-                <p class="help-text">使用FFmpeg将翻译后的字幕硬编码到视频中</p>
-            </div>
-            
-            <div class="form-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" name="SUBTITLE_KEEP_ORIGINAL" {% if config.SUBTITLE_KEEP_ORIGINAL %}checked{% endif %}>
-                    保留原始字幕文件
-                </label>
-                <p class="help-text">保留原始和翻译后的字幕文件</p>
-            </div>
-            
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <label for="subtitleMaxWorkers" class="form-label">最大并发线程数</label>
-                    <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 3) }}" min="1" max="8">
-                    <div class="form-text">多线程并发翻译的最大线程数，提高翻译速度</div>
+                <div class="settings-actions-bar">
+                    <div class="d-flex justify-content-end gap-2">
+                        <button type="reset" class="btn btn-outline-secondary">重置</button>
+                        <button type="submit" class="btn btn-primary">保存设置</button>
+                    </div>
                 </div>
-            </div>
+            </form>
         </div>
-        
-        <div class="settings-section">
-            <h3>阿里云内容安全设置</h3>
-            
-            <div class="form-group">
-                <label for="aliyun-key">阿里云AccessKey ID:</label>
-                <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}">
-            </div>
-            
-            <div class="form-group">
-                <label for="aliyun-secret">阿里云AccessKey Secret:</label>
-                <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}">
-            </div>
-            
-            <div class="form-group">
-                <label for="aliyun-region">阿里云区域:</label>
-                <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}">
-                <p class="help-text">默认为cn-shanghai</p>
-            </div>
-
-            <div class="form-group">
-                <label for="aliyun-text-service">阿里云文本审核服务类型:</label>
-                <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}">
-                <p class="help-text">例如：comment_detection, ugc_moderation_byllm等。具体参考阿里云文档。</p>
-            </div>
-        </div>
-        
-        <div class="settings-section">
-            <h3><i class="bi bi-youtube text-danger"></i> YouTube监控设置</h3>
-            
-            <div class="form-group">
-                <label for="youtube-api-key">YouTube Data API v3 密钥:</label>
-                <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}">
-                <p class="help-text">
-                    请在 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> 获取API密钥。
-                    配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面使用自动监控功能。
-                </p>
-            </div>
-            
-            {% if config.YOUTUBE_API_KEY %}
-            <div class="alert alert-success">
-                <i class="bi bi-check-circle"></i> YouTube API密钥已配置，监控功能可正常使用
-            </div>
-            {% else %}
-            <div class="alert alert-warning">
-                <i class="bi bi-exclamation-triangle"></i> 尚未配置YouTube API密钥，请先设置才能使用监控功能
-            </div>
-            {% endif %}
-            
-            <div class="alert alert-info">
-                <strong><i class="bi bi-info-circle"></i> 使用说明：</strong>
-                <ul class="mb-0 mt-2">
-                    <li>1. 访问 <a href="https://console.developers.google.com/" target="_blank" rel="noopener">Google Cloud Console</a></li>
-                    <li>2. 创建项目并启用 YouTube Data API v3</li>
-                    <li>3. 创建API密钥并设置适当的限制</li>
-                    <li>4. 将密钥填入上方输入框并保存</li>
-                    <li>5. 前往 <a href="{{ url_for('youtube_monitor_index') }}">YouTube监控</a> 页面配置监控任务</li>
-                </ul>
-            </div>
-        </div>
-        
-        <div class="form-actions">
-            <button type="submit" class="btn btn-primary">保存设置</button>
-            <button type="reset" class="btn btn-secondary">重置</button>
-        </div>
-    </form>
+    </div>
 
     <!-- 独立的日志清理表单 -->
     <form method="post" action="{{ url_for('cleanup_logs_route') }}" class="d-none" id="cleanup-form">
         <input type="hidden" name="hours" id="cleanup-hours-input" value="{{ config.LOG_CLEANUP_HOURS }}">
     </form>
-    
+
     <!-- 独立的日志清空表单 -->
-    <form method="post" action="{{ url_for('clear_logs_route') }}" class="d-none" id="clear-form">
-    </form>
+    <form method="post" action="{{ url_for('clear_logs_route') }}" class="d-none" id="clear-form"></form>
 </div>
 
 {% endblock %}
@@ -463,131 +578,62 @@
 {% block extra_css %}
 <style>
     .settings-container {
-        max-width: 800px;
-        margin: 0 auto;
         padding: 20px;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.05);
     }
-    
+
+    .settings-layout .settings-nav .nav-link {
+        border-radius: 6px;
+        margin-bottom: 6px;
+    }
+
+    .settings-nav {
+        position: sticky;
+        top: 80px;
+    }
+
     .settings-section {
-        margin-bottom: 30px;
+        margin-bottom: 20px;
         padding: 20px;
         background-color: #f8f9fa;
-        border-radius: 5px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border-radius: 6px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    
-    .form-group {
-        margin-bottom: 15px;
+
+    .settings-section h3 {
+        margin-top: 0;
+        color: #0d6efd;
+        font-size: 1.1rem;
     }
-    
-    .form-group label {
-        display: block;
-        margin-bottom: 5px;
-        font-weight: bold;
-    }
-    
-    .form-group input[type="text"],
-    .form-group input[type="password"],
-    .form-group select {
-        width: 100%;
-        padding: 10px;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-    }
-    
+
+    .form-group { margin-bottom: 12px; }
+
     .checkbox-label {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        font-weight: bold;
+        gap: 8px;
+        font-weight: 600;
     }
-    
-    .checkbox-label input[type="checkbox"] {
-        margin-right: 10px;
-    }
-    
+
     .help-text {
         font-size: 0.9em;
-        color: #666;
-        margin-top: 5px;
+        color: #6c757d;
+        margin-top: 4px;
     }
-    
-    .form-actions {
-        margin-top: 20px;
-        display: flex;
-        gap: 10px;
+
+    .settings-actions-bar {
+        position: sticky;
+        bottom: -20px;
+        background: #fff;
+        padding-top: 12px;
+        margin-top: 8px;
+        border-top: 1px solid #eee;
     }
-    
-    .btn {
-        padding: 10px 20px;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-weight: bold;
-    }
-    
-    .btn-primary {
-        background-color: #007bff;
-        color: white;
-    }
-    
-    .btn-secondary {
-        background-color: #6c757d;
-        color: white;
-    }
-    
-    .flash-messages {
-        margin-bottom: 20px;
-    }
-    
-    .alert {
-        padding: 15px;
-        border-radius: 4px;
-        margin-bottom: 10px;
-    }
-    
-    .alert-success {
-        background-color: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
-    }
-    
-    .alert-danger {
-        background-color: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
-    }
-    
-    /* 健康检查样式 */
-    .health-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        padding: 8px 0;
-        border-bottom: 1px solid #eee;
-    }
-    
-    .health-item:last-child {
-        border-bottom: none;
-    }
-    
-    .health-label {
-        font-weight: bold;
-        min-width: 120px;
-    }
-    
-    .health-value {
-        flex: 1;
-        text-align: right;
-    }
-    
-    .health-value small {
-        display: block;
-        font-size: 0.8em;
-        margin-top: 2px;
-    }
-    
-    .hidden {
-        display: none;
+
+    @media (max-width: 991.98px) {
+        .settings-nav { position: static; }
     }
 </style>
-{% endblock %} 
+{% endblock %}
