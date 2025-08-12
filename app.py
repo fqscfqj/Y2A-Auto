@@ -1726,8 +1726,11 @@ def youtube_monitor_config_delete(config_id):
 @login_required
 def youtube_monitor_run(config_id):
     """立即执行一次监控任务"""
-    youtube_monitor.run_monitor_task(config_id, manual=True)
-    
+    success, message = youtube_monitor.run_monitor(config_id)
+    if success:
+        flash(message or '监控已执行', 'success')
+    else:
+        flash(message or '监控执行失败', 'danger')
     return redirect(url_for('youtube_monitor_history', config_id=config_id))
 
 @app.route('/youtube_monitor/history/<int:config_id>')
@@ -1768,24 +1771,22 @@ def youtube_monitor_history(config_id):
 @login_required
 def youtube_monitor_add_to_tasks():
     """从监控历史中添加视频到任务列表"""
-    video_urls = request.json.get('video_urls', [])
-    
-    if not video_urls:
-        return jsonify({'success': False, 'message': '参数不完整'})
-    
-    success, message, added_count = youtube_monitor.add_videos_to_tasks_from_history(video_urls)
-    
+    data = request.get_json(silent=True) or {}
+    video_id = data.get('video_id')
+    config_id = data.get('config_id')
+    if not video_id or not config_id:
+        return jsonify({'success': False, 'message': '参数不完整'}), 400
+    try:
+        config_id_int = int(config_id)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'config_id 无效'}), 400
+
+    success, message = youtube_monitor.add_video_to_tasks_manually(video_id, config_id_int)
+
     if success:
-        return jsonify({
-            'success': True,
-            'message': f'成功添加了 {added_count} 个视频到任务列表',
-            'added_count': added_count
-        })
+        return jsonify({'success': True, 'message': message})
     else:
-        return jsonify({
-            'success': False,
-            'message': f'操作失败: {message}'
-        })
+        return jsonify({'success': False, 'message': message}), 400
 
 @app.route('/youtube_monitor/history/<int:config_id>/clear', methods=['POST'])
 @login_required
@@ -1807,7 +1808,7 @@ def youtube_monitor_clear_all_history():
 @login_required
 def youtube_monitor_restore_configs():
     """恢复默认监控配置"""
-    youtube_monitor.restore_default_configs()
+    youtube_monitor.restore_configs_from_files_manually()
     
     return redirect(url_for('youtube_monitor_index'))
 
@@ -1815,7 +1816,7 @@ def youtube_monitor_restore_configs():
 @login_required
 def youtube_monitor_reset_offset(config_id):
     """重置频道监控的视频偏移量"""
-    youtube_monitor.reset_channel_video_offset(config_id)
+    youtube_monitor.reset_historical_offset(config_id)
     
     return redirect(url_for('youtube_monitor_index'))
 
