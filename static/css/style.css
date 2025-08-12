@@ -154,3 +154,8 @@ body {
     min-width: 80px;
     max-width: 100px;
 } 
+
+/* YouTube 监控页面表格列宽 */
+.youtube-monitor-table th.col-name {
+    width: 20%;
+}
