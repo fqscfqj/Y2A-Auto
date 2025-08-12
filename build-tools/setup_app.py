@@ -73,7 +73,7 @@ def setup_environment():
     # 创建必要的目录
     directories = [
         "config", "db", "downloads", "logs", 
-        "cookies", "temp", "acfunid"
+        "cookies", "temp", "acfunid", "fonts"
     ]
     
     for directory in directories:

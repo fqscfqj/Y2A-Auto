@@ -23,6 +23,45 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
+# 登录安全状态存储
+def _get_security_state_path():
+    try:
+        db_dir = get_app_subdir('db')
+    except Exception:
+        # 回退到当前目录下的db
+        db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db')
+    os.makedirs(db_dir, exist_ok=True)
+    return os.path.join(db_dir, 'security_state.json')
+
+def _load_security_state():
+    path = _get_security_state_path()
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 兼容缺失字段
+                if not isinstance(data, dict):
+                    data = {}
+        else:
+            data = {}
+    except Exception:
+        data = {}
+    # 默认值
+    return {
+        'failed_attempts': int(data.get('failed_attempts', 0) or 0),
+        'locked_until': float(data.get('locked_until', 0) or 0.0),
+        'last_attempt': float(data.get('last_attempt', 0) or 0.0),
+    }
+
+def _save_security_state(state):
+    try:
+        path = _get_security_state_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
 
 # 登录验证装饰器
 def login_required(f):
@@ -269,6 +308,17 @@ def login():
     if 'logged_in' in session:
         return redirect(url_for('index'))
 
+    # 读取登录安全状态
+    sec = _load_security_state()
+    now_ts = time.time()
+    # 检查是否处于锁定期
+    if sec.get('locked_until', 0) and now_ts < sec['locked_until']:
+        remaining = int(sec['locked_until'] - now_ts)
+        minutes = remaining // 60
+        seconds = remaining % 60
+        flash(f'登录已被临时锁定，请 {minutes} 分 {seconds} 秒后重试。', 'danger')
+        return render_template('login.html')
+
     if request.method == 'POST':
         password = request.form.get('password')
         stored_password = config.get('password')
@@ -281,11 +331,28 @@ def login():
         if password and password == stored_password:
             session['logged_in'] = True
             session.permanent = True  # session持久化
+            # 登录成功，重置失败计数与锁定
+            sec.update({'failed_attempts': 0, 'locked_until': 0, 'last_attempt': now_ts})
+            _save_security_state(sec)
             flash('登录成功', 'success')
             next_url = request.args.get('next')
             return redirect(next_url or url_for('index'))
         else:
-            flash('密码错误', 'danger')
+            # 密码错误，更新失败计数
+            max_attempts = int(config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) or 5)
+            lock_minutes = int(config.get('LOGIN_LOCKOUT_MINUTES', 15) or 15)
+            failed = int(sec.get('failed_attempts', 0) or 0) + 1
+            sec['failed_attempts'] = failed
+            sec['last_attempt'] = now_ts
+            # 达到阈值则锁定
+            if failed >= max_attempts:
+                sec['locked_until'] = now_ts + lock_minutes * 60
+                _save_security_state(sec)
+                flash(f'密码错误次数过多（{failed}/{max_attempts}），已锁定 {lock_minutes} 分钟。', 'danger')
+            else:
+                _save_security_state(sec)
+                remain = max_attempts - failed
+                flash(f'密码错误。还可尝试 {remain} 次后将被锁定。', 'danger')
     
     return render_template('login.html')
 
@@ -969,7 +1036,8 @@ def settings():
         numeric_fields = [
             'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
             'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
-            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS'
+            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
+            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES'
         ]
         for field in numeric_fields:
             if field in form_data:
@@ -985,8 +1053,10 @@ def settings():
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 3,
-                        'YOUTUBE_DOWNLOAD_THREADS': 4
+                        'SUBTITLE_MAX_WORKERS': 0,
+                        'YOUTUBE_DOWNLOAD_THREADS': 4,
+                        'LOGIN_MAX_FAILED_ATTEMPTS': 5,
+                        'LOGIN_LOCKOUT_MINUTES': 15
                     }
                     form_data[field] = defaults.get(field, 1)
         

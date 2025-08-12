@@ -33,6 +33,7 @@ tasks.db
 *.db
 *.sqlite
 *.sqlite3
+db/
 
 # Configuration and secrets
 config/*

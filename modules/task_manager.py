@@ -1250,16 +1250,39 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             simple_video = os.path.join(temp_dir, "input.mp4")
             simple_subtitle = os.path.join(temp_dir, "sub.srt")
             simple_output = os.path.join(temp_dir, "output.mp4")
+            # 字体目录（在临时目录内放置一份，避免Windows路径转义问题）
+            temp_fonts_dir = os.path.join(temp_dir, "fonts")
+            os.makedirs(temp_fonts_dir, exist_ok=True)
             
             try:
                 # 复制文件到临时目录
                 shutil.copy2(video_path, simple_video)
                 shutil.copy2(subtitle_path, simple_subtitle)
                 
+                # 将默认字体复制到临时字体目录，确保libass可用
+                try:
+                    from .utils import get_app_subdir, get_app_root_dir
+                    candidates = [
+                        os.path.join(get_app_subdir('fonts'), 'SourceHanSansHWSC-VF.ttf'),
+                        os.path.join(get_app_root_dir(), 'SourceHanSansHWSC-VF.ttf'),
+                    ]
+                    default_font_src = next((p for p in candidates if os.path.exists(p)), None)
+                    if default_font_src:
+                        shutil.copy2(default_font_src, os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.ttf'))
+                        task_logger.info("已将默认字幕字体复制到临时目录")
+                    else:
+                        task_logger.warning("未找到默认字幕字体（fonts/ 或 根目录），将使用系统默认字体")
+                except Exception as e:
+                    task_logger.warning(f"复制默认字幕字体失败: {e}")
+                
+                # 使用libass渲染字幕，并通过fontsdir指定临时字体目录；强制样式使用指定字体
+                # 在参数中对空格进行转义，避免被解析为分隔符
+                font_family_escaped = 'Source\\ Han\\ Sans\\ HW\\ SC'
+                vf_filter = f"subtitles=sub.srt:fontsdir=fonts:force_style=FontName={font_family_escaped}"
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', 'input.mp4',
-                    '-vf', 'subtitles=sub.srt',  # 简化语法（已验证有效）
+                    '-vf', vf_filter,
                     '-c:v', 'libx264',
                     '-crf', '23.5',
                     '-c:a', 'copy',

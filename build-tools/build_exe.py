@@ -128,6 +128,7 @@ datas = [
     ('../userscripts', 'userscripts'),
     ('../docs', 'docs'),
     ('../acfunid', 'acfunid'),
+    ('../fonts', 'fonts'),
     ('../app.py', '.'),
 ]
 
