@@ -468,6 +468,19 @@ class YouTubeMonitor:
                 config_id = cursor.lastrowid
                 conn.commit()
                 
+                # 如果为频道监控的持续跟进最新模式，则在创建时将基准时间设为当前时间
+                try:
+                    is_channel_monitor = bool(config_data.get('channel_ids') and str(config_data.get('channel_ids')).strip())
+                    if config_data.get('channel_mode') == 'latest' and is_channel_monitor:
+                        cursor.execute(
+                            'UPDATE monitor_configs SET last_run_time = CURRENT_TIMESTAMP WHERE id = ?',
+                            (config_id,)
+                        )
+                        conn.commit()
+                        logger.info("创建配置：已为持续跟进最新模式设置基准时间为当前时间")
+                except Exception as e:
+                    logger.warning(f"设置最新跟进基准时间失败: {str(e)}")
+                
                 logger.info(f"监控配置已创建，ID: {config_id}, 名称: {config_data.get('name')}")
             
             # 保存配置到文件
@@ -631,6 +644,23 @@ class YouTubeMonitor:
                 ))
                 
                 conn.commit()
+                
+                # 如果从其他模式切换为持续跟进最新模式，则将基准时间设为当前时间
+                try:
+                    became_latest = (
+                        config_data.get('channel_mode') == 'latest' and 
+                        (not old_config or old_config.get('channel_mode') != 'latest')
+                    )
+                    is_channel_monitor = bool(config_data.get('channel_ids') and str(config_data.get('channel_ids')).strip())
+                    if became_latest and is_channel_monitor:
+                        cursor.execute(
+                            'UPDATE monitor_configs SET last_run_time = CURRENT_TIMESTAMP WHERE id = ?',
+                            (config_id,)
+                        )
+                        conn.commit()
+                        logger.info("切换为持续跟进最新模式：已设置基准时间为当前时间")
+                except Exception as e:
+                    logger.warning(f"更新最新跟进基准时间失败: {str(e)}")
                 
                 if should_reset_offset:
                     logger.info(f"历史搬运偏移量已重置为0")
@@ -797,20 +827,36 @@ class YouTubeMonitor:
                     published_before = end_date.isoformat() + 'Z'
                     logger.info(f"使用结束日期: {config['end_date']}")
             else:
-                # 否则使用时间段
-                if config.get('channel_mode') == 'latest':
-                    # 最新跟进模式使用调度间隔的2倍作为时间范围（小时转换为天）
-                    interval_hours = config.get('schedule_interval', 120) / 60 * 2
-                    days = max(1, interval_hours / 24)  # 至少1天
+                # 否则根据模式计算
+                is_channel_monitor = bool(config.get('channel_ids') and str(config.get('channel_ids')).strip())
+                if config.get('channel_mode') == 'latest' and is_channel_monitor:
+                    # 持续跟进最新（频道监控）：从开启/上次运行时间开始算
+                    last_run_str = config.get('last_run_time')
+                    if last_run_str:
+                        # SQLite CURRENT_TIMESTAMP 格式为 'YYYY-MM-DD HH:MM:SS'
+                        try:
+                            last_run_dt = datetime.strptime(last_run_str, '%Y-%m-%d %H:%M:%S')
+                            published_after = last_run_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                            logger.info(f"最新跟进模式：使用上次运行时间为基准: {published_after}")
+                        except Exception:
+                            # 解析失败则退回到当前时间
+                            published_after = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                            logger.info("最新跟进模式：无法解析上次运行时间，使用当前时间为基准")
+                    else:
+                        # 首次运行：从当前时间开始，不处理历史视频
+                        published_after = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                        logger.info("最新跟进模式：首次运行，仅从当前时间开始跟进新发布的视频")
                 else:
-                    # 其他模式使用time_period
-                    days = config.get('time_period', 7)
-                
-                published_after = (datetime.now() - timedelta(days=days)).isoformat() + 'Z'
-                if config.get('channel_mode') == 'latest':
-                    logger.info(f"使用动态时间段: 最近 {days:.1f} 天（基于调度间隔 {config.get('schedule_interval', 120)} 分钟）")
-                else:
-                    logger.info(f"使用时间段: 最近 {days} 天")
+                    # 其他模式或全局检索：使用配置的时间段
+                    if config.get('channel_mode') == 'latest':
+                        # 保持原有行为：对于非频道监控的'latest'，按调度间隔*2估算窗口
+                        interval_hours = config.get('schedule_interval', 120) / 60 * 2
+                        days = max(1, interval_hours / 24)  # 至少1天
+                        logger.info(f"使用动态时间段: 最近 {days:.1f} 天（基于调度间隔 {config.get('schedule_interval', 120)} 分钟）")
+                    else:
+                        days = config.get('time_period', 7)
+                        logger.info(f"使用时间段: 最近 {days} 天")
+                    published_after = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             # 如果指定了频道，优先使用频道搜索
             if config.get('channel_ids') and config['channel_ids'].strip():

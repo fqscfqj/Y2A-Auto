@@ -23,16 +23,14 @@
         <h4><i class="bi bi-list-ul"></i> 监控配置</h4>
         {% if configs %}
         <div class="table-responsive">
-            <table class="table table-striped table-hover">
+            <table class="table table-striped table-hover align-middle">
                 <thead class="table-dark">
                     <tr>
-                        <th>名称</th>
-                        <th>状态</th>
-                        <th>地区</th>
-                        <th>时间段</th>
-                        <th>处理数量</th>
-                        <th>最小观看数</th>
-                        <th>调度类型</th>
+                        <th style="width: 20%;">名称</th>
+                        <th class="text-center">状态</th>
+                        <th class="text-center">监控类型</th>
+                        <th>参数</th>
+                        <th class="text-center">调度类型</th>
                         <th>最后运行</th>
                         <th>操作</th>
                     </tr>
@@ -42,50 +40,56 @@
                     <tr>
                         <td>
                             <strong>{{ config.name }}</strong>
-                            {% if config.keywords %}
-                            <br><small class="text-muted">关键词: {{ config.keywords[:50] }}{% if config.keywords|length > 50 %}...{% endif %}</small>
+                            {% if config.monitor_type == 'youtube_search' and config.keywords %}
+                                <br><small class="text-muted" title="{{ config.keywords }}">关键词: {{ config.keywords[:30] }}{% if config.keywords|length > 30 %}...{% endif %}</small>
+                            {% elif config.monitor_type == 'channel_monitor' and config.channel_ids %}
+                                <br><small class="text-muted" title="{{ config.channel_ids }}">频道ID: {{ config.channel_ids.split(',')[0][:20] }}...</small>
                             {% endif %}
                         </td>
-                        <td>
+                        <td class="text-center">
                             {% if config.enabled %}
                             <span class="badge bg-success">启用</span>
                             {% else %}
                             <span class="badge bg-secondary">禁用</span>
                             {% endif %}
                         </td>
-                        <td>{{ config.region_code }}</td>
-                        <td>
-                            {% if config.monitor_type == 'channel_monitor' and config.channel_mode == 'historical' %}
-                                {% if config.start_date and config.end_date %}
-                                    {{ config.start_date }} 至 {{ config.end_date }}
-                                {% elif config.start_date %}
-                                    从 {{ config.start_date }} 开始
-                                {% else %}
-                                    历史搬运模式
-                                {% endif %}
-                            {% elif config.monitor_type == 'channel_monitor' and config.channel_mode == 'latest' %}
-                                最新 {{ config.latest_days or 7 }} 天
+                        <td class="text-center">
+                            {% if config.monitor_type == 'channel_monitor' %}
+                                <span class="badge bg-primary">频道监控</span>
                             {% else %}
-                                {{ config.time_period or 7 }} 天
+                                <span class="badge bg-danger">全网搜索</span>
                             {% endif %}
                         </td>
                         <td>
-                            {% if config.monitor_type == 'youtube_search' %}
-                                {{ config.max_results }}
+                            {% if config.monitor_type == 'channel_monitor' %}
+                                {% if config.channel_mode == 'latest' %}
+                                    <i class="bi bi-rss-fill text-success" title="持续跟进最新"></i> 持续跟进最新
+                                {% elif config.channel_mode == 'historical' %}
+                                    <i class="bi bi-clock-history text-info" title="历史视频搬运"></i> 
+                                    {% if config.start_date %}{{ config.start_date }} {% endif %}
+                                    → 
+                                    {% if config.end_date %}{{ config.end_date }}{% else %}最新{% endif %}
+                                {% elif config.channel_mode == 'search' %}
+                                    <i class="bi bi-search text-warning" title="频道内搜索"></i> 
+                                    <span title="{{ config.channel_keywords }}">关键词: {{ config.channel_keywords[:20] }}...</span>
+                                {% endif %}
                             {% else %}
-                                {% if config.channel_mode == 'historical' %}
-                                    {{ config.rate_limit_requests or 4 }}
-                                {% else %}
-                                    {{ config.latest_max_results or 20 }}
+                                <i class="bi bi-calendar-event" title="时间段"></i> 最近 {{ config.time_period or 7 }} 天
+                                <br>
+                                <i class="bi bi-sort-down" title="排序方式"></i> 
+                                {% if config.order_by == 'viewCount' %}观看数
+                                {% elif config.order_by == 'date' %}上传日期
+                                {% elif config.order_by == 'rating' %}评分
+                                {% elif config.order_by == 'relevance' %}相关度
+                                {% else %}{{ config.order_by }}
                                 {% endif %}
                             {% endif %}
                         </td>
-                        <td>{{ config.min_view_count if config.min_view_count is not none else 0 }}</td>
-                        <td>
+                        <td class="text-center">
                             {% if config.schedule_type == 'auto' %}
-                            <span class="badge bg-info">自动({{ config.schedule_interval }}分钟)</span>
+                            <span class="badge bg-info text-dark">自动({{ config.schedule_interval }}分钟)</span>
                             {% else %}
-                            <span class="badge bg-warning">手动</span>
+                            <span class="badge bg-warning text-dark">手动</span>
                             {% endif %}
                         </td>
                         <td>
@@ -101,25 +105,18 @@
                         <td>
                             <div class="btn-group btn-group-sm" role="group">
                                 <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
-                                    <button type="submit" class="btn btn-success btn-sm" title="立即运行">
+                                    <button type="submit" class="btn btn-outline-success btn-icon" title="立即运行">
                                         <i class="bi bi-play-fill"></i>
                                     </button>
                                 </form>
-                                <a href="{{ url_for('youtube_monitor_history', config_id=config.id) }}" class="btn btn-info btn-sm" title="查看历史">
+                                <a href="{{ url_for('youtube_monitor_history', config_id=config.id) }}" class="btn btn-outline-info btn-icon" title="查看历史">
                                     <i class="bi bi-clock-history"></i>
                                 </a>
-                                {% if config.channel_mode == 'historical' %}
-                                <form method="POST" action="{{ url_for('youtube_monitor_reset_offset', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要重置历史搬运偏移量吗？这将重新开始搬运历史视频。')">
-                                    <button type="submit" class="btn btn-secondary btn-sm" title="重置偏移量">
-                                        <i class="bi bi-arrow-clockwise"></i>
-                                    </button>
-                                </form>
-                                {% endif %}
-                                <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-warning btn-sm" title="编辑">
+                                <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-outline-warning btn-icon" title="编辑">
                                     <i class="bi bi-pencil"></i>
                                 </a>
                                 <form method="POST" action="{{ url_for('youtube_monitor_config_delete', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要删除监控配置 {{ config.name }} 吗？')">
-                                    <button type="submit" class="btn btn-danger btn-sm" title="删除">
+                                    <button type="submit" class="btn btn-outline-danger btn-icon" title="删除">
                                         <i class="bi bi-trash"></i>
                                     </button>
                                 </form>
@@ -191,11 +188,11 @@
                         <td>
                             <div class="btn-group" role="group">
                                 <a href="https://www.youtube.com/watch?v={{ record.video_id }}" 
-                                   target="_blank" rel="noopener" class="btn btn-outline-danger btn-sm" title="在YouTube中查看">
+                                   target="_blank" rel="noopener" class="btn btn-outline-danger btn-icon" title="在YouTube中查看">
                                 <i class="bi bi-youtube"></i>
                             </a>
                                 {% if not record.added_to_tasks %}
-                                <button type="button" class="btn btn-outline-success btn-sm" 
+                                <button type="button" class="btn btn-outline-success btn-icon" 
                                         onclick="addToTasks('{{ record.video_id }}', '{{ record.config_id }}')" 
                                         title="添加到任务队列">
                                     <i class="bi bi-plus-circle"></i>
@@ -222,15 +219,25 @@
 <style>
 .table th {
     border-top: none;
+    font-weight: 600;
 }
 .badge {
-    font-size: 0.75em;
+    font-size: 0.78em;
 }
 .text-truncate-300 {
     max-width: 300px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* Consistent icon button size */
+.btn-icon {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
 }
 </style>
 {% endblock %}
