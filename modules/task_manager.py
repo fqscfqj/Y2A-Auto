@@ -976,11 +976,59 @@ class TaskProcessor:
                 task_logger.info("未找到字幕文件，跳过字幕翻译")
                 return True
             
-            # 选择第一个字幕文件进行翻译
-            subtitle_file = subtitle_files[0]
+            # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
+            detected_list = []
+            for f in subtitle_files:
+                lang = self._detect_subtitle_language(f)
+                detected_list.append((f, lang))
+            
+            zh_candidates = [f for f, lang in detected_list if str(lang).lower().startswith('zh')]
+            en_candidates = [f for f, lang in detected_list if str(lang).lower().startswith('en')]
+            
+            if zh_candidates:
+                # 直接使用中文字幕，不进行翻译
+                subtitle_file = zh_candidates[0]
+                subtitle_lang = 'zh'
+                task_logger.info(f"检测到中文字幕，直接烧录，无需翻译: {os.path.basename(subtitle_file)}")
+                if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
+                    embedded_video_path = self._embed_subtitle_in_video(
+                        task_id, task['video_path_local'], subtitle_file, task_logger
+                    )
+                    if embedded_video_path:
+                        update_task(
+                            task_id,
+                            video_path_local=embedded_video_path,
+                            subtitle_path_original=subtitle_file,
+                            subtitle_path_translated=None,
+                            subtitle_language_detected=subtitle_lang
+                        )
+                        task_logger.info("中文字幕烧录完成")
+                        return True
+                    else:
+                        task_logger.warning("中文字幕烧录失败，保留原视频")
+                        update_task(
+                            task_id,
+                            subtitle_path_original=subtitle_file,
+                            subtitle_path_translated=None,
+                            subtitle_language_detected=subtitle_lang
+                        )
+                        return False
+                else:
+                    # 不嵌入字幕，只保存信息
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=None,
+                        subtitle_language_detected=subtitle_lang
+                    )
+                    task_logger.info("已检测到中文字幕，但未开启烧录，跳过翻译")
+                    return True
+            
+            # 没有中文：优先选择英文，否则退回第一个文件
+            subtitle_file = en_candidates[0] if en_candidates else subtitle_files[0]
             task_logger.info(f"找到字幕文件: {os.path.basename(subtitle_file)}")
             
-            # 创建翻译器，传递task_id参数
+            # 创建翻译器（此时需要翻译为中文）
             translator = create_translator_from_config(self.config, task_id)
             if not translator:
                 task_logger.error("无法创建字幕翻译器，请检查API配置")
@@ -989,6 +1037,8 @@ class TaskProcessor:
             # 检测字幕语言（简单实现）
             subtitle_lang = self._detect_subtitle_language(subtitle_file)
             task_logger.info(f"检测到字幕语言: {subtitle_lang}")
+            if en_candidates and subtitle_file in en_candidates:
+                task_logger.info("优先使用英文字幕进行翻译")
             
             # 生成翻译后的文件路径
             subtitle_ext = os.path.splitext(subtitle_file)[1]
