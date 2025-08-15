@@ -253,7 +253,7 @@
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="end_date" class="form-label">结束时间</label>
-                                    <input type="date" class="form-control" id="end_date" name="end_date">
+                                    <input type="date" class="form-control" id="end_date" name="end_date" value="{{ config.end_date if config else '' }}">
                                     <div class="form-text">搬运到此日期为止，留空表示到最新</div>
                                 </div>
                             </div>
@@ -283,6 +283,38 @@
                         <div class="alert alert-info">
                             <i class="bi bi-info-circle"></i> 
                             <strong>提示：</strong>上方的"视频筛选与搜索设置"将用于对频道最新视频进行筛选（如观看数、时长、排序等），时间范围由调度间隔自动计算。
+                        </div>
+                        <div class="card border-secondary mt-3">
+                            <div class="card-header py-2 d-flex align-items-center">
+                                <div class="form-check m-0">
+                                    <input class="form-check-input" type="checkbox" id="latest_enable_date_range" onchange="toggleLatestDateRange()">
+                                    <label class="form-check-label" for="latest_enable_date_range">
+                                        启用临时时间范围（仅用于下一次运行）
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="card-body d-none" id="latest_date_range">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label for="start_date_latest" class="form-label">开始时间</label>
+                                            <input type="date" class="form-control" id="start_date_latest" placeholder="YYYY-MM-DD">
+                                            <div class="form-text">临时回溯起始日期；提交时会同步到内部的开始时间字段</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label for="end_date_latest" class="form-label">结束时间</label>
+                                            <input type="date" class="form-control" id="end_date_latest" placeholder="YYYY-MM-DD">
+                                            <div class="form-text">可选；留空表示到现在</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="alert alert-warning mb-0">
+                                    <i class="bi bi-exclamation-triangle"></i>
+                                    <strong>说明：</strong>仅用于下一次执行以快速补救漏抓视频；执行后建议关闭或清空以恢复为“持续跟进最新”。
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -882,7 +914,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }, 50);
     
-    // Bootstrap表单验证
+    // Bootstrap表单验证与提交流程增强
     const forms = document.querySelectorAll('.needs-validation');
     Array.from(forms).forEach(function(form) {
         form.addEventListener('submit', function(event) {
@@ -890,9 +922,43 @@ document.addEventListener('DOMContentLoaded', function() {
                 event.preventDefault();
                 event.stopPropagation();
             }
+            // 若启用了“最新模式临时时间范围”，将其值同步到真实字段 start_date / end_date
+            try {
+                const enableLatestRange = document.getElementById('latest_enable_date_range');
+                const latestRange = document.getElementById('latest_date_range');
+                const startLatest = document.getElementById('start_date_latest');
+                const endLatest = document.getElementById('end_date_latest');
+                const startReal = document.getElementById('start_date');
+                const endReal = document.getElementById('end_date');
+                const latestMode = document.getElementById('channel_mode_latest');
+                const channelRadio = document.getElementById('monitor_type_channel');
+                if (
+                    enableLatestRange && enableLatestRange.checked && latestRange && !latestRange.classList.contains('d-none') &&
+                    channelRadio && channelRadio.checked && latestMode && latestMode.checked && startReal && endReal
+                ) {
+                    startReal.value = (startLatest && startLatest.value) ? startLatest.value : '';
+                    endReal.value = (endLatest && endLatest.value) ? endLatest.value : '';
+                } else if (channelRadio && channelRadio.checked && latestMode && latestMode.checked && startReal && endReal) {
+                    // 未启用临时范围则清空以恢复默认“最新”逻辑
+                    startReal.value = '';
+                    endReal.value = '';
+                }
+            } catch (_) {}
             form.classList.add('was-validated');
         });
     });
 });
+
+// 切换“最新模式临时时间范围”的显示
+function toggleLatestDateRange() {
+    const checkbox = document.getElementById('latest_enable_date_range');
+    const container = document.getElementById('latest_date_range');
+    if (!checkbox || !container) return;
+    if (checkbox.checked) {
+        container.classList.remove('d-none');
+    } else {
+        container.classList.add('d-none');
+    }
+}
 </script>
 {% endblock %} 

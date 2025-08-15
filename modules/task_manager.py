@@ -1253,6 +1253,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # GOP 取 2 秒一关键帧
             gop = max(24, int(round(2 * input_fps)))
             
+            # FFmpeg能力探测工具
+            def _ffmpeg_has_encoder(encoder_name: str) -> bool:
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['ffmpeg', '-hide_banner', '-encoders'],
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
+                    )
+                    if result.returncode == 0 and encoder_name in result.stdout:
+                        return True
+                except Exception:
+                    pass
+                return False
+
+            def _ffmpeg_has_filter(filter_name: str) -> bool:
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['ffmpeg', '-hide_banner', '-filters'],
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
+                    )
+                    if result.returncode == 0 and filter_name in result.stdout:
+                        return True
+                except Exception:
+                    pass
+                return False
+
             # 使用简化路径方式（已测试成功）
             temp_dir = tempfile.mkdtemp()
             simple_video = os.path.join(temp_dir, "input.mp4")
@@ -1339,6 +1366,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 # 读取编码器设置
                 encoder_pref = str(self.config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
+
+                # 若字幕滤镜不可用，提前报错并放弃嵌入
+                if not _ffmpeg_has_filter('subtitles'):
+                    task_logger.error("当前FFmpeg不包含 'subtitles' 滤镜（需要libass支持），无法嵌入字幕")
+                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                    return None
 
                 # 针对不同后端与档位生成参数
                 def build_cpu_params():
@@ -1448,13 +1481,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             '-g', str(gop)
                         ]
 
-                if encoder_pref == 'nvenc':
+                # 首次参数选择（会在不支持时自动降级）
+                selected_encoder = 'cpu'
+                if encoder_pref == 'nvenc' and (_ffmpeg_has_encoder('h264_nvenc') or _ffmpeg_has_encoder('hevc_nvenc')):
+                    selected_encoder = 'nvenc'
+                elif encoder_pref == 'qsv' and (_ffmpeg_has_encoder('h264_qsv') or _ffmpeg_has_encoder('hevc_qsv')):
+                    selected_encoder = 'qsv'
+                elif encoder_pref == 'amf' and (_ffmpeg_has_encoder('h264_amf') or _ffmpeg_has_encoder('hevc_amf')):
+                    selected_encoder = 'amf'
+
+                if selected_encoder == 'nvenc':
                     vparams = build_nvenc_params()
-                elif encoder_pref == 'qsv':
+                elif selected_encoder == 'qsv':
                     vparams = build_qsv_params()
-                elif encoder_pref == 'amf':
+                elif selected_encoder == 'amf':
                     vparams = build_amf_params()
                 else:
+                    if encoder_pref in ('nvenc', 'qsv', 'amf'):
+                        task_logger.warning(f"请求的编码器 {encoder_pref} 在当前环境不可用，自动回退到CPU编码")
                     vparams = build_cpu_params()
 
                 cmd = [
@@ -1598,9 +1642,62 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return embedded_video_path
                 else:
                     # 收集错误信息
-                    error_output = '\n'.join(error_messages[-10:]) if error_messages else "无详细错误信息"
+                    error_output_full = '\n'.join(error_messages) if error_messages else "无详细错误信息"
+                    error_output_tail = '\n'.join(error_messages[-50:]) if error_messages else "无详细错误信息"
                     task_logger.error(f"字幕嵌入失败 (返回码: {process.returncode})")
-                    task_logger.error(f"错误信息: {error_output}")
+                    task_logger.error(f"错误信息(尾部): {error_output_tail}")
+
+                    # 针对硬件编码失败自动降级至CPU重试一次
+                    known_nv_errors = (
+                        'Unknown encoder \"h264_nvenc\"',
+                        'Unknown encoder \"hevc_nvenc\"',
+                        'No NVENC capable devices found',
+                        'Device not present',
+                        'No such filter: \"subtitles\"'
+                    )
+                    should_retry_cpu = False
+                    if any(err in error_output_full for err in known_nv_errors):
+                        should_retry_cpu = True
+                    # 如果选择了硬编但返回码非零，也尝试一次CPU
+                    if selected_encoder in ('nvenc', 'qsv', 'amf') and process.returncode != 0:
+                        should_retry_cpu = True
+
+                    if should_retry_cpu:
+                        task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
+                        vparams = build_cpu_params()
+                        cmd_retry = [
+                            'ffmpeg', '-y',
+                            '-i', 'input.mp4',
+                            '-vf', vf_filter,
+                            *vparams,
+                            '-c:a', 'copy',
+                            '-movflags', '+faststart',
+                            '-progress', 'pipe:1',
+                            'output.mp4'
+                        ]
+                        task_logger.info(f"回退FFmpeg命令: {' '.join(cmd_retry)}")
+
+                        # 重新执行（缩短超时以避免长时间卡住）
+                        process2 = subprocess.Popen(
+                            cmd_retry,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            cwd=temp_dir,
+                            encoding='utf-8',
+                            errors='replace'
+                        )
+                        stdout2, stderr2 = process2.communicate(timeout=min(timeout, 3600))
+                        if process2.returncode == 0 and os.path.exists(simple_output):
+                            shutil.copy2(simple_output, embedded_video_path)
+                            task_logger.info("字幕嵌入完成（CPU回退）")
+                            update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                            return embedded_video_path
+                        else:
+                            task_logger.error("CPU回退方案仍然失败")
+                            if stderr2:
+                                task_logger.error(f"FFmpeg错误(回退): {stderr2.splitlines()[-50:]}")
+
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
             
