@@ -185,3 +185,37 @@ def process_cover(image_path, output_path=None, mode='crop'):
     except Exception as e:
         print(f"处理封面图片时出错: {str(e)}")
         return image_path 
+
+# -----------------------------
+# LLM 输出清洗与兼容辅助函数
+# -----------------------------
+
+def strip_reasoning_thoughts(text):
+    """
+    屏蔽/移除思考模型产出的思考内容，仅保留最终答案。
+    - 兼容 DeepSeek 的 <think>...</think> 标签
+    - 兼容 ```think ...``` 代码块形式
+
+    Args:
+        text (str): 原始模型输出
+
+    Returns:
+        str: 已移除思考内容的纯净文本
+    """
+    try:
+        if not isinstance(text, str):
+            return text
+
+        cleaned = text
+
+        # 移除 <think>...</think>（大小写不敏感，跨行匹配）
+        cleaned = re.sub(r'(?is)<\s*think\s*>.*?<\s*/\s*think\s*>', '', cleaned)
+
+        # 移除 ```think ...``` 样式的思考内容代码块（仅当语言标记包含 think 时）
+        cleaned = re.sub(r'(?is)```\s*think[^\n]*\n.*?```', '', cleaned)
+
+        # 去除多余空白
+        cleaned = cleaned.strip()
+        return cleaned
+    except Exception:
+        return text

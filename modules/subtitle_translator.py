@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
 from threading import Lock
-from .utils import get_app_subdir
+from .utils import get_app_subdir, strip_reasoning_thoughts
 
 logger = logging.getLogger('subtitle_translator')
 
@@ -310,7 +310,10 @@ class LLMRequester:
             with self._log_lock:
                 self.logger.info(f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒")
             
-            result = response.choices[0].message.content
+            message = response.choices[0].message
+            # 优先使用最终答案；缺失时回退到 reasoning_content，并屏蔽 <think>
+            result = (message.content or getattr(message, 'reasoning_content', None) or '')
+            result = strip_reasoning_thoughts(result)
             
             # 解析结构化翻译结果
             return self._parse_structured_translation_result(result, len(texts), batch_id)

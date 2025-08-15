@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from logging.handlers import RotatingFileHandler
-from .utils import get_app_subdir
+from .utils import get_app_subdir, strip_reasoning_thoughts
 
 import openai
 
@@ -142,8 +142,11 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         
         response_time = time.time() - start_time
         
-        # 新版API响应格式
-        translated_text = response.choices[0].message.content.strip()
+        # 读取消息主体并先屏蔽思考内容
+        message = response.choices[0].message
+        # 优先取最终答案内容；仅在缺失时回退到 reasoning_content
+        translated_text = (message.content or getattr(message, 'reasoning_content', None) or '')
+        translated_text = strip_reasoning_thoughts(translated_text).strip()
         
         # 检查并移除可能的前缀和注释
         prefixes_to_remove = ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]
@@ -348,8 +351,10 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         response_time = time.time() - start_time
         logger.info(f"标签生成完成，耗时: {response_time:.2f}秒")
         
-        # 提取响应内容
-        tags_response = response.choices[0].message.content.strip()
+        # 提取响应内容并屏蔽思考
+        message = response.choices[0].message
+        tags_response = (message.content or getattr(message, 'reasoning_content', None) or '')
+        tags_response = strip_reasoning_thoughts(tags_response).strip()
         
         # 尝试解析JSON
         import json
@@ -517,7 +522,9 @@ AcFun分区列表:
             max_tokens=800
         )
         
-        result = response.choices[0].message.content.strip()
+        message = response.choices[0].message
+        result = (message.content or getattr(message, 'reasoning_content', None) or '')
+        result = strip_reasoning_thoughts(result).strip()
         logger.info(f"分区推荐原始响应: {result}")
         
         # 解析结果
