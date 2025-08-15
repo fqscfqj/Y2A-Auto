@@ -1765,7 +1765,7 @@ def youtube_monitor_history(config_id):
         stats['avg_views'] = int(total_views / len(history))
         stats['avg_likes'] = int(total_likes / len(history))
     
-    return render_template('youtube_monitor_history.html', history=history, config=config)
+    return render_template('youtube_monitor_history.html', history=history, config=config, stats=stats)
 
 @app.route('/youtube_monitor/add_to_tasks', methods=['POST'])
 @login_required

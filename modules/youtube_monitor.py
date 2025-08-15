@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import datetime
 from datetime import datetime, timedelta
+import ssl
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import threading
@@ -61,6 +62,7 @@ class YouTubeMonitor:
         self.youtube = None
         self.scheduler = BackgroundScheduler()
         self.db_path = os.path.join(get_app_subdir('db'), 'youtube_monitor.db')
+        self._last_fetch_had_errors = False
         self._init_database()
         self._init_youtube_api()
         
@@ -730,6 +732,8 @@ class YouTubeMonitor:
         try:
             # 获取视频
             logger.info("开始获取视频数据...")
+            # 每次运行前重置错误标记
+            self._last_fetch_had_errors = False
             videos = self._fetch_trending_videos(config)
             logger.info(f"获取到 {len(videos)} 个视频")
             
@@ -785,8 +789,11 @@ class YouTubeMonitor:
                 else:
                     logger.debug(f"视频已处理过，跳过: {video['title']}")
             
-            # 更新最后运行时间
-            self._update_last_run_time(config_id)
+            # 更新最后运行时间（若本次抓取存在错误则跳过，避免漏掉新视频）
+            if not self._last_fetch_had_errors:
+                self._update_last_run_time(config_id)
+            else:
+                logger.warning("本次抓取存在错误，跳过更新last_run_time以避免漏掉新视频")
             
             logger.info(f"监控任务完成 - 配置: {config['name']}, "
                        f"处理新视频: {processed_count}, 添加到任务队列: {added_count}")
@@ -897,19 +904,21 @@ class YouTubeMonitor:
         if config['category_id'] and config['category_id'] != '0':
             search_params['videoCategoryId'] = config['category_id']
         
-        # 执行搜索
-        search_response = self.youtube.search().list(**search_params).execute()
+        # 执行搜索（带重试）
+        search_request = self.youtube.search().list(**search_params)
+        search_response = self._execute_with_retry(search_request, 'search.list')
         
         video_ids = [item['id']['videoId'] for item in search_response['items']]
         
         if not video_ids:
             return []
         
-        # 获取视频详细信息
-        videos_response = self.youtube.videos().list(
+        # 获取视频详细信息（带重试）
+        videos_request = self.youtube.videos().list(
             part='id,snippet,statistics,contentDetails',
             id=','.join(video_ids)
-        ).execute()
+        )
+        videos_response = self._execute_with_retry(videos_request, 'videos.list')
         
         return videos_response['items']
     
@@ -928,6 +937,7 @@ class YouTubeMonitor:
         channel_mode = config.get('channel_mode', 'latest')
         logger.info(f"开始处理 {len(channel_ids)} 个频道，模式: {channel_mode}，请求限制: {max_requests}/{config.get('schedule_interval', 60)}分钟")
         
+        had_error = False
         for i, channel_id in enumerate(channel_ids, 1):
             if request_count >= max_requests:
                 logger.warning(f"达到请求限制 {max_requests}/{config.get('schedule_interval', 60)}分钟，跳过剩余 {len(channel_ids) - i + 1} 个频道")
@@ -954,9 +964,12 @@ class YouTubeMonitor:
                     
             except Exception as e:
                 logger.error(f"获取频道 {channel_id} 视频失败: {str(e)}")
+                had_error = True
                 continue
         
         logger.info(f"频道视频获取完成，总计 {len(all_videos)} 个视频，使用了 {request_count} 个API请求")
+        # 记录本次获取是否出现错误，供上层决定是否更新last_run_time
+        self._last_fetch_had_errors = had_error
         return all_videos
     
     def _fetch_channel_search_videos(self, channel_id, config, published_after, published_before=None):
@@ -984,8 +997,9 @@ class YouTubeMonitor:
             
             logger.info(f"在频道 {channel_id} 内搜索关键词: {keywords}")
             
-            # 执行搜索
-            search_response = self.youtube.search().list(**search_params).execute()
+            # 执行搜索（带重试）
+            search_request = self.youtube.search().list(**search_params)
+            search_response = self._execute_with_retry(search_request, f'search.list (channel {channel_id})')
             
             video_ids = [item['id']['videoId'] for item in search_response['items']]
             
@@ -993,26 +1007,28 @@ class YouTubeMonitor:
                 logger.info(f"频道 {channel_id} 搜索无结果")
                 return []
             
-            # 获取视频详细信息
-            videos_response = self.youtube.videos().list(
+            # 获取视频详细信息（带重试）
+            videos_request = self.youtube.videos().list(
                 part='id,snippet,statistics,contentDetails',
                 id=','.join(video_ids)
-            ).execute()
+            )
+            videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
             
             return videos_response['items']
             
         except Exception as e:
             logger.error(f"频道搜索失败 {channel_id}: {str(e)}")
-            return []
+            raise
     
     def _fetch_channel_playlist_videos(self, channel_id, config, published_after, published_before=None):
         """从频道播放列表获取视频"""
         try:
             # 获取频道的上传播放列表ID
-            channel_response = self.youtube.channels().list(
+            channel_request = self.youtube.channels().list(
                 part='contentDetails',
                 id=channel_id
-            ).execute()
+            )
+            channel_response = self._execute_with_retry(channel_request, f'channels.list (channel {channel_id})')
             
             if not channel_response['items']:
                 logger.warning(f"找不到频道: {channel_id}")
@@ -1050,7 +1066,8 @@ class YouTubeMonitor:
                 if next_page_token:
                     playlist_params['pageToken'] = next_page_token
                 
-                playlist_response = self.youtube.playlistItems().list(**playlist_params).execute()
+                playlist_request = self.youtube.playlistItems().list(**playlist_params)
+                playlist_response = self._execute_with_retry(playlist_request, f'playlistItems.list (channel {channel_id})')
                 current_items = playlist_response['items']
                 all_playlist_items.extend(current_items)
                 videos_fetched += len(current_items)
@@ -1093,10 +1110,11 @@ class YouTubeMonitor:
                 return []
             
             # 获取视频详细信息
-            videos_response = self.youtube.videos().list(
+            videos_request = self.youtube.videos().list(
                 part='id,snippet,statistics,contentDetails',
                 id=','.join(video_ids)
-            ).execute()
+            )
+            videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
             
             videos = videos_response['items']
             
@@ -1111,7 +1129,41 @@ class YouTubeMonitor:
                     
         except Exception as e:
             logger.error(f"频道播放列表获取失败 {channel_id}: {str(e)}")
-            return []
+            # 向上抛出让上层决定是否继续以及是否更新last_run_time
+            raise
+
+    def _execute_with_retry(self, request, description, max_attempts=3, backoff_seconds=1.0):
+        """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题"""
+        attempt = 0
+        last_exception = None
+        while attempt < max_attempts:
+            try:
+                return request.execute()
+            except HttpError as e:
+                # 对于5xx或已知可重试错误进行重试
+                status = getattr(e, 'resp', None).status if getattr(e, 'resp', None) else None
+                if status and 500 <= status < 600:
+                    last_exception = e
+                else:
+                    # 429或配额等错误也可适当重试
+                    if status in (429,):
+                        last_exception = e
+                    else:
+                        raise
+            except ssl.SSLError as e:
+                # 记录并重试，同时尝试重建客户端
+                last_exception = e
+                logger.warning(f"SSL错误，准备重试并重建API客户端: {str(e)}")
+                self._init_youtube_api()
+            except OSError as e:
+                # 网络层错误，重试
+                last_exception = e
+            attempt += 1
+            sleep_time = backoff_seconds * (2 ** (attempt - 1))
+            logger.warning(f"调用 {description} 失败（第 {attempt} 次），{type(last_exception).__name__}: {last_exception}，{sleep_time:.1f}s 后重试...")
+            time.sleep(sleep_time)
+        # 达到最大重试次数仍失败
+        raise last_exception
     
     def _filter_videos(self, videos, config):
         """根据配置筛选视频"""
