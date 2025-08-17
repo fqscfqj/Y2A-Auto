@@ -83,45 +83,58 @@ jobs:
           done || true
 
       - name: Delete old GHCR package versions for y2a-auto (keep ${{ env.KEEP }})
+        timeout-minutes: 15
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           echo "Cleaning GHCR package versions..."
           per_page=100
+          page=1
           versions_list=""
+          base_url="https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions"
 
-          for scope in users orgs; do
-            page=1
-            while :; do
-              url="https://api.github.com/${scope}/${OWNER}/packages/container/y2a-auto/versions?per_page=$per_page&page=$page"
-              resp=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "$url")
-              # if not an array or empty, break
-              if [ "$(echo "$resp" | jq 'type' 2>/dev/null || echo null)" = "null" ]; then
-                break
-              fi
-              if [ "$(echo "$resp" | jq 'length')" -eq 0 ]; then break; fi
-              versions_list="$versions_list\n$resp"
-              page=$((page+1))
-            done
+          while :; do
+            url="${base_url}?per_page=$per_page&page=$page"
+            resp=$(curl -sS -m 20 -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "$url" || true)
+            rtype=$(echo "$resp" | jq -r 'type' 2>/dev/null || echo "unknown")
+            if [ "$rtype" != "array" ]; then
+              echo "GHCR list API did not return an array (type=$rtype). Message: $(echo "$resp" | jq -r '.message // empty')"
+              break
+            fi
+            count=$(echo "$resp" | jq 'length')
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+            versions_list="$versions_list\n$resp"
+            page=$((page+1))
           done
 
-          # collect unique version ids, order by created_at desc, skip KEEP
-          echo "$versions_list" | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk 'NR>${KEEP} {print $1}' | while read vid; do
+          # If nothing collected, skip delete
+          if [ -z "$(echo -e "$versions_list" | awk 'NF')" ]; then
+            echo "No GHCR versions fetched or API not accessible; skipping GHCR cleanup."
+            exit 0
+          fi
+
+          echo "$versions_list" | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk -v KEEP="$KEEP" 'NR>KEEP {print $1}' | while read vid; do
             if [ -n "$vid" ]; then
               echo "Deleting GHCR package version id=$vid"
-              del_resp=$(curl -s -o /tmp/ghcr_del_body -w "%{http_code}" -X DELETE -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid")
+              del_resp=$(curl -sS -m 20 -o /tmp/ghcr_del_body -w "%{http_code}" -X DELETE -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid" || true)
               echo "HTTP status: $del_resp"
               if [ -s /tmp/ghcr_del_body ]; then
                 echo "Response body:" && cat /tmp/ghcr_del_body
               fi
+              sleep 0.5
             fi
           done || true
 
       - name: Delete old Docker Hub tags for y2a-auto (keep ${{ env.KEEP }})
+        timeout-minutes: 15
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
             echo "DOCKERHUB credentials not available, skipping Docker Hub cleanup. To enable, set secrets.DOCKERHUB_USERNAME and secrets.DOCKERHUB_TOKEN."
             exit 0
