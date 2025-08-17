@@ -177,21 +177,69 @@ python app.py
 典型自动化流程如下（可选步骤以条件分支表示）：
 
 ```mermaid
-flowchart TD
-  A[添加任务/监控触发] --> B[yt-dlp 下载视频/封面/元数据/字幕]
-  B -->|无内置字幕且启用转写| C[语音转写 Whisper]
-  B -->|已有字幕或转写输出| D[字幕翻译 (OpenAI 兼容 API)]
-  D --> E[可选: 嵌入字幕 + 转码]
-  B --> E
-  E --> F[AI 生成 标题/描述/标签]
-  F --> G[分区推荐]
-  G --> H[内容审核 (阿里云 Green)]
-  H --> I{是否需要人工审核?}
-  I -- 是 --> J[人工审核/修改]
-  I -- 否 --> K[准备上传]
+```mermaid
+flowchart TB
+  %% 分组与主流程
+  subgraph ING [Ingest]
+    A["添加任务 / 监控触发"]
+    B["yt-dlp 下载\n视频 / 封面 / 元数据 / 字幕"]
+  end
+
+  subgraph SUB [字幕处理]
+    C{"是否有内置字幕?"}
+    D["语音转写\n(Whisper)"]
+    E["使用已有字幕"]
+    F["字幕翻译\n(OpenAI API)"]
+  end
+
+  subgraph PROC [处理 & 增强]
+    G["嵌入字幕 & 转码"]
+    H["AI 生成 标题 / 描述 / 标签"]
+    I["分区推荐"]
+  end
+
+  subgraph MOD [审核]
+    J["内容审核\n(阿里云 Green)"]
+    K{"需人工审核?"}
+    L["人工审核 / 修改"]
+  end
+
+  subgraph UP [上传]
+    M["准备上传"]
+    N["上传至 AcFun"]
+    O["完成"]
+  end
+
+  %% 连线
+  A --> B
+  B --> C
+  C -- "否" --> D
+  C -- "是" --> E
+  D --> F
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
   J --> K
-  K --> L[上传至 AcFun]
-  L --> M[完成]
+  K -- "是" --> L
+  K -- "否" --> M
+  L --> M
+  M --> N
+  N --> O
+
+  %% 美化：分配颜色样式
+  classDef ingest fill:#E8F6FF,stroke:#2B7BB9,color:#073642;
+  classDef subs fill:#FFF4E6,stroke:#D97706,color:#6B2E00;
+  classDef proc fill:#F0FFF4,stroke:#16A34A,color:#064E3B;
+  classDef mod fill:#FFF0F6,stroke:#DB2777,color:#5A1033;
+  classDef up fill:#F7F7FF,stroke:#4F46E5,color:#1E1B4B;
+
+  class A,B ingest
+  class C,D,E,F subs
+  class G,H,I proc
+  class J,K,L mod
+  class M,N,O up
 ```
 
 ## 使用指南
