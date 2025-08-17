@@ -15,6 +15,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from typing import Optional, List, Union, Tuple, Any
 from .utils import get_app_subdir
 
 from modules.utils import process_cover
@@ -106,7 +107,7 @@ class AcfunUploader:
         sha1_obj.update(data)
         return sha1_obj.hexdigest()
     
-    def load_cookies(self, cookie_file: str = None) -> bool:
+    def load_cookies(self, cookie_file: Optional[str] = None) -> bool:
         """从文件加载cookie，支持Netscape和JSON格式"""
         if cookie_file is None:
             cookie_file = self.cookie_file
@@ -194,7 +195,7 @@ class AcfunUploader:
         
         return cookie_count
     
-    def save_cookies(self, cookie_file: str = None):
+    def save_cookies(self, cookie_file: Optional[str] = None):
         """保存cookie到文件"""
         if cookie_file is None:
             cookie_file = self.cookie_file
@@ -304,7 +305,7 @@ class AcfunUploader:
             self.log(f"登录过程中出错: {e}")
             return False
     
-    def get_token(self, filename: str, filesize: int) -> tuple:
+    def get_token(self, filename: str, filesize: int) -> Tuple[str, str, int]:
         """获取上传token"""
         response = self.session.post(
             self.TOKEN_URL,
@@ -315,7 +316,10 @@ class AcfunUploader:
             }
         )
         result = response.json()
-        return result["taskId"], result["token"], result["uploadConfig"]["partSize"]
+        task_id = result["taskId"]
+        token = result["token"]
+        part_size = result["uploadConfig"]["partSize"]
+        return task_id, token, part_size
     
     def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str) -> bool:
         """上传分块"""
@@ -454,7 +458,7 @@ class AcfunUploader:
         if response.json()["result"] != 0:
             self.log(f"上传完成处理失败: {response.text}")
     
-    def create_video(self, video_key: int, filename: str) -> int:
+    def create_video(self, video_key: int, filename: str) -> Optional[int]:
         """创建视频"""
         response = self.session.post(
             self.C_VIDEO_URL,
@@ -532,8 +536,8 @@ class AcfunUploader:
         return cover_url
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
-                     desc: str = "", tags: list = None, creation_type: int = 3, 
-                     original_url: str = "") -> tuple:
+                     desc: str = "", tags: Optional[List[str]] = None, creation_type: int = 3,
+                     original_url: str = "") -> Tuple[bool, Union[dict, str]]:
         """创建投稿"""
         if tags is None:
             tags = []
@@ -558,11 +562,15 @@ class AcfunUploader:
                     self.log(f"分块 {fragment_id + 1} 上传失败")
                     return False, "分块上传失败"
                 
-                # 计算和报告上传进度
+                # 计算上传进度并更新网页显示进度（不再把每次进度写为 INFO 到任务日志）
                 progress = ((fragment_id + 1) / fragment_count) * 100
-                self.log(f"上传进度: {progress:.1f}% ({fragment_id + 1}/{fragment_count})")
-                
-                # 静默更新任务进度到数据库（如果有task_id），不记录到主日志
+                if hasattr(self, 'logger') and self.logger:
+                    try:
+                        self.logger.debug(f"上传进度: {progress:.1f}% ({fragment_id + 1}/{fragment_count})")
+                    except Exception:
+                        pass
+
+                # 静默更新任务进度到数据库（如果有task_id），用于网页显示
                 if hasattr(self, 'task_id') and self.task_id:
                     from modules.task_manager import update_task
                     update_task(self.task_id, upload_progress=f"{progress:.1f}%", silent=True)
@@ -572,7 +580,7 @@ class AcfunUploader:
         self.complete_upload(fragment_count, token)
         
         # 创建视频
-        video_id = self.create_video(task_id, file_name)
+        video_id = self.create_video(int(task_id), file_name)
         if not video_id:
             return False, "创建视频失败"
         

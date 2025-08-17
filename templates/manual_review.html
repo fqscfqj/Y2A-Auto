@@ -53,43 +53,11 @@
                                             {% if result and result.details %}
                                                 <div class="moderation-item">
                                                     <h6><i class="bi bi-exclamation-triangle"></i> {{ content_type }}问题:</h6>
-                                                    <ul class="list-group list-group-flush">
-                                                        {% for detail in result.details %}
-                                                            <li class="list-group-item 
-                                                               {% if detail.suggestion == 'block' %}list-group-item-danger
-                                                               {% elif detail.suggestion == 'review' %}list-group-item-warning
-                                                               {% else %}list-group-item-info{% endif %}">
-                                                                <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
-                                                                {% if detail.description %}
-                                                                    <small class="text-muted"> ({{ detail.description }})</small>
-                                                                {% endif %}
-                                                                <br>
-                                                                <small>
-                                                                    原因: {{ detail.reason or '无' }}<br>
-                                                                    建议: 
-                                                                    {% if detail.suggestion == 'block' %}阻止发布
-                                                                    {% elif detail.suggestion == 'review' %}人工复审
-                                                                    {% else %}通过{% endif %}
-                                                                    {% if detail.confidence %}
-                                                                        (置信度: {{ "%.2f"|format(detail.confidence) }}%)
-                                                                    {% endif %}
-                                                                </small>
-                                                            </li>
-                                                        {% endfor %}
-                                                    </ul>
-                                                </div>
-                                            {% endif %}
-                                        {% endfor %}
-                                        
-                                        {% if moderation.tags and moderation.tags.details %}
-                                            <div class="moderation-item">
-                                                <h6><i class="bi bi-exclamation-triangle"></i> 标签问题:</h6>
-                                                <ul class="list-group list-group-flush">
-                                                    {% for detail in moderation.tags.details %}
-                                                        <li class="list-group-item 
+                                                    <div class="list-group list-group-flush" role="list">{%- for detail in result.details %}
+                                                        <div class="list-group-item 
                                                            {% if detail.suggestion == 'block' %}list-group-item-danger
                                                            {% elif detail.suggestion == 'review' %}list-group-item-warning
-                                                           {% else %}list-group-item-info{% endif %}">
+                                                           {% else %}list-group-item-info{% endif %}" role="listitem">
                                                             <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
                                                             {% if detail.description %}
                                                                 <small class="text-muted"> ({{ detail.description }})</small>
@@ -105,9 +73,37 @@
                                                                     (置信度: {{ "%.2f"|format(detail.confidence) }}%)
                                                                 {% endif %}
                                                             </small>
-                                                        </li>
-                                                    {% endfor %}
-                                                </ul>
+                                                        </div>
+                                                    {%- endfor %}</div>
+                                                </div>
+                                            {% endif %}
+                                        {% endfor %}
+                                        
+                                        {% if moderation.tags and moderation.tags.details %}
+                                            <div class="moderation-item">
+                                                <h6><i class="bi bi-exclamation-triangle"></i> 标签问题:</h6>
+                                                <div class="list-group list-group-flush" role="list">{%- for detail in moderation.tags.details %}
+                                                    <div class="list-group-item 
+                                                       {% if detail.suggestion == 'block' %}list-group-item-danger
+                                                       {% elif detail.suggestion == 'review' %}list-group-item-warning
+                                                       {% else %}list-group-item-info{% endif %}" role="listitem">
+                                                        <strong>{{ get_aliyun_label_chinese(detail.label) }}</strong>
+                                                        {% if detail.description %}
+                                                            <small class="text-muted"> ({{ detail.description }})</small>
+                                                        {% endif %}
+                                                        <br>
+                                                        <small>
+                                                            原因: {{ detail.reason or '无' }}<br>
+                                                            建议: 
+                                                            {% if detail.suggestion == 'block' %}阻止发布
+                                                            {% elif detail.suggestion == 'review' %}人工复审
+                                                            {% else %}通过{% endif %}
+                                                            {% if detail.confidence %}
+                                                                (置信度: {{ "%.2f"|format(detail.confidence) }}%)
+                                                            {% endif %}
+                                                        </small>
+                                                    </div>
+                                                {%- endfor %}</div>
                                             </div>
                                         {% endif %}
                                     </div>

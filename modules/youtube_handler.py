@@ -191,36 +191,31 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
     try:
         # 获取yt-dlp路径
         yt_dlp_path = 'yt-dlp'
+        logger.info("开始查找yt-dlp可执行文件路径...")
         
-        # 在Linux/Docker环境中，首先检查系统PATH中的yt-dlp
+        # 优先使用跨平台方式在PATH中查找 yt-dlp
         try:
-            # 尝试使用which命令查找yt-dlp
-            result = subprocess.run(
-                ['which', 'yt-dlp'], 
-                capture_output=True, 
-                text=True,
-                timeout=10,  # 添加10秒超时
-                encoding='utf-8',
-                errors='replace'
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                yt_dlp_path = result.stdout.strip()
+            import shutil as _shutil
+            found = _shutil.which('yt-dlp')
+            if found:
+                yt_dlp_path = found
                 logger.info(f"找到系统中的yt-dlp: {yt_dlp_path}")
-        except:
-            # 如果which命令失败，检查常见的yt-dlp安装位置
-            possible_paths = [
-                '/home/y2a/.local/bin/yt-dlp',  # Docker环境中的用户安装路径
-                '/usr/local/bin/yt-dlp',        # 系统全局安装路径
-                '/usr/bin/yt-dlp',              # 系统安装路径
-                'yt-dlp'                        # 回退到PATH查找
-            ]
-            
-            for path in possible_paths:
-                if os.path.exists(path) or path == 'yt-dlp':
-                    yt_dlp_path = path
-                    if path != 'yt-dlp':
-                        logger.info(f"使用yt-dlp路径: {yt_dlp_path}")
-                    break
+            else:
+                logger.debug("PATH 未找到 yt-dlp，尝试常见安装位置")
+                # 检查常见的yt-dlp安装位置（Linux/Docker）
+                possible_paths = [
+                    '/home/y2a/.local/bin/yt-dlp',  # Docker环境中的用户安装路径
+                    '/usr/local/bin/yt-dlp',        # 系统全局安装路径
+                    '/usr/bin/yt-dlp',              # 系统安装路径
+                ]
+                logger.debug(f"检查常见yt-dlp安装位置: {possible_paths}")
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        yt_dlp_path = path
+                        logger.info(f"找到存在的yt-dlp路径: {yt_dlp_path}")
+                        break
+        except Exception as e:
+            logger.debug(f"通过PATH查找 yt-dlp 异常: {e}")
         
         # Windows环境的特殊处理（保持兼容性）
         if os.name == 'nt':  # Windows系统
@@ -257,6 +252,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             else:
                 logger.warning(f"指定的YouTube Cookies文件不存在: {cookies_path}")
                 cookies_path = None
+        
+        # 验证yt-dlp路径有效性
+        logger.info(f"最终确定的yt-dlp路径: {yt_dlp_path}")
+        if yt_dlp_path != 'yt-dlp' and not os.path.exists(yt_dlp_path):
+            logger.error(f"yt-dlp路径不存在: {yt_dlp_path}")
+            return False, f"yt-dlp可执行文件不存在: {yt_dlp_path}"
         
         # 首先测试视频可用性
         available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_path, cookies_path, logger)
@@ -372,18 +373,38 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 
                 if progress_callback and not skip_download:
                     # 使用Popen实时获取进度，设置UTF-8编码
-                    process = subprocess.Popen(
-                        cmd, 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.STDOUT, 
-                        text=True, 
-                        bufsize=1, 
-                        universal_newlines=True,
-                        encoding='utf-8',
-                        errors='replace'  # 遇到无法解码的字符时用?替换
-                    )
+                    logger.info(f"准备执行yt-dlp命令，路径: {yt_dlp_path}")
+                    logger.debug(f"完整命令: {' '.join(cmd)}")
+                    
+                    try:
+                        process = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                            universal_newlines=True,
+                            encoding='utf-8',
+                            errors='replace'  # 遇到无法解码的字符时用?替换
+                        )
+                        logger.info(f"subprocess.Popen创建成功，PID: {process.pid}")
+                    except Exception as e:
+                        logger.error(f"subprocess.Popen创建失败: {str(e)}")
+                        raise
+                    
+                    # 检查process.stdout是否为None
+                    if process.stdout is None:
+                        logger.error("process.stdout为None，无法读取输出")
+                        raise RuntimeError("进程创建成功但stdout为None")
                     
                     output_lines = []
+                    logger.info("开始读取yt-dlp输出...")
+                    
+                    # 确保process.stdout不为None且可迭代
+                    if process.stdout is None:
+                        logger.error("process.stdout为None，无法读取输出")
+                        raise RuntimeError("进程创建成功但stdout为None")
+                    
                     for line in process.stdout:
                         output_lines.append(line)
                         line = line.strip()

@@ -35,10 +35,10 @@
                         <th>操作</th>
                     </tr>
                 </thead>
-                <tbody>
+        <tbody>
                     {% for config in configs %}
                     <tr>
-                        <td>
+            <td data-label="名称">
                             <strong>{{ config.name }}</strong>
                             {% if config.monitor_type == 'youtube_search' and config.keywords %}
                                 <br><small class="text-muted" title="{{ config.keywords }}">关键词: {{ config.keywords[:30] }}{% if config.keywords|length > 30 %}...{% endif %}</small>
@@ -46,21 +46,21 @@
                                 <br><small class="text-muted" title="{{ config.channel_ids }}">频道ID: {{ config.channel_ids.split(',')[0][:20] }}...</small>
                             {% endif %}
                         </td>
-                        <td class="text-center">
+                        <td class="text-center" data-label="状态">
                             {% if config.enabled %}
                             <span class="badge bg-success">启用</span>
                             {% else %}
                             <span class="badge bg-secondary">禁用</span>
                             {% endif %}
                         </td>
-                        <td class="text-center">
+                        <td class="text-center" data-label="监控类型">
                             {% if config.monitor_type == 'channel_monitor' %}
                                 <span class="badge bg-primary">频道监控</span>
                             {% else %}
                                 <span class="badge bg-danger">全网搜索</span>
                             {% endif %}
                         </td>
-                        <td>
+                        <td data-label="参数">
                             {% if config.monitor_type == 'channel_monitor' %}
                                 {% if config.channel_mode == 'latest' %}
                                     <i class="bi bi-rss-fill text-success" title="持续跟进最新"></i> 持续跟进最新
@@ -85,14 +85,14 @@
                                 {% endif %}
                             {% endif %}
                         </td>
-                        <td class="text-center">
+                        <td class="text-center" data-label="调度类型">
                             {% if config.schedule_type == 'auto' %}
                             <span class="badge bg-info text-dark">自动({{ config.schedule_interval }}分钟)</span>
                             {% else %}
                             <span class="badge bg-warning text-dark">手动</span>
                             {% endif %}
                         </td>
-                        <td>
+                        <td data-label="最后运行">
                             {% if config.last_run_time %}
                             <small>{{ config.last_run_time }}</small>
                             {% else %}
@@ -102,7 +102,7 @@
                             <br><small class="text-info">已处理: {{ config.historical_offset }} 个视频</small>
                             {% endif %}
                         </td>
-                        <td>
+                        <td data-label="操作">
                             <div class="btn-group btn-group-sm" role="group">
                                 <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
                                     <button type="submit" class="btn btn-outline-success btn-icon" title="立即运行">
@@ -150,7 +150,7 @@
         </div>
         {% if history %}
         <div class="table-responsive">
-            <table class="table table-striped">
+            <table class="table table-striped history-table">
                 <thead class="table-dark">
                     <tr>
                         <th>时间</th>
@@ -167,25 +167,25 @@
                 <tbody>
                     {% for record in history %}
                     <tr>
-                        <td><small>{{ record.run_time }}</small></td>
-                        <td>{{ record.config_name }}</td>
-                        <td>
+                        <td data-label="时间"><small>{{ record.run_time }}</small></td>
+                        <td data-label="配置名称">{{ record.config_name }}</td>
+                        <td data-label="视频标题">
                             <div class="text-truncate-300" title="{{ record.video_title }}">
                                 {{ record.video_title }}
                             </div>
                         </td>
-                        <td>{{ record.channel_title }}</td>
-                        <td>{{ record.view_count|int }}</td>
-                        <td>{{ record.like_count|int }}</td>
-                        <td>{{ record.comment_count|int }}</td>
-                        <td>
+                        <td data-label="频道">{{ record.channel_title }}</td>
+                        <td data-label="观看数">{{ record.view_count|int }}</td>
+                        <td data-label="点赞数">{{ record.like_count|int }}</td>
+                        <td data-label="评论数">{{ record.comment_count|int }}</td>
+                        <td data-label="状态">
                             {% if record.added_to_tasks %}
                             <span class="badge bg-success">已添加</span>
                             {% else %}
                             <span class="badge bg-secondary">未添加</span>
                             {% endif %}
                         </td>
-                        <td>
+                        <td data-label="操作">
                             <div class="btn-group" role="group">
                                 <a href="https://www.youtube.com/watch?v={{ record.video_id }}" 
                                    target="_blank" rel="noopener" class="btn btn-outline-danger btn-icon" title="在YouTube中查看">
@@ -238,6 +238,66 @@
     align-items: center;
     justify-content: center;
     padding: 0;
+}
+
+/* Responsive: convert table to stacked card/list on small screens */
+@media (max-width: 768px) {
+    .youtube-monitor-table thead,
+    .history-table thead {
+        display: none;
+    }
+    .youtube-monitor-table tbody tr,
+    .history-table tbody tr {
+        display: block;
+        margin-bottom: 0.7rem;
+        border: 1px solid rgba(0,0,0,0.06);
+        border-radius: .35rem;
+        padding: .35rem;
+        background: rgba(255,255,255,0.98);
+    }
+    /* Stack label above value for each cell to reduce horizontal clutter */
+    .youtube-monitor-table tbody td,
+    .history-table tbody td {
+        display: block;
+        padding: .45rem .65rem;
+        border-bottom: none;
+    }
+    .youtube-monitor-table tbody td:before,
+    .history-table tbody td:before {
+        content: attr(data-label);
+        display: block;
+        font-weight: 700;
+        color: #222;
+        margin-bottom: .25rem;
+        font-size: .92rem;
+    }
+    /* Ensure cell content flows vertically */
+    .youtube-monitor-table tbody td > *,
+    .history-table tbody td > * {
+        display: block;
+    }
+    .text-truncate-300 {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    /* Right align action buttons and keep them on a single line */
+    .youtube-monitor-table tbody td[data-label="操作"],
+    .history-table tbody td[data-label="操作"] {
+        text-align: right;
+        padding-right: .8rem;
+    }
+    /* Slightly smaller icon buttons on mobile */
+    .btn-icon {
+        width: 30px;
+        height: 30px;
+    }
+    /* Make name stand out but not too large */
+    .youtube-monitor-table tbody td[data-label="名称"] strong,
+    .history-table tbody td[data-label="配置名称"] {
+        font-size: 1rem;
+    }
 }
 </style>
 {% endblock %}

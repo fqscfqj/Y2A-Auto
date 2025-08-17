@@ -8,6 +8,7 @@ import sqlite3
 import datetime
 from datetime import datetime, timedelta
 import ssl
+from typing import Optional, Dict, List, Any, Union, Tuple
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import threading
@@ -57,9 +58,9 @@ def setup_youtube_monitor_logger():
 logger = setup_youtube_monitor_logger()
 
 class YouTubeMonitor:
-    def __init__(self, api_key=None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
-        self.youtube = None
+        self.youtube: Optional[Any] = None
         self.scheduler = BackgroundScheduler()
         self.db_path = os.path.join(get_app_subdir('db'), 'youtube_monitor.db')
         self._last_fetch_had_errors = False
@@ -291,7 +292,7 @@ class YouTubeMonitor:
                             min_duration, max_duration, schedule_type, schedule_interval,
                             order_by, start_date, end_date, latest_days, latest_max_results,
                             rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         target_id,
                         config_data.get('name'),
@@ -402,7 +403,7 @@ class YouTubeMonitor:
         except Exception as e:
             logger.error(f"重新启动调度任务失败: {str(e)}")
     
-    def _init_youtube_api(self):
+    def _init_youtube_api(self) -> None:
         """初始化YouTube API"""
         if self.api_key:
             try:
@@ -412,7 +413,7 @@ class YouTubeMonitor:
                 logger.error(f"YouTube API初始化失败: {str(e)}")
                 self.youtube = None
     
-    def set_api_key(self, api_key):
+    def set_api_key(self, api_key: str) -> None:
         """设置API密钥"""
         self.api_key = api_key
         self._init_youtube_api()
@@ -712,10 +713,12 @@ class YouTubeMonitor:
             logger.error(f"删除监控配置失败，ID: {config_id}, 错误: {str(e)}")
             raise
     
-    def run_monitor(self, config_id):
+    def run_monitor(self, config_id: int) -> Tuple[bool, str]:
         """执行监控任务"""
         logger.info(f"开始执行监控任务，配置ID: {config_id}")
         
+        # 添加调试日志 - 检查 YouTube API 对象状态
+        logger.debug(f"YouTube API 对象状态: {type(self.youtube)}, 值: {self.youtube}")
         if not self.youtube:
             logger.error("YouTube API未初始化")
             return False, "YouTube API未初始化"
@@ -810,12 +813,12 @@ class YouTubeMonitor:
             logger.error(f"监控任务执行失败 - 配置: {config['name']} (ID: {config_id}), 错误: {str(e)}")
             return False, f"监控失败: {str(e)}"
     
-    def _fetch_trending_videos(self, config):
+    def _fetch_trending_videos(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """获取视频"""
         try:
             # 设置时间范围
-            published_after = None
-            published_before = None
+            published_after: Optional[str] = None
+            published_before: Optional[str] = None
             
             # 历史搬运模式的智能时间推进
             if config.get('channel_mode') == 'historical' and config.get('start_date'):
@@ -868,10 +871,18 @@ class YouTubeMonitor:
             # 如果指定了频道，优先使用频道搜索
             if config.get('channel_ids') and config['channel_ids'].strip():
                 logger.info(f"使用频道监控模式，频道数量: {len([ch.strip() for ch in config['channel_ids'].split(',') if ch.strip()])}")
-                return self._fetch_channel_videos(config, published_after, published_before)
+                if published_after is not None:
+                    return self._fetch_channel_videos(config, published_after, published_before)
+                else:
+                    logger.error("published_after 为 None，无法获取频道视频")
+                    return []
             else:
                 logger.info(f"使用YouTube搜索模式，关键词: {config.get('keywords', '无')}")
-                return self._fetch_search_videos(config, published_after, published_before)
+                if published_after is not None:
+                    return self._fetch_search_videos(config, published_after, published_before)
+                else:
+                    logger.error("published_after 为 None，无法搜索视频")
+                    return []
                 
         except HttpError as e:
             logger.error(f"YouTube API错误: {str(e)}")
@@ -880,8 +891,13 @@ class YouTubeMonitor:
             logger.error(f"获取视频数据失败: {str(e)}")
             raise
     
-    def _fetch_search_videos(self, config, published_after, published_before=None):
+    def _fetch_search_videos(self, config: Dict[str, Any], published_after: str, published_before: Optional[str] = None) -> List[Dict[str, Any]]:
         """通过搜索获取视频"""
+        # 确保 YouTube API 对象可用
+        if not self.youtube:
+            logger.error("YouTube API 未初始化")
+            return []
+            
         # 构建搜索参数
         search_params = {
             'part': 'id,snippet',
@@ -905,8 +921,20 @@ class YouTubeMonitor:
             search_params['videoCategoryId'] = config['category_id']
         
         # 执行搜索（带重试）
+        logger.debug(f"准备执行搜索请求，YouTube API 对象: {type(self.youtube)}")
         search_request = self.youtube.search().list(**search_params)
+        logger.debug(f"搜索请求已创建: {type(search_request)}")
         search_response = self._execute_with_retry(search_request, 'search.list')
+        
+        # 添加调试日志 - 检查搜索响应
+        logger.debug(f"搜索响应类型: {type(search_response)}, 值: {search_response}")
+        if search_response is None:
+            logger.error("搜索响应为 None")
+            return []
+        
+        if 'items' not in search_response:
+            logger.error(f"搜索响应中缺少 'items' 字段，响应内容: {search_response}")
+            return []
         
         video_ids = [item['id']['videoId'] for item in search_response['items']]
         
@@ -914,15 +942,27 @@ class YouTubeMonitor:
             return []
         
         # 获取视频详细信息（带重试）
+        logger.debug(f"准备执行视频详情请求，YouTube API 对象: {type(self.youtube)}")
         videos_request = self.youtube.videos().list(
             part='id,snippet,statistics,contentDetails',
             id=','.join(video_ids)
         )
+        logger.debug(f"视频详情请求已创建: {type(videos_request)}")
         videos_response = self._execute_with_retry(videos_request, 'videos.list')
+        
+        # 添加调试日志 - 检查视频响应
+        logger.debug(f"视频响应类型: {type(videos_response)}, 值: {videos_response}")
+        if videos_response is None:
+            logger.error("视频响应为 None")
+            return []
+        
+        if 'items' not in videos_response:
+            logger.error(f"视频响应中缺少 'items' 字段，响应内容: {videos_response}")
+            return []
         
         return videos_response['items']
     
-    def _fetch_channel_videos(self, config, published_after, published_before=None):
+    def _fetch_channel_videos(self, config: Dict[str, Any], published_after: str, published_before: Optional[str] = None) -> List[Dict[str, Any]]:
         """从指定频道获取视频"""
         all_videos = []
         channel_ids = [ch.strip() for ch in config['channel_ids'].split(',') if ch.strip()]
@@ -972,8 +1012,13 @@ class YouTubeMonitor:
         self._last_fetch_had_errors = had_error
         return all_videos
     
-    def _fetch_channel_search_videos(self, channel_id, config, published_after, published_before=None):
+    def _fetch_channel_search_videos(self, channel_id: str, config: Dict[str, Any], published_after: str, published_before: Optional[str] = None) -> List[Dict[str, Any]]:
         """在指定频道内搜索视频"""
+        # 确保 YouTube API 对象可用
+        if not self.youtube:
+            logger.error("YouTube API 未初始化")
+            return []
+            
         try:
             keywords = config.get('channel_keywords', '')
             if not keywords:
@@ -998,8 +1043,20 @@ class YouTubeMonitor:
             logger.info(f"在频道 {channel_id} 内搜索关键词: {keywords}")
             
             # 执行搜索（带重试）
+            logger.debug(f"准备执行频道搜索请求，YouTube API 对象: {type(self.youtube)}")
             search_request = self.youtube.search().list(**search_params)
+            logger.debug(f"频道搜索请求已创建: {type(search_request)}")
             search_response = self._execute_with_retry(search_request, f'search.list (channel {channel_id})')
+            
+            # 添加调试日志 - 检查频道搜索响应
+            logger.debug(f"频道搜索响应类型: {type(search_response)}, 值: {search_response}")
+            if search_response is None:
+                logger.error(f"频道 {channel_id} 搜索响应为 None")
+                return []
+            
+            if 'items' not in search_response:
+                logger.error(f"频道 {channel_id} 搜索响应中缺少 'items' 字段，响应内容: {search_response}")
+                return []
             
             video_ids = [item['id']['videoId'] for item in search_response['items']]
             
@@ -1008,11 +1065,23 @@ class YouTubeMonitor:
                 return []
             
             # 获取视频详细信息（带重试）
+            logger.debug(f"准备执行频道视频详情请求，YouTube API 对象: {type(self.youtube)}")
             videos_request = self.youtube.videos().list(
                 part='id,snippet,statistics,contentDetails',
                 id=','.join(video_ids)
             )
+            logger.debug(f"频道视频详情请求已创建: {type(videos_request)}")
             videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
+            
+            # 添加调试日志 - 检查频道视频响应
+            logger.debug(f"频道视频响应类型: {type(videos_response)}, 值: {videos_response}")
+            if videos_response is None:
+                logger.error(f"频道 {channel_id} 视频响应为 None")
+                return []
+            
+            if 'items' not in videos_response:
+                logger.error(f"频道 {channel_id} 视频响应中缺少 'items' 字段，响应内容: {videos_response}")
+                return []
             
             return videos_response['items']
             
@@ -1024,6 +1093,9 @@ class YouTubeMonitor:
         """从频道播放列表获取视频"""
         try:
             # 获取频道的上传播放列表ID
+            if self.youtube is None:
+                logger.error(f"频道 {channel_id} YouTube API 对象为 None")
+                return []
             channel_request = self.youtube.channels().list(
                 part='contentDetails',
                 id=channel_id
@@ -1066,6 +1138,9 @@ class YouTubeMonitor:
                 if next_page_token:
                     playlist_params['pageToken'] = next_page_token
                 
+                if self.youtube is None:
+                    logger.error(f"频道 {channel_id} YouTube API 对象为 None")
+                    break
                 playlist_request = self.youtube.playlistItems().list(**playlist_params)
                 playlist_response = self._execute_with_retry(playlist_request, f'playlistItems.list (channel {channel_id})')
                 current_items = playlist_response['items']
@@ -1110,6 +1185,9 @@ class YouTubeMonitor:
                 return []
             
             # 获取视频详细信息
+            if self.youtube is None:
+                logger.error(f"频道 {channel_id} YouTube API 对象为 None")
+                return []
             videos_request = self.youtube.videos().list(
                 part='id,snippet,statistics,contentDetails',
                 id=','.join(video_ids)
@@ -1132,16 +1210,20 @@ class YouTubeMonitor:
             # 向上抛出让上层决定是否继续以及是否更新last_run_time
             raise
 
-    def _execute_with_retry(self, request, description, max_attempts=3, backoff_seconds=1.0):
+    def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3, backoff_seconds: float = 1.0) -> Any:
         """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题"""
         attempt = 0
-        last_exception = None
+        last_exception: Optional[Exception] = None
         while attempt < max_attempts:
             try:
                 return request.execute()
             except HttpError as e:
                 # 对于5xx或已知可重试错误进行重试
-                status = getattr(e, 'resp', None).status if getattr(e, 'resp', None) else None
+                resp = getattr(e, 'resp', None)
+                if resp is not None:
+                    status = getattr(resp, 'status', None)
+                else:
+                    status = None
                 if status and 500 <= status < 600:
                     last_exception = e
                 else:
@@ -1163,7 +1245,10 @@ class YouTubeMonitor:
             logger.warning(f"调用 {description} 失败（第 {attempt} 次），{type(last_exception).__name__}: {last_exception}，{sleep_time:.1f}s 后重试...")
             time.sleep(sleep_time)
         # 达到最大重试次数仍失败
-        raise last_exception
+        if last_exception is not None:
+            raise last_exception
+        else:
+            raise Exception("未知错误：重试次数耗尽但未捕获到具体异常")
     
     def _filter_videos(self, videos, config):
         """根据配置筛选视频"""

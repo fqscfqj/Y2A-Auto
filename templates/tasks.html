@@ -4,9 +4,9 @@
 
 {% block content %}
 <div class="tasks-container">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2>任务列表</h2>
-        <div>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
+        <h2 class="mb-0">任务列表</h2>
+        <div class="d-flex gap-2 flex-wrap">
             <button type="button" class="btn btn-outline-secondary me-2" id="autoRefreshBtn" onclick="toggleAutoRefresh()">
                 <i class="bi bi-arrow-clockwise"></i> 开启自动刷新
             </button>
@@ -23,7 +23,8 @@
 
     {% if tasks %}
     <div class="modern-list">
-        <div class="table-responsive modern-table">
+        <!-- 桌面端表格（md及以上显示） -->
+        <div class="table-responsive modern-table d-none d-md-block">
                 <table class="table table-striped table-hover table-borderless table-sm align-middle mb-0 tasks-table no-min-width">
                     <colgroup>
                         <col class="col-id">
@@ -70,6 +71,7 @@
                                 {% if task.status == 'downloading' %}{% set icon = 'download' %}
                                 {% elif task.status == 'uploading' %}{% set icon = 'cloud-upload' %}
                                 {% elif task.status == 'translating' or task.status == 'translating_subtitle' %}{% set icon = 'translate' %}
+                                {% elif task.status == 'asr_transcribing' %}{% set icon = 'mic' %}
                                 {% elif task.status == 'encoding_video' %}{% set icon = 'cpu' %}
                                 {% elif task.status == 'awaiting_manual_review' %}{% set icon = 'eye' %}
                                 {% elif task.status == 'completed' %}{% set icon = 'check-circle' %}
@@ -82,7 +84,7 @@
                                     <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge">
                                         <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
                                     </span>
-                                    {% if (task.status in ['uploading','downloading','translating_subtitle','encoding_video']) and task.upload_progress %}
+                                    {% if (task.status in ['uploading','downloading','translating_subtitle','encoding_video','asr_transcribing']) and task.upload_progress %}
                                         <small class="text-muted mt-1">{{ task.upload_progress }}</small>
                                     {% endif %}
                                 </div>
@@ -182,6 +184,125 @@
                         {% endfor %}
                     </tbody>
                 </table>
+        </div>
+
+        <!-- 移动端卡片（md以下显示） -->
+        <div class="d-block d-md-none">
+            <div class="task-cards">
+                {% for task in tasks %}
+                {% set display_title = task.video_title_translated or task.video_title_original or '未获取标题' %}
+                <div class="card task-card mb-3" data-task-id="{{ task.id }}">
+                    <div class="card-body p-3">
+                        <div class="d-flex align-items-start justify-content-between gap-2">
+                            <div class="flex-grow-1">
+                                <div class="task-title text-body fw-semibold title-clamp title-clamp-3" title="{{ display_title }}">{{ display_title }}</div>
+                                {% if task.video_title_translated and task.video_title_original %}
+                                    <div class="small text-muted text-truncate mt-1" title="原标题: {{ task.video_title_original }}">原标题: {{ task.video_title_original }}</div>
+                                {% endif %}
+                            </div>
+                            <div class="text-end flex-shrink-0">
+                                <div class="id-cell d-flex align-items-center justify-content-end">
+                                    <span class="text-monospace small" title="{{ task.id }}">{{ task.id[:6] }}...</span>
+                                    <button type="button" class="btn btn-link p-0 ms-1 copy-id-btn" title="复制ID" data-full-id="{{ task.id }}">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                                {% set icon = 'circle' %}
+                                {% if task.status == 'downloading' %}{% set icon = 'download' %}
+                                {% elif task.status == 'uploading' %}{% set icon = 'cloud-upload' %}
+                                {% elif task.status == 'translating' or task.status == 'translating_subtitle' %}{% set icon = 'translate' %}
+                                {% elif task.status == 'asr_transcribing' %}{% set icon = 'mic' %}
+                                {% elif task.status == 'encoding_video' %}{% set icon = 'cpu' %}
+                                {% elif task.status == 'awaiting_manual_review' %}{% set icon = 'eye' %}
+                                {% elif task.status == 'completed' %}{% set icon = 'check-circle' %}
+                                {% elif task.status == 'failed' %}{% set icon = 'x-circle' %}
+                                {% elif task.status == 'ready_for_upload' %}{% set icon = 'cloud-arrow-up' %}
+                                {% elif task.status == 'pending' %}{% set icon = 'pause-circle' %}
+                                {% endif %}
+                                <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} mt-1">
+                                    <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="mt-2 small text-muted d-flex flex-wrap gap-2">
+                            <div><i class="bi bi-clock me-1"></i><span class="task-datetime" data-datetime="{{ task.updated_at or task.created_at }}">{{ task.updated_at or task.created_at }}</span></div>
+                            <div class="vr mx-1"></div>
+                            <div>
+                                <i class="bi bi-diagram-3 me-1"></i>
+                                {% if task.selected_partition_id %}
+                                    {{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}
+                                {% elif task.recommended_partition_id %}
+                                    {{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}<span class="text-secondary ms-1">(荐)</span>
+                                {% else %}
+                                    未设置
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="mt-2">
+                            {% if task.tags_generated %}
+                                {% set tags = parse_json(task.tags_generated) %}
+                                <div class="d-flex flex-wrap gap-1">
+                                    {% for tag in tags[:3] %}
+                                        <span class="badge bg-secondary">{{ tag }}</span>
+                                    {% endfor %}
+                                    {% if tags|length > 3 %}
+                                        <span class="badge bg-light text-dark">+{{ tags|length - 3 }}</span>
+                                    {% endif %}
+                                </div>
+                            {% else %}
+                                <span class="badge bg-secondary">未生成标签</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="mt-2">
+                            {% if task.status == 'completed' and task.acfun_upload_response %}
+                                {% set upload_result = parse_json(task.acfun_upload_response) %}
+                                {% if upload_result and upload_result.ac_number %}
+                                    <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ upload_result.ac_number }}</a>
+                                    <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-ac-btn" title="复制AC号" data-ac-number="{{ upload_result.ac_number }}">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                {% else %}
+                                    <span class="badge bg-secondary">未获取AC号</span>
+                                {% endif %}
+                            {% elif task.status == 'failed' %}
+                                {% set error_msg = task.error_message or '未知错误' %}
+                                {% if error_msg|length > 24 %}
+                                    <span class="badge bg-danger" title="{{ error_msg }}">{{ error_msg[:21] }}...</span>
+                                {% else %}
+                                    <span class="badge bg-danger">{{ error_msg }}</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="badge bg-secondary">未上传</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="task-actions mt-3 d-grid gap-2 task-actions-grid-2">
+                            {% if task.status == 'awaiting_manual_review' %}
+                                <a href="{{ url_for('review_task', task_id=task.id) }}" class="btn btn-sm btn-warning"><i class="bi bi-eye me-1"></i> 审核</a>
+                            {% elif task.status == 'pending' or task.status == 'failed' %}
+                                <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                                    <button type="submit" class="btn btn-sm btn-primary w-100"><i class="bi bi-play-fill me-1"></i> 开始</button>
+                                </form>
+                            {% elif task.status == 'ready_for_upload' %}
+                                <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                                    <button type="submit" class="btn btn-sm btn-success w-100"><i class="bi bi-cloud-upload me-1"></i> 上传</button>
+                                </form>
+                            {% endif %}
+                            <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i> 编辑</a>
+                            <button type="button" class="btn btn-sm btn-outline-danger"
+                                data-task-id="{{ task.id }}"
+                                data-task-title="{{ task.video_title_original|default(task.video_title_translated, true)|default('未知视频', true) }}"
+                                onclick="confirmDelete(this.dataset.taskId, this.dataset.taskTitle)">
+                                <i class="bi bi-trash me-1"></i> 删除
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
     </div>
     {% else %}
@@ -694,7 +815,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             if (statusText.includes('下载中') || statusText.includes('上传中') || 
                 statusText.includes('翻译中') || statusText.includes('生成标签中') || 
                 statusText.includes('推荐分区中') || statusText.includes('内容审核中') ||
-                statusText.includes('翻译字幕中') || statusText.includes('转码视频中') || 
+                statusText.includes('翻译字幕中') || statusText.includes('语音转写中') || statusText.includes('转码视频中') || 
                 statusText.includes('处理中') || statusText.includes('等待') || 
                 statusText.includes('队列中')) {
                 hasProcessing = true;
