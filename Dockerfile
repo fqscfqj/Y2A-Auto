@@ -8,15 +8,16 @@ WORKDIR /app
 
 # 安装构建依赖
 ENV DEBIAN_FRONTEND=noninteractive
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-builder \
     rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
     && dpkg --configure -a || true \
+    && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc \
         python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && apt-get clean
 
 # 复制依赖文件
 COPY requirements.txt .
@@ -36,15 +37,17 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # 安装运行时依赖
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+ENV DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
     && dpkg --configure -a || true \
+    && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
-    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a
 
 # 从构建阶段复制Python包
