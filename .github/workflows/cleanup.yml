@@ -1,0 +1,139 @@
+name: Cleanup old artifacts, releases and images
+
+on:
+  workflow_run:
+    workflows: ["Docker Image CI/CD"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  packages: write
+
+env:
+  KEEP: 3
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Prepare variables
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          echo "OWNER=${OWNER}" >> $GITHUB_ENV
+          echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_ENV
+          echo "KEEP=${{ env.KEEP }}" >> $GITHUB_ENV
+
+      - name: Delete old GitHub Actions artifacts (keep ${{ env.KEEP }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Cleaning repository artifacts for ${OWNER}/${REPO_NAME}..."
+          per_page=100
+          page=1
+          all_ids=""
+          while :; do
+            resp=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${OWNER}/${REPO_NAME}/actions/artifacts?per_page=$per_page&page=$page")
+            ids=$(echo "$resp" | jq -r '.artifacts[]?.id')
+            if [ -z "$ids" ]; then break; fi
+            all_ids="$all_ids\n$ids"
+            page=$((page+1))
+          done
+
+          echo -e "$all_ids" | awk 'NF' | while read id; do
+            created_at=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${OWNER}/${REPO_NAME}/actions/artifacts/$id" | jq -r '.created_at')
+            echo "$id $created_at"
+          done | sort -k2 -r | awk 'NR>${KEEP} {print $1}' | while read del; do
+            if [ -n "$del" ]; then
+              echo "Deleting artifact id=$del"
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${OWNER}/${REPO_NAME}/actions/artifacts/$del"
+            fi
+          done || true
+
+      - name: Delete old release assets named Y2A-Auto-win64.zip (keep ${{ env.KEEP }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Cleaning release assets named Y2A-Auto-win64.zip..."
+          per_page=100
+          page=1
+          releases_json=""
+          while :; do
+            resp=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${OWNER}/${REPO_NAME}/releases?per_page=$per_page&page=$page")
+            if [ "$(echo "$resp" | jq 'length')" -eq 0 ]; then break; fi
+            releases_json="$releases_json\n$resp"
+            page=$((page+1))
+          done
+
+          # collect asset ids in release created_at order
+          echo "$releases_json" | jq -s 'add | sort_by(.created_at) | reverse | .[] | .assets[]? | select(.name=="Y2A-Auto-win64.zip") | "\(.id) \(.created_at)"' -r | awk 'NR>${KEEP} {print $1}' | while read aid; do
+            if [ -n "$aid" ]; then
+              echo "Deleting release asset id=$aid"
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${OWNER}/${REPO_NAME}/releases/assets/$aid"
+            fi
+          done || true
+
+      - name: Delete old GHCR package versions for y2a-auto (keep ${{ env.KEEP }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Cleaning GHCR package versions..."
+          per_page=100
+          page=1
+          versions_list=""
+          while :; do
+            resp=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions?per_page=$per_page&page=$page")
+            if [ "$(echo "$resp" | jq 'length')" -eq 0 ]; then break; fi
+            versions_list="$versions_list\n$resp"
+            page=$((page+1))
+          done
+
+          echo "$versions_list" | jq -s 'add | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk 'NR>${KEEP} {print $1}' | while read vid; do
+            if [ -n "$vid" ]; then
+              echo "Deleting GHCR package version id=$vid"
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid"
+            fi
+          done || true
+
+      - name: Delete old Docker Hub tags for y2a-auto (keep ${{ env.KEEP }})
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "DOCKERHUB credentials not available, skipping Docker Hub cleanup. To enable, set secrets.DOCKERHUB_USERNAME and secrets.DOCKERHUB_TOKEN."
+            exit 0
+          fi
+
+          echo "Cleaning Docker Hub tags..."
+          repo=${DOCKERHUB_USERNAME}/y2a-auto
+          page=1
+          page_size=100
+          tags=""
+          while :; do
+            resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags?page_size=$page_size&page=$page")
+            names=$(echo "$resp" | jq -r '.results[]?.name')
+            if [ -z "$names" ]; then break; fi
+            tags="$tags\n$names"
+            page=$((page+1))
+          done
+
+          # get tag last_updated for ordering
+          echo -e "$tags" | awk 'NF' | while read tag; do
+            lu=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags/$tag" | jq -r '.last_updated')
+            echo "$tag $lu"
+          done | sort -k2 -r | awk 'NR>${KEEP} {print $1}' | while read deltag; do
+            if [ -n "$deltag" ]; then
+              echo "Deleting Docker Hub tag $deltag"
+              curl -s -X DELETE -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags/$deltag/"
+            fi
+          done || true
