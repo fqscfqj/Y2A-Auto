@@ -578,6 +578,25 @@ class TaskProcessor:
         )
         self.scheduler.start()
         logger.info(f"任务处理器初始化完成 - 最大并发任务: {max_concurrent_tasks}, 最大并发上传: {max_concurrent_uploads}")
+
+        # 定时扫描 pending 任务（默认每30秒，可通过配置 PENDING_SCAN_INTERVAL_SECONDS 覆盖）
+        try:
+            scan_interval = self.config.get('PENDING_SCAN_INTERVAL_SECONDS', 30)
+            try:
+                scan_interval = int(str(scan_interval).strip())
+            except Exception:
+                scan_interval = 30
+            # 使用固定作业ID，避免重复创建；replace_existing 确保重建时替换
+            self.scheduler.add_job(
+                self._check_and_start_next_pending_task,
+                'interval',
+                seconds=max(5, scan_interval),  # 下限5秒，防误配
+                id='pending_scanner',
+                replace_existing=True
+            )
+            logger.info(f"已启动定时扫描pending任务：每 {max(5, scan_interval)} 秒")
+        except Exception as e:
+            logger.warning(f"注册定时扫描pending任务失败（不影响主流程）：{e}")
     
     def shutdown(self):
         """安全关闭调度器"""
@@ -2558,6 +2577,19 @@ def force_upload_task(task_id, config=None):
     try:
         # 直接执行上传步骤
         processor._upload_to_acfun(task_id, task_logger)
+
+        # 上传流程（强制路径）不会进入 process_task 的 finally，需手动唤醒队列
+        try:
+            import threading, time
+            def delayed_check():
+                # 等待一下，确保任务状态已写回数据库
+                time.sleep(1)
+                processor._check_and_start_next_pending_task()
+            threading.Thread(target=delayed_check, daemon=True).start()
+            logger.info("强制上传结束，已触发检查下一条pending任务")
+        except Exception as _e:
+            logger.warning(f"强制上传后触发队列检查失败（忽略）：{_e}")
+
         return True
     except Exception as e:
         task_logger.error(f"强制上传任务 {task_id} 失败: {str(e)}")
