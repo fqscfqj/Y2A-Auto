@@ -1084,13 +1084,18 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['TRANSLATING_SUBTITLE'])
         
         try:
-            # 查找字幕文件
+            # 查找字幕文件（大小写无关）
             task_dir = os.path.join(DOWNLOADS_DIR, task_id)
             subtitle_files = []
-            
-            # 查找SRT和VTT字幕文件
-            for ext in ['*.srt', '*.vtt']:
-                subtitle_files.extend(glob.glob(os.path.join(task_dir, ext)))
+            try:
+                for name in os.listdir(task_dir):
+                    if not isinstance(name, str):
+                        continue
+                    lower = name.lower()
+                    if lower.endswith('.srt') or lower.endswith('.vtt'):
+                        subtitle_files.append(os.path.join(task_dir, name))
+            except Exception:
+                pass
             
             if not subtitle_files:
                 task_logger.info("未找到字幕文件，尝试语音识别生成字幕（如已启用）")
@@ -2326,10 +2331,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if video_path and os.path.exists(video_path):
                 import glob
                 task_dir = os.path.dirname(video_path)
-                # 检查是否已有字幕
+                # 检查是否已有字幕（大小写无关）
                 subtitle_files = []
-                for ext in ('*.srt', '*.vtt'):
-                    subtitle_files.extend(glob.glob(os.path.join(task_dir, ext)))
+                try:
+                    for name in os.listdir(task_dir):
+                        if not isinstance(name, str):
+                            continue
+                        lower = name.lower()
+                        if lower.endswith('.srt') or lower.endswith('.vtt'):
+                            subtitle_files.append(os.path.join(task_dir, name))
+                except Exception:
+                    pass
 
                 if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
                     if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
