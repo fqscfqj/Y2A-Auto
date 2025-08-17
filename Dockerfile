@@ -7,9 +7,11 @@ FROM python:3.10-slim AS builder
 WORKDIR /app
 
 # 安装构建依赖
+ENV DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
-    rm -f /var/lib/apt/lists/lock || true \
+    rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
+    && dpkg --configure -a || true \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc \
@@ -36,7 +38,8 @@ WORKDIR /app
 # 安装运行时依赖
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
-    rm -f /var/lib/apt/lists/lock || true \
+    rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
+    && dpkg --configure -a || true \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -76,7 +79,8 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
 
 # 确保本地包在PATH中
 ENV PATH=/home/y2a/.local/bin:$PATH
-ENV PYTHONPATH=/home/y2a/.local/lib/python3.10/site-packages:$PYTHONPATH
+# 避免引用未定义变量的告警，直接补充常见站点路径
+ENV PYTHONPATH=/home/y2a/.local/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
 
 # 切换到非root用户
 USER y2a

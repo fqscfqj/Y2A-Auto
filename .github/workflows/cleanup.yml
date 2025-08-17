@@ -88,19 +88,32 @@ jobs:
         run: |
           echo "Cleaning GHCR package versions..."
           per_page=100
-          page=1
           versions_list=""
-          while :; do
-            resp=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions?per_page=$per_page&page=$page")
-            if [ "$(echo "$resp" | jq 'length')" -eq 0 ]; then break; fi
-            versions_list="$versions_list\n$resp"
-            page=$((page+1))
+
+          for scope in users orgs; do
+            page=1
+            while :; do
+              url="https://api.github.com/${scope}/${OWNER}/packages/container/y2a-auto/versions?per_page=$per_page&page=$page"
+              resp=$(curl -s -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "$url")
+              # if not an array or empty, break
+              if [ "$(echo "$resp" | jq 'type' 2>/dev/null || echo null)" = "null" ]; then
+                break
+              fi
+              if [ "$(echo "$resp" | jq 'length')" -eq 0 ]; then break; fi
+              versions_list="$versions_list\n$resp"
+              page=$((page+1))
+            done
           done
 
-          echo "$versions_list" | jq -s 'add | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk 'NR>${KEEP} {print $1}' | while read vid; do
+          # collect unique version ids, order by created_at desc, skip KEEP
+          echo "$versions_list" | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk 'NR>${KEEP} {print $1}' | while read vid; do
             if [ -n "$vid" ]; then
               echo "Deleting GHCR package version id=$vid"
-              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid"
+              del_resp=$(curl -s -o /tmp/ghcr_del_body -w "%{http_code}" -X DELETE -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid")
+              echo "HTTP status: $del_resp"
+              if [ -s /tmp/ghcr_del_body ]; then
+                echo "Response body:" && cat /tmp/ghcr_del_body
+              fi
             fi
           done || true
 
@@ -129,11 +142,23 @@ jobs:
 
           # get tag last_updated for ordering
           echo -e "$tags" | awk 'NF' | while read tag; do
-            lu=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags/$tag" | jq -r '.last_updated')
+            tag_url="https://hub.docker.com/v2/repositories/${repo}/tags/$tag"
+            lu_resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" -w "HTTPSTATUS:%{http_code}" "$tag_url")
+            http=$(echo "$lu_resp" | tr -d '\r' | sed -n 's/.*HTTPSTATUS:\([0-9][0-9][0-9]\)$/\1/p')
+            body=$(echo "$lu_resp" | sed 's/HTTPSTATUS:...$//')
+            if [ "$http" != "200" ]; then
+              echo "Failed to fetch tag $tag info, HTTP=$http, body=$body"
+              continue
+            fi
+            lu=$(echo "$body" | jq -r '.last_updated')
             echo "$tag $lu"
           done | sort -k2 -r | awk 'NR>${KEEP} {print $1}' | while read deltag; do
             if [ -n "$deltag" ]; then
               echo "Deleting Docker Hub tag $deltag"
-              curl -s -X DELETE -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags/$deltag/"
+              del_resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" -w "%{http_code}" -o /tmp/del_body -X DELETE "https://hub.docker.com/v2/repositories/${repo}/tags/$deltag/")
+              echo "HTTP status: $del_resp"
+              if [ -s /tmp/del_body ]; then
+                echo "Response body:" && cat /tmp/del_body
+              fi
             fi
           done || true
