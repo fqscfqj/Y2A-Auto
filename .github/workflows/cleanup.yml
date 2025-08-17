@@ -93,10 +93,11 @@ jobs:
           page=1
           versions_list=""
           base_url="https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions"
+          TOKEN="$GITHUB_TOKEN"
 
           while :; do
             url="${base_url}?per_page=$per_page&page=$page"
-            resp=$(curl -sS -m 20 -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "$url" || true)
+            resp=$(curl -sS -m 12 -H "Accept: application/vnd.github+json" -H "Authorization: token $TOKEN" "$url" || true)
             rtype=$(echo "$resp" | jq -r 'type' 2>/dev/null || echo "unknown")
             if [ "$rtype" != "array" ]; then
               echo "GHCR list API did not return an array (type=$rtype). Message: $(echo "$resp" | jq -r '.message // empty')"
@@ -116,17 +117,25 @@ jobs:
             exit 0
           fi
 
-          echo "$versions_list" | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[] | "\(.id) \(.created_at)"' -r | awk -v KEEP="$KEEP" 'NR>KEEP {print $1}' | while read vid; do
-            if [ -n "$vid" ]; then
-              echo "Deleting GHCR package version id=$vid"
-              del_resp=$(curl -sS -m 20 -o /tmp/ghcr_del_body -w "%{http_code}" -X DELETE -H "Accept: application/vnd.github+json" -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/$vid" || true)
-              echo "HTTP status: $del_resp"
-              if [ -s /tmp/ghcr_del_body ]; then
-                echo "Response body:" && cat /tmp/ghcr_del_body
-              fi
-              sleep 0.5
+          # Build delete list (skip newest KEEP versions)
+          del_ids=$(echo "$versions_list" | jq -r --argjson k "$KEEP" 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[$k:] | .[].id?')
+          if [ -z "$(echo "$del_ids" | awk 'NF')" ]; then
+            echo "Nothing to delete on GHCR (<= KEEP)."
+            exit 0
+          fi
+
+          echo "$del_ids" | wc -l | xargs echo "GHCR versions to delete:"
+          echo "$del_ids" | xargs -I{} -n1 -P6 sh -c '
+            vid="$1"
+            echo "Deleting GHCR version id=${vid}"
+            code=$(curl -sS -m 12 -o "/tmp/ghcr_${vid}.body" -w "%{http_code}" -X DELETE \
+              -H "Accept: application/vnd.github+json" -H "Authorization: token $TOKEN" \
+              "https://api.github.com/users/${OWNER}/packages/container/y2a-auto/versions/${vid}" || true)
+            echo "[${vid}] HTTP ${code}"
+            if [ -s "/tmp/ghcr_${vid}.body" ]; then
+              echo "[${vid}] Body:"; head -c 200 "/tmp/ghcr_${vid}.body"; echo
             fi
-          done || true
+          ' sh {} || true
 
       - name: Delete old Docker Hub tags for y2a-auto (keep ${{ env.KEEP }})
         timeout-minutes: 15
@@ -146,32 +155,28 @@ jobs:
           page_size=100
           tags=""
           while :; do
-            resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags?page_size=$page_size&page=$page")
-            names=$(echo "$resp" | jq -r '.results[]?.name')
-            if [ -z "$names" ]; then break; fi
-            tags="$tags\n$names"
+            resp=$(curl -sS -m 12 -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" "https://hub.docker.com/v2/repositories/${repo}/tags?page_size=$page_size&page=$page")
+            # collect name and last_updated in one go
+            lines=$(echo "$resp" | jq -r '.results[]? | select(.name!=null) | "\(.name) \(.last_updated)"')
+            if [ -z "$lines" ]; then break; fi
+            tags="$tags\n$lines"
             page=$((page+1))
           done
 
-          # get tag last_updated for ordering
-          echo -e "$tags" | awk 'NF' | while read tag; do
-            tag_url="https://hub.docker.com/v2/repositories/${repo}/tags/$tag"
-            lu_resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" -w "HTTPSTATUS:%{http_code}" "$tag_url")
-            http=$(echo "$lu_resp" | tr -d '\r' | sed -n 's/.*HTTPSTATUS:\([0-9][0-9][0-9]\)$/\1/p')
-            body=$(echo "$lu_resp" | sed 's/HTTPSTATUS:...$//')
-            if [ "$http" != "200" ]; then
-              echo "Failed to fetch tag $tag info, HTTP=$http, body=$body"
-              continue
+          # Order by last_updated descending and build delete list (skip newest KEEP)
+          del_tags=$(echo -e "$tags" | awk 'NF' | sort -k2 -r | awk -v KEEP="$KEEP" '{print $1}' | awk -v KEEP="$KEEP" 'NR>KEEP')
+          if [ -z "$(echo "$del_tags" | awk 'NF')" ]; then
+            echo "Nothing to delete on Docker Hub (<= KEEP)."
+            exit 0
+          fi
+
+          echo "$del_tags" | wc -l | xargs echo "Docker Hub tags to delete:" 
+          echo "$del_tags" | xargs -I{} -n1 -P6 sh -c '
+            tag="$1"
+            echo "Deleting Docker Hub tag ${tag}"
+            code=$(curl -sS -m 12 -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" -w "%{http_code}" -o /tmp/dh_${tag}.body -X DELETE "https://hub.docker.com/v2/repositories/${repo}/tags/${tag}/" || true)
+            echo "[${tag}] HTTP ${code}"
+            if [ -s "/tmp/dh_${tag}.body" ]; then
+              echo "[${tag}] Body:"; head -c 200 "/tmp/dh_${tag}.body"; echo
             fi
-            lu=$(echo "$body" | jq -r '.last_updated')
-            echo "$tag $lu"
-          done | sort -k2 -r | awk 'NR>${KEEP} {print $1}' | while read deltag; do
-            if [ -n "$deltag" ]; then
-              echo "Deleting Docker Hub tag $deltag"
-              del_resp=$(curl -s -u "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" -w "%{http_code}" -o /tmp/del_body -X DELETE "https://hub.docker.com/v2/repositories/${repo}/tags/$deltag/")
-              echo "HTTP status: $del_resp"
-              if [ -s /tmp/del_body ]; then
-                echo "Response body:" && cat /tmp/del_body
-              fi
-            fi
-          done || true
+          ' sh {} || true
