@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_subdir
 
@@ -42,6 +43,7 @@ TASK_STATES = {
     'PENDING': 'pending',                 # 等待处理
     'DOWNLOADING': 'downloading',         # 正在下载
     'DOWNLOADED': 'downloaded',           # 下载完成
+    'ASR_TRANSCRIBING': 'asr_transcribing',  # 语音转写中
     'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
     'ENCODING_VIDEO': 'encoding_video',   # 正在转码视频
     'TRANSLATING': 'translating',         # 正在翻译
@@ -284,11 +286,14 @@ def get_task(task_id):
     Returns:
         task: 任务信息字典，如果不存在则返回None
     """
+    logger.debug(f"正在获取任务 {task_id}")
     conn = get_db_connection()
     try:
         cursor = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         task = cursor.fetchone()
-        return dict(task) if task else None
+        result = dict(task) if task else None
+        logger.debug(f"获取任务 {task_id} 结果: {result}")
+        return result
     except Exception as e:
         logger.error(f"获取任务 {task_id} 失败: {str(e)}")
         return None
@@ -422,11 +427,21 @@ def delete_task_files(task_id):
 # 全局上传队列锁
 upload_queue_lock = threading.Lock()
 upload_semaphore = None
+task_semaphore = None
 
 def init_upload_semaphore(max_concurrent_uploads=1):
     """初始化上传信号量"""
     global upload_semaphore
+    logger.info(f"初始化上传信号量，最大并发上传数: {max_concurrent_uploads}")
     upload_semaphore = threading.Semaphore(max_concurrent_uploads)
+    logger.info(f"上传信号量初始化完成: {upload_semaphore}")
+
+def init_task_semaphore(max_concurrent_tasks=3):
+    """初始化任务并发信号量"""
+    global task_semaphore
+    logger.info(f"初始化任务信号量，最大并发任务数: {max_concurrent_tasks}")
+    task_semaphore = threading.Semaphore(max_concurrent_tasks)
+    logger.info(f"任务信号量初始化完成: {task_semaphore}")
 
 def reset_stuck_tasks():
     """重置卡住的任务"""
@@ -442,9 +457,12 @@ def reset_stuck_tasks():
         cursor = conn.execute('''
             SELECT id, status, updated_at 
             FROM tasks 
-            WHERE status IN (?, ?, ?, ?, ?, ?, ?) 
+            WHERE status IN (?, ?, ?, ?, ?, ?, ?, ?) 
             AND datetime(updated_at) < datetime('now', '-30 minutes')
-        ''', ('processing', 'downloading', 'uploading', 'fetching_info', 'translating', 'translating_subtitle', 'encoding_video'))
+        ''', (
+            'processing', 'downloading', 'uploading', 'fetching_info',
+            'translating', 'translating_subtitle', 'encoding_video', 'asr_transcribing'
+        ))
         
         stuck_tasks = cursor.fetchall()
         
@@ -530,13 +548,24 @@ class TaskProcessor:
             config: 配置字典，包含各种API的配置信息
         """
         self.config = config or {}
-        
-        # 获取并发配置
-        max_concurrent_tasks = self.config.get('MAX_CONCURRENT_TASKS', 3)
-        max_concurrent_uploads = self.config.get('MAX_CONCURRENT_UPLOADS', 1)
+
+        # 获取并发配置并做健壮的类型转换
+        def _as_int(value, default):
+            try:
+                if value is None:
+                    return int(default)
+                # 允许字符串数字
+                return int(str(value).strip())
+            except Exception:
+                return int(default)
+
+        max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 3), 3)
+        max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1)
         
         # 初始化上传信号量
         init_upload_semaphore(max_concurrent_uploads)
+        # 初始化任务并发信号量
+        init_task_semaphore(max_concurrent_tasks)
         
         self.scheduler = BackgroundScheduler(
             executors={
@@ -552,8 +581,17 @@ class TaskProcessor:
     
     def shutdown(self):
         """安全关闭调度器"""
-        self.scheduler.shutdown()
-        logger.info("任务处理器已关闭")
+        try:
+            if self.scheduler:
+                # 防止对未运行的调度器调用shutdown引发异常
+                self.scheduler.shutdown(wait=False)
+        except SchedulerNotRunningError:
+            # 已经停止则忽略
+            pass
+        except Exception as e:
+            logger.warning(f"关闭任务处理器时发生异常: {e}")
+        finally:
+            logger.info("任务处理器已关闭")
     
     def schedule_task(self, task_id):
         """
@@ -630,10 +668,43 @@ class TaskProcessor:
         if not task:
             logger.error(f"任务 {task_id} 不存在")
             return
+        # 并发控制：获取任务并发配额
+        global task_semaphore
+        if task_semaphore is None:
+            # 兜底：根据当前配置重新初始化
+            task_logger.warning("task_semaphore 为 None，正在重新初始化...")
+            init_task_semaphore(self.config.get('MAX_CONCURRENT_TASKS', 3))
+            task_logger.info(f"task_semaphore 重新初始化完成，当前值: {task_semaphore}")
+            # 确保初始化成功
+            if task_semaphore is None:
+                task_logger.error("task_semaphore 初始化失败，无法继续执行任务")
+                return
+        else:
+            task_logger.info(f"task_semaphore 已初始化，当前值: {task_semaphore}")
+            
+        task_logger.info("等待获取任务并发配额...")
+        try:
+            # 类型断言，告诉 Pylance task_semaphore 不是 None
+            assert task_semaphore is not None, "task_semaphore 应该已经初始化"
+            task_semaphore.acquire()
+            task_logger.info("获得任务并发配额，开始执行任务")
+        except Exception as _e:
+            task_logger.error(f"获取任务并发配额失败: {_e}")
+            return
         try:
             # 1. 采集视频信息（只获取元数据和封面，不下载视频文件）
+            task_logger.info(f"开始处理任务，当前task对象: {task}")
+            if task is None:
+                task_logger.error("任务对象为None，终止任务处理")
+                return
+                
             self._fetch_video_info(task_id, task['youtube_url'], task_logger)
             task = get_task(task_id)
+            task_logger.info(f"重新获取任务对象: {task}")
+            if task is None:
+                task_logger.error("重新获取任务对象为None，终止任务处理")
+                return
+                
             if task['status'] == TASK_STATES['FAILED']:
                 task_logger.error("采集视频信息失败，终止任务处理")
                 return
@@ -645,28 +716,36 @@ class TaskProcessor:
             if self.config.get('RECOMMEND_PARTITION', True):
                 self._recommend_partition(task_id, task_logger)
                 task = get_task(task_id)
-                if not task.get('selected_partition_id') and task.get('recommended_partition_id'):
-                    update_task(task_id, selected_partition_id=task.get('recommended_partition_id'))
-                    task_logger.info(f"自动使用推荐分区: {task.get('recommended_partition_id')}")
+                # 确保 task 不是 None
+                if task is not None:
+                    if not task.get('selected_partition_id') and task.get('recommended_partition_id'):
+                        update_task(task_id, selected_partition_id=task.get('recommended_partition_id'))
+                        task_logger.info(f"自动使用推荐分区: {task.get('recommended_partition_id')}")
+                else:
+                    task_logger.warning("任务对象为 None，跳过分区推荐")
             # 3. 内容审核（如启用）
             if self.config.get('CONTENT_MODERATION_ENABLED', False):
                 self._moderate_content(task_id, task_logger)
                 task = get_task(task_id)
-                if task['status'] == TASK_STATES['AWAITING_REVIEW']:
+                if task is not None and task['status'] == TASK_STATES['AWAITING_REVIEW']:
                     task_logger.info("内容需要人工审核，暂停任务处理")
                     return
             # 4. 审核通过后才下载视频文件
-            self._download_video_file(task_id, task['youtube_url'], task_logger)
-            task = get_task(task_id)
-            if task['status'] == TASK_STATES['FAILED']:
-                task_logger.error("下载视频文件失败，终止任务处理")
+            if task is not None:
+                self._download_video_file(task_id, task['youtube_url'], task_logger)
+                task = get_task(task_id)
+                if task is not None and task['status'] == TASK_STATES['FAILED']:
+                    task_logger.error("下载视频文件失败，终止任务处理")
+                    return
+            else:
+                task_logger.error("任务对象为 None，无法下载视频文件")
                 return
             
             # 5. 字幕翻译（如启用）
             if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
                 self._translate_subtitle(task_id, task_logger)
                 task = get_task(task_id)
-                if task['status'] == TASK_STATES['FAILED']:
+                if task is not None and task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("字幕翻译失败，继续执行后续步骤")
             
             # 6. 上传
@@ -675,21 +754,34 @@ class TaskProcessor:
             
             # 任务处理完成后，根据是否已上传到AcFun决定状态
             task = get_task(task_id)
-            if task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
-                # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
-                if not self.config.get('AUTO_MODE_ENABLED', False) or not task.get('acfun_upload_response'):
-                    update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
-                    task_logger.info("任务处理完成，标记为准备上传")
-                else:
-                    # 只有成功上传到AcFun的视频才会被标记为"已完成"
-                    update_task(task_id, status=TASK_STATES['COMPLETED'])
-                    task_logger.info("任务处理并上传完成")
+            if task is not None:
+                if task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
+                    # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
+                    if not self.config.get('AUTO_MODE_ENABLED', False) or not task.get('acfun_upload_response'):
+                        update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
+                        task_logger.info("任务处理完成，标记为准备上传")
+                    else:
+                        # 只有成功上传到AcFun的视频才会被标记为"已完成"
+                        update_task(task_id, status=TASK_STATES['COMPLETED'])
+                        task_logger.info("任务处理并上传完成")
+            else:
+                task_logger.warning("任务对象为 None，无法确定最终状态")
+                update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
+                task_logger.info("任务处理完成，标记为准备上传")
         except Exception as e:
             task_logger.error(f"任务处理过程中发生错误: {str(e)}")
             import traceback
             task_logger.error(traceback.format_exc())
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=str(e))
         finally:
+            # 释放并发配额
+            try:
+                # 类型断言，告诉 Pylance task_semaphore 不是 None
+                assert task_semaphore is not None, "task_semaphore 应该已经初始化"
+                task_semaphore.release()
+                task_logger.info("已释放任务并发配额")
+            except Exception:
+                pass
             # 任务完成后，检查是否有其他pending任务需要启动
             task_logger.info("任务处理完成，检查是否有其他pending任务...")
             # 延迟1秒后检查，确保数据库状态更新完成
@@ -722,6 +814,7 @@ class TaskProcessor:
                 TASK_STATES['MODERATING'],
                 TASK_STATES['DOWNLOADING'], 
                 TASK_STATES['DOWNLOADED'],
+                TASK_STATES['ASR_TRANSCRIBING'],
                 TASK_STATES['TRANSLATING_SUBTITLE'],
                 TASK_STATES['ENCODING_VIDEO'],
                 TASK_STATES['UPLOADING']
@@ -732,7 +825,12 @@ class TaskProcessor:
                 running_tasks.extend(get_tasks_by_status(state))
             
             # 如果有任务正在运行且并发限制为1，则不启动新任务
+            # 兼容字符串配置，安全转换为整数
             max_concurrent = self.config.get('MAX_CONCURRENT_TASKS', 3)
+            try:
+                max_concurrent = int(str(max_concurrent).strip())
+            except Exception:
+                max_concurrent = 3
             if len(running_tasks) >= max_concurrent:
                 logger.info(f"当前有 {len(running_tasks)} 个任务正在运行，达到并发限制 {max_concurrent}，暂不启动新任务")
                 return
@@ -863,8 +961,8 @@ class TaskProcessor:
             if eta:
                 detailed_msg += f" ETA {eta}"
             
-            task_logger.info(f"下载进度: {detailed_msg}")
-            
+            # 不再把每次下载进度记录为 INFO 到文件，以减少日志噪声；保留网页进度显示
+            task_logger.debug(f"下载进度: {detailed_msg}")
             # 更新任务的上传进度字段用于显示（只显示百分比）
             update_task(task_id, upload_progress=progress_msg, silent=True)
         
@@ -889,11 +987,14 @@ class TaskProcessor:
             
             # 如果结果中包含元数据和封面信息，保存这些信息
             # 这是因为我们修改了download_video_data函数，使其在only_video=True时也能返回之前保存的元数据和封面
-            if result.get('metadata_path') and not task.get('metadata_json_path_local'):
-                update_data['metadata_json_path_local'] = result.get('metadata_path')
-                
-            if result.get('cover_path') and not task.get('cover_path_local'):
-                update_data['cover_path_local'] = result.get('cover_path')
+            if task is not None:
+                if result.get('metadata_path') and not task.get('metadata_json_path_local'):
+                    update_data['metadata_json_path_local'] = result.get('metadata_path')
+                    
+                if result.get('cover_path') and not task.get('cover_path_local'):
+                    update_data['cover_path_local'] = result.get('cover_path')
+            else:
+                task_logger.warning("任务对象为 None，无法更新元数据和封面信息")
                 
             update_task(task_id, **update_data)
         else:
@@ -973,8 +1074,40 @@ class TaskProcessor:
                 subtitle_files.extend(glob.glob(os.path.join(task_dir, ext)))
             
             if not subtitle_files:
-                task_logger.info("未找到字幕文件，跳过字幕翻译")
-                return True
+                task_logger.info("未找到字幕文件，尝试语音识别生成字幕（如已启用）")
+                # 若启用了语音识别，使用Whisper兼容API从视频生成字幕
+                if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                    try:
+                        from modules.speech_recognition import create_speech_recognizer_from_config
+                        recognizer = create_speech_recognizer_from_config(self.config, task_id)
+                    except Exception as e:
+                        task_logger.error(f"创建语音识别器失败: {e}")
+                        recognizer = None
+                    if recognizer and task is not None:
+                        video_path = task.get('video_path_local')
+                        if video_path and os.path.exists(video_path):
+                            # 显示ASR状态
+                            _t = get_task(task_id)
+                            prev_status = _t['status'] if _t else TASK_STATES['TRANSLATING_SUBTITLE']
+                            update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
+                            # 输出字幕路径（与配置格式一致）
+                            asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
+                            asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                            out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
+                            # 恢复到字幕翻译状态
+                            update_task(task_id, status=prev_status)
+                        if out_path and os.path.exists(out_path):
+                            subtitle_files = [out_path]
+                            task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
+                        else:
+                            task_logger.warning("语音识别未能生成字幕，跳过字幕流程")
+                            return True
+                    else:
+                        task_logger.warning("语音识别未启用或视频文件缺失，跳过字幕流程")
+                        return True
+                else:
+                    task_logger.info("未启用语音识别，跳过字幕流程")
+                    return True
             
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
             detected_list = []
@@ -1049,7 +1182,8 @@ class TaskProcessor:
             
             # 定义进度回调函数
             def progress_callback(progress, current, total):
-                task_logger.info(f"字幕翻译进度: {progress:.1f}% ({current}/{total})")
+                # 不再将每次字幕翻译进度记录为 INFO 到文件，减少日志噪声
+                task_logger.debug(f"字幕翻译进度: {progress:.1f}% ({current}/{total})")
                 # 更新任务进度显示到网页
                 update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
             
@@ -1592,8 +1726,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 
                 def read_output():
                     try:
-                        for line in process.stdout:
-                            output_queue.put(('stdout', line.strip()))
+                        # 检查 process.stdout 是否为 None
+                        if process.stdout is not None:
+                            for line in process.stdout:
+                                output_queue.put(('stdout', line.strip()))
+                        else:
+                            task_logger.warning("process.stdout 为 None，无法读取输出")
                     except:
                         pass
                     finally:
@@ -1601,8 +1739,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 
                 def read_error():
                     try:
-                        for line in process.stderr:
-                            error_queue.put(('stderr', line.strip()))
+                        # 检查 process.stderr 是否为 None
+                        if process.stderr is not None:
+                            for line in process.stderr:
+                                error_queue.put(('stderr', line.strip()))
+                        else:
+                            task_logger.warning("process.stderr 为 None，无法读取错误输出")
                     except:
                         pass
                     finally:
@@ -1805,7 +1947,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     def _get_video_stream_info(self, video_path, task_logger):
         """获取视频流分辨率与帧率等信息"""
-        info = {"width": None, "height": None, "fps": None}
+        # 使用类型注解明确字典值的类型
+        info: dict[str, float | int | None] = {"width": None, "height": None, "fps": None}
         try:
             import subprocess, json
             cmd = [
@@ -1825,17 +1968,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 streams = data.get('streams', [])
                 if streams:
                     s = streams[0]
-                    info['width'] = s.get('width')
-                    info['height'] = s.get('height')
-                    r = s.get('avg_frame_rate') or s.get('r_frame_rate')
-                    if r and r != '0/0':
-                        try:
-                            num, den = r.split('/')
-                            fps = float(num) / float(den) if float(den) != 0 else 0
-                            if fps > 1:
-                                info['fps'] = fps
-                        except Exception:
-                            pass
+                    # 确保 info 字典不是 None
+                    if info is not None:
+                        info['width'] = s.get('width')
+                        info['height'] = s.get('height')
+                        r = s.get('avg_frame_rate') or s.get('r_frame_rate')
+                        if r and r != '0/0':
+                            try:
+                                num, den = r.split('/')
+                                fps = float(num) / float(den) if float(den) != 0 else 0
+                                if fps > 1:
+                                    # 使用类型断言解决类型问题
+                                    info['fps'] = fps  # type: ignore
+                            except Exception:
+                                pass
             task_logger.info(f"视频流信息: {info}")
         except subprocess.TimeoutExpired:
             task_logger.warning("获取视频流信息超时")
@@ -2097,14 +2243,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 使用信号量控制并发上传
         global upload_semaphore
         if upload_semaphore is None:
-            task_logger.warning("上传信号量未初始化，使用默认值")
+            task_logger.warning("upload_semaphore 为 None，正在初始化...")
             init_upload_semaphore(1)
+            task_logger.info(f"upload_semaphore 初始化完成，当前值: {upload_semaphore}")
+            # 确保初始化成功
+            if upload_semaphore is None:
+                task_logger.error("upload_semaphore 初始化失败，无法继续执行任务")
+                return
+        else:
+            task_logger.info(f"upload_semaphore 已初始化，当前值: {upload_semaphore}")
         
         task_logger.info("等待获取上传锁...")
-        with upload_semaphore:
-            task_logger.info("获得上传锁，开始上传到AcFun")
-            self._do_upload_to_acfun(task_id, task_logger)
-            task_logger.info("释放上传锁")
+        try:
+            # 类型断言，告诉 Pylance upload_semaphore 不是 None
+            assert upload_semaphore is not None, "upload_semaphore 应该已经初始化"
+            with upload_semaphore:
+                task_logger.info("获得上传锁，开始上传到AcFun")
+                self._do_upload_to_acfun(task_id, task_logger)
+                task_logger.info("释放上传锁")
+        except Exception as e:
+            task_logger.error(f"获取或使用上传锁时出错: {e}")
+            return
     
     def _do_upload_to_acfun(self, task_id, task_logger):
         """实际执行上传到AcFun的逻辑"""
@@ -2118,16 +2277,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         update_task(task_id, status=TASK_STATES['UPLOADING'])
         
         # 获取任务信息
-        video_path = task.get('video_path_local', '')
-        cover_path = task.get('cover_path_local', '')
-        title = task.get('video_title_translated', '') or task.get('video_title_original', '')
-        description = task.get('description_translated', '') or task.get('description_original', '')
-        partition_id = task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')
+        video_path = task.get('video_path_local', '') if task else ''
+        cover_path = task.get('cover_path_local', '') if task else ''
+        title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
+        description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
+        partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
         
         # 如果没有视频文件，先下载视频
         if not video_path or not os.path.exists(video_path):
             task_logger.info("检测到视频文件缺失，开始下载视频文件...")
-            youtube_url = task.get('youtube_url', '')
+            youtube_url = task.get('youtube_url', '') if task else ''
             if not youtube_url:
                 task_logger.error("无法获取YouTube URL，无法下载视频")
                 update_task(task_id, error_message="无法获取YouTube URL，无法下载视频")
@@ -2138,21 +2297,83 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             # 重新获取任务信息
             task = get_task(task_id)
-            video_path = task.get('video_path_local', '')
+            video_path = task.get('video_path_local', '') if task else ''
         
-        # 重新设置状态为上传中（字幕翻译已在主流程中完成）
+        # 在上传前确保字幕处理：
+        # - 若开启字幕翻译：调用统一字幕流程（内部会在无字幕时先进行ASR，再翻译/嵌入）
+        # - 若未开启字幕翻译但开启ASR：在无字幕时仅进行ASR生成基础字幕
+        try:
+            # 只有在有视频文件的前提下才尝试字幕处理
+            if video_path and os.path.exists(video_path):
+                import glob
+                task_dir = os.path.dirname(video_path)
+                # 检查是否已有字幕
+                subtitle_files = []
+                for ext in ('*.srt', '*.vtt'):
+                    subtitle_files.extend(glob.glob(os.path.join(task_dir, ext)))
+
+                if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                    if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
+                        task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
+                        # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
+                        self._translate_subtitle(task_id, task_logger)
+                        # 重新获取最新任务信息和视频路径（可能已嵌入生成了新视频）
+                        task = get_task(task_id)
+                        video_path = task.get('video_path_local', '') if task else video_path
+                    else:
+                        # 仅ASR：在没有任何字幕文件时生成一个基础字幕文件
+                        if not subtitle_files:
+                            task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
+                            try:
+                                from modules.speech_recognition import create_speech_recognizer_from_config
+                                recognizer = create_speech_recognizer_from_config(self.config, task_id)
+                            except Exception as e:
+                                recognizer = None
+                                task_logger.error(f"创建语音识别器失败: {e}")
+                            if recognizer:
+                                # 显示ASR状态
+                                _t2 = get_task(task_id)
+                                prev_status2 = _t2['status'] if _t2 else TASK_STATES['UPLOADING']
+                                update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
+                                asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
+                                asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                                out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
+                                # 恢复上传状态
+                                update_task(task_id, status=prev_status2)
+                                if out_path and os.path.exists(out_path):
+                                    # 简单记录到任务（不做嵌入，以保持最小变更）
+                                    detected_lang = self._detect_subtitle_language(out_path)
+                                    update_task(
+                                        task_id,
+                                        subtitle_path_original=out_path,
+                                        subtitle_path_translated=None,
+                                        subtitle_language_detected=detected_lang
+                                    )
+                                    task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
+                                else:
+                                    task_logger.warning("ASR 未能生成字幕，继续上传流程")
+                        else:
+                            task_logger.info("已存在字幕文件，跳过ASR 生成")
+                else:
+                    task_logger.info("未启用语音识别，跳过上传前的字幕处理")
+            else:
+                task_logger.warning("视频文件不存在，无法进行上传前的字幕处理")
+        except Exception as e:
+            task_logger.error(f"上传前字幕处理出现异常: {e}")
+
+        # 重新设置状态为上传中（字幕翻译可能已在上述步骤执行）
         update_task(task_id, status=TASK_STATES['UPLOADING'])
         
         # 解析标签
         tags = []
         try:
-            tags_json = task.get('tags_generated', '[]')
+            tags_json = task.get('tags_generated', '[]') if task else '[]'
             tags = json.loads(tags_json)
         except Exception as e:
             task_logger.error(f"解析标签失败: {str(e)}")
         
         # 获取元数据
-        metadata_path = task.get('metadata_json_path_local', '')
+        metadata_path = task.get('metadata_json_path_local', '') if task else ''
         original_url = ''
         original_uploader = ''
         original_upload_date = ''
@@ -2366,7 +2587,10 @@ def get_global_task_processor(config=None):
     elif config and config != _global_task_processor.config:
         # 如果配置发生变化，重新创建处理器
         logger.info("配置已更新，重新创建全局任务处理器实例")
-        _global_task_processor.shutdown()
+        try:
+            _global_task_processor.shutdown()
+        except Exception as e:
+            logger.warning(f"忽略关闭全局任务处理器时的异常: {e}")
         _global_task_processor = TaskProcessor(config)
     
     return _global_task_processor

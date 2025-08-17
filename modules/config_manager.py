@@ -66,6 +66,19 @@ DEFAULT_CONFIG = {
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
     # 视频转码相关
     "VIDEO_ENCODER": "cpu"  # 选择视频编码器：cpu / nvenc / qsv / amf
+    ,
+    # 语音识别（无字幕转写）
+    "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
+    "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
+    "SPEECH_RECOGNITION_OUTPUT_FORMAT": "srt",  # srt 或 vtt
+    # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
+    "WHISPER_API_KEY": "",
+    "WHISPER_BASE_URL": "",
+    "WHISPER_MODEL_NAME": "whisper-1",
+    # Whisper 语言检测专用（可选，留空将复用上面的 Whisper 配置）
+    "WHISPER_DETECT_API_KEY": "",
+    "WHISPER_DETECT_BASE_URL": "",
+    "WHISPER_DETECT_MODEL_NAME": ""
 }
 
 CONFIG_FILE = "config.json"

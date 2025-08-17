@@ -8,6 +8,9 @@ body {
 .navbar {
     background-color: #0d6efd;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1030;
 }
 
 .navbar-brand {
@@ -29,8 +32,8 @@ body {
 .home-hero {
     background-color: #f1f8ff;
     border-radius: 0.5rem;
-    padding: 2rem;
-    margin-bottom: 2rem;
+    padding: 1rem 1rem;
+    margin-bottom: 1rem;
 }
 
 .feature-icon {
@@ -159,3 +162,36 @@ body {
 .youtube-monitor-table th.col-name {
     width: 20%;
 }
+
+/* 移动端优化 */
+@media (max-width: 575.98px) {
+    .card-body { padding: 0.75rem; }
+    .card-header, .card-footer { padding: 0.5rem 0.75rem; }
+    .feature-icon { font-size: 1.5rem; }
+    .task-action-btn { min-width: auto; max-width: none; padding: .25rem .5rem; }
+    .navbar .container { padding-left: .5rem; padding-right: .5rem; }
+    /* 任务页顶部按钮换行与间距 */
+    .tasks-container .btn { margin-right: 0 !important; }
+    .tasks-container h2 { font-size: 1.25rem; }
+    /* 移动端卡片标题与徽章不重叠，文本更紧凑 */
+    .task-card .task-title { font-size: 1rem; line-height: 1.35; }
+    .task-card .badge { font-size: .75rem; }
+}
+
+/* 任务卡片操作区域两列网格（移动端） */
+.task-actions-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* 移动端任务卡片细节 */
+.task-cards .task-card {
+    border: 1px solid rgba(0,0,0,.05);
+}
+.task-cards .task-card .vr { width: 1px; background: #e9ecef; }
+
+/* 防止移动端卡片内容把容器撑破 */
+.task-card { overflow: hidden; }
+.task-card .card-body { overflow: hidden; }
+.task-card .flex-grow-1 { min-width: 0; }
+.task-card .task-title { overflow-wrap: anywhere; word-break: break-word; }
+.task-card .small.text-muted { overflow-wrap: anywhere; word-break: break-word; }

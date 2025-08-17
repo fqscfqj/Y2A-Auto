@@ -1,0 +1,546 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import tempfile
+import subprocess
+import logging
+from dataclasses import dataclass
+from typing import Optional, Tuple
+import re
+
+
+def _setup_task_logger(task_id: str) -> logging.Logger:
+    """Create a task-scoped logger that writes into logs/task_{task_id}.log."""
+    from .utils import get_app_subdir
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = get_app_subdir('logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    logger = logging.getLogger(f'speech_recognition_{task_id}')
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, f'task_{task_id}.log'),
+            maxBytes=10485760,
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        logger.propagate = False
+    return logger
+
+
+def _get_openai_client(openai_config: dict):
+    """Create an OpenAI client using the same approach as subtitle_translator.py."""
+    import openai
+    api_key = openai_config.get('OPENAI_API_KEY', '')
+    options = {}
+    if openai_config.get('OPENAI_BASE_URL'):
+        options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+    return openai.OpenAI(api_key=api_key, **options)
+
+
+@dataclass
+class SpeechRecognitionConfig:
+    provider: str = 'whisper'
+    api_key: str = ''
+    base_url: str = ''
+    model_name: str = 'whisper-1'
+    output_format: str = 'srt'  # srt | vtt
+    # Separate whisper API for language detection (optional)
+    detect_api_key: str = ''
+    detect_base_url: str = ''
+    detect_model_name: str = ''
+
+
+class SpeechRecognizer:
+    """Abstracted speech recognizer with a Whisper(OpenAI compatible) implementation."""
+
+    def __init__(self, config: SpeechRecognitionConfig, task_id: Optional[str] = None):
+        self.config = config
+        self.task_id = task_id or 'unknown'
+        self.logger = _setup_task_logger(self.task_id)
+        self.client = None  # for transcription
+        self.detect_client = None  # for language detection
+        self._init_client()
+
+    # --- ISO 639-1 language normalization helpers ---
+    # Complete ISO 639-1 2-letter code set (including legacy aliases mapped later)
+    ISO_639_1_CODES = {
+        'aa','ab','ae','af','ak','am','an','ar','as','av','ay','az',
+        'ba','be','bg','bh','bi','bm','bn','bo','br','bs',
+        'ca','ce','ch','co','cr','cs','cu','cv','cy',
+        'da','de','dv','dz',
+        'ee','el','en','eo','es','et','eu',
+        'fa','ff','fi','fj','fo','fr','fy',
+        'ga','gd','gl','gn','gu','gv',
+        'ha','he','hi','ho','hr','ht','hu','hy','hz',
+        'ia','id','ie','ig','ii','ik','io','is','it','iu',
+        'ja','jv',
+        'ka','kg','ki','kj','kk','kl','km','kn','ko','kr','ks','ku','kv','kw','ky',
+        'la','lb','lg','li','ln','lo','lt','lu','lv',
+        'mg','mh','mi','mk','ml','mn','mr','ms','mt','my',
+        'na','nb','nd','ne','ng','nl','nn','no','nr','nv','ny',
+        'oc','oj','om','or','os',
+        'pa','pi','pl','ps','pt',
+        'qu',
+        'rm','rn','ro','ru','rw',
+        'sa','sc','sd','se','sg','si','sk','sl','sm','sn','so','sq','sr','ss','st','su','sv','sw',
+        'ta','te','tg','th','ti','tk','tl','tn','to','tr','ts','tt','tw','ty',
+        'ug','uk','ur','uz',
+        've','vi','vo',
+        'wa','wo',
+        'xh',
+        'yi','yo',
+        'za','zh','zu'
+    }
+
+    # Common language-name and alias mapping to ISO 639-1 codes (English and a few Chinese names)
+    LANG_NAME_TO_ISO639_1 = {
+        # Top/common languages
+        'english': 'en', 'en-us': 'en', 'en-gb': 'en',
+        'chinese': 'zh', 'chinese (simplified)': 'zh', 'chinese (traditional)': 'zh',
+        'mandarin': 'zh', 'cantonese': 'zh', 'zh-cn': 'zh', 'zh-hans': 'zh', 'zh-tw': 'zh', 'zh-hant': 'zh',
+        'japanese': 'ja', 'jpn': 'ja',
+        'korean': 'ko', 'kor': 'ko',
+        'spanish': 'es', 'castilian': 'es',
+        'french': 'fr', 'francais': 'fr', 'français': 'fr',
+        'german': 'de',
+        'russian': 'ru',
+        'portuguese': 'pt', 'brazilian portuguese': 'pt', 'português': 'pt',
+        'italian': 'it',
+        'arabic': 'ar',
+        'hindi': 'hi',
+        'bengali': 'bn', 'bangla': 'bn',
+        'urdu': 'ur',
+        'turkish': 'tr',
+        'vietnamese': 'vi',
+        'thai': 'th',
+        'indonesian': 'id', 'bahasa indonesia': 'id',
+        'malay': 'ms', 'bahasa melayu': 'ms',
+        'dutch': 'nl',
+        'polish': 'pl',
+        'ukrainian': 'uk',
+        'romanian': 'ro',
+        'greek': 'el', 'modern greek': 'el',
+        'czech': 'cs',
+        'slovak': 'sk',
+        'slovenian': 'sl', 'slovene': 'sl',
+        'croatian': 'hr',
+        'serbian': 'sr',
+        'bosnian': 'bs',
+        'bulgarian': 'bg',
+        'hungarian': 'hu',
+        'finnish': 'fi',
+        'swedish': 'sv',
+        'norwegian': 'no', 'bokmal': 'nb', 'bokmål': 'nb', 'nynorsk': 'nn',
+        'danish': 'da',
+        'icelandic': 'is',
+        'estonian': 'et',
+        'latvian': 'lv',
+        'lithuanian': 'lt',
+        'hebrew': 'he', 'iw': 'he',
+        'yiddish': 'yi', 'ji': 'yi',
+        'persian': 'fa', 'farsi': 'fa',
+        'pashto': 'ps',
+        'kurdish': 'ku',
+        'amharic': 'am',
+        'swahili': 'sw',
+        'afrikaans': 'af',
+        'albanian': 'sq',
+        'armenian': 'hy',
+        'azerbaijani': 'az',
+        'basque': 'eu',
+        'belarusian': 'be',
+        'catalan': 'ca',
+        'filipino': 'tl', 'tagalog': 'tl',
+        'georgian': 'ka',
+        'irish': 'ga',
+        'kazakh': 'kk',
+        'kyrgyz': 'ky',
+        'lao': 'lo',
+        'macedonian': 'mk',
+        'mongolian': 'mn',
+        'nepali': 'ne',
+        'sinhala': 'si', 'sinhalese': 'si',
+        'somali': 'so',
+        'tamil': 'ta',
+        'telugu': 'te',
+        'tatar': 'tt',
+        'tigrinya': 'ti',
+        'turkmen': 'tk',
+        'uzbek': 'uz',
+        'welsh': 'cy',
+        'yoruba': 'yo',
+        'zulu': 'zu',
+        'xhosa': 'xh',
+        # Chinese names (简体/繁体)
+        '中文': 'zh', '中文（简体）': 'zh', '简体中文': 'zh', '中文（繁體）': 'zh', '繁体中文': 'zh', '普通话': 'zh', '粤语': 'zh',
+        # Legacy 2-letter aliases used historically
+        'in': 'id', 'jw': 'jv'
+    }
+
+    # Some common ISO 639-3 or legacy codes to ISO 639-1
+    ISO_639_3_TO_1 = {
+        'zho': 'zh', 'chi': 'zh', 'eng': 'en', 'jpn': 'ja', 'kor': 'ko', 'fra': 'fr', 'fre': 'fr',
+        'deu': 'de', 'ger': 'de', 'spa': 'es', 'ita': 'it', 'rus': 'ru', 'por': 'pt', 'hin': 'hi',
+        'ben': 'bn', 'urd': 'ur', 'tur': 'tr', 'vie': 'vi', 'tha': 'th', 'ind': 'id', 'msa': 'ms', 'may': 'ms',
+        'nld': 'nl', 'dut': 'nl', 'pol': 'pl', 'ukr': 'uk', 'ron': 'ro', 'rum': 'ro', 'ell': 'el', 'gre': 'el',
+        'ces': 'cs', 'cze': 'cs', 'slk': 'sk', 'slo': 'sk', 'slv': 'sl', 'hrv': 'hr', 'srp': 'sr', 'bos': 'bs',
+        'bul': 'bg', 'hun': 'hu', 'fin': 'fi', 'swe': 'sv', 'nor': 'no', 'dan': 'da', 'isl': 'is', 'est': 'et',
+        'lav': 'lv', 'lit': 'lt', 'heb': 'he', 'yid': 'yi', 'fas': 'fa', 'pus': 'ps', 'kur': 'ku', 'amh': 'am',
+        'swa': 'sw', 'afr': 'af', 'sqi': 'sq', 'hye': 'hy', 'aze': 'az', 'eus': 'eu', 'bel': 'be', 'cat': 'ca',
+        'tgl': 'tl', 'gle': 'ga', 'kat': 'ka', 'kaz': 'kk', 'kir': 'ky', 'lao': 'lo', 'mkd': 'mk', 'mon': 'mn',
+        'nep': 'ne', 'sin': 'si', 'som': 'so', 'tam': 'ta', 'tel': 'te', 'tat': 'tt', 'tir': 'ti', 'tuk': 'tk',
+        'uzb': 'uz', 'cym': 'cy', 'yor': 'yo', 'zul': 'zu', 'xho': 'xh', 'cmn': 'zh', 'yue': 'zh'
+    }
+
+    @classmethod
+    def _normalize_language_to_iso639_1(cls, lang: Optional[str]) -> Optional[str]:
+        """Normalize various language inputs to ISO 639-1 2-letter code.
+
+        Accepts codes (en, zh, zh-CN, en-US), names (English, 中文), and some 3-letter/legacy codes.
+        Returns lowercased 2-letter code if resolvable; otherwise None.
+        """
+        if not lang:
+            return None
+        # Basic cleanup
+        s = str(lang).strip().lower()
+        if not s:
+            return None
+        # If pure 2-letter code and valid
+        if len(s) == 2 and s in cls.ISO_639_1_CODES:
+            return s
+        # Legacy aliases that are already 2 letters
+        if s in ('iw', 'ji', 'in', 'jw'):
+            return {'iw': 'he', 'ji': 'yi', 'in': 'id', 'jw': 'jv'}[s]
+
+        # Normalize BCP-47 like tags (e.g., zh-CN, en_US)
+        s_tag = re.sub(r'[ _]', '-', s)
+        if '-' in s_tag:
+            primary = s_tag.split('-', 1)[0]
+            if len(primary) == 2 and primary in cls.ISO_639_1_CODES:
+                return primary
+            # Handle zh-Hans/zh-Hant etc.
+            if primary in ('zh', 'cmn', 'yue'):
+                return 'zh'
+
+        # Map common names/aliases
+        if s in cls.LANG_NAME_TO_ISO639_1:
+            return cls.LANG_NAME_TO_ISO639_1[s]
+
+        # 3-letter to 2-letter
+        if len(s) == 3 and s in cls.ISO_639_3_TO_1:
+            return cls.ISO_639_3_TO_1[s]
+
+        # Last attempt: if someone passed something like "english (us)"
+        s_base = re.split(r'[()\-_/ ]+', s)[0]
+        if s_base in cls.LANG_NAME_TO_ISO639_1:
+            return cls.LANG_NAME_TO_ISO639_1[s_base]
+
+        return None
+
+    def _init_client(self):
+        try:
+            if self.config.provider != 'whisper':
+                self.logger.error(f"暂不支持的语音识别提供商: {self.config.provider}")
+                return
+            if not self.config.api_key:
+                self.logger.error("缺少Whisper/OpenAI API密钥")
+                return
+            openai_config = {
+                'OPENAI_API_KEY': self.config.api_key,
+                'OPENAI_BASE_URL': self.config.base_url,
+            }
+            self.client = _get_openai_client(openai_config)
+            # setup detect client (fallback to main if not provided)
+            detect_api_key = self.config.detect_api_key or self.config.api_key
+            detect_base_url = self.config.detect_base_url or self.config.base_url
+            detect_openai_config = {
+                'OPENAI_API_KEY': detect_api_key,
+                'OPENAI_BASE_URL': detect_base_url,
+            }
+            self.detect_client = _get_openai_client(detect_openai_config)
+            self.logger.info("语音识别客户端初始化成功(含语言检测)")
+        except Exception as e:
+            self.logger.error(f"初始化语音识别客户端失败: {e}")
+
+    def _extract_audio_wav(self, video_path: str) -> Optional[str]:
+        """Extract 16kHz mono WAV from video using ffmpeg. Returns temp file path."""
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_')
+            audio_path = os.path.join(tmp_dir, 'audio.wav')
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-vn',
+                '-ac', '1',
+                '-ar', '16000',
+                '-f', 'wav',
+                audio_path
+            ]
+            self.logger.info(f"提取音频: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=600
+            )
+            if result.returncode != 0 or not os.path.exists(audio_path):
+                self.logger.error(f"提取音频失败: {result.stderr}\n{result.stdout}")
+                return None
+            return audio_path
+        except Exception as e:
+            self.logger.error(f"提取音频异常: {e}")
+            return None
+
+    def _extract_audio_wav_clip(self, video_path: str, seconds: int = 60) -> Optional[str]:
+        """Extract only the first N seconds of audio as 16kHz mono WAV for fast language detection."""
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_clip_')
+            audio_path = os.path.join(tmp_dir, f'audio_first_{seconds}s.wav')
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-t', str(seconds),
+                '-vn',
+                '-ac', '1',
+                '-ar', '16000',
+                '-f', 'wav',
+                audio_path
+            ]
+            self.logger.info(f"提取音频片段用于语言检测: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=180
+            )
+            if result.returncode != 0 or not os.path.exists(audio_path):
+                self.logger.warning(f"提取音频片段失败，将跳过语言检测: {result.stderr}\n{result.stdout}")
+                return None
+            return audio_path
+        except Exception as e:
+            self.logger.warning(f"提取语言检测音频片段异常，将跳过语言检测: {e}")
+            return None
+
+    def transcribe_video_to_subtitles(self, video_path: str, output_path: str) -> Optional[str]:
+        """
+        Transcribe a video file into SRT/VTT subtitles using Whisper-compatible API.
+
+        Returns the output_path on success, otherwise None.
+        """
+        try:
+            if not self.client:
+                self.logger.error("语音识别客户端未初始化")
+                return None
+            if not os.path.exists(video_path):
+                self.logger.error(f"视频文件不存在: {video_path}")
+                return None
+
+            # 先用前60秒做语言检测（若失败则忽略，进入自动语言识别）
+            detected_language = None
+            try:
+                clip_wav = self._extract_audio_wav_clip(video_path, seconds=60)
+                if clip_wav:
+                    detected_language, confidence = self._detect_language(clip_wav)
+                    if detected_language:
+                        self.logger.info(f"语言检测结果: {detected_language} (confidence={confidence})")
+            except Exception as e:
+                self.logger.warning(f"语言检测失败，继续自动识别: {e}")
+
+            # 再提取整段音频进行完整转写
+            audio_wav = self._extract_audio_wav(video_path)
+            if not audio_wav:
+                return None
+
+            model_name = self.config.model_name or 'whisper-1'
+            response_format = (self.config.output_format or 'srt').lower()
+            if response_format not in ('srt', 'vtt'):
+                response_format = 'srt'
+
+            self.logger.info(f"开始语音转写，模型: {model_name}，输出格式: {response_format}")
+            with open(audio_wav, 'rb') as f:
+                # OpenAI new SDK: returns string when response_format is text-like
+                kwargs = {
+                    'model': model_name,
+                    'file': f,
+                    'response_format': response_format,
+                }
+                if detected_language:
+                    # Provide language hint to improve accuracy and speed (normalize to ISO 639-1 code)
+                    lang_code = self._normalize_language_to_iso639_1(detected_language)
+                    if lang_code:
+                        kwargs['language'] = lang_code
+
+                try:
+                    resp = self.client.audio.transcriptions.create(**kwargs)
+                except Exception as e:
+                    # If server rejects unsupported language, stop without retrying
+                    msg = str(e)
+                    if (
+                        ('Unsupported language' in msg)
+                        or ('unsupported_language' in msg)
+                        or ('语言不支持' in msg)
+                        or ('不支持的语言' in msg)
+                        or ('param' in msg and 'language' in msg)
+                    ):
+                        bad_lang = kwargs.get('language', detected_language)
+                        self.logger.warning(
+                            f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。原始错误：{msg}"
+                        )
+                        return None
+                    # Other errors will bubble to outer except
+                    else:
+                        raise
+
+            # Handle SDK variations: sometimes resp is str, sometimes has .text
+            text = None
+            try:
+                # Some compatible servers may return an error payload instead of raising
+                # Normalize and early-stop if an error is present
+                if isinstance(resp, dict) and 'error' in resp:
+                    self.logger.error(f"语音转写失败：{resp.get('error')}")
+                    return None
+                if isinstance(resp, str):
+                    # Try parse JSON error
+                    import json as _json
+                    try:
+                        maybe = _json.loads(resp)
+                        if isinstance(maybe, dict) and 'error' in maybe:
+                            self.logger.error(f"语音转写失败：{maybe.get('error')}")
+                            return None
+                    except Exception:
+                        pass
+                    text = resp
+                elif not isinstance(resp, dict) and hasattr(resp, 'text'):
+                    text = getattr(resp, 'text', None)
+                else:
+                    # Fallback to string representation
+                    text = str(resp)
+            except Exception:
+                text = None
+
+            if not text or len(text.strip()) == 0:
+                self.logger.error("语音转写API返回为空")
+                return None
+
+            # Ensure VTT header if needed
+            if response_format == 'vtt' and not text.lstrip().upper().startswith('WEBVTT'):
+                text = 'WEBVTT\n\n' + text
+
+            with open(output_path, 'w', encoding='utf-8') as out:
+                out.write(text)
+            self.logger.info(f"语音转写完成，字幕已保存: {output_path}")
+            return output_path
+        except Exception as e:
+            self.logger.error(f"语音转写失败: {e}")
+            return None
+
+    def _detect_language(self, audio_wav_path: str) -> Tuple[Optional[str], Optional[float]]:
+        """Detect language using Whisper-compatible API via verbose_json.
+
+        Returns (language_code, confidence) if available, else (None, None).
+        """
+        try:
+            if not self.detect_client:
+                return None, None
+            detect_model = self.config.detect_model_name or self.config.model_name or 'whisper-1'
+            with open(audio_wav_path, 'rb') as f:
+                resp = self.detect_client.audio.transcriptions.create(
+                    model=detect_model,
+                    file=f,
+                    response_format='verbose_json'
+                )
+            # Some SDKs return dict-like, some return object; normalize
+            data = None
+            if isinstance(resp, dict):
+                data = resp
+            else:
+                try:
+                    # OpenAI SDK returns pydantic models; use .model_dump if available, else vars()
+                    if hasattr(resp, 'model_dump'):
+                        data = resp.model_dump()
+                    elif hasattr(resp, 'to_dict'):
+                        data = resp.to_dict()
+                    else:
+                        data = getattr(resp, '__dict__', None)
+                except Exception:
+                    data = None
+
+            if not data:
+                # Last resort, try to parse as string JSON-like (unlikely)
+                try:
+                    import json as _json
+                    data = _json.loads(str(resp))
+                except Exception:
+                    data = None
+
+            language = None
+            confidence = None
+            if isinstance(data, dict):
+                language = data.get('language') or data.get('detected_language')
+                # try to derive confidence from avg segment probs
+                segs = data.get('segments') or []
+                if isinstance(segs, list) and segs:
+                    probs = []
+                    for s in segs:
+                        p = s.get('avg_logprob') if isinstance(s, dict) else None
+                        if isinstance(p, (int, float)):
+                            probs.append(p)
+                    if probs:
+                        # Convert logprob to a rough [0,1] scale (heuristic)
+                        import math as _math
+                        confidence = sum(_math.exp(p) for p in probs) / len(probs)
+            # Normalize language code (e.g., 'zh', 'en')
+            if language is not None:
+                lang_str = str(language) if isinstance(language, (str, bytes)) else None
+                language = self._normalize_language_to_iso639_1(lang_str) if lang_str else None
+            # ensure precise types for return
+            lang_ret: Optional[str] = language if isinstance(language, str) and language else None
+            conf_ret: Optional[float] = confidence if isinstance(confidence, (int, float)) else None
+            return lang_ret, conf_ret
+        except Exception as e:
+            self.logger.warning(f"语言检测异常: {e}")
+            return None, None
+
+
+def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str] = None) -> Optional[SpeechRecognizer]:
+    """Factory: Build recognizer from app settings."""
+    try:
+        if not app_config.get('SPEECH_RECOGNITION_ENABLED', False):
+            return None
+
+        provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
+        output_format = (app_config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT') or 'srt').lower()
+
+        # Prefer dedicated Whisper settings; fallback to general OpenAI settings
+        whisper_base_url = app_config.get('WHISPER_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+        whisper_api_key = app_config.get('WHISPER_API_KEY') or app_config.get('OPENAI_API_KEY', '')
+        whisper_model = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
+
+        config = SpeechRecognitionConfig(
+            provider=provider,
+            api_key=whisper_api_key,
+            base_url=whisper_base_url,
+            model_name=whisper_model,
+            output_format=output_format,
+            # dedicated detect settings (optional)
+            detect_api_key=app_config.get('WHISPER_DETECT_API_KEY', ''),
+            detect_base_url=app_config.get('WHISPER_DETECT_BASE_URL', ''),
+            detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', '')
+        )
+        return SpeechRecognizer(config, task_id)
+    except Exception:
+        return None
+
+

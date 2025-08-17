@@ -88,9 +88,14 @@ class AlibabaCloudModerator:
             
             self.client = Green20220302Client(config)
             self.logger.info("阿里云内容审核客户端初始化成功")
+            self.logger.info(f"调试信息：创建的客户端对象类型: {type(self.client)}")
+            self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
             
         except Exception as e:
             self.logger.error(f"创建阿里云客户端失败: {str(e)}")
+            self.logger.error(f"调试信息：异常类型: {type(e)}")
+            import traceback
+            self.logger.error(f"调试信息：异常堆栈: {traceback.format_exc()}")
             self.client = None
     
     def moderate_text(self, text_content, service_type='comment_detection_pro'):
@@ -148,6 +153,27 @@ class AlibabaCloudModerator:
             
             # 发送请求
             start_time = time.time()
+            
+            # 添加调试日志：检查客户端状态
+            self.logger.info(f"调试信息：客户端对象类型: {type(self.client)}")
+            self.logger.info(f"调试信息：客户端对象是否为None: {self.client is None}")
+            if self.client is not None:
+                self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
+                if hasattr(self.client, 'text_moderation_plus_with_options'):
+                    self.logger.info(f"调试信息：text_moderation_plus_with_options方法类型: {type(getattr(self.client, 'text_moderation_plus_with_options'))}")
+            
+            # 检查客户端是否可用
+            if self.client is None:
+                error_msg = "阿里云客户端未初始化，无法进行文本审核"
+                self.logger.error(error_msg)
+                return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
+            
+            # 检查方法是否存在
+            if not hasattr(self.client, 'text_moderation_plus_with_options'):
+                error_msg = "阿里云客户端不支持text_moderation_plus_with_options方法，可能是SDK版本问题"
+                self.logger.error(error_msg)
+                return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
+            
             response = self.client.text_moderation_plus_with_options(request, runtime)
             response_time = time.time() - start_time
             
@@ -266,6 +292,27 @@ class AlibabaCloudModerator:
             
             # 发送请求
             start_time = time.time()
+            
+            # 添加调试日志：检查客户端状态
+            self.logger.info(f"调试信息：客户端对象类型: {type(self.client)}")
+            self.logger.info(f"调试信息：客户端对象是否为None: {self.client is None}")
+            if self.client is not None:
+                self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
+                if hasattr(self.client, 'text_moderation_plus_with_options'):
+                    self.logger.info(f"调试信息：text_moderation_plus_with_options方法类型: {type(getattr(self.client, 'text_moderation_plus_with_options'))}")
+            
+            # 检查客户端是否可用
+            if self.client is None:
+                error_msg = "阿里云客户端未初始化，无法进行文本段审核"
+                self.logger.error(error_msg)
+                return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
+            
+            # 检查方法是否存在
+            if not hasattr(self.client, 'text_moderation_plus_with_options'):
+                error_msg = "阿里云客户端不支持text_moderation_plus_with_options方法，可能是SDK版本问题"
+                self.logger.error(error_msg)
+                return {"pass": False, "details": [{"label": "error", "suggestion": "review", "reason": error_msg}]}
+            
             response = self.client.text_moderation_plus_with_options(request, runtime)
             response_time = time.time() - start_time
             

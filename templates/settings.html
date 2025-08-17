@@ -24,6 +24,9 @@
                 <a class="nav-link" id="vtab-subtitle-tab" data-bs-toggle="pill" href="#vtab-subtitle" role="tab" aria-controls="vtab-subtitle" aria-selected="false">
                     <i class="bi bi-translate"></i> 字幕翻译
                 </a>
+                <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
+                    <i class="bi bi-mic"></i> 语音识别
+                </a>
                 <a class="nav-link" id="vtab-concurrency-tab" data-bs-toggle="pill" href="#vtab-concurrency" role="tab" aria-controls="vtab-concurrency" aria-selected="false">
                     <i class="bi bi-cpu"></i> 并发与日志
                 </a>
@@ -369,6 +372,87 @@
                                         <label for="subtitleMaxWorkers" class="form-label">最大并发线程数</label>
                                         <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 0) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
                                         <div class="form-text">设置字幕翻译的并发线程数；设置为 <strong>0</strong> 表示不设上限，按任务量动态分配</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 语音识别（无字幕转写）设置 -->
+                    <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">
+                        <div class="settings-section">
+                            <h3>语音识别（无字幕转写）</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="SPEECH_RECOGNITION_ENABLED" {% if config.get('SPEECH_RECOGNITION_ENABLED', False) %}checked{% endif %}>
+                                    启用语音识别生成字幕（Whisper API）
+                                </label>
+                                <p class="help-text">当yt-dlp未能获取到 .vtt/.srt 字幕时，使用Whisper将音频自动转写为字幕，再配合字幕翻译功能形成完整链路。</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="asr-provider">识别提供商:</label>
+                                        <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
+                                            <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI兼容）</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="asr-output-format">输出格式:</label>
+                                        <select id="asr-output-format" name="SPEECH_RECOGNITION_OUTPUT_FORMAT" class="form-select">
+                                            <option value="srt" {% if config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt') == 'srt' %}selected{% endif %}>SRT</option>
+                                            <option value="vtt" {% if config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt') == 'vtt' %}selected{% endif %}>VTT</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="whisper-api-key">Whisper API Key（可选）:</label>
+                                        <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用上方 OpenAI Key">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="whisper-model">Whisper模型名:</label>
+                                        <input type="text" id="whisper-model" name="WHISPER_MODEL_NAME" value="{{ config.get('WHISPER_MODEL_NAME', 'whisper-1') }}" class="form-control" placeholder="如 whisper-1 / gpt-4o-transcribe">
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-group">
+                                        <label for="whisper-base-url">Whisper Base URL（可选）:</label>
+                                        <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI Base URL">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <hr>
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <h5>语言检测（可选，默认复用上方 Whisper 设置）</h5>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="whisper-detect-api-key">Whisper Detect API Key:</label>
+                                        <input type="password" id="whisper-detect-api-key" name="WHISPER_DETECT_API_KEY" value="{{ config.get('WHISPER_DETECT_API_KEY', '') }}" class="form-control" placeholder="留空复用上方 Whisper API Key">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="whisper-detect-model">Whisper Detect 模型名:</label>
+                                        <input type="text" id="whisper-detect-model" name="WHISPER_DETECT_MODEL_NAME" value="{{ config.get('WHISPER_DETECT_MODEL_NAME', '') }}" class="form-control" placeholder="留空复用上方 Whisper 模型">
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-group">
+                                        <label for="whisper-detect-base-url">Whisper Detect Base URL:</label>
+                                        <input type="text" id="whisper-detect-base-url" name="WHISPER_DETECT_BASE_URL" value="{{ config.get('WHISPER_DETECT_BASE_URL', '') }}" class="form-control" placeholder="留空复用上方 Whisper Base URL">
                                     </div>
                                 </div>
                             </div>

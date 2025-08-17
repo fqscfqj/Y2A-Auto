@@ -3,128 +3,163 @@
 {% block title %}Y2A-Auto - 首页{% endblock %}
 
 {% block content %}
-<div class="home-hero text-center">
-    <h1 class="display-4 mb-3">Y2A-Auto</h1>
-    <p class="lead">YouTube到AcFun视频全自动处理平台</p>
-    <div class="mt-4">
-        <a href="{{ url_for('tasks') }}" class="btn btn-primary btn-lg me-2">
-            <i class="bi bi-list-task"></i> 查看任务
-        </a>
-        <a href="javascript:void(0);" data-bs-toggle="modal" data-bs-target="#quickStartModal" class="btn btn-outline-primary btn-lg">
-            <i class="bi bi-question-circle"></i> 快速入门
-        </a>
-    </div>
-</div>
-
-<div class="row mt-5">
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-download"></i>
-                </div>
-                <h5 class="card-title">自动下载</h5>
-                <p class="card-text">使用yt-dlp高效下载YouTube视频、元数据、封面和字幕</p>
-            </div>
+<div class="home-hero p-3 p-md-4">
+    <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2">
+        <div>
+            <h1 class="h3 h-md-2 mb-1">Y2A-Auto 仪表盘</h1>
+            <div class="text-muted small">今日概览 · 实时掌握任务与转发情况</div>
         </div>
-    </div>
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-translate"></i>
-                </div>
-                <h5 class="card-title">AI翻译</h5>
-                <p class="card-text">利用OpenAI将视频标题和描述翻译成中文，自动生成AcFun风格标签</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-shield-check"></i>
-                </div>
-                <h5 class="card-title">内容审核</h5>
-                <p class="card-text">集成阿里云内容安全API进行文本和图片审核，确保内容合规</p>
-            </div>
+        <div class="d-flex flex-wrap gap-2">
+            <a href="{{ url_for('tasks') }}" class="btn btn-primary"><i class="bi bi-list-task me-1"></i> 任务列表</a>
+            <a href="{{ url_for('manual_review') }}" class="btn btn-warning"><i class="bi bi-eye me-1"></i> 待审核</a>
+            <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-outline-danger"><i class="bi bi-youtube me-1"></i> 监控</a>
+            <a href="#" data-bs-toggle="modal" data-bs-target="#quickStartModal" class="btn btn-outline-secondary"><i class="bi bi-question-circle me-1"></i> 快速入门</a>
         </div>
     </div>
 </div>
 
-<div class="row mt-3">
-    <div class="col-md-4 mb-4">
+<!-- KPI cards -->
+<div class="row g-3 mt-2">
+    <div class="col-6 col-md-3">
         <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-tags"></i>
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">今日完成</div>
+                        <div class="fs-3 fw-bold text-success">{{ stats.completed_today }}</div>
+                    </div>
+                    <i class="bi bi-check-circle text-success fs-2"></i>
                 </div>
-                <h5 class="card-title">分区推荐</h5>
-                <p class="card-text">智能分析视频内容，自动推荐适合的AcFun分区，提高投稿精准度</p>
             </div>
         </div>
     </div>
-    <div class="col-md-4 mb-4">
+    <div class="col-6 col-md-3">
         <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-aspect-ratio"></i>
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">今日失败</div>
+                        <div class="fs-3 fw-bold text-danger">{{ stats.failed_today }}</div>
+                    </div>
+                    <i class="bi bi-x-circle text-danger fs-2"></i>
                 </div>
-                <h5 class="card-title">封面优化</h5>
-                <p class="card-text">自动处理封面图片至AcFun最佳比例(16:10)，支持裁剪和填充模式</p>
             </div>
         </div>
     </div>
-    <div class="col-md-4 mb-4">
+    <div class="col-6 col-md-3">
         <div class="card h-100">
-            <div class="card-body text-center">
-                <div class="feature-icon">
-                    <i class="bi bi-upload"></i>
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">今日新增</div>
+                        <div class="fs-3 fw-bold">{{ stats.created_today }}</div>
+                    </div>
+                    <i class="bi bi-plus-circle fs-2 text-primary"></i>
                 </div>
-                <h5 class="card-title">一键上传</h5>
-                <p class="card-text">自动登录AcFun并上传视频、封面、标题、描述和标签，全流程自动化</p>
             </div>
         </div>
     </div>
-</div>
-
-<div class="mt-5 mb-4">
-    <div class="card">
-        <div class="card-header bg-primary text-white">
-            <h4 class="mb-0">使用流程</h4>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-3 text-center mb-3">
-                    <div class="p-3 border rounded">
-                        <h3 class="h5"><i class="bi bi-1-circle"></i> 添加任务</h3>
-                        <p class="small">输入YouTube视频URL创建新任务</p>
+    <div class="col-6 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">进行中</div>
+                        <div class="fs-3 fw-bold">{{ stats.in_progress }}</div>
                     </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="p-3 border rounded">
-                        <h3 class="h5"><i class="bi bi-2-circle"></i> 自动处理</h3>
-                        <p class="small">系统自动下载、翻译、生成标签并审核</p>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="p-3 border rounded">
-                        <h3 class="h5"><i class="bi bi-3-circle"></i> 人工审核</h3>
-                        <p class="small">需要时检查并修改翻译和标签</p>
-                    </div>
-                </div>
-                <div class="col-md-3 text-center mb-3">
-                    <div class="p-3 border rounded">
-                        <h3 class="h5"><i class="bi bi-4-circle"></i> 上传AcFun</h3>
-                        <p class="small">一键上传至AcFun平台</p>
-                    </div>
+                    <i class="bi bi-activity fs-2 text-info"></i>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- 快速入门模态框 -->
+<!-- Queues -->
+<div class="row g-3 mt-1">
+    <div class="col-6 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">待审核</div>
+                <div class="fs-4 fw-bold text-warning">{{ stats.awaiting_review }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">等待处理</div>
+                <div class="fs-4 fw-bold">{{ stats.pending_total }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">准备上传</div>
+                <div class="fs-4 fw-bold">{{ stats.ready_total }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">失败总数</div>
+                <div class="fs-4 fw-bold text-danger">{{ stats.failed_total }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent activity -->
+<div class="card mt-3">
+    <div class="card-header bg-light">
+        <div class="d-flex align-items-center justify-content-between">
+            <h5 class="mb-0"><i class="bi bi-clock-history me-1"></i> 最近动态</h5>
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('tasks') }}"><i class="bi bi-arrow-right"></i> 前往任务</a>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        {% if recent_tasks %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="col-narrow">#</th>
+                        <th>标题</th>
+                        <th class="text-center">状态</th>
+                        <th class="text-center">更新时间</th>
+                        <th class="text-end">结果</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in recent_tasks %}
+                    <tr>
+                        <td class="text-monospace">{{ t.id[:6] }}…</td>
+                        <td class="title-clamp title-clamp-2">{{ t.title }}</td>
+                        <td class="text-center"><span class="badge bg-{{ task_status_color(t.status) }}">{{ task_status_display(t.status) }}</span></td>
+                        <td class="text-center"><span class="task-datetime" data-datetime="{{ t.updated_at }}">{{ t.updated_at }}</span></td>
+                        <td class="text-end">
+                            {% if t.ac_number %}
+                                <a href="https://www.acfun.cn/v/ac{{ t.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ t.ac_number }}</a>
+                            {% else %}
+                                <span class="badge bg-secondary">—</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+            <div class="p-3 text-muted">暂无最近动态</div>
+        {% endif %}
+    </div>
+    <div class="card-footer text-muted small">
+        总任务数：{{ stats.total_tasks }}
+    </div>
+    </div>
+
+<!-- 快速入门模态框（复用原内容） -->
 <div class="modal fade" id="quickStartModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -139,14 +174,12 @@
                     <li>如需AI功能，请配置OpenAI API密钥</li>
                     <li>如需内容审核，请配置阿里云内容安全API</li>
                 </ul>
-                
                 <h5>第二步：添加任务</h5>
                 <ul>
                     <li>访问"任务列表"页面</li>
                     <li>点击"新建任务"按钮</li>
                     <li>输入YouTube视频URL</li>
                 </ul>
-                
                 <h5>第三步：处理任务</h5>
                 <ul>
                     <li>系统将自动下载视频内容</li>
@@ -154,7 +187,6 @@
                     <li>生成标签并推荐分区</li>
                     <li>对内容进行安全审核</li>
                 </ul>
-                
                 <h5>第四步：审核与上传</h5>
                 <ul>
                     <li>如果内容审核通过，系统将自动上传</li>
@@ -168,4 +200,21 @@
         </div>
     </div>
 </div>
-{% endblock %} 
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .title-clamp-2 { -webkit-line-clamp: 2; line-clamp: 2; max-height: 2.8em; }
+    .col-narrow { width: 32px; }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 复用任务页的相对时间渲染逻辑（简化拷贝）
+    function formatLocal(dt){
+        try{const d=new Date(dt);if(isNaN(d.getTime()))return dt;const n=new Date();const ms=n-d;const m=Math.floor(ms/60000);const h=Math.floor(ms/3600000);const days=Math.floor(ms/86400000);if(m<5)return '刚刚';if(m<60)return m+'分钟前';if(h<24&&d.toDateString()===n.toDateString())return h+'小时前';if(days===1) return '昨天 '+d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});if(days<7) return days+'天前';if(d.getFullYear()===n.getFullYear()) return d.toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});return d.toLocaleDateString('zh-CN');}catch(e){return dt}}
+    function updateTimes(){document.querySelectorAll('.task-datetime').forEach(el=>{const v=el.getAttribute('data-datetime');if(v){el.textContent=formatLocal(v);el.title=new Date(v).toLocaleString('zh-CN')}})}
+    document.addEventListener('DOMContentLoaded',()=>{updateTimes();setInterval(updateTimes,60000)});
+</script>
+{% endblock %}

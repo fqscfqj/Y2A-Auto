@@ -106,42 +106,46 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         }
         
         target_language_name = language_map.get(target_language, target_language)
-        
-        # 构建翻译提示 - 简洁有效，重点在模仿原文表达风格
-        prompt = f"""请将以下内容翻译成{target_language_name}，注意模仿原文的语言风格和表达方式：
 
-**翻译原则：**
-• 保持原文的语气、风格和表达习惯
-• 如果原文口语化，译文也要口语化；如果原文正式，译文也要正式
-• 保留原文的情感色彩和个人化表达
-• 使用自然流畅的{target_language_name}，但不要过度本土化
-• 直接输出翻译结果，不要添加说明或注释
+        # 构建针对“搬运视频”场景的严格翻译提示
+        prompt = f"""请将以下内容翻译成{target_language_name}。
 
-**需要过滤的内容（直接忽略，不留痕迹）：**
-• 所有网址链接和邮箱地址
-• 社交媒体账号(@用户名、#标签)  
-• "订阅"、"关注"、"点赞"等平台互动提示
-• 广告推广和商业链接
+严格规范（必须同时满足）：
+1) 不改变原本意图：只做等价翻译，禁止解释、扩写、改写、总结或二次创作。
+2) 不添加多余信息：不得添加序号、列表符号、引号包裹、括注、免责声明、语气词、emoji、前后缀等。
+3) 风格对齐：保持原文口语/正式/幽默/严肃等风格一致；情感与语气不弱化、不夸张。
+4) 可读易扫：用目标语言中自然、简洁的表达，信息密度不高于原文，便于视频观众快速阅读。
+5) 专名策略：人名/地名/品牌/型号等如有约定俗成译名则用之；无固定译名时保留原文，不加括注或解释。
+6) 数字/单位/格式：数字、货币、计量单位与大小写按原样保留；不要换算单位或币种；标点遵循目标语言习惯但不改变语气。
+7) 占位/代码：代码、命令、格式化占位符与变量（如 {{...}}、<...>、%s）保持不变。
+8) 敏感/粗口：按目标语言自然等价表达保留，不润色、不夸张。
 
-原文:
+只输出译文文本，不要添加任何说明或注释。
+
+原文：
 {text}
 """
-        
+
         start_time = time.time()
-        
+
         # 使用新版API调用格式
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": "你是一个专业翻译工具。你的工作是提供准确、规范的翻译，使用正式的书面语言风格，避免过度口语化和网络流行语。"},
+                {"role": "system", "content": (
+                    "你是一名资深本地化译员，工作场景为‘搬运视频’。"
+                    "严格遵守：不改变意图、不添加任何多余信息、只做等价翻译、保持风格一致。"
+                    "遇到专有名词无固定译名时保留原文；保留占位/代码/变量；数字和单位不换算。"
+                    "输出中不得包含引言、编号、括注、免责声明或额外说明。"
+                )},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=4096
         )
-        
+
         response_time = time.time() - start_time
-        
+
         # 读取消息主体并先屏蔽思考内容
         message = response.choices[0].message
         # 优先取最终答案内容；仅在缺失时回退到 reasoning_content
@@ -247,7 +251,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         # 应用互动提示过滤
         for pattern in interaction_patterns:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-        
+
         # 最终清理：再次确保移除任何残留的说明性文字
         final_cleanup_patterns = [
             r'（.*?已.*?除.*?）',               # 匹配"已...除"模式
@@ -255,14 +259,21 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             r'（.*?contact.*?）',               # 联系相关
             r'\(.*?contact.*?\)',               # 英文括号联系相关
         ]
-        
+
         for pattern in final_cleanup_patterns:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-        
-        # 清理多余的空白字符
-        translated_text = re.sub(r'\s+', ' ', translated_text)  # 多个空格合并为一个
-        translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)  # 多个换行合并
-        translated_text = translated_text.strip()  # 去除首尾空白
+
+        # 规范空白但保留换行：AcFun 简介支持换行，且一个换行符等同一个字符
+        # 1) 统一换行符为 \n
+        translated_text = translated_text.replace('\r\n', '\n').replace('\r', '\n')
+        # 2) 仅压缩空格/制表符等（不包含换行）
+        translated_text = re.sub(r'[ \t\f\v]+', ' ', translated_text)
+        # 3) 去除行尾多余空格
+        translated_text = re.sub(r'[ \t]+\n', '\n', translated_text)
+        # 4) 将3个及以上连续空行压缩为2个，避免过多留白
+        translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)
+        # 5) 去除首尾空白（保留文本内换行）
+        translated_text = translated_text.strip()
         
         logger.info("已过滤URL、域名、邮箱地址和社交媒体引用")
         

@@ -105,13 +105,40 @@ console_handler.setLevel(logging.WARNING)
 if os.name == 'nt':
     import sys
     import codecs
+    # 检查Python版本和reconfigure方法可用性
+    python_version = sys.version_info
+    print(f"DEBUG: 当前Python版本: {python_version.major}.{python_version.minor}.{python_version.micro}")
+    print(f"DEBUG: 操作系统: {os.name}, sys.stdout类型: {type(sys.stdout)}")
+    
     # 强制设置stdout和stderr为UTF-8编码
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    if hasattr(sys.stdout, 'reconfigure'):
+        print("DEBUG: sys.stdout.reconfigure方法可用，正在设置UTF-8编码")
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')  # type: ignore
+            print("DEBUG: sys.stdout.reconfigure执行成功")
+        except Exception as e:
+            print(f"DEBUG: sys.stdout.reconfigure执行失败: {e}")
+    else:
+        print("DEBUG: sys.stdout.reconfigure方法不可用，跳过stdout编码设置")
+        
+    if hasattr(sys.stderr, 'reconfigure'):
+        print("DEBUG: sys.stderr.reconfigure方法可用，正在设置UTF-8编码")
+        try:
+            sys.stderr.reconfigure(encoding='utf-8')  # type: ignore
+            print("DEBUG: sys.stderr.reconfigure执行成功")
+        except Exception as e:
+            print(f"DEBUG: sys.stderr.reconfigure执行失败: {e}")
+    else:
+        print("DEBUG: sys.stderr.reconfigure方法不可用，跳过stderr编码设置")
+    
     # 设置环境变量
     os.environ["PYTHONIOENCODING"] = "utf-8"
     # 为控制台处理器设置编码
-    console_handler.setStream(codecs.getwriter('utf-8')(sys.stdout.buffer))
+    try:
+        console_handler.setStream(codecs.getwriter('utf-8')(sys.stdout.buffer))  # type: ignore
+        print("DEBUG: 控制台处理器编码设置成功")
+    except Exception as e:
+        print(f"DEBUG: 控制台处理器编码设置失败: {e}")
 
 # 配置根日志记录器
 root_logger = logging.getLogger()
@@ -120,9 +147,18 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 
 # 强制设置所有日志记录器的默认编码为UTF-8
-logging.getLogger().handlers[0].encoding = 'utf-8'
-if len(logging.getLogger().handlers) > 1:
-    logging.getLogger().handlers[1].encoding = 'utf-8'
+try:
+    logging.getLogger().handlers[0].encoding = 'utf-8'  # type: ignore
+    print("DEBUG: 第一个日志处理器编码设置成功")
+except Exception as e:
+    print(f"DEBUG: 第一个日志处理器编码设置失败: {e}")
+
+try:
+    if len(logging.getLogger().handlers) > 1:
+        logging.getLogger().handlers[1].encoding = 'utf-8'  # type: ignore
+        print("DEBUG: 第二个日志处理器编码设置成功")
+except Exception as e:
+    print(f"DEBUG: 第二个日志处理器编码设置失败: {e}")
 
 # 配置应用日志记录器
 logger = logging.getLogger('Y2A-Auto')
@@ -147,6 +183,7 @@ def task_status_display(status):
         TASK_STATES['DOWNLOADING']: '下载中',
         TASK_STATES['DOWNLOADED']: '下载完成',
         TASK_STATES['TRANSLATING_SUBTITLE']: '翻译字幕中',
+    TASK_STATES['ASR_TRANSCRIBING']: '语音转写中',
         TASK_STATES['ENCODING_VIDEO']: '转码视频中',
         TASK_STATES['TRANSLATING']: '翻译中',
         TASK_STATES['TAGGING']: '生成标签中',
@@ -169,6 +206,7 @@ def task_status_color(status):
         TASK_STATES['DOWNLOADING']: 'info',
         TASK_STATES['DOWNLOADED']: 'info',
         TASK_STATES['TRANSLATING_SUBTITLE']: 'info',
+    TASK_STATES['ASR_TRANSCRIBING']: 'info',
         TASK_STATES['ENCODING_VIDEO']: 'info',
         TASK_STATES['TRANSLATING']: 'info',
         TASK_STATES['TAGGING']: 'info',
@@ -367,7 +405,118 @@ def logout():
 def index():
     """首页"""
     logger.info("访问首页")
-    return render_template('index.html')
+    # 统计信息用于仪表盘
+    try:
+        from modules.task_manager import get_db_connection
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 本地时间的今日起止
+        now_local = datetime.now()
+        today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_start = today_start + timedelta(days=1)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        start_str = today_start.strftime(fmt)
+        end_str = tomorrow_start.strftime(fmt)
+
+        # 各类计数
+        cur.execute("SELECT COUNT(*) FROM tasks")
+        total_tasks = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT COUNT(*) FROM tasks WHERE status = ?", (TASK_STATES['AWAITING_REVIEW'],))
+        awaiting_review = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT COUNT(*) FROM tasks WHERE status = ?", (TASK_STATES['FAILED'],))
+        failed_total = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT COUNT(*) FROM tasks WHERE status = ?", (TASK_STATES['PENDING'],))
+        pending_total = cur.fetchone()[0] or 0
+
+        cur.execute("SELECT COUNT(*) FROM tasks WHERE status = ?", (TASK_STATES['READY_FOR_UPLOAD'],))
+        ready_total = cur.fetchone()[0] or 0
+
+        # 进行中的状态集合
+        processing_states = (
+            'fetching_info', 'info_fetched',
+            TASK_STATES['TRANSLATING'], TASK_STATES['TAGGING'], TASK_STATES['PARTITIONING'],
+            TASK_STATES['MODERATING'], TASK_STATES['DOWNLOADING'], TASK_STATES['DOWNLOADED'],
+            TASK_STATES['ASR_TRANSCRIBING'], TASK_STATES['TRANSLATING_SUBTITLE'],
+            TASK_STATES['ENCODING_VIDEO'], TASK_STATES['UPLOADING']
+        )
+        placeholders = ",".join(["?"] * len(processing_states))
+        cur.execute(f"SELECT COUNT(*) FROM tasks WHERE status IN ({placeholders})", processing_states)
+        in_progress = cur.fetchone()[0] or 0
+
+        # 今日完成/失败/新增任务
+        cur.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?",
+            (TASK_STATES['COMPLETED'], start_str, end_str)
+        )
+        completed_today = cur.fetchone()[0] or 0
+
+        cur.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?",
+            (TASK_STATES['FAILED'], start_str, end_str)
+        )
+        failed_today = cur.fetchone()[0] or 0
+
+        cur.execute(
+            "SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at < ?",
+            (start_str, end_str)
+        )
+        created_today = cur.fetchone()[0] or 0
+
+        # 最近任务（按更新时间倒序）
+        cur.execute(
+            "SELECT id, video_title_translated, video_title_original, status, updated_at, acfun_upload_response FROM tasks ORDER BY updated_at DESC LIMIT 10"
+        )
+        rows = cur.fetchall()
+        recent_tasks = []
+        for r in rows:
+            ac_number = None
+            try:
+                resp = json.loads(r[5]) if r[5] else None
+                if isinstance(resp, dict):
+                    ac_number = resp.get('ac_number')
+            except Exception:
+                ac_number = None
+            recent_tasks.append({
+                'id': r[0],
+                'title': r[1] or r[2] or '未获取标题',
+                'status': r[3],
+                'updated_at': r[4],
+                'ac_number': ac_number
+            })
+
+        conn.close()
+
+        stats = {
+            'total_tasks': total_tasks,
+            'awaiting_review': awaiting_review,
+            'failed_total': failed_total,
+            'pending_total': pending_total,
+            'ready_total': ready_total,
+            'in_progress': in_progress,
+            'completed_today': completed_today,
+            'failed_today': failed_today,
+            'created_today': created_today
+        }
+    except Exception as e:
+        logger.warning(f"首页统计失败: {e}")
+        stats = {
+            'total_tasks': 0,
+            'awaiting_review': 0,
+            'failed_total': 0,
+            'pending_total': 0,
+            'ready_total': 0,
+            'in_progress': 0,
+            'completed_today': 0,
+            'failed_today': 0,
+            'created_today': 0
+        }
+        recent_tasks = []
+
+    return render_template('index.html', stats=stats, recent_tasks=recent_tasks)
 
 @app.route('/tasks')
 @login_required
@@ -417,12 +566,34 @@ def edit_task(task_id):
             # 如果是从等待审核状态修改，则设置为等待上传
             update_data['status'] = TASK_STATES['PENDING']
         
-        update_task(task_id, **update_data)
+        # 调试：检查update_task函数参数类型
+        print(f"DEBUG: update_task参数 - task_id: {type(task_id)}, update_data: {type(update_data)}")
+        print(f"DEBUG: update_data内容: {update_data}")
+        # 检查是否有silent参数类型问题
+        if 'silent' in update_data:
+            print(f"DEBUG: silent参数值: {update_data['silent']}, 类型: {type(update_data['silent'])}")
+        try:
+            # 确保silent参数是布尔类型
+            final_update_data = update_data.copy()
+            silent_param = False  # 默认值
+            
+            if 'silent' in final_update_data:
+                if isinstance(final_update_data['silent'], str):
+                    silent_param = final_update_data['silent'].lower() in ('true', 'yes', '1', 'on')
+                elif isinstance(final_update_data['silent'], bool):
+                    silent_param = final_update_data['silent']
+                # 从final_update_data中移除silent，避免重复传递
+                final_update_data.pop('silent')
+            
+            update_task(task_id, silent=silent_param, **final_update_data)
+            print("DEBUG: update_task调用成功")
+        except Exception as e:
+            print(f"DEBUG: update_task调用失败: {e}")
         logger.info(f"任务 {task_id} 信息已更新")
         
         # 执行上传操作（当任务处于"已完成"、"等待处理"或"准备上传"状态时）
         task = get_task(task_id)  # 重新获取更新后的任务信息
-        if task['status'] in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD']]:
+        if task and task['status'] in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD']]:
             # 获取当前配置
             config = load_config()
             
@@ -742,8 +913,8 @@ def get_database_debug_info():
             'db_dir_exists': os.path.exists(os.path.dirname(db_path)),
             'db_dir_writable': os.access(os.path.dirname(db_path), os.W_OK) if os.path.exists(os.path.dirname(db_path)) else False,
             'current_user': os.environ.get('USER', 'unknown'),
-            'current_uid': os.getuid() if hasattr(os, 'getuid') else 'unknown',
-            'current_gid': os.getgid() if hasattr(os, 'getgid') else 'unknown'
+            'current_uid': os.getuid() if hasattr(os, 'getuid') else 'unknown',  # type: ignore
+            'current_gid': os.getgid() if hasattr(os, 'getgid') else 'unknown'   # type: ignore
         }
         
         if os.path.exists(db_path):
@@ -1026,7 +1197,8 @@ def settings():
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled'
+            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
+            'SPEECH_RECOGNITION_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1042,8 +1214,12 @@ def settings():
         for field in numeric_fields:
             if field in form_data:
                 try:
-                    form_data[field] = int(form_data[field])
-                except (ValueError, TypeError):
+                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    original_value = form_data[field]
+                    form_data[field] = str(int(form_data[field]))  # 转换为int再转回str以满足类型要求
+                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     # 如果转换失败，使用默认值
                     defaults = {
                         'MAX_CONCURRENT_TASKS': 3,
@@ -1058,7 +1234,8 @@ def settings():
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15
                     }
-                    form_data[field] = defaults.get(field, 1)
+                    form_data[field] = str(defaults.get(field, 1))  # 转换为str以满足类型要求
+                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
         
         # 处理文件上传
         cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
@@ -1097,6 +1274,7 @@ def settings():
         try:
             from modules.task_manager import get_global_task_processor
             app.config['Y2A_SETTINGS'] = updated_config
+            # 防御：即使配置中的数字字段是字符串也不致崩溃
             get_global_task_processor(updated_config)
             logger.info("配置已更新并同步到任务处理器")
         except Exception as e:

@@ -7,7 +7,7 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Callable
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
@@ -148,32 +148,55 @@ class SubtitleReader:
     
     @staticmethod
     def read_srt(file_path: str) -> List[SubtitleItem]:
-        """读取SRT字幕文件"""
+        """读取SRT字幕文件（兼容更宽松的SRT变体与ASR输出）"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            
-            # SRT格式解析
-            pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\d+\n|\Z)'
-            matches = re.findall(pattern, content, re.DOTALL)
-            
-            items = []
-            for match in matches:
-                index, start_time, end_time, text = match
-                
-                # 前处理字幕文本：将多行改为单行
-                processed_text = SubtitleReader._preprocess_subtitle_text(text)
-                
-                if processed_text:  # 只保留有文本内容的条目
-                    items.append(SubtitleItem(
-                        index=int(index),
-                        start_time=start_time,
-                        end_time=end_time,
-                        source_text=processed_text
-                    ))
-            
-            logger.info(f"SRT文件读取完成，共{len(items)}条字幕（已进行前处理）")
-            return items
+                raw = f.read()
+
+            content = raw.strip()
+            if not content:
+                return []
+
+            # 标准化换行
+            content = content.replace('\r\n', '\n').replace('\r', '\n')
+
+            # 先尝试严格格式：带编号的块
+            # 小时位放宽为1-2位，兼容 0:00:01,920 与 00:00:01,920
+            pattern_strict = r'(\d+)\n(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\n(.*?)(?=\n\d+\n|\Z)'
+            matches = re.findall(pattern_strict, content, re.DOTALL)
+
+            blocks: List[SubtitleItem] = []
+            if matches:
+                for index, start_time, end_time, text in matches:
+                    processed_text = SubtitleReader._preprocess_subtitle_text(text)
+                    if processed_text:
+                        # 统一时间为SRT逗号毫秒
+                        st = start_time.replace('.', ',')
+                        et = end_time.replace('.', ',')
+                        blocks.append(SubtitleItem(
+                            index=int(index),
+                            start_time=st,
+                            end_time=et,
+                            source_text=processed_text
+                        ))
+            else:
+                # 回退解析：部分ASR会输出无编号的SRT块，仅时间行 + 文本
+                pattern_loose = r'(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\n(.*?)(?=\n\d{1,2}:\d{2}:\d{2}|\Z)'
+                loose_matches = re.findall(pattern_loose, content, re.DOTALL)
+                for i, (start_time, end_time, text) in enumerate(loose_matches, 1):
+                    processed_text = SubtitleReader._preprocess_subtitle_text(text)
+                    if processed_text:
+                        st = start_time.replace('.', ',')
+                        et = end_time.replace('.', ',')
+                        blocks.append(SubtitleItem(
+                            index=i,
+                            start_time=st,
+                            end_time=et,
+                            source_text=processed_text
+                        ))
+
+            logger.info(f"SRT文件读取完成，共{len(blocks)}条字幕（已进行前处理）")
+            return blocks
         except Exception as e:
             logger.error(f"读取SRT文件失败: {e}")
             return []
@@ -252,7 +275,7 @@ class SubtitleWriter:
 class LLMRequester:
     """LLM请求处理器 (与ai_enhancer.py保持一致的调用方式)"""
     
-    def __init__(self, openai_config, task_id=None):
+    def __init__(self, openai_config, task_id: Optional[str] = None):
         self.openai_config = openai_config
         self.task_id = task_id or "unknown"
         self.logger = setup_task_logger(self.task_id)
@@ -334,27 +357,31 @@ class LLMRequester:
             "ko": "韩文"
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
-        
-        return f"""你是一个专业的字幕翻译专家。请将提供的字幕文本逐条翻译成{target_lang_name}。
 
-严格要求：
-1. 只输出与原句对应的译文本身，不要添加任何与内容无关的信息（不得添加序号、项目符号、解释、注释、引号包裹、前后缀、额外括号等）。
-2. 译文应口语自然、准确传达含义，并保持简洁以适合字幕展示。
-3. 保留原文中已有的场景说明或音效标注（如“(audience laughing)”），但禁止新增未出现的说明。
-4. 每个输入对应一个输出，长度与顺序严格一致。
+        return f"""
+你是一名资深字幕本地化译员，工作场景为“搬运视频”。请将提供的字幕文本逐条翻译成{target_lang_name}。
 
-输出格式：必须返回有效的JSON，结构如下（仅此一个对象）：
+严格规范（必须同时满足）：
+1) 不改变原本意图：不得解释、扩写、改写、总结或二次创作；只做等价翻译。
+2) 不添加多余信息：不得添加序号、列表符号、引号包裹、括注、免责声明、语气词、emoji、前后缀等。
+3) 字幕可读：用目标语言中自然、简洁的口语表达，信息密度不高于原文，适合快速阅读。
+4) 现有标注保留：保留原文已有的场景/音效标注（如“(audience laughing)”），但绝不新增未出现的标注。
+5) 专有名词策略：人名/地名/品牌/型号等如有约定俗成译名则使用；无固定译名时保留原文，不添加括注或解释。
+6) 数字/单位/格式：数字、货币、计量单位与大小写按原样保留；不要换算单位或币种；标点遵循目标语言习惯但不改变语气。
+7) 占位/代码：代码、命令、格式化占位符与变量（如 {{...}}、<...>、%s）保持不变。
+8) 直译粗口：敏感或粗口按目标语言自然等价表达保留，不弱化、不夸张。
+9) 一一对应：每个输入严格对应一个输出，顺序一致，禁止合并或拆分。
+
+输出格式：必须返回且仅返回如下JSON对象：
 {{
-  "translations": [
-    "句子1的翻译",
-    "句子2的翻译",
-    "句子3的翻译"
-  ]
+    "translations": [
+        "句子1的翻译",
+        "句子2的翻译",
+        "句子3的翻译"
+    ]
 }}
 
-注意：
-- 严禁输出JSON对象以外的任何文字。
-- 严禁在译文前后添加序号（如“1.”、“2.”、“3:”、“1、”等）或任何列表标记。"""
+注意：严禁输出JSON对象以外的任何字符。严禁给译文添加任何编号或列表标记。"""
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
         """构建结构化用户提示词"""
@@ -363,7 +390,7 @@ class LLMRequester:
             "texts": texts
         }
         return (
-            "请将下面JSON中texts数组的每个元素翻译为目标语言。"
+            "请逐条等价翻译下面JSON中texts数组的每个元素，禁止改写、扩写、删减或合并。"
             "仅返回包含等长translations数组的JSON对象，不要输出任何其他文字。\n\n"
             + json.dumps(payload, ensure_ascii=False)
         )
@@ -384,7 +411,8 @@ class LLMRequester:
             if not isinstance(translations, list):
                 with self._log_lock:
                     self.logger.warning(f"批次 {batch_id}: translations不是数组格式")
-                return [""] * expected_count
+                # 回退到简单解析
+                return self._fallback_parse_translation_result(result, expected_count)
             
             # 确保返回的翻译数量正确
             while len(translations) < expected_count:
@@ -397,14 +425,6 @@ class LLMRequester:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")
             
             return final_translations
-            
-        except json.JSONDecodeError as e:
-            with self._log_lock:
-                self.logger.error(f"批次 {batch_id}: JSON解析失败: {e}")
-                self.logger.error(f"原始响应: {result[:200]}...")
-            
-            # 回退到简单解析
-            return self._fallback_parse_translation_result(result, expected_count)
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
@@ -420,8 +440,6 @@ class LLMRequester:
                 line = line.strip()
                 if not line:
                     continue
-                
-                # 移除可能的序号前缀
                 line = re.sub(r'^(\d+\.|\d+、|\(|（)?\d+(\)|）)?\s*[-–—·•]*\s*', '', line)
                 # 去除引号包裹
                 if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
@@ -442,24 +460,27 @@ class LLMRequester:
 class SubtitleTranslator:
     """字幕翻译器主类"""
     
-    def __init__(self, config: TranslationConfig, task_id: str = None):
+    def __init__(self, config: TranslationConfig, task_id: Optional[str] = None):
         self.config = config
         self.task_id = task_id or "unknown"
         self.logger = setup_task_logger(self.task_id)
         
-        # 构建与ai_enhancer.py兼容的openai_config
+        # 添加调试日志：检查配置值是否为 None
+        self.logger.debug(f"配置参数检查 - api_key: {config.api_key is None}, base_url: {config.base_url is None}, model_name: {config.model_name is None}")
+        
+        # 构建与ai_enhancer.py兼容的openai_config，确保不为 None
         self.openai_config = {
-            'OPENAI_API_KEY': config.api_key,
-            'OPENAI_BASE_URL': config.base_url,
-            'OPENAI_MODEL_NAME': config.model_name
+            'OPENAI_API_KEY': config.api_key or '',
+            'OPENAI_BASE_URL': config.base_url or 'https://api.openai.com/v1',
+            'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo'
         }
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
         self.reader = SubtitleReader()
         self.writer = SubtitleWriter()
     
-    def translate_file(self, input_path: str, output_path: str, 
-                      progress_callback: Optional[callable] = None) -> bool:
+    def translate_file(self, input_path: str, output_path: str,
+                      progress_callback: Optional[Callable[[float, int, int], None]] = None) -> bool:
         """翻译字幕文件，使用多线程并发翻译"""
         try:
             # 检测文件格式并读取
@@ -487,8 +508,8 @@ class SubtitleTranslator:
             self.logger.error(traceback.format_exc())
             return False
     
-    def _translate_concurrent(self, items: List[SubtitleItem], output_path: str, 
-                            progress_callback: Optional[callable] = None) -> bool:
+    def _translate_concurrent(self, items: List[SubtitleItem], output_path: str,
+                            progress_callback: Optional[Callable[[float, int, int], None]] = None) -> bool:
         """使用多线程并发翻译"""
         try:
             total_items = len(items)
@@ -525,7 +546,8 @@ class SubtitleTranslator:
                     if progress_callback:
                         progress = (completed_items / total_items) * 100
                         progress_callback(progress, completed_items, total_items)
-                    self.logger.info(f"翻译进度: {completed_items}/{total_items} ({progress:.1f}%)")
+                    # 将逐条翻译进度降低到 debug 级别，保留网页上显示的进度
+                    self.logger.debug(f"翻译进度: {completed_items}/{total_items} ({progress:.1f}%)")
             
             def translate_batch_worker(batch_info):
                 """单个批次翻译工作函数"""
@@ -585,6 +607,9 @@ class SubtitleTranslator:
                 
                 self.logger.info(f"并发翻译完成，成功批次: {successful_batches}/{len(batches)}")
             
+            # 二次修复：补翻漏译项（例如返回空串或仍是英文）
+            self._repair_untranslated_items(items)
+
             # 输出翻译后的文件
             return self._write_translated_file(items, output_path)
             
@@ -593,6 +618,70 @@ class SubtitleTranslator:
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+
+    def _likely_untranslated(self, src: str, dst: str) -> bool:
+        """判断翻译是否可能未生效：空串、与原文相同、非中文比例过高。
+
+        非中文比例判定：仅统计“中文汉字”与“英拉丁字母/数字”，忽略空白与标点；
+        当 非中文/(中文+非中文) > 0.8 时，认为疑似未翻译。
+        """
+        try:
+            s = (src or '').strip()
+            d = (dst or '').strip()
+            if not d:
+                return True
+            if d == s:
+                # 若目标语言是中文但结果与原文一致，多半未翻译
+                return True
+            # 计算非中文比例（仅中文汉字 vs 英数）
+            chinese = 0
+            non_chinese = 0
+            for ch in d:
+                if ch.isspace():
+                    continue
+                # 中文汉字范围
+                code = ord(ch)
+                if 0x4E00 <= code <= 0x9FFF:
+                    chinese += 1
+                elif re.match(r"[A-Za-z0-9]", ch):
+                    non_chinese += 1
+                else:
+                    # 忽略标点/符号/表情，不计入分母
+                    continue
+            denom = chinese + non_chinese
+            if denom == 0:
+                return False
+            non_cn_ratio = non_chinese / denom
+            return non_cn_ratio > 0.8
+        except Exception:
+            return False
+
+    def _repair_untranslated_items(self, items: List[SubtitleItem]):
+        """对疑似未翻译的条目进行小批量补翻，最大化消除漏翻。"""
+        try:
+            to_fix_indices: List[int] = [i for i, it in enumerate(items) if self._likely_untranslated(it.source_text, it.translated_text)]
+            if not to_fix_indices:
+                return
+            self.logger.info(f"检测到 {len(to_fix_indices)} 条疑似未翻译条目，开始补翻...")
+
+            bs = max(1, int(self.config.batch_size) if self.config.batch_size else 5)
+            for i in range(0, len(to_fix_indices), bs):
+                chunk = to_fix_indices[i:i+bs]
+                texts = [items[idx].source_text for idx in chunk]
+                try:
+                    translations = self.llm_requester.translate_batch(texts, self.config.target_language, batch_id=f"repair_{self.task_id}_{i//bs+1}")
+                except Exception as e:
+                    self.logger.warning(f"补翻批次失败，跳过该批：{e}")
+                    continue
+                for j, idx in enumerate(chunk):
+                    try:
+                        tr = translations[j] if j < len(translations) else ''
+                        if tr and self._likely_untranslated(items[idx].source_text, tr) is False:
+                            items[idx].translated_text = self._sanitize_translated_text(tr)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.logger.warning(f"补翻流程出现异常：{e}")
 
     def _sanitize_translated_text(self, text: str) -> str:
         """清洗译文：移除无关的序号/项目符号/引号，合并重复行"""
@@ -681,9 +770,12 @@ class SubtitleTranslator:
             return []
 
 # 工厂函数
-def create_translator_from_config(app_config: Dict, task_id: str = None) -> Optional[SubtitleTranslator]:
+def create_translator_from_config(app_config: Dict, task_id: Optional[str] = None) -> Optional[SubtitleTranslator]:
     """从应用配置创建翻译器 (与ai_enhancer.py保持一致的配置格式)"""
     try:
+        # 添加调试日志：检查配置值是否为 None
+        logger.debug(f"create_translator_from_config 调用，task_id: {task_id}")
+        
         # 确保数值配置被正确转换为整数
         batch_size = app_config.get('SUBTITLE_BATCH_SIZE', 5)
         if isinstance(batch_size, str):
@@ -707,6 +799,9 @@ def create_translator_from_config(app_config: Dict, task_id: str = None) -> Opti
         # 计算字幕翻译专用Key/模型，未配置则回退通用值
         subtitle_api_key = app_config.get('SUBTITLE_OPENAI_API_KEY') or app_config.get('OPENAI_API_KEY', '')
         subtitle_model = app_config.get('SUBTITLE_OPENAI_MODEL_NAME') or app_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
+        
+        # 添加调试日志：检查配置值
+        logger.debug(f"配置值检查 - subtitle_base_url: {subtitle_base_url is None}, subtitle_api_key: {subtitle_api_key is None}, subtitle_model: {subtitle_model is None}")
 
         translation_config = TranslationConfig(
             source_language=app_config.get('SUBTITLE_SOURCE_LANGUAGE', 'auto'),
@@ -725,7 +820,7 @@ def create_translator_from_config(app_config: Dict, task_id: str = None) -> Opti
             logger.error("未配置API密钥，无法创建翻译器")
             return None
         
-        return SubtitleTranslator(translation_config, task_id)
+        return SubtitleTranslator(translation_config, task_id or "unknown")
         
     except Exception as e:
         logger.error(f"创建翻译器失败: {e}")
