@@ -347,14 +347,43 @@ class LLMRequester:
                 import traceback
                 self.logger.error(traceback.format_exc())
             return texts  # 返回原文本
+
+    def translate_batch_strict(self, texts: List[str], target_language: str, batch_id: str = "") -> List[str]:
+        """严格模式批量翻译：用于补救仍未译的条目，强制全中文输出。"""
+        if not self.client or not texts:
+            return texts
+        try:
+            system_prompt = self._build_strict_structured_system_prompt(target_language)
+            user_prompt = self._build_structured_user_prompt(texts)
+            model_name = self.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
+            with self._log_lock:
+                self.logger.info(f"开始严格模式翻译批次 {batch_id}，包含 {len(texts)} 条字幕")
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                max_tokens=4096,
+                response_format={"type": "json_object"}
+            )
+            message = response.choices[0].message
+            result = (message.content or getattr(message, 'reasoning_content', None) or '')
+            result = strip_reasoning_thoughts(result)
+            return self._parse_structured_translation_result(result, len(texts), batch_id)
+        except Exception as e:
+            with self._log_lock:
+                self.logger.error(f"严格模式批次 {batch_id} 翻译失败: {e}")
+            return texts
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
         """构建结构化系统提示词"""
         target_lang_map = {
             "zh": "中文",
-            "en": "英文", 
+            "en": "英文",
             "ja": "日文",
-            "ko": "韩文"
+            "ko": "韩文",
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
 
@@ -371,6 +400,7 @@ class LLMRequester:
 7) 占位/代码：代码、命令、格式化占位符与变量（如 {{...}}、<...>、%s）保持不变。
 8) 直译粗口：敏感或粗口按目标语言自然等价表达保留，不弱化、不夸张。
 9) 一一对应：每个输入严格对应一个输出，顺序一致，禁止合并或拆分。
+10) 语言一致性：输出必须完全为{target_lang_name}。除不可译的专有名词外，不得整句保留英文原文。
 
 输出格式：必须返回且仅返回如下JSON对象：
 {{
@@ -382,6 +412,12 @@ class LLMRequester:
 }}
 
 注意：严禁输出JSON对象以外的任何字符。严禁给译文添加任何编号或列表标记。"""
+
+    def _build_strict_structured_system_prompt(self, target_language: str) -> str:
+        """更严格的系统提示词，用于补救未译条目：强制全中文输出。"""
+        base = self._build_structured_system_prompt(target_language)
+        extra = "\n附加要求：务必确保每条输出完全为目标语言文本，禁止保留整句英文或音译。\n"
+        return base + extra
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
         """构建结构化用户提示词"""
@@ -478,6 +514,89 @@ class SubtitleTranslator:
         self.llm_requester = LLMRequester(self.openai_config, task_id)
         self.reader = SubtitleReader()
         self.writer = SubtitleWriter()
+
+    @staticmethod
+    def _contains_chinese(text: str) -> bool:
+        try:
+            for ch in str(text):
+                code = ord(ch)
+                if 0x4E00 <= code <= 0x9FFF:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def quick_repair_translated_file(self, input_path: str, output_path: Optional[str] = None) -> bool:
+        """最小改动修复：仅补译已翻译文件中仍为英文/未译的行，避免整文件重翻译。
+
+        - 读取 SRT/VTT 文件。
+        - 找出文本中不含中文且含英文字母/数字的条目。
+        - 以严格模式仅翻译这些条目，写回文件（默认覆盖原文件）。
+        """
+        try:
+            from pathlib import Path as _Path
+            fp = _Path(input_path)
+            ext = fp.suffix.lower()
+            if ext == '.srt':
+                items = self.reader.read_srt(input_path)
+            elif ext == '.vtt':
+                items = self.reader.read_vtt(input_path)
+            else:
+                self.logger.error(f"不支持的字幕格式: {ext}")
+                return False
+
+            if not items:
+                self.logger.warning("文件为空或解析失败，跳过修复")
+                return False
+
+            # 挑出仍为英文的行（无中文且包含拉丁字母/数字）
+            targets: List[int] = []
+            for i, it in enumerate(items):
+                t = (it.source_text or '').strip()
+                if not t:
+                    continue
+                if self._contains_chinese(t):
+                    continue
+                # 若包含字母或数字则判定为待修复
+                if re.search(r"[A-Za-z0-9]", t):
+                    targets.append(i)
+
+            if not targets:
+                self.logger.info("未发现需要修复的英文行，跳过")
+                return True
+
+            texts = [items[i].source_text for i in targets]
+            self.logger.info(f"快速修复：共 {len(texts)} 条待补译")
+
+            # 使用严格模式批量翻译，尽量输出全中文
+            translations = self.llm_requester.translate_batch_strict(
+                texts, self.config.target_language, batch_id=f"quick_repair_{self.task_id}"
+            )
+
+            # 写回对应条目（只改这些行）
+            for j, idx in enumerate(targets):
+                try:
+                    tr = translations[j] if j < len(translations) else ''
+                    if tr:
+                        items[idx].translated_text = self._sanitize_translated_text(tr)
+                except Exception:
+                    pass
+
+            # 输出到目标文件（默认覆盖原文件）
+            out_path = str(output_path or input_path)
+            if ext == '.srt':
+                self.writer.write_srt(items, out_path, translated=True)
+            else:
+                self.writer.write_vtt(items, out_path, translated=True)
+
+            self.logger.info(f"快速修复完成：{out_path}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"快速修复失败: {e}")
+            import traceback as _tb
+            self.logger.error(_tb.format_exc())
+            return False
     
     def translate_file(self, input_path: str, output_path: str,
                       progress_callback: Optional[Callable[[float, int, int], None]] = None) -> bool:
@@ -672,6 +791,28 @@ class SubtitleTranslator:
                     translations = self.llm_requester.translate_batch(texts, self.config.target_language, batch_id=f"repair_{self.task_id}_{i//bs+1}")
                 except Exception as e:
                     self.logger.warning(f"补翻批次失败，跳过该批：{e}")
+                    continue
+                for j, idx in enumerate(chunk):
+                    try:
+                        tr = translations[j] if j < len(translations) else ''
+                        if tr and self._likely_untranslated(items[idx].source_text, tr) is False:
+                            items[idx].translated_text = self._sanitize_translated_text(tr)
+                    except Exception:
+                        pass
+
+            # 再次扫描仍未译的条目，使用严格模式再尝试一次
+            still_untranslated: List[int] = [i for i, it in enumerate(items) if self._likely_untranslated(it.source_text, it.translated_text)]
+            if not still_untranslated:
+                return
+            self.logger.info(f"仍有 {len(still_untranslated)} 条未充分翻译，启动严格模式补救...")
+            bs2 = max(1, int(self.config.batch_size) if self.config.batch_size else 5)
+            for i in range(0, len(still_untranslated), bs2):
+                chunk = still_untranslated[i:i+bs2]
+                texts = [items[idx].source_text for idx in chunk]
+                try:
+                    translations = self.llm_requester.translate_batch_strict(texts, self.config.target_language, batch_id=f"repair_strict_{self.task_id}_{i//bs2+1}")
+                except Exception as e:
+                    self.logger.warning(f"严格模式补翻批次失败，跳过该批：{e}")
                     continue
                 for j, idx in enumerate(chunk):
                     try:
