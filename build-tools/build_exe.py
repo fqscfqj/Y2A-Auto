@@ -114,23 +114,31 @@ def create_spec_file():
     """创建PyInstaller spec文件"""
     print("生成PyInstaller配置文件...")
     
-    spec_content = '''# -*- mode: python ; coding: utf-8 -*-
+    # 列出期望打包的数据路径（相对于 build-tools 目录）
+    candidate_datas = [
+        ('../templates', 'templates'),
+        ('../static', 'static'),
+        ('../modules', 'modules'),
+        ('../userscripts', 'userscripts'),
+        ('../docs', 'docs'),
+        ('../acfunid', 'acfunid'),
+        ('../fonts', 'fonts'),
+        ('../app.py', '.'),
+    ]
 
-import os
+    # 只包含实际存在的路径，避免 PyInstaller 在找不到时失败
+    datas_lines = []
+    for src, dst in candidate_datas:
+        abs_src = os.path.normpath(os.path.join(os.getcwd(), src))
+        if os.path.exists(abs_src):
+            datas_lines.append(f"    ('{src}', '{dst}'),")
+        else:
+            print(f"⚠ 跳过不存在的数据路径: {abs_src}")
 
-block_cipher = None
+    datas_block = "[\n" + "\n".join(datas_lines) + "\n]" if datas_lines else "[]"
 
-# 收集所有数据文件
-datas = [
-    ('../templates', 'templates'),
-    ('../static', 'static'),
-    ('../modules', 'modules'),
-    ('../userscripts', 'userscripts'),
-    ('../docs', 'docs'),
-    ('../acfunid', 'acfunid'),
-    ('../fonts', 'fonts'),
-    ('../app.py', '.'),
-]
+    # 其余内容保持原样（隐藏导入等）
+    spec_tail = '''
 
 # 隐藏导入 - 包含所有可能需要的模块
 hiddenimports = [
@@ -275,10 +283,12 @@ coll = COLLECT(
     name='Y2A-Auto',
 )
 '''
-    
+
+    spec_content = '# -*- mode: python ; coding: utf-8 -*-\n\nimport os\n\nblock_cipher = None\n\n# 收集所有数据文件\n' + 'datas = ' + datas_block + spec_tail
+
     with open('Y2A-Auto.spec', 'w', encoding='utf-8') as f:
         f.write(spec_content)
-    
+
     print("✓ PyInstaller配置文件已生成")
 
 def build_executable():
