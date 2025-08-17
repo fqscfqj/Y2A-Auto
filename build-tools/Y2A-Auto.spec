@@ -9,8 +9,6 @@ datas = [
     ('../templates', 'templates'),
     ('../static', 'static'),
     ('../modules', 'modules'),
-    ('../userscripts', 'userscripts'),
-    ('../docs', 'docs'),
     ('../acfunid', 'acfunid'),
     ('../fonts', 'fonts'),
     ('../app.py', '.'),
