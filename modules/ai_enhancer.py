@@ -62,7 +62,7 @@ def get_openai_client(openai_config):
     # 创建并返回新版客户端实例
     return openai.OpenAI(api_key=api_key, **options)
 
-def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None):
+def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None, content_type: str = "description"):
     """
     使用OpenAI翻译文本
     
@@ -107,23 +107,65 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         
         target_language_name = language_map.get(target_language, target_language)
 
-        # 构建针对“搬运视频”场景的严格翻译提示
-        prompt = f"""请将以下内容翻译成{target_language_name}。
+        # 在提示阶段前执行一次本地预清洗，移除明显的推广信息（URL/邮箱/社媒@/#等）
+        import re as _re
+        _url_patterns = [
+            r'https?://[^\s\u4e00-\u9fff]+',
+            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+            r'ftp://[^\s\u4e00-\u9fff]+'
+        ]
+        _email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        _social_patterns = [r'@[A-Za-z0-9_]+', r'#[A-Za-z0-9_]+' ]
+        _interaction_patterns = [
+            r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
+            r'更多[内容]*请访问', r'详情见[链接]*', r'链接在[描述]*[中]*', r'访问[我们的]*[网站]*', r'查看[完整]*[版本]*',
+            r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
+            r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
+            r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
+            r'see\s+[full\s]*[version\s]*', r'patreon|팬딩|팬딩|팬딩|팬딩', r'会员|加入会员|赞助|福利|团购|抽奖'
+        ]
 
-严格规范（必须同时满足）：
-1) 不改变原本意图：只做等价翻译，禁止解释、扩写、改写、总结或二次创作。
-2) 不添加多余信息：不得添加序号、列表符号、引号包裹、括注、免责声明、语气词、emoji、前后缀等。
-3) 风格对齐：保持原文口语/正式/幽默/严肃等风格一致；情感与语气不弱化、不夸张。
-4) 可读易扫：用目标语言中自然、简洁的表达，信息密度不高于原文，便于视频观众快速阅读。
-5) 专名策略：人名/地名/品牌/型号等如有约定俗成译名则用之；无固定译名时保留原文，不加括注或解释。
-6) 数字/单位/格式：数字、货币、计量单位与大小写按原样保留；不要换算单位或币种；标点遵循目标语言习惯但不改变语气。
-7) 占位/代码：代码、命令、格式化占位符与变量（如 {{...}}、<...>、%s）保持不变。
-8) 敏感/粗口：按目标语言自然等价表达保留，不润色、不夸张。
+        def _pre_clean(s: str) -> str:
+            if not s:
+                return s
+            for p in _url_patterns:
+                s = _re.sub(p, '', s, flags=_re.IGNORECASE)
+            s = _re.sub(_email_pattern, '', s)
+            for p in _social_patterns:
+                s = _re.sub(p, '', s)
+            for p in _interaction_patterns:
+                s = _re.sub(p, '', s, flags=_re.IGNORECASE)
+            # 清除可能的多余空白
+            s = s.replace('\r\n', '\n').replace('\r', '\n')
+            s = _re.sub(r'[ \t\f\v]+', ' ', s)
+            s = _re.sub(r'[ \t]+\n', '\n', s)
+            s = _re.sub(r'\n{3,}', '\n\n', s)
+            return s.strip()
 
-只输出译文文本，不要添加任何说明或注释。
+        cleaned_source_text = _pre_clean(text)
+        if cleaned_source_text != text:
+            logger.info("已在提示阶段前预清洗推广信息与链接等噪声")
 
-原文：
-{text}
+        # 构建针对“搬运视频”场景的严格翻译提示（强制JSON输出）
+        purpose = "标题" if str(content_type).lower() == "title" else "描述"
+        prompt = f"""
+你是一名资深本地化译员，当前任务是将视频{purpose}翻译成{target_language_name}并返回严格JSON。
+
+处理规则（必须全部满足）：
+1) 先从原文中移除所有推广/引流信息：包含或暗示的URL/域名、邮箱、社交账号(@/话题#)、商店/打赏/会员/Patreon/粉丝平台、关注/订阅/点赞/分享/评论等CTA、二维码/优惠码/联系方式、平台跳转文案等；保留与视频内容理解直接相关的信息。
+2) 不改变原意：做等价翻译，禁止解释、扩写、改写、总结或加入任何说明。
+3) 风格对齐：保持原文风格与语气；专有名词无固定译名时原文保留；代码/占位符/变量不改动。
+4) 数字/单位/大小写按原文保留，不换算单位或币种。
+5) 输出必须是一行紧凑JSON，键名固定为 translation，且仅此一个键。
+6) 严禁输出Markdown、反引号、额外文本、前后缀、括注、编号、免责声明或解释。
+
+输入原文（已做基础去噪）：
+<CONTENT>
+{cleaned_source_text}
+</CONTENT>
+
+仅以如下JSON返回：
+{"translation":"<翻译后的{purpose}>"}
 """
 
         start_time = time.time()
@@ -133,10 +175,8 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             model=model_name,
             messages=[
                 {"role": "system", "content": (
-                    "你是一名资深本地化译员，工作场景为‘搬运视频’。"
-                    "严格遵守：不改变意图、不添加任何多余信息、只做等价翻译、保持风格一致。"
-                    "遇到专有名词无固定译名时保留原文；保留占位/代码/变量；数字和单位不换算。"
-                    "输出中不得包含引言、编号、括注、免责声明或额外说明。"
+                    "你是严格遵循指令的JSON翻译器。始终只输出一行、无多余字符的紧凑JSON对象，"
+                    "且仅包含键 translation。不得输出Markdown或任何说明。"
                 )},
                 {"role": "user", "content": prompt}
             ],
@@ -146,44 +186,49 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
 
         response_time = time.time() - start_time
 
-        # 读取消息主体并先屏蔽思考内容
+        # 读取消息主体并解析严格JSON
         message = response.choices[0].message
-        # 优先取最终答案内容；仅在缺失时回退到 reasoning_content
-        translated_text = (message.content or getattr(message, 'reasoning_content', None) or '')
-        translated_text = strip_reasoning_thoughts(translated_text).strip()
+        raw = (message.content or getattr(message, 'reasoning_content', None) or '')
+        raw = strip_reasoning_thoughts(raw).strip()
+
+        # 去除可能的Markdown围栏
+        if raw.startswith('```'):
+            raw = raw.strip('`')
+            raw = raw.replace('json\n', '').replace('\njson', '')
         
-        # 检查并移除可能的前缀和注释
+        import json as _json
+        import re
+        translation_value = None
+        try:
+            data = _json.loads(raw)
+            translation_value = data.get('translation') if isinstance(data, dict) else None
+        except Exception:
+            # 尝试从文本中提取第一个JSON对象
+            m = re.search(r'\{.*\}', raw, re.DOTALL)
+            if m:
+                try:
+                    data = _json.loads(m.group(0))
+                    translation_value = data.get('translation') if isinstance(data, dict) else None
+                except Exception:
+                    pass
+
+        # 如果依然无法解析JSON，回退为原文本并继续后续清洗（尽最大努力）
+        translated_text = (translation_value or raw or '').strip()
+
+        # 为防止模型输出解释性话语，移除常见前缀/注释
         prefixes_to_remove = ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]
         for prefix in prefixes_to_remove:
             if translated_text.startswith(prefix):
                 translated_text = translated_text[len(prefix):].strip()
-        
-        # 移除各种形式的说明性文字
-        import re
+
+        # 清理提示性注释
         removal_patterns = [
-            r'（注：.*?）',                     # 中文括号注释
-            r'\(注：.*?\)',                     # 英文括号注释
-            r'【注：.*?】',                     # 方括号注释
-            r'（.*?已移除）',                   # 各种"已移除"说明
-            r'\(.*?已移除\)',                   # 英文括号的已移除说明
-            r'（.*?联系方式.*?）',              # 联系方式相关说明
-            r'\(.*?联系方式.*?\)',              # 英文括号联系方式说明
-            r'（.*?社交媒体.*?）',              # 社交媒体相关说明
-            r'\(.*?社交媒体.*?\)',              # 英文括号社交媒体说明
-            r'（.*?标签.*?）',                  # 标签相关说明
-            r'\(.*?标签.*?\)',                  # 英文括号标签说明
-            r'（.*?链接.*?）',                  # 链接相关说明
-            r'\(.*?链接.*?\)',                  # 英文括号链接说明
-            r'（.*?推广.*?）',                  # 推广相关说明
-            r'\(.*?推广.*?\)',                  # 英文括号推广说明
-            r'（.*?广告.*?）',                  # 广告相关说明
-            r'\(.*?广告.*?\)',                  # 英文括号广告说明
-            r'（.*?removed.*?）',               # 英文removed说明
-            r'\(.*?removed.*?\)',               # 英文括号removed说明
-            r'（.*?filtered.*?）',              # 英文filtered说明
-            r'\(.*?filtered.*?\)',              # 英文括号filtered说明
+            r'（注：.*?）', r'\(注：.*?\)', r'【注：.*?】', r'（.*?已移除）', r'\(.*?已移除\)',
+            r'（.*?联系方式.*?）', r'\(.*?联系方式.*?\)', r'（.*?社交媒体.*?）', r'\(.*?社交媒体.*?\)',
+            r'（.*?标签.*?）', r'\(.*?标签.*?\)', r'（.*?链接.*?）', r'\(.*?链接.*?\)',
+            r'（.*?推广.*?）', r'\(.*?推广.*?\)', r'（.*?广告.*?）', r'\(.*?广告.*?\)',
+            r'（.*?removed.*?）', r'\(.*?removed.*?\)', r'（.*?filtered.*?）', r'\(.*?filtered.*?\)'
         ]
-        
         for pattern in removal_patterns:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
         
@@ -191,7 +236,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         logger.info(f"翻译结果总长度: {len(translated_text)} 字符")
         logger.info(f"翻译结果 (截取前100字符用于显示): {translated_text[:100]}...")
         
-        # 过滤URL、域名和邮箱地址
+        # 过滤URL、域名和邮箱地址（防御性，再次清理）
         import re
         
         # 更全面的URL正则表达式
@@ -274,21 +319,20 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)
         # 5) 去除首尾空白（保留文本内换行）
         translated_text = translated_text.strip()
-        
+
         logger.info("已过滤URL、域名、邮箱地址和社交媒体引用")
-        
+
         # 处理字符限制
-        if task_id and "title" in task_id.lower():
-            # 如果是标题，限制为50个字符
+        ct_lower = str(content_type).lower()
+        if ct_lower == 'title':
             if len(translated_text) > 50:
                 logger.info(f"标题超过AcFun限制(50字符)，将被截断: {len(translated_text)} -> 50")
                 translated_text = translated_text[:50]
         else:
-            # 如果是描述，限制为1000个字符
             if len(translated_text) > 1000:
                 logger.info(f"描述超过AcFun限制(1000字符)，将被截断: {len(translated_text)} -> 1000")
                 translated_text = translated_text[:997] + "..."
-        
+
         return translated_text
     
     except Exception as e:

@@ -34,6 +34,15 @@
                                 {% endif %}
                             </h5>
                             
+                            {# 描述预览：优先显示翻译后的描述，否则显示原始描述；保留换行 #}
+                            {% set desc = task.description_translated or task.description_original %}
+                            {% if desc %}
+                            <div class="mt-2">
+                                <h6 class="mb-1"><i class="bi bi-card-text"></i> 描述预览:</h6>
+                                <div class="desc-pre">{{ desc }}</div>
+                            </div>
+                            {% endif %}
+                            
                             <div class="mt-3">
                                 <h6><i class="bi bi-shield-check"></i> 审核结果:</h6>
                                 {% if task.moderation_result %}
@@ -260,6 +269,18 @@
     .tags-container {
         display: flex;
         flex-wrap: wrap;
+    }
+
+    /* 保留描述中的换行与空白 */
+    .desc-pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #fafafa;
+        border: 1px solid #eee;
+        border-radius: .25rem;
+        padding: .5rem .75rem;
+        max-height: 220px;
+        overflow-y: auto;
     }
 </style>
 {% endblock %}

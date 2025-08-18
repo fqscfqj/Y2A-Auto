@@ -1046,7 +1046,8 @@ class TaskProcessor:
                 task['video_title_original'], 
                 target_language="zh-CN", 
                 openai_config=openai_config,
-                task_id=task_id
+                task_id=task_id,
+                content_type="title"
             )
             if title_translated:
                 update_task(task_id, video_title_translated=title_translated)
@@ -1060,7 +1061,8 @@ class TaskProcessor:
                 task['description_original'], 
                 target_language="zh-CN", 
                 openai_config=openai_config,
-                task_id=task_id
+                task_id=task_id,
+                content_type="description"
             )
             if description_translated:
                 update_task(task_id, description_translated=description_translated)
