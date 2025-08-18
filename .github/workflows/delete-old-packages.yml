@@ -1,0 +1,43 @@
+name: Cleanup old packages and release assets
+
+on:
+  workflow_dispatch: # Allow manual triggering
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight
+
+jobs:
+  delete-old-packages:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old versions of y2a-auto package
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'y2a-auto'
+          package-type: 'container'
+          min-versions-to-keep: 5
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  delete-old-release-assets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete Y2A-Auto-win64.zip from older releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release list --repo $REPO --json tagName,createdAt --limit 1000 | \
+          jq -r '. | sort_by(.createdAt) | reverse | .[5:] | .[] | .tagName' | \
+          while read tag; do
+            echo "Checking release $tag for asset Y2A-Auto-win64.zip"
+            asset_id=$(gh release view "$tag" --json assets --jq '.assets[] | select(.name == "Y2A-Auto-win64.zip") | .id')
+            if [ -n "$asset_id" ]; then
+              echo "Deleting asset $asset_id (Y2A-Auto-win64.zip) from release $tag"
+              gh api "repos/$REPO/releases/assets/$asset_id" -X DELETE
+            else
+              echo "No Y2A-Auto-win64.zip asset found in release $tag"
+            fi
+          done
