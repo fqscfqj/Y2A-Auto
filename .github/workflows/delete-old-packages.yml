@@ -1,4 +1,4 @@
-name: Cleanup old packages and release assets
+name: Cleanup old packages, assets, and images
 
 on:
   workflow_dispatch: # Allow manual triggering
@@ -41,3 +41,15 @@ jobs:
               echo "No Y2A-Auto-win64.zip asset found in release $tag"
             fi
           done
+
+  delete-old-docker-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete older Docker Hub images
+        uses: burnett01/delete-older-docker-images@v3.0.0
+        with:
+          repo: fqscfqj/y2a-auto
+          keep_latest: 5
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
