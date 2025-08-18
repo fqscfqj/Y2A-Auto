@@ -10,146 +10,103 @@ from .utils import get_app_subdir, strip_reasoning_thoughts
 
 import openai
 
+# --- Helpers: logger/client/cleaner (restored) ---
 def setup_task_logger(task_id):
     """
-    为特定任务设置日志记录器
-    
-    Args:
-        task_id: 任务ID
-        
-    Returns:
-        logger: 配置好的日志记录器
+    为特定任务设置日志记录器（与其他模块保持一致）。
     """
     log_dir = get_app_subdir('logs')
     os.makedirs(log_dir, exist_ok=True)
-    
+
     log_file = os.path.join(log_dir, f'task_{task_id}.log')
     logger = logging.getLogger(f'ai_enhancer_{task_id}')
-    
-    if not logger.handlers:  # 避免重复添加处理器
+
+    if not logger.handlers:
         logger.setLevel(logging.INFO)
-        
-        # 文件处理器
         file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5, encoding='utf-8')
         file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.INFO)
         logger.addHandler(file_handler)
-        
-        # 确保消息不会传播到根日志记录器
         logger.propagate = False
-    
+
     return logger
 
 def get_openai_client(openai_config):
     """
-    创建OpenAI客户端 (兼容 API 1.x 版本)
-    
-    Args:
-        openai_config (dict): OpenAI配置信息，包含api_key, base_url等
-        
-    Returns:
-        OpenAI客户端实例
+    创建OpenAI客户端（与其它模块保持一致的实现）。
     """
-    # 配置选项
     api_key = openai_config.get('OPENAI_API_KEY', '')
     options = {}
-    
-    # 如果提供了base_url，添加到选项中
     if openai_config.get('OPENAI_BASE_URL'):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
-    
-    # 创建并返回新版客户端实例
     return openai.OpenAI(api_key=api_key, **options)
+
+def _pre_clean(text: str) -> str:
+    """在发送给模型前做基础去噪：去URL/邮箱/社交句柄/明显CTA等。"""
+    if not text:
+        return text
+    import re
+    cleaned = text
+    # URLs / domains
+    url_patterns = [
+        r'https?://[^\s\u4e00-\u9fff]+',
+        r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        r'ftp://[^\s\u4e00-\u9fff]+'
+    ]
+    for pat in url_patterns:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    # emails
+    cleaned = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', '', cleaned)
+    # social handles/hashtags
+    cleaned = re.sub(r'@[A-Za-z0-9_]+', '', cleaned)
+    cleaned = re.sub(r'#[A-Za-z0-9_]+', '', cleaned)
+    # Common CTAs
+    ctas = [
+        r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
+        r'更多[内容]*请访问', r'详情见[链接]*', r'链接在[描述]*[中]*', r'访问[我们的]*[网站]*', r'查看[完整]*[版本]*',
+        r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
+        r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
+        r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
+        r'see\s+[full\s]*[version\s]*',
+    ]
+    for pat in ctas:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    # whitespace normalize (keep newlines)
+    cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
+    cleaned = re.sub(r'[ \t\f\v]+', ' ', cleaned)
+    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 
 def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None, content_type: str = "description"):
     """
-    使用OpenAI翻译文本
-    
-    Args:
-        text (str): 待翻译的文本
-        target_language (str): 目标语言代码，默认为简体中文
-        openai_config (dict): OpenAI配置信息，包含api_key, base_url, model_name等
-        task_id (str, optional): 任务ID，用于日志记录
-        
-    Returns:
-        str or None: 翻译后的文本，出错时返回None
+    使用OpenAI翻译文本（移除温度，强制结构化JSON输出）。
+    返回清洗后的翻译文本，失败返回None。
     """
     if not text or not text.strip():
         return text
-    
+
     logger = setup_task_logger(task_id or "unknown")
     logger.info(f"开始翻译文本，目标语言: {target_language}")
-    # 仅日志中显示部分内容，实际翻译用完整文本
     logger.info(f"原始文本 (截取前100字符用于显示): {text[:100]}...")
     logger.info(f"原始文本总长度: {len(text)} 字符")
-    
+
     if not openai_config or not openai_config.get('OPENAI_API_KEY'):
         logger.error("缺少OpenAI配置或API密钥")
         return None
-    
+
     try:
-        # 获取OpenAI客户端 (1.x版本)
         client = get_openai_client(openai_config)
         model_name = openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
-        
-        language_map = {
-            'zh-CN': '简体中文',
-            'zh-TW': '繁体中文',
-            'en': '英语',
-            'ja': '日语',
-            'ko': '韩语',
-            'es': '西班牙语',
-            'fr': '法语',
-            'de': '德语',
-            'ru': '俄语'
-        }
-        
-        target_language_name = language_map.get(target_language, target_language)
-
-        # 在提示阶段前执行一次本地预清洗，移除明显的推广信息（URL/邮箱/社媒@/#等）
-        import re as _re
-        _url_patterns = [
-            r'https?://[^\s\u4e00-\u9fff]+',
-            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            r'ftp://[^\s\u4e00-\u9fff]+'
-        ]
-        _email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        _social_patterns = [r'@[A-Za-z0-9_]+', r'#[A-Za-z0-9_]+' ]
-        _interaction_patterns = [
-            r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
-            r'更多[内容]*请访问', r'详情见[链接]*', r'链接在[描述]*[中]*', r'访问[我们的]*[网站]*', r'查看[完整]*[版本]*',
-            r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
-            r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
-            r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
-            r'see\s+[full\s]*[version\s]*', r'patreon|팬딩|팬딩|팬딩|팬딩', r'会员|加入会员|赞助|福利|团购|抽奖'
-        ]
-
-        def _pre_clean(s: str) -> str:
-            if not s:
-                return s
-            for p in _url_patterns:
-                s = _re.sub(p, '', s, flags=_re.IGNORECASE)
-            s = _re.sub(_email_pattern, '', s)
-            for p in _social_patterns:
-                s = _re.sub(p, '', s)
-            for p in _interaction_patterns:
-                s = _re.sub(p, '', s, flags=_re.IGNORECASE)
-            # 清除可能的多余空白
-            s = s.replace('\r\n', '\n').replace('\r', '\n')
-            s = _re.sub(r'[ \t\f\v]+', ' ', s)
-            s = _re.sub(r'[ \t]+\n', '\n', s)
-            s = _re.sub(r'\n{3,}', '\n\n', s)
-            return s.strip()
 
         cleaned_source_text = _pre_clean(text)
         if cleaned_source_text != text:
             logger.info("已在提示阶段前预清洗推广信息与链接等噪声")
 
-        # 构建针对“搬运视频”场景的严格翻译提示（强制JSON输出）
         purpose = "标题" if str(content_type).lower() == "title" else "描述"
         prompt = f"""
-你是一名资深本地化译员，当前任务是将视频{purpose}翻译成{target_language_name}并返回严格JSON。
+你是一名资深本地化译员，当前任务是将视频{purpose}翻译成{target_language}并返回严格JSON。
 
 处理规则（必须全部满足）：
 1) 先从原文中移除所有推广/引流信息：包含或暗示的URL/域名、邮箱、社交账号(@/话题#)、商店/打赏/会员/Patreon/粉丝平台、关注/订阅/点赞/分享/评论等CTA、二维码/优惠码/联系方式、平台跳转文案等；保留与视频内容理解直接相关的信息。
@@ -165,164 +122,197 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
 </CONTENT>
 
 仅以如下JSON返回：
-{"translation":"<翻译后的{purpose}>"}
+{{"translation":"<翻译后的{purpose}>"}}
 """
 
         start_time = time.time()
-
-        # 使用新版API调用格式
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": (
-                    "你是严格遵循指令的JSON翻译器。始终只输出一行、无多余字符的紧凑JSON对象，"
-                    "且仅包含键 translation。不得输出Markdown或任何说明。"
-                )},
+        create_kwargs = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是严格遵循指令的JSON翻译器。始终只输出一行、无多余字符的紧凑JSON对象，且仅包含键 translation。不得输出Markdown或任何说明。"
+                },
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
-            max_tokens=4096
-        )
+            "max_tokens": 4096,
+        }
+        try:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        except Exception:
+            pass
 
+        response = client.chat.completions.create(**create_kwargs)
         response_time = time.time() - start_time
 
-        # 读取消息主体并解析严格JSON
         message = response.choices[0].message
-        raw = (message.content or getattr(message, 'reasoning_content', None) or '')
+        # 优先尝试结构化 parsed（部分SDK/服务商在json_object下提供parsed）
+        raw = ''
+        translation_from_parsed = None
+        try:
+            parsed = getattr(message, 'parsed', None)
+            if isinstance(parsed, dict) and 'translation' in parsed:
+                translation_from_parsed = parsed.get('translation')
+        except Exception:
+            pass
+        # 提取文本内容（兼容部分供应商将 content 组织为 list[{type,text}]）
+        if not translation_from_parsed:
+            mc = getattr(message, 'content', None)
+            if isinstance(mc, list):
+                try:
+                    raw = ''.join([seg.get('text', '') for seg in mc if isinstance(seg, dict)])
+                except Exception:
+                    raw = ''
+            else:
+                raw = (mc or getattr(message, 'reasoning_content', None) or '')
         raw = strip_reasoning_thoughts(raw).strip()
 
         # 去除可能的Markdown围栏
         if raw.startswith('```'):
-            raw = raw.strip('`')
-            raw = raw.replace('json\n', '').replace('\njson', '')
-        
+            try:
+                import re as _re
+                raw = _re.sub(r'^```[a-zA-Z0-9]*\s*', '', raw)
+                raw = _re.sub(r'\s*```$', '', raw)
+            except Exception:
+                raw = raw.strip('`')
+
         import json as _json
         import re
-        translation_value = None
-        try:
-            data = _json.loads(raw)
-            translation_value = data.get('translation') if isinstance(data, dict) else None
-        except Exception:
-            # 尝试从文本中提取第一个JSON对象
-            m = re.search(r'\{.*\}', raw, re.DOTALL)
-            if m:
-                try:
-                    data = _json.loads(m.group(0))
-                    translation_value = data.get('translation') if isinstance(data, dict) else None
-                except Exception:
-                    pass
+        translation_value = translation_from_parsed
+        if translation_value is None:
+            try:
+                data = _json.loads(raw)
+                translation_value = data.get('translation') if isinstance(data, dict) else None
+            except Exception:
+                m = re.search(r'\{.*\}', raw, re.DOTALL)
+                if m:
+                    try:
+                        data = _json.loads(m.group(0))
+                        translation_value = data.get('translation') if isinstance(data, dict) else None
+                    except Exception:
+                        pass
 
-        # 如果依然无法解析JSON，回退为原文本并继续后续清洗（尽最大努力）
-        translated_text = (translation_value or raw or '').strip()
+        translated_text = (translation_value if isinstance(translation_value, str) else (raw or '')).strip()
 
-        # 为防止模型输出解释性话语，移除常见前缀/注释
-        prefixes_to_remove = ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]
-        for prefix in prefixes_to_remove:
+        # 移除常见前缀
+        for prefix in ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]:
             if translated_text.startswith(prefix):
                 translated_text = translated_text[len(prefix):].strip()
 
         # 清理提示性注释
-        removal_patterns = [
+        for pattern in [
             r'（注：.*?）', r'\(注：.*?\)', r'【注：.*?】', r'（.*?已移除）', r'\(.*?已移除\)',
             r'（.*?联系方式.*?）', r'\(.*?联系方式.*?\)', r'（.*?社交媒体.*?）', r'\(.*?社交媒体.*?\)',
             r'（.*?标签.*?）', r'\(.*?标签.*?\)', r'（.*?链接.*?）', r'\(.*?链接.*?\)',
             r'（.*?推广.*?）', r'\(.*?推广.*?\)', r'（.*?广告.*?）', r'\(.*?广告.*?\)',
             r'（.*?removed.*?）', r'\(.*?removed.*?\)', r'（.*?filtered.*?）', r'\(.*?filtered.*?\)'
-        ]
-        for pattern in removal_patterns:
+        ]:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-        
+
         logger.info(f"翻译完成，耗时: {response_time:.2f}秒")
         logger.info(f"翻译结果总长度: {len(translated_text)} 字符")
         logger.info(f"翻译结果 (截取前100字符用于显示): {translated_text[:100]}...")
-        
-        # 过滤URL、域名和邮箱地址（防御性，再次清理）
-        import re
-        
-        # 更全面的URL正则表达式
+
+        # 再次防御性清理 URL/邮箱/社交引用
         url_patterns = [
-            r'https?://[^\s\u4e00-\u9fff]+',  # HTTP/HTTPS链接（排除中文字符）
-            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',  # www开头的域名
-            r'ftp://[^\s\u4e00-\u9fff]+',     # FTP链接
-            r'\b[a-zA-Z0-9.-]+\.(?:com|net|org|edu|gov|mil|co|io|me|tv|fm|ly|be|to|cc|ws|biz|info|name|mobi|asia|tel|travel|museum|aero|jobs|cat|pro|xxx|app|dev|ai|tech|online|website|blog|shop|store|host|cloud|site|link|page|youtube|twitter|facebook|instagram|tiktok|linkedin|pinterest|tumblr|flickr|vimeo|twitch|discord|slack|telegram|whatsapp|reddit|github|gitlab|bitbucket|stackoverflow|medium|substack|patreon|ko-fi|paypal|venmo|cashapp|gofundme|kickstarter|indiegogo|etsy|amazon|ebay|aliexpress|shopify|wix|squarespace|wordpress|blogger|weebly|godaddy|namecheap|cloudflare|google|microsoft|apple|adobe|netflix|spotify|hulu|disney|hbo|paramount|peacock|crunchyroll|funimation|vrv|roosterteeth|newgrounds|deviantart|artstation|behance|dribbble|figma|sketch|canva|photoshop|zoom|teams|meet|skype|facetime|snapchat|clubhouse|onlyfans|cameo|twitch|mixer|dlive|caffeine|trovo|nimo|booyah|nonolive|bigo|uplive|liveme|periscope|younow|omegle|chatroulette|discord|teamspeak|mumble|ventrilo|curse|overwolf|steam|epic|origin|uplay|battlenet|gog|itch|humble|greenman|fanatical|chrono|bundlestars|indiegala|groupees|royalgames|gamersgate|direct2drive|impulse|desura|gamefly|onlive|gaikai|stadia|geforce|shadow|parsec|rainway|moonlight|steamlink|nvidia|amd|intel|corsair|razer|logitech|steelseries|hyperx|asus|msi|gigabyte|asrock|evga|zotac|sapphire|xfx|powercolor|his|club3d|gainward|palit|galax|kfa2|inno3d|pny|leadtek|point|view|manli|colorful|maxsun|yeston|mingying|onda|soyo|biostar|elite|foxconn|jetway|ecs|dfi|abit|chaintech|shuttle|via|sis|ali|uli|nvidia|ati|3dfx|matrox|s3|cirrus|tseng|oak|trident|chips|realtek|creative|aureal|ensoniq|yamaha|roland|korg|moog|oberheim|sequential|prophet|jupiter|juno|sh|tr|tb|mc|sp|mpc|mv|fantom|integra|rd|fp|go|bk|jv|xv|vsynth|variphrase|cosm|roli|arturia|novation|akai|native|ableton|steinberg|presonus|avid|digidesign|motu|rme|focusrite|scarlett|clarett|red|saffire|octopre|isa|liquid|voicemaster|twintrack|trackmaster|platinum|onyx|big|knob|studio|live|monitor|reference|truth|reveal|dynaudio|genelec|yamaha|kali|jbl|krk|mackie|behringer|tascam|zoom|roland|boss|tc|eventide|lexicon|alesis|akai|mpc|maschine|push|launchpad|oxygen|keystation|axiom|impulse|code|sl|mk|arturia|keystep|beatstep|drumbrute|microbrute|minibrute|matrixbrute|polybrute|pigments|analog|lab|collection|v|vintage|electric|stage|piano|clavinet|wurlitzer|rhodes|hammond|leslie|vox|continental|farfisa|acetone|combo|compact|drawbar|tonewheel|percussion|vibrato|chorus|reverb|tremolo|distortion|overdrive|fuzz|wah|phaser|flanger|delay|echo|compressor|limiter|gate|expander|eq|filter|synthesizer|sampler|sequencer|arpeggiator|vocoder|talkbox|autotune|melodyne|celemony|antares|waves|plugin|alliance|soundtoys|fabfilter|izotope|ozone|neutron|nectar|rx|insight|tonal|balance|music|rebalance|dialogue|match|de|noise|de|clip|de|click|de|crackle|de|hum|de|rustle|de|wind|spectral|repair|composite|view|advanced|healing|connect|portal|exponential|audio|cedar|sonnox|oxford|inflator|limiter|enhancer|eq|dynamics|reverb|transmod|fraunhofer|pro|codec|toolbox|surcode|dvd|dts|ac3|dolby|atmos|truehd|dtsma|pcm|flac|alac|aac|mp3|ogg|vorbis|opus|speex|gsm|amr|g711|g722|g726|g729|ilbc|silk|celt|wma|ra|rm|au|aiff|wav|bwf|rf64|caf|m4a|m4b|m4p|m4r|3gp|3g2|amv|asf|avi|drc|dv|f4v|flv|gif|gifv|m2v|m4v|mkv|mng|mov|mp2|mp4|mpe|mpeg|mpg|mpv|mxf|nsv|ogv|qt|rm|rmvb|roq|svi|vob|webm|wmv|yuv|divx|xvid|h264|h265|hevc|vp8|vp9|av1|theora|dirac|prores|dnxhd|cineform|blackmagic|raw|braw|r3d|arriraw|cinema|dng|exr|dpx|tiff|tga|bmp|jpg|jpeg|png|gif|webp|svg|eps|pdf|ps|ai|cdr|wmf|emf|cgm|dxf|dwg|step|iges|stl|obj|ply|x3d|collada|fbx|3ds|max|maya|blender|cinema4d|houdini|modo|lightwave|softimage|xsi|katana|nuke|fusion|resolve|premiere|avid|final|cut|pro|x|imovie|quicktime|vlc|media|player|classic|mpc|hc|be|potplayer|kmplayer|gom|player|smplayer|mpv|mplayer|xine|totem|banshee|rhythmbox|amarok|clementine|strawberry|foobar2000|winamp|musicbee|aimp|mediamonkey|jriver|plex|kodi|emby|jellyfin|serviio|universal|media|server|twonky|asset|upnp|dlna|chromecast|airplay|miracast|widi|intel|wireless|display|nvidia|shield|apple|tv|roku|fire|stick|android|tv|smart|tv|samsung|lg|sony|panasonic|philips|tcl|hisense|vizio|insignia|toshiba|sharp|jvc|mitsubishi|pioneer|onkyo|denon|marantz|yamaha|harman|kardon|bose|sonos|klipsch|polk|audio|definitive|technology|martin|logan|magnepan|wilson|audio|focal|kef|bowers|wilkins|paradigm|psa|svs|hsu|research|rythmik|audio|rel|acoustics|velodyne|jl|audio|rockford|fosgate|alpine|kenwood|pioneer|clarion|sony|jvc|panasonic|blaupunkt|continental|bosch|delphi|visteon|harman|becker|grundig|telefunken|nordmende|saba|loewe|metz|bang|olufsen|meridian|arcam|cambridge|audio|creek|cyrus|exposure|rega|naim|linn|chord|electronics|musical|fidelity|rotel|parasound|bryston|classe|audio|research|conrad|johnson|mcintosh|mark|levinson|krell|pass|labs|boulder|amplifiers|wilson|benesch|vandersteen|thiel|revel|infinity|jbl|synthesis|lexicon|proceed|madrigal|cello|spectral|mit|transparent|audioquest|kimber|kable|nordost|cardas|analysis|plus|purist|audio|design|siltech|crystal|cable|synergistic|research|shunyata|power|conditioning|ps|audio|furman|monster|panamax|tripp|lite|apc|cyberpower|eaton|liebert|emerson|network|power|vertiv|schneider|electric|legrand|wiremold|panduit|black|box|belkin|linksys|netgear|dlink|tplink|asus|cisco|juniper|hp|dell|lenovo|ibm|oracle|sun|microsystems|sgi|cray|fujitsu|nec|hitachi|toshiba|mitsubishi|panasonic|sharp|casio|citizen|seiko|epson|canon|nikon|sony|olympus|pentax|ricoh|fujifilm|kodak|polaroid|leica|hasselblad|mamiya|contax|bronica|rollei|voigtlander|zeiss|schneider|kreuznach|rodenstock|cooke|angenieux|fujinon|sigma|tamron|tokina|samyang|rokinon|bower|vivitar|quantaray|promaster|tiffen|hoya|b+w|heliopan|marumi|kenko|cokin|lee|filters|formatt|hitech|singh|ray|breakthrough|photography|polar|pro|nisi|haida|kase|wine|country|benro|gitzo|manfrotto|really|right|stuff|kirk|enterprises|arca|swiss|wimberley|jobu|design|promedia|gear|think|tank|photo|lowepro|billingham|ona|bags|peak|design|f|stop|gear|mindshift|tenba|domke|crumpler|kata|vanguard|gura|gear|pelican|storm|cases|b+h|adorama|amazon|best|buy|walmart|target|costco|sams|club|newegg|micro|center|fry|electronics|tiger|direct|provantage|cdw|insight|connection|zones|pc|mall|tech|data|systems|synnex|ingram|tech|arrow|electronics|avnet|mouser|digikey|newark|element14|rs|components|allied|electronics|future|electronics|quest|components|chip|one|stop|findchips|octopart|datasheets|alldatasheet|electronic|components|distributor|supplier|manufacturer|oem|odm|ems|pcb|assembly|smt|through|hole|bga|qfp|soic|ssop|tssop|msop|dfn|qfn|wlcsp|flip|chip|wire|bond|die|attach|encapsulation|molding|test|burn|programming|functional|boundary|scan|jtag|spi|i2c|uart|usb|ethernet|can|lin|flexray|most|lvds|mipi|csi|dsi|hdmi|displayport|thunderbolt|pcie|sata|sas|scsi|fc|infiniband|roce|iwarp|omnipath|nvlink|ccix|cxl|gen|z|ddr|gddr|hbm|lpddr|nand|nor|flash|eeprom|fram|mram|rram|pcm|3d|xpoint|optane|nvdimm|dimm|sodimm|udimm|rdimm|lrdimm|fbdimm|simm|sipp|dip|sip|zip|plcc|pga|bga|csp|sop|tsop|vsop|ssop|tssop|msop|soic|sol|qfp|lqfp|tqfp|pqfp|bqfp|cqfp|mqfp|sqfp|dfn|qfn|mlf|son|wson|uson|xson|dson|lfcsp|wlcsp|fcbga|pbga|cbga|ccga|lccc|plcc|clcc|cerquad|cerdip|pdip|sdip|shrink|dip|skinny|dip|zip|pga|cpga|fcpga|ppga|spga|bga|pbga|cbga|fcbga|tbga|fbga|lbga|mbga|sbga|ubga|csp|wlcsp|fcsp|lga|land|grid|array|socket|slot|connector|header|receptacle|plug|jack|terminal|block|barrier|strip|wire|to|board|board|to|board|cable|assembly|harness|ribbon|flat|flex|ffc|fpc|coaxial|twinax|triax|twisted|pair|shielded|unshielded|cat5|cat5e|cat6|cat6a|cat7|cat8|fiber|optic|single|mode|multi|mode|om1|om2|om3|om4|om5|os1|os2|lc|sc|st|fc|mtp|mpo|e2000|mu|mt|rj|din|xlr|bnc|sma|smb|smc|mmcx|mcx|u|fl|ipex|hirose|jst|molex|te|connectivity|tyco|amp|deutsch|itt|cannon|amphenol|souriau|glenair|radiall|rosenberger|huber|suhner|times|microwave|southwest|microwave|pasternack|fairview|microwave|mini|circuits|analog|devices|texas|instruments|infineon|stmicroelectronics|nxp|semiconductors|renesas|microchip|technology|maxim|integrated|linear|technology|analog|devices|intersil|idt|integrated|device|technology|cypress|semiconductor|lattice|semiconductor|microsemi|actel|altera|xilinx|intel|psg|programmable|solutions|group|amd|xilinx|zynq|ultrascale|kintex|virtex|artix|spartan|cyclone|arria|stratix|max|ecp5|machxo|crosslink|fpga|cpld|soc|mpsoc|rfsoc|acap|versal|zynq|mpsoc|ultrascale|plus|kintex|ultrascale|virtex|ultrascale|zynq|7000|series|spartan|6|cyclone|v|arria|10|stratix|10|agilex|7|series|ultrascale|plus|versal|acap|adaptive|compute|acceleration|platform|ai|engine|dsp|slice|block|ram|bram|uram|distributed|ram|shift|register|lut|lookup|table|carry|chain|dsp48|dsp58|multiplier|accumulator|mac|fir|filter|iir|filter|fft|dft|cordic|floating|point|fixed|point|arithmetic|logic|unit|alu|processor|core|arm|cortex|a|r|m|series|risc|v|mips|powerpc|x86|intel|atom|core|xeon|pentium|celeron|amd|ryzen|threadripper|epyc|athlon|a|series|fx|series|phenom|opteron|nvidia|geforce|rtx|gtx|titan|quadro|tesla|a100|v100|p100|k80|m40|m60|gtx|1080|1070|1060|1050|rtx|2080|2070|2060|rtx|3090|3080|3070|3060|rtx|4090|4080|4070|4060|radeon|rx|vega|navi|rdna|rdna2|rdna3|gcn|polaris|fiji|hawaii|tahiti|pitcairn|cape|verde|bonaire|oland|hainan|tonga|antigua|grenada|ellesmere|baffin|lexa|vega|10|vega|20|navi|10|navi|14|navi|21|navi|22|navi|23|navi|24|big|navi|small|navi|sienna|cichlid|navy|flounder|dimgrey|cavefish|beige|goby|yellow|carp|navi|31|navi|32|navi|33|plum|bonito|wheat|nas|raphael|rembrandt|barcelo|cezanne|renoir|picasso|raven|ridge|bristol|ridge|carrizo|kaveri|richland|trinity|llano|brazos|ontario|zacate|bobcat|jaguar|puma|excavator|steamroller|piledriver|bulldozer|k10|k8|k7|k6|k5|am4|am3|am2|fm2|fm1|s1|s1g4|s1g3|s1g2|s1g1|asb2|asa|tr4|trx40|sp3|sp4|sp5|lga|1151|1150|1155|1156|1366|2011|2066|3647|4189|bga|1440|1515|1356|1364|1168|956|827|479|478|423|370|socket|a|b|c|d|e|f|g|h|j|k|l|m|n|p|q|r|s|t|u|v|w|x|y|z|0|1|2|3|4|5|6|7|8|9)\b',  # 常见域名
+            r'https?://[^\s\u4e00-\u9fff]+',
+            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+            r'ftp://[^\s\u4e00-\u9fff]+'
         ]
-        
-        # 邮箱正则表达式
         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        
-        # 社交媒体账号引用
-        social_patterns = [
-            r'@[A-Za-z0-9_]+',     # @用户名
-            r'#[A-Za-z0-9_]+',     # #标签
-        ]
-        
-        # 平台互动提示词（中英文）
-        interaction_patterns = [
-            r'订阅[我们的]*[频道]*',
-            r'关注[我们]*',
-            r'点赞[这个]*[视频]*',
-            r'分享[给]*[朋友们]*',
-            r'评论[区]*[见]*',
-            r'更多[内容]*请访问',
-            r'详情见[链接]*',
-            r'链接在[描述]*[中]*',
-            r'访问[我们的]*[网站]*',
-            r'查看[完整]*[版本]*',
-            r'下载[链接]*',
-            r'购买[链接]*',
-            r'subscribe\s+to\s+[our\s]*channel',
-            r'follow\s+[us\s]*',
-            r'like\s+[this\s]*video',
-            r'share\s+[with\s]*[friends\s]*',
-            r'check\s+out\s+[our\s]*[website\s]*',
-            r'visit\s+[our\s]*[site\s]*',
-            r'download\s+[link\s]*',
-            r'buy\s+[link\s]*',
-            r'more\s+info\s+at',
-            r'see\s+[full\s]*[version\s]*',
-        ]
-        
-        # 应用所有URL模式
+        social_patterns = [r'@[A-Za-z0-9_]+', r'#[A-Za-z0-9_]+' ]
         for pattern in url_patterns:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-        
-        # 应用邮箱过滤
         translated_text = re.sub(email_pattern, '', translated_text)
-        
-        # 应用社交媒体过滤
         for pattern in social_patterns:
             translated_text = re.sub(pattern, '', translated_text)
-        
-        # 应用互动提示过滤
-        for pattern in interaction_patterns:
+
+        # 互动提示词
+        for pattern in [
+            r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
+            r'更多[内容]*请访问', r'详情见[链接]*', r'链接在[描述]*[中]*', r'访问[我们的]*[网站]*', r'查看[完整]*[版本]*',
+            r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
+            r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
+            r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
+            r'see\s+[full\s]*[version\s]*',
+        ]:
             translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
 
-        # 最终清理：再次确保移除任何残留的说明性文字
-        final_cleanup_patterns = [
-            r'（.*?已.*?除.*?）',               # 匹配"已...除"模式
-            r'\(.*?已.*?除.*?\)',               # 英文括号版本
-            r'（.*?contact.*?）',               # 联系相关
-            r'\(.*?contact.*?\)',               # 英文括号联系相关
-        ]
-
-        for pattern in final_cleanup_patterns:
-            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-
-        # 规范空白但保留换行：AcFun 简介支持换行，且一个换行符等同一个字符
-        # 1) 统一换行符为 \n
+        # 规范空白但保留换行
         translated_text = translated_text.replace('\r\n', '\n').replace('\r', '\n')
-        # 2) 仅压缩空格/制表符等（不包含换行）
         translated_text = re.sub(r'[ \t\f\v]+', ' ', translated_text)
-        # 3) 去除行尾多余空格
         translated_text = re.sub(r'[ \t]+\n', '\n', translated_text)
-        # 4) 将3个及以上连续空行压缩为2个，避免过多留白
         translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)
-        # 5) 去除首尾空白（保留文本内换行）
         translated_text = translated_text.strip()
 
-        logger.info("已过滤URL、域名、邮箱地址和社交媒体引用")
+        # 若为空或与清理后的原文一致，则尝试一次严格模式重试（强制中文与JSON）
+        needs_retry = (not translated_text) or (translated_text.strip() == cleaned_source_text.strip())
+        if needs_retry:
+            logger.info("首次翻译为空或未改变，进行严格模式重试")
+            strict_prompt = f"""
+你是一名只输出严格JSON的翻译器。目标语言必须为简体中文。
 
-        # 处理字符限制
+请将下面的{purpose}翻译成简体中文并移除所有推广/引流/链接/邮箱/社交账号等信息，但不要改变与内容理解直接相关的信息。
+仅返回一行JSON：{{"translation":"..."}}，不要输出任何其它文本、标点或Markdown。
+
+<CONTENT>
+{cleaned_source_text}
+</CONTENT>
+"""
+            strict_kwargs = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "严格遵循：只输出一行JSON对象，键仅有 translation，语言为简体中文。"},
+                    {"role": "user", "content": strict_prompt},
+                ],
+                "max_tokens": 2048,
+            }
+            try:
+                strict_kwargs["response_format"] = {"type": "json_object"}
+            except Exception:
+                pass
+            try:
+                resp2 = client.chat.completions.create(**strict_kwargs)
+                msg2 = resp2.choices[0].message
+                parsed2 = getattr(msg2, 'parsed', None)
+                trans2 = None
+                if isinstance(parsed2, dict) and 'translation' in parsed2:
+                    trans2 = parsed2.get('translation')
+                if not trans2:
+                    mc2 = getattr(msg2, 'content', None)
+                    if isinstance(mc2, list):
+                        try:
+                            raw2 = ''.join([seg.get('text', '') for seg in mc2 if isinstance(seg, dict)])
+                        except Exception:
+                            raw2 = ''
+                    else:
+                        raw2 = (mc2 or getattr(msg2, 'reasoning_content', None) or '')
+                    raw2 = strip_reasoning_thoughts(raw2).strip()
+                    import json as _json
+                    import re as _re
+                    try:
+                        data2 = _json.loads(raw2)
+                        if isinstance(data2, dict):
+                            trans2 = data2.get('translation')
+                    except Exception:
+                        m2 = _re.search(r'\{.*\}', raw2, _re.DOTALL)
+                        if m2:
+                            try:
+                                data2 = _json.loads(m2.group(0))
+                                if isinstance(data2, dict):
+                                    trans2 = data2.get('translation')
+                            except Exception:
+                                pass
+                if isinstance(trans2, str) and trans2.strip():
+                    translated_text = trans2.strip()
+            except Exception as _e2:
+                logger.warning(f"严格模式重试失败: {_e2}")
+
+        # 若仍为空，则回退为已清理的原文，避免返回空串
+        if not translated_text:
+            translated_text = cleaned_source_text
+
+        # 平台长度限制
         ct_lower = str(content_type).lower()
         if ct_lower == 'title':
             if len(translated_text) > 50:
@@ -334,7 +324,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
                 translated_text = translated_text[:997] + "..."
 
         return translated_text
-    
+
     except Exception as e:
         logger.error(f"翻译过程中发生错误: {str(e)}")
         import traceback
@@ -368,80 +358,104 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         # 获取OpenAI客户端 (1.x版本)
         client = get_openai_client(openai_config)
         model_name = openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
-        
-        # 构建标签生成提示
+
+        # 构建标签生成提示（强制返回对象JSON）
         prompt = f"""根据以下视频的标题和描述，生成恰好6个适合AcFun平台的标签。
-        要求:
-        - 必须生成6个标签，不多不少
-        - 每个标签长度不超过10个汉字或20个字符
-        - 标签应反映视频的核心内容、类型或情感
-        - 避免过于宽泛的标签如"搞笑"、"有趣"等
-        - 包含1-2个与视频主题相关的基础关键词
-        
-        视频标题:
-        {title}
-        
-        视频描述:
-        {description}
-        
-        JSON格式返回6个标签，例如:
-        ["标签1", "标签2", "标签3", "标签4", "标签5", "标签6"]
-        
-        只返回JSON数组，不要有其他内容:
-        """
+要求:
+- 必须生成6个标签，不多不少
+- 每个标签长度不超过10个汉字或20个字符
+- 标签应反映视频的核心内容、类型或情感
+- 避免过于宽泛的标签如"搞笑"、"有趣"等
+- 包含1-2个与视频主题相关的基础关键词
+
+视频标题:
+{title}
+
+视频描述:
+{description}
+
+仅返回如下结构的一行JSON，不要输出其他内容：
+{{"tags": ["标签1", "标签2", "标签3", "标签4", "标签5", "标签6"]}}
+"""
         
         start_time = time.time()
-        
+
         # 使用新版API调用格式
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
+        create_kwargs = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": "你是一个内容标签生成工具。你的任务是为视频内容生成恰当的标签，以帮助用户更好地发现和分类内容。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
-            max_tokens=800
-        )
-        
+            "max_tokens": 800,
+        }
+        # 尝试启用结构化JSON输出
+        try:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        except Exception:
+            pass
+
+        response = client.chat.completions.create(**create_kwargs)
         response_time = time.time() - start_time
         logger.info(f"标签生成完成，耗时: {response_time:.2f}秒")
-        
+
         # 提取响应内容并屏蔽思考
         message = response.choices[0].message
         tags_response = (message.content or getattr(message, 'reasoning_content', None) or '')
         tags_response = strip_reasoning_thoughts(tags_response).strip()
-        
+
         # 尝试解析JSON
         import json
         import re
-        
-        # 清理响应文本，确保它是有效的JSON
-        # 有时API可能返回带有额外文本的JSON，尝试提取JSON部分
-        json_pattern = r'\[.*?\]'
-        json_match = re.search(json_pattern, tags_response, re.DOTALL)
-        
-        if json_match:
+
+        # 去除可能的代码块围栏
+        if tags_response.startswith("```"):
             try:
-                tags = json.loads(json_match.group())
-                # 确保我们有6个标签
-                if len(tags) > 6:
-                    tags = tags[:6]
-                elif len(tags) < 6:
-                    # 如果少于6个，用空字符串填充
-                    tags.extend([''] * (6 - len(tags)))
-                
-                # 确保每个标签不超过长度限制
-                tags = [tag[:20] for tag in tags]
-                
-                logger.info(f"生成标签: {tags}")
-                return tags
-            except json.JSONDecodeError as e:
-                logger.error(f"解析标签JSON时出错: {str(e)}")
-                logger.error(f"原始响应: {tags_response}")
-        else:
-            logger.error(f"无法从响应中提取JSON数组: {tags_response}")
-        
-        return []
+                tags_response = re.sub(r'^```[a-zA-Z0-9]*\s*', '', tags_response)
+                tags_response = re.sub(r'\s*```$', '', tags_response)
+            except Exception:
+                pass
+
+        # 优先解析对象JSON {"tags": [...]} 
+        try:
+            data = json.loads(tags_response)
+            if isinstance(data, dict) and isinstance(data.get('tags'), list):
+                tags = data['tags']
+            else:
+                # 兼容旧格式：直接数组
+                tags = data if isinstance(data, list) else None
+        except Exception:
+            # 兼容：从文本中提取JSON对象或数组
+            obj_match = re.search(r'\{[^{}]*\}', tags_response, re.DOTALL)
+            arr_match = re.search(r'\[[^\[\]]*\]', tags_response, re.DOTALL)
+            raw_json = obj_match.group(0) if obj_match else (arr_match.group(0) if arr_match else None)
+            tags = None
+            if raw_json:
+                try:
+                    data = json.loads(raw_json)
+                    if isinstance(data, dict) and isinstance(data.get('tags'), list):
+                        tags = data['tags']
+                    elif isinstance(data, list):
+                        tags = data
+                except Exception:
+                    pass
+
+        if not tags:
+            logger.error(f"无法从响应中提取标签: {tags_response}")
+            return []
+
+        # 归一化并确保我们有6个标签
+        tags = [str(tag).strip() for tag in tags]
+        if len(tags) > 6:
+            tags = tags[:6]
+        elif len(tags) < 6:
+            tags.extend([''] * (6 - len(tags)))
+
+        # 确保每个标签不超过长度限制
+        tags = [str(tag)[:20] for tag in tags]
+
+        logger.info(f"生成标签: {tags}")
+        return tags
     
     except Exception as e:
         logger.error(f"生成标签过程中发生错误: {str(e)}")
@@ -547,7 +561,7 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         
         partitions_text = "\n".join(partitions_info)
         
-        # 构建提示内容
+    # 构建提示内容
         prompt = f"""请根据以下视频的标题和描述，从给定的AcFun分区列表中，选择最合适的一个分区。
 
 视频标题: {title}
@@ -566,27 +580,151 @@ AcFun分区列表:
 不要返回任何其他格式或额外内容。
 """
         
-        # 使用新版API调用格式
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
+        # 如果配置指定固定分区ID，优先返回
+        fixed_pid = (openai_config or {}).get('FIXED_PARTITION_ID')
+        if fixed_pid and fixed_pid in [p['id'] for p in partitions]:
+            logger.info(f"根据配置固定分区ID直接返回: {fixed_pid}")
+            return fixed_pid
+
+        # 先尝试规则直推，尽量一次成功
+        pre_rule_id = None
+        def _pre_rule_based(title_in, desc_in):
+            text = f"{title_in or ''}\n{desc_in or ''}".lower()
+            if any(k in text for k in [' mv', '官方mv', 'official video', 'music', '歌曲', '演唱', '单曲', '专辑', 'mv']):
+                return (
+                    next((p['id'] for p in partitions if '综合音乐' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '原创·翻唱' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '演奏·乐器' in p.get('name','')), None)
+                )
+            if any(k in text for k in ['舞蹈', 'dance', '编舞', '翻跳']):
+                return (
+                    next((p['id'] for p in partitions if '综合舞蹈' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '宅舞' in p.get('name','')), None)
+                )
+            if any(k in text for k in ['预告', '花絮', 'trailer', 'behind the scenes']):
+                return next((p['id'] for p in partitions if '预告·花絮' in p.get('name','')), None)
+            if any(k in text for k in ['game', '游戏', '实况', '攻略', '电竞']):
+                return (
+                    next((p['id'] for p in partitions if '主机单机' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '电子竞技' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '网络游戏' in p.get('name','')), None)
+                )
+            if any(k in text for k in ['科技', '数码', '评测', '开箱', '测评']):
+                return (
+                    next((p['id'] for p in partitions if '数码家电' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '科技制造' in p.get('name','')), None)
+                )
+            if any(k in text for k in ['vlog', '生活', '美食', '旅行', '宠物']):
+                return (
+                    next((p['id'] for p in partitions if '生活日常' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '美食' in p.get('name','')), None) or
+                    next((p['id'] for p in partitions if '旅行' in p.get('name','')), None)
+                )
+            return None
+        pre_rule_id = _pre_rule_based(title, description)
+        if pre_rule_id:
+            logger.info(f"规则优先直接命中分区ID: {pre_rule_id}")
+            return pre_rule_id
+
+        # 使用新版API调用格式（尽量结构化）
+        create_kwargs = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": "你是一个专业视频分类助手，擅长将视频内容匹配到最合适的分区。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
-            max_tokens=800
-        )
+            "max_tokens": 800,
+        }
+        try:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        except Exception:
+            pass
+
+        response = client.chat.completions.create(**create_kwargs)
         
         message = response.choices[0].message
         result = (message.content or getattr(message, 'reasoning_content', None) or '')
         result = strip_reasoning_thoughts(result).strip()
+        # 处理可能的Markdown代码块围栏
+        if result.startswith('```'):
+            # 去除围栏与语言标记
+            tmp = result.strip('`')
+            tmp = tmp.replace('\njson\n', '\n').replace('\njson', '\n').replace('json\n', '\n')
+            result = tmp.strip()
         logger.info(f"分区推荐原始响应: {result}")
         
         # 解析结果
         import json
         import re
+        from typing import Optional
         
         available_partition_ids = [p['id'] for p in partitions]
+
+        def extract_first_json_object(text: str) -> Optional[str]:
+            """从文本中提取第一个完整的JSON对象（使用括号计数，忽略引号内的括号）。"""
+            if not text:
+                return None
+            start = text.find('{')
+            if start == -1:
+                return None
+            brace = 0
+            in_str = False
+            esc = False
+            for i, ch in enumerate(text[start:], start):
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\':
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                if not in_str:
+                    if ch == '{':
+                        brace += 1
+                    elif ch == '}':
+                        brace -= 1
+                        if brace == 0:
+                            return text[start:i+1]
+            return None
+
+        def find_partition_id_by_name(name_sub: str) -> Optional[str]:
+            """根据分区名称包含关系查找ID。"""
+            name_sub = (name_sub or '').strip()
+            if not name_sub:
+                return None
+            for p in partitions:
+                if name_sub in p.get('name', ''):
+                    return p['id']
+            return None
+
+        def rule_based_fallback(t: str, d: str) -> Optional[str]:
+            """基于简单关键词的回退分类策略。"""
+            text = f"{t or ''}\n{d or ''}".lower()
+            # 音乐相关
+            if any(k in text for k in [' mv', '官方mv', 'official video', 'music', '歌曲', '演唱', '单曲', '专辑', 'mv']):
+                # 优先 综合音乐 -> 原创·翻唱 -> 演奏·乐器
+                return (
+                    find_partition_id_by_name('综合音乐') or
+                    find_partition_id_by_name('原创·翻唱') or
+                    find_partition_id_by_name('演奏·乐器')
+                )
+            # 舞蹈相关
+            if any(k in text for k in ['舞蹈', 'dance', '编舞', '翻跳']):
+                return find_partition_id_by_name('综合舞蹈') or find_partition_id_by_name('宅舞')
+            # 影视预告/花絮
+            if any(k in text for k in ['预告', '花絮', 'trailer', 'behind the scenes']):
+                return find_partition_id_by_name('预告·花絮')
+            # 游戏相关
+            if any(k in text for k in ['game', '游戏', '实况', '攻略', '电竞']):
+                return find_partition_id_by_name('主机单机') or find_partition_id_by_name('电子竞技') or find_partition_id_by_name('网络游戏')
+            # 科技/数码
+            if any(k in text for k in ['科技', '数码', '评测', '开箱', '测评']):
+                return find_partition_id_by_name('数码家电') or find_partition_id_by_name('科技制造')
+            # 生活
+            if any(k in text for k in ['vlog', '生活', '美食', '旅行', '宠物']):
+                return find_partition_id_by_name('生活日常') or find_partition_id_by_name('美食') or find_partition_id_by_name('旅行')
+            return None
 
         # 尝试直接解析JSON
         try:
@@ -602,18 +740,19 @@ AcFun分区列表:
                     logger.warning(f"推荐的分区ID '{partition_id}' 不在有效分区列表中。可用ID: {available_partition_ids}。原始响应: {result}")
         except json.JSONDecodeError as e_direct:
             logger.warning(f"直接解析JSON响应失败: {e_direct}. 原始响应: {result}")
-            # 如果直接解析失败，尝试从文本中提取JSON
-            match = re.search(r'\\{.*\\}', result, re.DOTALL)
-            if match:
-                extracted_json_text = match.group(0)
+            # 如果直接解析失败，尝试从文本中提取JSON（使用括号计数）
+            extracted_json_text = extract_first_json_object(result)
+            if not extracted_json_text:
+                # 退而求其次，使用简单正则（不跨嵌套）
+                match = re.search(r'\{[^{}]*\}', result, re.DOTALL)
+                extracted_json_text = match.group(0) if match else None
+            if extracted_json_text:
                 try:
                     data = json.loads(extracted_json_text)
                     if 'id' in data:
-                        # 验证ID是否存在于分区列表中
                         partition_id = str(data['id'])
                         if partition_id in available_partition_ids:
                             logger.info(f"从提取内容中推荐分区: ID {partition_id}, 理由: {data.get('reason', '无')}")
-                            # 直接返回分区ID字符串，而不是整个字典
                             return partition_id
                         else:
                             logger.warning(f"提取内容中推荐的分区ID '{partition_id}' 不在有效分区列表中。可用ID: {available_partition_ids}。提取的文本: {extracted_json_text}")
@@ -621,16 +760,30 @@ AcFun分区列表:
                     logger.warning(f"无法从提取的文本中解析JSON: {e_extract}. 提取的文本: {extracted_json_text}")
         
         # 如果上述方法都失败，尝试提取ID
-        id_match = re.search(r'"id"\\s*:\\s*"?(\\d+)"?', result)
+        id_match = re.search(r'"id"\s*:\s*"?(\d+)"?', result)
         if id_match:
             partition_id = id_match.group(1)
             if partition_id in available_partition_ids:
-                reason_match = re.search(r'"reason"\\s*:\\s*"([^"]+)"', result)
+                reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', result)
                 reason = reason_match.group(1) if reason_match else "未提供理由 (正则提取)"
                 logger.info(f"正则提取的推荐分区: ID {partition_id}, 理由: {reason}")
                 return partition_id
             else:
                 logger.warning(f"正则提取的分区ID '{partition_id}' 不在有效分区列表中。可用ID: {available_partition_ids}。原始响应: {result}")
+
+        # 最后尝试：在文本中直接匹配已知ID集合
+        joined_ids = '|'.join(re.escape(pid) for pid in available_partition_ids)
+        id_any_match = re.search(rf'\b({joined_ids})\b', result)
+        if id_any_match:
+            pid = id_any_match.group(1)
+            logger.info(f"在响应文本中直接匹配到合法分区ID: {pid}")
+            return pid
+
+        # 规则回退
+        fallback_id = rule_based_fallback(title or '', description or '')
+        if fallback_id and fallback_id in available_partition_ids:
+            logger.warning(f"无法从OpenAI响应可靠解析，启用规则回退，得到分区ID: {fallback_id}")
+            return fallback_id
         
         logger.warning(f"无法从OpenAI响应中解析或验证有效的分区ID。最终原始响应: {result}")
         return None

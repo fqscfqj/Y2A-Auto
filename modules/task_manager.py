@@ -1037,6 +1037,8 @@ class TaskProcessor:
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            # 可选：允许用户配置固定分区ID，确保一次命中
+            'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
         # 翻译标题
@@ -1446,8 +1448,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             embedded_video_path = os.path.join(video_dir, f"{video_name}_with_subtitle.mp4")
             
             task_logger.info("开始将字幕嵌入视频...")
-            task_logger.info(f"视频路径: {video_path}")
-            task_logger.info(f"字幕路径: {subtitle_path}")
+            # 仅在调试时输出详细路径信息
+            task_logger.debug(f"视频路径: {video_path}")
+            task_logger.debug(f"字幕路径: {subtitle_path}")
             
             # 设置任务状态为转码视频中
             update_task(task_id, status=TASK_STATES['ENCODING_VIDEO'])
@@ -1458,8 +1461,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             input_width = stream_info.get('width') or 0
             input_height = stream_info.get('height') or 0
             input_fps = stream_info.get('fps') or 30
-            # 档位选择：≤1440 走 1080p 档；>1440 走 4K 档
-            is_4k_tier = input_height > 1440
+            input_pix_fmt = stream_info.get('pix_fmt') if isinstance(stream_info, dict) else None
+            # 探测音频采样率（用于跟随原视频）
+            audio_info = self._get_audio_stream_info(video_path, task_logger)
+            input_sample_rate = audio_info.get('sample_rate') if isinstance(audio_info, dict) else None
             # GOP 取 2 秒一关键帧
             gop = max(24, int(round(2 * input_fps)))
             
@@ -1516,7 +1521,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if default_font_src:
                         temp_font_path = os.path.join(temp_fonts_dir, os.path.basename(default_font_src))
                         shutil.copy2(default_font_src, temp_font_path)
-                        task_logger.info(f"已将默认字幕字体复制到临时目录: {os.path.basename(default_font_src)}")
+                        task_logger.debug(f"已将默认字幕字体复制到临时目录: {os.path.basename(default_font_src)}")
                     else:
                         task_logger.warning("未找到默认字幕字体（fonts/ 或 根目录），将使用系统默认字体")
                 except Exception as e:
@@ -1541,7 +1546,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 pil_font = ImageFont.truetype(fpath, size=18)
                                 family_name, style_name = pil_font.getname()
                                 font_family = family_name
-                                task_logger.info(f"检测到字幕字体: family={family_name}, style={style_name}")
+                                task_logger.debug(f"检测到字幕字体: family={family_name}, style={style_name}")
                                 break
                             except Exception as e:
                                 task_logger.warning(f"读取字体信息失败，尝试下一个：{e}")
@@ -1560,19 +1565,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         'SimHei'
                     ]
                     font_family = fallback_families[0]
-                    task_logger.info(f"使用回退字体家族名称: {font_family}")
+                    task_logger.debug(f"使用回退字体家族名称: {font_family}")
 
                 # 在参数中对空格进行转义，避免被解析为分隔符，并强制使用 UTF-8 字符集
                 font_family_escaped = font_family.replace(' ', '\\ ')
                 # 构建滤镜链：字幕 + 需要时的降分辨率
-                vf_parts = [
-                    f"subtitles=sub.srt:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
-                ]
-                if not is_4k_tier and input_height > 1080:
-                    vf_parts.append("scale=-2:1080:flags=lanczos")
-                if is_4k_tier and input_height > 2160:
-                    vf_parts.append("scale=-2:2160:flags=lanczos")
-                vf_filter = ",".join(vf_parts)
+                vf_filter = f"subtitles=sub.srt:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
 
                 # 读取编码器设置
                 encoder_pref = str(self.config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
@@ -1583,113 +1581,87 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
 
-                # 针对不同后端与档位生成参数
+                # 针对不同后端生成统一参数（不再区分分辨率档位）
                 def build_cpu_params():
-                    if is_4k_tier:
-                        # HEVC/x265, 10Mbps VBV 约束 + CRF
-                        return [
-                            '-c:v', 'libx265',
-                            '-pix_fmt', 'yuv420p',
-                            '-preset', 'slow',
-                            '-crf', '23',
-                            '-x265-params', f"vbv-maxrate=10000:vbv-bufsize=20000:keyint={gop}:min-keyint={gop}:scenecut=0:profile=main:level=5.1:high-tier=1"
-                        ]
-                    else:
-                        # H.264/x264, 6Mbps 上限 + CRF
-                        return [
-                            '-c:v', 'libx264',
-                            '-pix_fmt', 'yuv420p',
-                            '-preset', 'slow',
-                            '-profile:v', 'high',
-                            '-level', '4.1',
-                            '-crf', '19',
-                            '-maxrate', '6000k',
-                            '-bufsize', '12000k',
-                            '-g', str(gop),
-                            '-keyint_min', str(gop),
-                            '-sc_threshold', '0'
-                        ]
+                    # 强制 libx264 crf18 preset:slow profile:high level:4.2
+                    return [
+                        '-c:v', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-preset', 'slow',
+                        '-crf', '18',
+                        '-profile:v', 'high',
+                        '-level', '4.2',
+                        '-g', str(gop),
+                        '-keyint_min', str(gop),
+                        '-sc_threshold', '0'
+                    ]
 
                 def build_nvenc_params():
-                    if is_4k_tier:
-                        return [
-                            '-c:v', 'hevc_nvenc',
-                            '-pix_fmt', 'yuv420p',
-                            '-rc:v', 'vbr_hq',
-                            '-b:v', '8000k',
-                            '-maxrate', '10000k',
-                            '-bufsize', '20000k',
-                            '-preset', 'p5',
-                            '-profile:v', 'main',
-                            '-g', str(gop),
-                            '-bf', '4',
-                            '-spatial_aq', '1',
-                            '-aq-strength', '8',
-                            '-look_ahead', '1'
-                        ]
+                    # hevc_nvenc preset:p6 cq 20 rc-lookahead:32；10bit源使用profile:main10并输出10bit像素格式
+                    is_10bit_src = False
+                    try:
+                        if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
+                            is_10bit_src = True
+                    except Exception:
+                        pass
+
+                    vparams = [
+                        '-c:v', 'hevc_nvenc',
+                        '-preset', 'p6',
+                        '-rc', 'vbr',
+                        '-cq', '20',
+                        '-rc-lookahead', '32',
+                        '-g', str(gop)
+                    ]
+                    if is_10bit_src:
+                        vparams += ['-profile:v', 'main10', '-pix_fmt', 'p010le']
                     else:
-                        return [
-                            '-c:v', 'h264_nvenc',
-                            '-pix_fmt', 'yuv420p',
-                            '-rc:v', 'vbr_hq',
-                            '-b:v', '4500k',
-                            '-maxrate', '6000k',
-                            '-bufsize', '12000k',
-                            '-preset', 'p5',
-                            '-profile:v', 'high',
-                            '-g', str(gop),
-                            '-bf', '3',
-                            '-spatial_aq', '1',
-                            '-aq-strength', '8'
-                        ]
+                        vparams += ['-profile:v', 'main', '-pix_fmt', 'yuv420p']
+                    return vparams
 
                 def build_qsv_params():
-                    if is_4k_tier:
-                        return [
-                            '-c:v', 'hevc_qsv',
-                            '-pix_fmt', 'yuv420p',
-                            '-b:v', '8000k',
-                            '-maxrate', '10000k',
-                            '-bufsize', '20000k',
-                            '-preset', 'slow',
-                            '-g', str(gop),
-                            '-bf', '4'
-                        ]
+                    # 统一 HEVC QSV，接近 CQ 20；10bit 源输出 main10 + p010le
+                    is_10bit_src = False
+                    try:
+                        if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
+                            is_10bit_src = True
+                    except Exception:
+                        pass
+                    vparams = [
+                        '-c:v', 'hevc_qsv',
+                        '-preset', 'slow',
+                        '-rc', 'icq',
+                        '-global_quality', '20',
+                        '-g', str(gop)
+                    ]
+                    if is_10bit_src:
+                        vparams += ['-profile:v', 'main10', '-pix_fmt', 'p010le']
                     else:
-                        return [
-                            '-c:v', 'h264_qsv',
-                            '-pix_fmt', 'yuv420p',
-                            '-b:v', '4500k',
-                            '-maxrate', '6000k',
-                            '-bufsize', '12000k',
-                            '-preset', 'slow',
-                            '-g', str(gop),
-                            '-bf', '3'
-                        ]
+                        vparams += ['-profile:v', 'main', '-pix_fmt', 'yuv420p']
+                    return vparams
 
                 def build_amf_params():
-                    if is_4k_tier:
-                        return [
-                            '-c:v', 'hevc_amf',
-                            '-pix_fmt', 'yuv420p',
-                            '-rc', 'vbr',
-                            '-b:v', '8000k',
-                            '-maxrate', '10000k',
-                            '-bufsize', '20000k',
-                            '-quality', 'quality',
-                            '-g', str(gop)
-                        ]
+                    # 统一 HEVC AMF，使用 CQP ≈ 20；10bit 源输出 main10 + p010le
+                    is_10bit_src = False
+                    try:
+                        if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
+                            is_10bit_src = True
+                    except Exception:
+                        pass
+                    vparams = [
+                        '-c:v', 'hevc_amf',
+                        '-quality', 'quality',
+                        '-rc', 'cqp',
+                        '-qp_i', '20',
+                        '-qp_p', '20',
+                        '-qp_b', '20',
+                        '-g', str(gop)
+                    ]
+                    if is_10bit_src:
+                        vparams += ['-profile:v', 'main10', '-pix_fmt', 'p010le']
                     else:
-                        return [
-                            '-c:v', 'h264_amf',
-                            '-pix_fmt', 'yuv420p',
-                            '-rc', 'vbr',
-                            '-b:v', '4500k',
-                            '-maxrate', '6000k',
-                            '-bufsize', '12000k',
-                            '-quality', 'quality',
-                            '-g', str(gop)
-                        ]
+                        vparams += ['-profile:v', 'main', '-pix_fmt', 'yuv420p']
+                    return vparams
 
                 # 首次参数选择（会在不支持时自动降级）
                 selected_encoder = 'cpu'
@@ -1711,19 +1683,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         task_logger.warning(f"请求的编码器 {encoder_pref} 在当前环境不可用，自动回退到CPU编码")
                     vparams = build_cpu_params()
 
+                # 音频统一转 AAC 320k，采样率跟随原视频
+                aparams = ['-c:a', 'aac', '-b:a', '320k']
+                if input_sample_rate:
+                    try:
+                        aparams += ['-ar', str(int(input_sample_rate))]
+                    except Exception:
+                        pass
+
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', 'input.mp4',
                     '-vf', vf_filter,
                     *vparams,
-                    '-c:a', 'copy',
+                    *aparams,
                     '-movflags', '+faststart',
                     '-progress', 'pipe:1',
                     'output.mp4'
                 ]
                 
-                task_logger.info(f"FFmpeg命令: {' '.join(cmd)}")
-                task_logger.info(f"临时目录: {temp_dir}")
+                task_logger.debug(f"FFmpeg命令: {' '.join(cmd)}")
+                task_logger.debug(f"临时目录: {temp_dir}")
                 
                 # 设置超时时间（根据视频时长计算，最少30分钟，最多3小时）
                 if video_duration:
@@ -1733,7 +1713,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 else:
                     timeout = 3600  # 默认1小时
                 
-                task_logger.info(f"设置处理超时时间: {timeout//60} 分钟")
+                task_logger.debug(f"设置处理超时时间: {timeout//60} 分钟")
                 
                 # 执行FFmpeg命令并实时获取进度
                 process = subprocess.Popen(
@@ -1817,8 +1797,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 
                                 if video_duration and current_time > last_time:
                                     progress = min((current_time / video_duration) * 100, 100)
+                                    # 仅更新网页进度，不在日志中记录进度
                                     progress_msg = f"转码进度: {progress:.1f}%"
-                                    task_logger.info(progress_msg)
                                     
                                     # 更新任务进度显示
                                     update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
@@ -1829,7 +1809,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     except queue.Empty:
                         # 检查是否长时间没有进度更新（可能卡死了）
                         if time.time() - last_progress_time > 300:  # 5分钟没有进度更新
-                            task_logger.warning("长时间没有进度更新，可能处理卡死")
+                            task_logger.debug("长时间没有进度更新，可能处理卡死")
                         continue
                     
                     # 读取错误信息
@@ -1852,8 +1832,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if process.returncode == 0 and os.path.exists(simple_output):
                     # 成功！复制输出文件回原位置
                     shutil.copy2(simple_output, embedded_video_path)
-                    task_logger.info("字幕嵌入完成（使用简化路径方式）")
-                    task_logger.info(f"嵌入字幕的视频已保存: {embedded_video_path}")
+                    # 结束日志：成功
+                    task_logger.info(f"字幕嵌入完成: {embedded_video_path}")
                     
                     # 清除进度显示并恢复之前的状态
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
@@ -1883,17 +1863,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if should_retry_cpu:
                         task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
                         vparams = build_cpu_params()
+                        aparams = ['-c:a', 'aac', '-b:a', '320k']
+                        if input_sample_rate:
+                            try:
+                                aparams += ['-ar', str(int(input_sample_rate))]
+                            except Exception:
+                                pass
                         cmd_retry = [
                             'ffmpeg', '-y',
                             '-i', 'input.mp4',
                             '-vf', vf_filter,
                             *vparams,
-                            '-c:a', 'copy',
+                            *aparams,
                             '-movflags', '+faststart',
                             '-progress', 'pipe:1',
                             'output.mp4'
                         ]
-                        task_logger.info(f"回退FFmpeg命令: {' '.join(cmd_retry)}")
+                        task_logger.debug(f"回退FFmpeg命令: {' '.join(cmd_retry)}")
 
                         # 重新执行（缩短超时以避免长时间卡住）
                         process2 = subprocess.Popen(
@@ -1908,7 +1894,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         stdout2, stderr2 = process2.communicate(timeout=min(timeout, 3600))
                         if process2.returncode == 0 and os.path.exists(simple_output):
                             shutil.copy2(simple_output, embedded_video_path)
-                            task_logger.info("字幕嵌入完成（CPU回退）")
+                            # 结束日志：成功（CPU回退）
+                            task_logger.info(f"字幕嵌入完成: {embedded_video_path}（CPU回退）")
                             update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                             return embedded_video_path
                         else:
@@ -1972,9 +1959,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             return None
 
     def _get_video_stream_info(self, video_path, task_logger):
-        """获取视频流分辨率与帧率等信息"""
+        """获取视频流分辨率/帧率/像素格式等信息"""
         # 使用类型注解明确字典值的类型
-        info: dict[str, float | int | None] = {"width": None, "height": None, "fps": None}
+        info: dict[str, float | int | str | None] = {"width": None, "height": None, "fps": None, "pix_fmt": None}
         try:
             import subprocess, json
             cmd = [
@@ -1998,6 +1985,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if info is not None:
                         info['width'] = s.get('width')
                         info['height'] = s.get('height')
+                        info['pix_fmt'] = s.get('pix_fmt')
                         r = s.get('avg_frame_rate') or s.get('r_frame_rate')
                         if r and r != '0/0':
                             try:
@@ -2013,6 +2001,43 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.warning("获取视频流信息超时")
         except Exception as e:
             task_logger.warning(f"获取视频流信息失败: {str(e)}")
+        return info
+
+    def _get_audio_stream_info(self, video_path, task_logger):
+        """获取音频流信息（采样率等），用于音频参数设置"""
+        info: dict[str, int | str | None] = {"sample_rate": None, "channels": None, "sample_fmt": None}
+        try:
+            import subprocess, json
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-select_streams', 'a:0', '-show_streams', video_path
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=30
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                streams = data.get('streams', [])
+                if streams:
+                    s = streams[0]
+                    sr = s.get('sample_rate')
+                    try:
+                        if sr:
+                            info['sample_rate'] = int(sr)
+                    except Exception:
+                        pass
+                    info['channels'] = s.get('channels')
+                    info['sample_fmt'] = s.get('sample_fmt')
+            task_logger.info(f"音频流信息: {info}")
+        except subprocess.TimeoutExpired:
+            task_logger.warning("获取音频流信息超时")
+        except Exception as e:
+            task_logger.warning(f"获取音频流信息失败: {str(e)}")
         return info
 
     def _generate_tags(self, task_id, task_logger):
@@ -2036,6 +2061,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
         if self.config.get('GENERATE_TAGS', True) and (title or description):
@@ -2098,6 +2124,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
         task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', True)}")
@@ -2325,70 +2352,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task = get_task(task_id)
             video_path = task.get('video_path_local', '') if task else ''
         
-        # 在上传前确保字幕处理：
         # - 若开启字幕翻译：调用统一字幕流程（内部会在无字幕时先进行ASR，再翻译/嵌入）
         # - 若未开启字幕翻译但开启ASR：在无字幕时仅进行ASR生成基础字幕
         try:
             # 只有在有视频文件的前提下才尝试字幕处理
             if video_path and os.path.exists(video_path):
-                import glob
                 task_dir = os.path.dirname(video_path)
-                # 检查是否已有字幕（大小写无关）
-                subtitle_files = []
-                try:
-                    for name in os.listdir(task_dir):
-                        if not isinstance(name, str):
-                            continue
-                        lower = name.lower()
-                        if lower.endswith('.srt') or lower.endswith('.vtt'):
-                            subtitle_files.append(os.path.join(task_dir, name))
-                except Exception:
-                    pass
-
-                if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
-                    if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
-                        task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
-                        # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
-                        self._translate_subtitle(task_id, task_logger)
-                        # 重新获取最新任务信息和视频路径（可能已嵌入生成了新视频）
-                        task = get_task(task_id)
-                        video_path = task.get('video_path_local', '') if task else video_path
-                    else:
-                        # 仅ASR：在没有任何字幕文件时生成一个基础字幕文件
-                        if not subtitle_files:
-                            task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
-                            try:
-                                from modules.speech_recognition import create_speech_recognizer_from_config
-                                recognizer = create_speech_recognizer_from_config(self.config, task_id)
-                            except Exception as e:
-                                recognizer = None
-                                task_logger.error(f"创建语音识别器失败: {e}")
-                            if recognizer:
-                                # 显示ASR状态
-                                _t2 = get_task(task_id)
-                                prev_status2 = _t2['status'] if _t2 else TASK_STATES['UPLOADING']
-                                update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
-                                asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
-                                asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
-                                out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
-                                # 恢复上传状态
-                                update_task(task_id, status=prev_status2)
-                                if out_path and os.path.exists(out_path):
-                                    # 简单记录到任务（不做嵌入，以保持最小变更）
-                                    detected_lang = self._detect_subtitle_language(out_path)
-                                    update_task(
-                                        task_id,
-                                        subtitle_path_original=out_path,
-                                        subtitle_path_translated=None,
-                                        subtitle_language_detected=detected_lang
-                                    )
-                                    task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
-                                else:
-                                    task_logger.warning("ASR 未能生成字幕，继续上传流程")
-                        else:
-                            task_logger.info("已存在字幕文件，跳过ASR 生成")
+                # 如果已经是带字幕的成品（_with_subtitle.mp4），直接跳过后续转码，避免重复转码
+                base_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
+                if base_name_no_ext.endswith('_with_subtitle'):
+                    task_logger.info("检测到已嵌入字幕的视频文件，跳过重复转码步骤")
                 else:
-                    task_logger.info("未启用语音识别，跳过上传前的字幕处理")
+                    # 检查是否已有字幕（大小写无关）
+                    subtitle_files = []
+                    try:
+                        for name in os.listdir(task_dir):
+                            if not isinstance(name, str):
+                                continue
+                            lower = name.lower()
+                            if lower.endswith('.srt') or lower.endswith('.vtt'):
+                                subtitle_files.append(os.path.join(task_dir, name))
+                    except Exception:
+                        pass
+
+                    if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                        if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
+                            task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
+                            # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
+                            self._translate_subtitle(task_id, task_logger)
+                            # 重新获取最新任务信息和视频路径（可能已嵌入生成了新视频）
+                            task = get_task(task_id)
+                            video_path = task.get('video_path_local', '') if task else video_path
+                        else:
+                            # 仅ASR：在没有任何字幕文件时生成一个基础字幕文件
+                            if not subtitle_files:
+                                task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
+                                try:
+                                    from modules.speech_recognition import create_speech_recognizer_from_config
+                                    recognizer = create_speech_recognizer_from_config(self.config, task_id)
+                                except Exception as e:
+                                    recognizer = None
+                                    task_logger.error(f"创建语音识别器失败: {e}")
+                                if recognizer:
+                                    # 显示ASR状态
+                                    _t2 = get_task(task_id)
+                                    prev_status2 = _t2['status'] if _t2 else TASK_STATES['UPLOADING']
+                                    update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
+                                    asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
+                                    asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                                    out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
+                                    # 恢复上传状态
+                                    update_task(task_id, status=prev_status2)
+                                    if out_path and os.path.exists(out_path):
+                                        # 简单记录到任务（不做嵌入，以保持最小变更）
+                                        detected_lang = self._detect_subtitle_language(out_path)
+                                        update_task(
+                                            task_id,
+                                            subtitle_path_original=out_path,
+                                            subtitle_path_translated=None,
+                                            subtitle_language_detected=detected_lang
+                                        )
+                                        task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
+                                    else:
+                                        task_logger.warning("ASR 未能生成字幕，继续上传流程")
+                            else:
+                                task_logger.info("已存在字幕文件，跳过ASR 生成")
+                    else:
+                        task_logger.info("未启用语音识别，跳过上传前的字幕处理")
             else:
                 task_logger.warning("视频文件不存在，无法进行上传前的字幕处理")
         except Exception as e:
