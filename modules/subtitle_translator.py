@@ -323,7 +323,6 @@ class LLMRequester:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,  # 降低温度以提高一致性
                 max_tokens=4096,
                 response_format={"type": "json_object"}  # 强制JSON输出
             )
@@ -364,7 +363,6 @@ class LLMRequester:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.0,
                 max_tokens=4096,
                 response_format={"type": "json_object"}
             )

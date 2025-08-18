@@ -186,6 +186,16 @@ python app.py
 - `db/` SQLite 数据库
 - `cookies/` 存放 cookies.txt（需自行准备）
 
+## 嵌字转码参数与硬件加速
+
+仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用会根据 `VIDEO_ENCODER` 选择编码器并使用统一参数：
+
+- CPU：libx264，CRF 18，preset=slow，profile=high，level=4.2，yuv420p
+- NVIDIA NVENC：hevc_nvenc，preset=p6，cq=20，rc-lookahead=32；若源为 10bit，自动使用 profile=main10 并输出 p010le，否则 profile=main + yuv420p
+- 音频：AAC 320kbps，采样率跟随原视频
+
+提示：NVENC/QSV/AMF 取决于系统与 ffmpeg 的编译是否包含对应硬编支持；不可用时会自动回退到 CPU。
+
 ## 硬件转码（Docker）
 
 应用支持通过 `VIDEO_ENCODER` 选择编码器：`cpu`（默认）/ `nvenc`（NVIDIA）/ `qsv`（Intel）。注意：容器内需有“包含对应硬件编码器的 ffmpeg”。默认镜像为发行版 ffmpeg，通常不含 NVENC/QSV；若需硬件转码，请按下述方案：

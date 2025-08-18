@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
+    # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
+    "FIXED_PARTITION_ID": "",
     # 字幕翻译可单独指定OpenAI Base URL；为空则回退到 OPENAI_BASE_URL
     "SUBTITLE_OPENAI_BASE_URL": "",
     # 字幕翻译可单独指定 API Key 与 模型名；为空则分别回退到 OPENAI_API_KEY 与 OPENAI_MODEL_NAME

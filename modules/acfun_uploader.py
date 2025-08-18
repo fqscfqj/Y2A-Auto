@@ -373,7 +373,13 @@ class AcfunUploader:
                 if response.status_code == 200:
                     result = response.json()
                     if result.get("result") == 1:
-                        self.log(f"分块 {fragment_id + 1} 上传成功")
+                        # 成功的分块上传不再写入任务INFO日志，改为debug级别
+                        if hasattr(self, 'logger') and self.logger:
+                            try:
+                                self.logger.debug(f"分块 {fragment_id + 1} 上传成功")
+                            except Exception:
+                                pass
+                        # 如果没有task级logger则不打印成功消息，避免终端或文件过多噪声
                         return True
                     else:
                         self.log(f"分块 {fragment_id + 1} 上传失败: {result}")
