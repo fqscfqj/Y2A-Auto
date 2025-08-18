@@ -3,7 +3,7 @@ name: Cleanup old packages, assets, and images
 on:
   workflow_dispatch: # Allow manual triggering
   schedule:
-    - cron: '0 0 * * *' # Run daily at midnight
+    - cron: '0 0 */14 * *' # Run every 14 days at midnight (UTC)
 
 jobs:
   delete-old-packages:
