@@ -45,13 +45,47 @@ jobs:
   delete-old-docker-images:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete older Docker Hub images
-        uses: snok/container-retention-policy@v2
-        with:
-          image-names: |
-            fqscfqj/y2a-auto
-          cut-off: A day ago UTC
-          keep-at-least: 5
-          account-type: personal
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Delete older Docker Hub images (inline script)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+          REPO: fqscfqj/y2a-auto
+          KEEP_LAST: 5
+        run: |
+          set -euo pipefail
+          echo "Logging into Docker Hub to obtain token..."
+          token=$(curl -s -X POST -H "Content-Type: application/json" -d "{\"username\": \"${DOCKERHUB_USERNAME}\", \"password\": \"${DOCKERHUB_PASSWORD}\"}" https://hub.docker.com/v2/users/login/ | jq -r .token)
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "Failed to obtain Docker Hub token" >&2
+            exit 1
+          fi
+          namespace=${REPO%%/*}
+          repo_name=${REPO##*/}
+          tmpfile=$(mktemp)
+          echo "Fetching tags for ${REPO}..."
+          next="https://hub.docker.com/v2/repositories/${namespace}/${repo_name}/tags?page_size=100"
+          while [ "$next" != "null" ]; do
+            echo "GET $next"
+            res=$(curl -s "$next")
+            echo "$res" | jq -c '.results[]' >> "$tmpfile"
+            next=$(echo "$res" | jq -r '.next')
+          done
+          total=$(wc -l < "$tmpfile" || true)
+          echo "Found $total tags"
+          if [ "$total" -le "$KEEP_LAST" ]; then
+            echo "Nothing to delete (keep_last=$KEEP_LAST)"
+            rm -f "$tmpfile"
+            exit 0
+          fi
+          # Build list of tags to delete: sort by last_updated (newest first), skip the first KEEP_LAST
+          to_delete=$(jq -s --argjson keep "$KEEP_LAST" 'map({name: .name, last_updated: .last_updated}) | sort_by(.last_updated) | reverse | .[$keep:] | map(.name)' "$tmpfile")
+          echo "Tags to delete:"
+          echo "$to_delete" | jq -r '.[]'
+          echo "$to_delete" | jq -r '.[]' > /tmp/delete_tags_list || true
+          while read -r tag; do
+            if [ -z "$tag" ]; then continue; fi
+            echo "Deleting tag $tag"
+            curl -s -X DELETE -H "Authorization: JWT ${token}" "https://hub.docker.com/v2/repositories/${namespace}/${repo_name}/tags/${tag}/" || echo "Failed to delete $tag"
+          done </tmp/delete_tags_list
+          rm -f "$tmpfile" /tmp/delete_tags_list
 
