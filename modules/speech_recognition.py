@@ -56,6 +56,9 @@ class SpeechRecognitionConfig:
     detect_api_key: str = ''
     detect_base_url: str = ''
     detect_model_name: str = ''
+    # Gating: treat as no subtitles if cues less than threshold
+    min_lines_enabled: bool = True
+    min_lines_threshold: int = 5
 
 
 class SpeechRecognizer:
@@ -347,7 +350,7 @@ class SpeechRecognizer:
                 self.logger.error(f"视频文件不存在: {video_path}")
                 return None
 
-            # 先用前60秒做语言检测（若失败则忽略，进入自动语言识别）
+            # 先用前60秒做语言检测（若失败则忽略，进入自动语言识别；若明确不支持语言，则直接停止）
             detected_language = None
             try:
                 clip_wav = self._extract_audio_wav_clip(video_path, seconds=60)
@@ -355,6 +358,12 @@ class SpeechRecognizer:
                     detected_language, confidence = self._detect_language(clip_wav)
                     if detected_language:
                         self.logger.info(f"语言检测结果: {detected_language} (confidence={confidence})")
+            except SpeechRecognizer.UnsupportedLanguageError as e:
+                self.logger.warning(f"语言检测被明确拒绝（不支持语言），将停止转写：{e}")
+                return None
+            except SpeechRecognizer.ServerFatalError as e:
+                self.logger.warning(f"语言检测出现服务端错误(500)，将停止转写：{e}")
+                return None
             except Exception as e:
                 self.logger.warning(f"语言检测失败，继续自动识别: {e}")
 
@@ -409,7 +418,24 @@ class SpeechRecognizer:
                 # Some compatible servers may return an error payload instead of raising
                 # Normalize and early-stop if an error is present
                 if isinstance(resp, dict) and 'error' in resp:
-                    self.logger.error(f"语音转写失败：{resp.get('error')}")
+                    err = resp.get('error')
+                    # Try to identify unsupported language specifically
+                    if isinstance(err, dict):
+                        code = str(err.get('code', '')).lower()
+                        etype = str(err.get('type', '')).lower()
+                        message = str(err.get('message', ''))
+                        param = str(err.get('param', ''))
+                        if (
+                            'unsupported_language' in code
+                            or 'unsupported language' in message
+                            or ('language' == param)
+                        ):
+                            bad_lang = (kwargs.get('language') if 'kwargs' in locals() else None) or 'unknown'
+                            self.logger.warning(
+                                f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
+                            )
+                            return None
+                    self.logger.error(f"语音转写失败：{err}")
                     return None
                 if isinstance(resp, str):
                     # Try parse JSON error
@@ -417,7 +443,23 @@ class SpeechRecognizer:
                     try:
                         maybe = _json.loads(resp)
                         if isinstance(maybe, dict) and 'error' in maybe:
-                            self.logger.error(f"语音转写失败：{maybe.get('error')}")
+                            err = maybe.get('error')
+                            if isinstance(err, dict):
+                                code = str(err.get('code', '')).lower()
+                                etype = str(err.get('type', '')).lower()
+                                message = str(err.get('message', ''))
+                                param = str(err.get('param', ''))
+                                if (
+                                    'unsupported_language' in code
+                                    or 'unsupported language' in message
+                                    or ('language' == param)
+                                ):
+                                    bad_lang = (kwargs.get('language') if 'kwargs' in locals() else None) or 'unknown'
+                                    self.logger.warning(
+                                        f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
+                                    )
+                                    return None
+                            self.logger.error(f"语音转写失败：{err}")
                             return None
                     except Exception:
                         pass
@@ -440,11 +482,34 @@ class SpeechRecognizer:
 
             with open(output_path, 'w', encoding='utf-8') as out:
                 out.write(text)
+
+            # Post-check: count subtitle cues; if below threshold and gating enabled, treat as no subtitles
+            try:
+                if self.config.min_lines_enabled:
+                    cues = self._count_subtitle_cues(output_path, response_format)
+                    self.logger.info(f"ASR字幕条目数: {cues}")
+                    if isinstance(cues, int) and cues < max(0, int(self.config.min_lines_threshold)):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                        self.logger.info(
+                            f"ASR字幕少于阈值({self.config.min_lines_threshold})，视为无字幕，丢弃文件")
+                        return None
+            except Exception as _e:
+                self.logger.warning(f"ASR字幕条目数统计失败，忽略门槛检查: {_e}")
+
             self.logger.info(f"语音转写完成，字幕已保存: {output_path}")
             return output_path
         except Exception as e:
             self.logger.error(f"语音转写失败: {e}")
             return None
+
+    class UnsupportedLanguageError(Exception):
+        pass
+
+    class ServerFatalError(Exception):
+        pass
 
     def _detect_language(self, audio_wav_path: str) -> Tuple[Optional[str], Optional[float]]:
         """Detect language using Whisper-compatible API via verbose_json.
@@ -456,14 +521,61 @@ class SpeechRecognizer:
                 return None, None
             detect_model = self.config.detect_model_name or self.config.model_name or 'whisper-1'
             with open(audio_wav_path, 'rb') as f:
-                resp = self.detect_client.audio.transcriptions.create(
-                    model=detect_model,
-                    file=f,
-                    response_format='verbose_json'
-                )
+                try:
+                    resp = self.detect_client.audio.transcriptions.create(
+                        model=detect_model,
+                        file=f,
+                        response_format='verbose_json'
+                    )
+                except Exception as e:
+                    # 如果返回明确不支持语言或 500 服务端错误，则直接终止
+                    msg = str(e)
+                    if (
+                        ('Unsupported language' in msg)
+                        or ('unsupported_language' in msg)
+                        or ('语言不支持' in msg)
+                        or ('不支持的语言' in msg)
+                        or ('param' in msg and 'language' in msg)
+                    ):
+                        self.logger.warning(
+                            f"语言检测被拒绝：不支持的语言。原始错误：{msg}"
+                        )
+                        raise SpeechRecognizer.UnsupportedLanguageError(msg)
+                    if (
+                        'status code 500' in msg.lower()
+                        or 'error code: 500' in msg.lower()
+                        or 'unknown_error' in msg.lower()
+                    ):
+                        self.logger.warning(
+                            f"语言检测出现服务端错误(500)，将停止转写。原始错误：{msg}"
+                        )
+                        raise SpeechRecognizer.ServerFatalError(msg)
+                    # 其他错误走原有流程，由上层忽略检测失败
+                    raise
             # Some SDKs return dict-like, some return object; normalize
             data = None
             if isinstance(resp, dict):
+                # 检查错误载荷
+                if 'error' in resp:
+                    err = resp.get('error')
+                    if isinstance(err, dict):
+                        code = str(err.get('code', '')).lower()
+                        message = str(err.get('message', ''))
+                        param = str(err.get('param', ''))
+                        if (
+                            'unsupported_language' in code
+                            or 'unsupported language' in message
+                            or ('language' == param)
+                        ):
+                            self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
+                            raise SpeechRecognizer.UnsupportedLanguageError(str(err))
+                        if (
+                            'unknown_error' in code
+                            or 'status code 500' in message.lower()
+                            or '500' == code
+                        ):
+                            self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
+                            raise SpeechRecognizer.ServerFatalError(str(err))
                 data = resp
             else:
                 try:
@@ -482,6 +594,26 @@ class SpeechRecognizer:
                 try:
                     import json as _json
                     data = _json.loads(str(resp))
+                    if isinstance(data, dict) and 'error' in data:
+                        err = data.get('error')
+                        if isinstance(err, dict):
+                            code = str(err.get('code', '')).lower()
+                            message = str(err.get('message', ''))
+                            param = str(err.get('param', ''))
+                            if (
+                                'unsupported_language' in code
+                                or 'unsupported language' in message
+                                or ('language' == param)
+                            ):
+                                self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
+                                raise SpeechRecognizer.UnsupportedLanguageError(str(err))
+                            if (
+                                'unknown_error' in code
+                                or 'status code 500' in message.lower()
+                                or code == '500'
+                            ):
+                                self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
+                                raise SpeechRecognizer.ServerFatalError(str(err))
                 except Exception:
                     data = None
 
@@ -510,8 +642,46 @@ class SpeechRecognizer:
             conf_ret: Optional[float] = confidence if isinstance(confidence, (int, float)) else None
             return lang_ret, conf_ret
         except Exception as e:
+            # 明确不支持语言或服务端致命错误时向上传递，其他异常仅告警
+            if isinstance(e, (SpeechRecognizer.UnsupportedLanguageError, SpeechRecognizer.ServerFatalError)):
+                raise
             self.logger.warning(f"语言检测异常: {e}")
             return None, None
+
+    def _count_subtitle_cues(self, file_path: str, fmt: str) -> Optional[int]:
+        """Count number of subtitle cues in SRT or VTT.
+
+        Args:
+            file_path: path to subtitle file
+            fmt: 'srt' or 'vtt'
+        Returns:
+            int or None on parse error
+        """
+        try:
+            fmt_l = (fmt or '').lower()
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            if fmt_l == 'srt':
+                # Split blocks by blank lines and count blocks that have a time range
+                blocks = re.split(r"\n\s*\n", content.strip())
+                cnt = 0
+                for b in blocks:
+                    if '-->' in b:
+                        cnt += 1
+                return cnt
+            else:
+                # VTT: ensure header removed then count cue lines with -->
+                # Remove header WEBVTT lines
+                body = re.sub(r'^WEBVTT.*?\n+', '', content, flags=re.IGNORECASE | re.DOTALL)
+                # Split by blank lines; count blocks containing a --> line
+                blocks = re.split(r"\n\s*\n", body.strip())
+                cnt = 0
+                for b in blocks:
+                    if '-->' in b:
+                        cnt += 1
+                return cnt
+        except Exception:
+            return None
 
 
 def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str] = None) -> Optional[SpeechRecognizer]:
@@ -537,7 +707,9 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             # dedicated detect settings (optional)
             detect_api_key=app_config.get('WHISPER_DETECT_API_KEY', ''),
             detect_base_url=app_config.get('WHISPER_DETECT_BASE_URL', ''),
-            detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', '')
+            detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', ''),
+            min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
+            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0)
         )
         return SpeechRecognizer(config, task_id)
     except Exception:

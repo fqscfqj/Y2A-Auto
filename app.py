@@ -1198,7 +1198,7 @@ def settings():
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
             'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
-            'SPEECH_RECOGNITION_ENABLED'
+            'SPEECH_RECOGNITION_ENABLED', 'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1209,7 +1209,8 @@ def settings():
             'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
             'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
             'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
-            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES'
+            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
+            'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES'
         ]
         for field in numeric_fields:
             if field in form_data:
