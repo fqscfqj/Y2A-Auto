@@ -408,6 +408,25 @@
                                         </select>
                                     </div>
                                 </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED" {% if config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True) %}checked{% endif %}>
+                                            少于最小字幕条目数则视为无字幕
+                                        </label>
+                                        <p class="help-text">用于过滤误识别或噪声结果。默认开启。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="asr-min-lines">最小字幕条目数:</label>
+                                        <input type="number" id="asr-min-lines" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES" value="{{ config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) }}" min="0" max="1000" class="form-control">
+                                        <p class="help-text">当ASR生成的字幕条目数小于该值时，将当作“没有字幕”处理（不会进入翻译/烧录）。</p>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="row g-3">
