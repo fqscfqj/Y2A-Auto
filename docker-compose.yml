@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   y2a-auto:
     image: fqscfqj/y2a-auto:latest #DockerHub
