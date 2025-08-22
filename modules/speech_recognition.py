@@ -59,6 +59,8 @@ class SpeechRecognitionConfig:
     # Gating: treat as no subtitles if cues less than threshold
     min_lines_enabled: bool = True
     min_lines_threshold: int = 5
+    # Parakeet API compatibility mode
+    parakeet_compatibility_mode: bool = False
 
 
 class SpeechRecognizer:
@@ -269,7 +271,8 @@ class SpeechRecognizer:
                 'OPENAI_BASE_URL': detect_base_url,
             }
             self.detect_client = _get_openai_client(detect_openai_config)
-            self.logger.info("语音识别客户端初始化成功(含语言检测)")
+            mode_info = " (parakeet兼容模式)" if self.config.parakeet_compatibility_mode else ""
+            self.logger.info(f"语音识别客户端初始化成功(含语言检测){mode_info}")
         except Exception as e:
             self.logger.error(f"初始化语音识别客户端失败: {e}")
 
@@ -412,67 +415,12 @@ class SpeechRecognizer:
                     else:
                         raise
 
-            # Handle SDK variations: sometimes resp is str, sometimes has .text
-            text = None
-            try:
-                # Some compatible servers may return an error payload instead of raising
-                # Normalize and early-stop if an error is present
-                if isinstance(resp, dict) and 'error' in resp:
-                    err = resp.get('error')
-                    # Try to identify unsupported language specifically
-                    if isinstance(err, dict):
-                        code = str(err.get('code', '')).lower()
-                        etype = str(err.get('type', '')).lower()
-                        message = str(err.get('message', ''))
-                        param = str(err.get('param', ''))
-                        if (
-                            'unsupported_language' in code
-                            or 'unsupported language' in message
-                            or ('language' == param)
-                        ):
-                            bad_lang = (kwargs.get('language') if 'kwargs' in locals() else None) or 'unknown'
-                            self.logger.warning(
-                                f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
-                            )
-                            return None
-                    self.logger.error(f"语音转写失败：{err}")
-                    return None
-                if isinstance(resp, str):
-                    # Try parse JSON error
-                    import json as _json
-                    try:
-                        maybe = _json.loads(resp)
-                        if isinstance(maybe, dict) and 'error' in maybe:
-                            err = maybe.get('error')
-                            if isinstance(err, dict):
-                                code = str(err.get('code', '')).lower()
-                                etype = str(err.get('type', '')).lower()
-                                message = str(err.get('message', ''))
-                                param = str(err.get('param', ''))
-                                if (
-                                    'unsupported_language' in code
-                                    or 'unsupported language' in message
-                                    or ('language' == param)
-                                ):
-                                    bad_lang = (kwargs.get('language') if 'kwargs' in locals() else None) or 'unknown'
-                                    self.logger.warning(
-                                        f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
-                                    )
-                                    return None
-                            self.logger.error(f"语音转写失败：{err}")
-                            return None
-                    except Exception:
-                        pass
-                    text = resp
-                elif not isinstance(resp, dict) and hasattr(resp, 'text'):
-                    text = getattr(resp, 'text', None)
-                else:
-                    # Fallback to string representation
-                    text = str(resp)
-            except Exception:
-                text = None
+            # Parse response using compatibility-aware method
+            text = self._parse_transcription_response(resp, kwargs)
 
             if not text or len(text.strip()) == 0:
+                self.logger.error("语音转写API返回为空")
+                return None
                 self.logger.error("语音转写API返回为空")
                 return None
 
@@ -504,6 +452,106 @@ class SpeechRecognizer:
         except Exception as e:
             self.logger.error(f"语音转写失败: {e}")
             return None
+
+    def _parse_transcription_response(self, resp, kwargs: dict = None) -> Optional[str]:
+        """
+        Parse transcription response with support for multiple API formats.
+        Handles both OpenAI standard format and parakeet-api-docker format.
+        
+        Args:
+            resp: Response from API call
+            kwargs: Original request parameters for error context
+            
+        Returns:
+            Transcription text or None if error/empty
+        """
+        kwargs = kwargs or {}
+        
+        # Handle SDK variations: sometimes resp is str, sometimes has .text
+        text = None
+        try:
+            # Some compatible servers may return an error payload instead of raising
+            # Normalize and early-stop if an error is present
+            if isinstance(resp, dict) and 'error' in resp:
+                err = resp.get('error')
+                # Try to identify unsupported language specifically
+                if isinstance(err, dict):
+                    code = str(err.get('code', '')).lower()
+                    etype = str(err.get('type', '')).lower()
+                    message = str(err.get('message', ''))
+                    param = str(err.get('param', ''))
+                    if (
+                        'unsupported_language' in code
+                        or 'unsupported language' in message
+                        or ('language' == param)
+                    ):
+                        bad_lang = kwargs.get('language', 'unknown')
+                        self.logger.warning(
+                            f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
+                        )
+                        return None
+                self.logger.error(f"语音转写失败：{err}")
+                return None
+                
+            # Parakeet compatibility: check for parakeet-specific response format
+            if self.config.parakeet_compatibility_mode and isinstance(resp, dict):
+                # Handle parakeet-api-docker specific response structure
+                if 'text' in resp:
+                    text = resp['text']
+                    self.logger.debug("使用parakeet兼容模式解析响应：找到text字段")
+                elif 'result' in resp:
+                    result = resp['result']
+                    if isinstance(result, dict) and 'text' in result:
+                        text = result['text']
+                        self.logger.debug("使用parakeet兼容模式解析响应：找到result.text字段")
+                    elif isinstance(result, str):
+                        text = result
+                        self.logger.debug("使用parakeet兼容模式解析响应：使用result字符串")
+                elif 'transcription' in resp:
+                    transcription = resp['transcription']
+                    if isinstance(transcription, str):
+                        text = transcription
+                        self.logger.debug("使用parakeet兼容模式解析响应：找到transcription字段")
+            
+            # Standard OpenAI response handling
+            if not text:
+                if isinstance(resp, str):
+                    # Try parse JSON error
+                    import json as _json
+                    try:
+                        maybe = _json.loads(resp)
+                        if isinstance(maybe, dict) and 'error' in maybe:
+                            err = maybe.get('error')
+                            if isinstance(err, dict):
+                                code = str(err.get('code', '')).lower()
+                                etype = str(err.get('type', '')).lower()
+                                message = str(err.get('message', ''))
+                                param = str(err.get('param', ''))
+                                if (
+                                    'unsupported_language' in code
+                                    or 'unsupported language' in message
+                                    or ('language' == param)
+                                ):
+                                    bad_lang = kwargs.get('language', 'unknown')
+                                    self.logger.warning(
+                                        f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
+                                    )
+                                    return None
+                            self.logger.error(f"语音转写失败：{err}")
+                            return None
+                    except Exception:
+                        pass
+                    text = resp
+                elif not isinstance(resp, dict) and hasattr(resp, 'text'):
+                    text = getattr(resp, 'text', None)
+                else:
+                    # Fallback to string representation
+                    text = str(resp)
+        except Exception as e:
+            self.logger.warning(f"解析转写响应时出错: {e}")
+            text = None
+
+        return text if text and len(text.strip()) > 0 else None
 
     class UnsupportedLanguageError(Exception):
         pass
@@ -552,12 +600,90 @@ class SpeechRecognizer:
                         raise SpeechRecognizer.ServerFatalError(msg)
                     # 其他错误走原有流程，由上层忽略检测失败
                     raise
-            # Some SDKs return dict-like, some return object; normalize
-            data = None
-            if isinstance(resp, dict):
-                # 检查错误载荷
-                if 'error' in resp:
-                    err = resp.get('error')
+            
+            # Use compatibility-aware parsing
+            return self._parse_language_detection_response(resp)
+            
+        except Exception as e:
+            # 明确不支持语言或服务端致命错误时向上传递，其他异常仅告警
+            if isinstance(e, (SpeechRecognizer.UnsupportedLanguageError, SpeechRecognizer.ServerFatalError)):
+                raise
+            self.logger.warning(f"语言检测异常: {e}")
+            return None, None
+
+    def _parse_language_detection_response(self, resp) -> Tuple[Optional[str], Optional[float]]:
+        """
+        Parse language detection response with support for multiple API formats.
+        Handles both OpenAI standard format and parakeet-api-docker format.
+        
+        Returns:
+            Tuple of (language_code, confidence)
+        """
+        # Some SDKs return dict-like, some return object; normalize
+        data = None
+        if isinstance(resp, dict):
+            # 检查错误载荷
+            if 'error' in resp:
+                err = resp.get('error')
+                if isinstance(err, dict):
+                    code = str(err.get('code', '')).lower()
+                    message = str(err.get('message', ''))
+                    param = str(err.get('param', ''))
+                    if (
+                        'unsupported_language' in code
+                        or 'unsupported language' in message
+                        or ('language' == param)
+                    ):
+                        self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
+                        raise SpeechRecognizer.UnsupportedLanguageError(str(err))
+                    if (
+                        'unknown_error' in code
+                        or 'status code 500' in message.lower()
+                        or '500' == code
+                    ):
+                        self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
+                        raise SpeechRecognizer.ServerFatalError(str(err))
+                        
+            # Parakeet compatibility: check for parakeet-specific response format
+            if self.config.parakeet_compatibility_mode:
+                # Handle parakeet-api-docker specific language detection response
+                if 'language' in resp and 'confidence' in resp:
+                    # Direct language/confidence format
+                    data = resp
+                    self.logger.debug("使用parakeet兼容模式解析语言检测响应：直接格式")
+                elif 'result' in resp:
+                    result = resp['result']
+                    if isinstance(result, dict):
+                        data = result
+                        self.logger.debug("使用parakeet兼容模式解析语言检测响应：result对象")
+                elif 'detection' in resp:
+                    detection = resp['detection']
+                    if isinstance(detection, dict):
+                        data = detection
+                        self.logger.debug("使用parakeet兼容模式解析语言检测响应：detection对象")
+                        
+            # Fall back to standard response if parakeet parsing didn't work
+            if not data:
+                data = resp
+        else:
+            try:
+                # OpenAI SDK returns pydantic models; use .model_dump if available, else vars()
+                if hasattr(resp, 'model_dump'):
+                    data = resp.model_dump()
+                elif hasattr(resp, 'to_dict'):
+                    data = resp.to_dict()
+                else:
+                    data = getattr(resp, '__dict__', None)
+            except Exception:
+                data = None
+
+        if not data:
+            # Last resort, try to parse as string JSON-like (unlikely)
+            try:
+                import json as _json
+                data = _json.loads(str(resp))
+                if isinstance(data, dict) and 'error' in data:
+                    err = data.get('error')
                     if isinstance(err, dict):
                         code = str(err.get('code', '')).lower()
                         message = str(err.get('message', ''))
@@ -572,81 +698,48 @@ class SpeechRecognizer:
                         if (
                             'unknown_error' in code
                             or 'status code 500' in message.lower()
-                            or '500' == code
+                            or code == '500'
                         ):
                             self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
                             raise SpeechRecognizer.ServerFatalError(str(err))
-                data = resp
-            else:
-                try:
-                    # OpenAI SDK returns pydantic models; use .model_dump if available, else vars()
-                    if hasattr(resp, 'model_dump'):
-                        data = resp.model_dump()
-                    elif hasattr(resp, 'to_dict'):
-                        data = resp.to_dict()
-                    else:
-                        data = getattr(resp, '__dict__', None)
-                except Exception:
-                    data = None
+            except Exception:
+                data = None
 
-            if not data:
-                # Last resort, try to parse as string JSON-like (unlikely)
-                try:
-                    import json as _json
-                    data = _json.loads(str(resp))
-                    if isinstance(data, dict) and 'error' in data:
-                        err = data.get('error')
-                        if isinstance(err, dict):
-                            code = str(err.get('code', '')).lower()
-                            message = str(err.get('message', ''))
-                            param = str(err.get('param', ''))
-                            if (
-                                'unsupported_language' in code
-                                or 'unsupported language' in message
-                                or ('language' == param)
-                            ):
-                                self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
-                                raise SpeechRecognizer.UnsupportedLanguageError(str(err))
-                            if (
-                                'unknown_error' in code
-                                or 'status code 500' in message.lower()
-                                or code == '500'
-                            ):
-                                self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
-                                raise SpeechRecognizer.ServerFatalError(str(err))
-                except Exception:
-                    data = None
-
-            language = None
-            confidence = None
-            if isinstance(data, dict):
-                language = data.get('language') or data.get('detected_language')
-                # try to derive confidence from avg segment probs
-                segs = data.get('segments') or []
-                if isinstance(segs, list) and segs:
-                    probs = []
-                    for s in segs:
-                        p = s.get('avg_logprob') if isinstance(s, dict) else None
-                        if isinstance(p, (int, float)):
-                            probs.append(p)
-                    if probs:
-                        # Convert logprob to a rough [0,1] scale (heuristic)
-                        import math as _math
-                        confidence = sum(_math.exp(p) for p in probs) / len(probs)
-            # Normalize language code (e.g., 'zh', 'en')
-            if language is not None:
-                lang_str = str(language) if isinstance(language, (str, bytes)) else None
-                language = self._normalize_language_to_iso639_1(lang_str) if lang_str else None
-            # ensure precise types for return
-            lang_ret: Optional[str] = language if isinstance(language, str) and language else None
-            conf_ret: Optional[float] = confidence if isinstance(confidence, (int, float)) else None
-            return lang_ret, conf_ret
-        except Exception as e:
-            # 明确不支持语言或服务端致命错误时向上传递，其他异常仅告警
-            if isinstance(e, (SpeechRecognizer.UnsupportedLanguageError, SpeechRecognizer.ServerFatalError)):
-                raise
-            self.logger.warning(f"语言检测异常: {e}")
-            return None, None
+        language = None
+        confidence = None
+        if isinstance(data, dict):
+            # Standard OpenAI format
+            language = data.get('language') or data.get('detected_language')
+            
+            # Parakeet compatibility: check alternative field names
+            if not language and self.config.parakeet_compatibility_mode:
+                language = data.get('lang') or data.get('language_code') or data.get('predicted_language')
+                
+            # try to derive confidence from avg segment probs
+            segs = data.get('segments') or []
+            if isinstance(segs, list) and segs:
+                probs = []
+                for s in segs:
+                    p = s.get('avg_logprob') if isinstance(s, dict) else None
+                    if isinstance(p, (int, float)):
+                        probs.append(p)
+                if probs:
+                    # Convert logprob to a rough [0,1] scale (heuristic)
+                    import math as _math
+                    confidence = sum(_math.exp(p) for p in probs) / len(probs)
+            
+            # Parakeet compatibility: check for direct confidence field
+            if confidence is None and self.config.parakeet_compatibility_mode:
+                confidence = data.get('confidence') or data.get('score') or data.get('probability')
+                
+        # Normalize language code (e.g., 'zh', 'en')
+        if language is not None:
+            lang_str = str(language) if isinstance(language, (str, bytes)) else None
+            language = self._normalize_language_to_iso639_1(lang_str) if lang_str else None
+        # ensure precise types for return
+        lang_ret: Optional[str] = language if isinstance(language, str) and language else None
+        conf_ret: Optional[float] = confidence if isinstance(confidence, (int, float)) else None
+        return lang_ret, conf_ret
 
     def _count_subtitle_cues(self, file_path: str, fmt: str) -> Optional[int]:
         """Count number of subtitle cues in SRT or VTT.
@@ -709,7 +802,9 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             detect_base_url=app_config.get('WHISPER_DETECT_BASE_URL', ''),
             detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', ''),
             min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
-            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0)
+            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
+            # parakeet compatibility mode
+            parakeet_compatibility_mode=app_config.get('WHISPER_PARAKEET_COMPATIBILITY_MODE', False)
         )
         return SpeechRecognizer(config, task_id)
     except Exception:

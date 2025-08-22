@@ -86,7 +86,9 @@ DEFAULT_CONFIG = {
     # Whisper 语言检测专用（可选，留空将复用上面的 Whisper 配置）
     "WHISPER_DETECT_API_KEY": "",
     "WHISPER_DETECT_BASE_URL": "",
-    "WHISPER_DETECT_MODEL_NAME": ""
+    "WHISPER_DETECT_MODEL_NAME": "",
+    # Parakeet API 兼容模式配置
+    "WHISPER_PARAKEET_COMPATIBILITY_MODE": False,  # 启用 parakeet-api-docker 兼容模式
 }
 
 CONFIG_FILE = "config.json"
