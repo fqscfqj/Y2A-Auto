@@ -421,8 +421,6 @@ class SpeechRecognizer:
             if not text or len(text.strip()) == 0:
                 self.logger.error("语音转写API返回为空")
                 return None
-                self.logger.error("语音转写API返回为空")
-                return None
 
             # Ensure VTT header if needed
             if response_format == 'vtt' and not text.lstrip().upper().startswith('WEBVTT'):
@@ -453,7 +451,7 @@ class SpeechRecognizer:
             self.logger.error(f"语音转写失败: {e}")
             return None
 
-    def _parse_transcription_response(self, resp, kwargs: dict = None) -> Optional[str]:
+    def _parse_transcription_response(self, resp, kwargs: Optional[dict] = None) -> Optional[str]:
         """
         Parse transcription response with support for multiple API formats.
         Handles both OpenAI standard format and parakeet-api-docker format.
