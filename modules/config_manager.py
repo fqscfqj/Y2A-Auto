@@ -18,8 +18,11 @@ DEFAULT_CONFIG = {
     "RECOMMEND_PARTITION": False,
     "CONTENT_MODERATION_ENABLED": False,
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
-    "LOG_CLEANUP_HOURS": 168, # 保留最近多少小时的日志 (7天=168小时)
+    "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志 (7天=168小时)
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
+    "DOWNLOAD_CLEANUP_ENABLED": False, # 是否启用下载内容自动清理
+    "DOWNLOAD_CLEANUP_HOURS": 72, # 保留最近多少小时的下载内容 (30天=720小时)
+    "DOWNLOAD_CLEANUP_INTERVAL": 12, # 下载内容清理间隔（小时）
     "password_protection_enabled": False,
     "password": "",
     # 登录安全控制

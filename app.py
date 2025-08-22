@@ -1684,6 +1684,102 @@ def auto_start_pending_tasks(config):
     except Exception as e:
         logger.error(f"自动启动pending任务时出错: {str(e)}")
 
+# 下载内容清理功能
+def cleanup_downloads(hours=720):
+    """
+    清理指定小时数以前的下载内容
+    
+    Args:
+        hours: 保留最近多少小时的下载内容
+    
+    Returns:
+        cleanup_stats: 清理统计信息
+    """
+    try:
+        logger.info(f"开始清理{hours}小时前的下载内容")
+        cutoff_date = datetime.now() - timedelta(hours=hours)
+        cutoff_timestamp = cutoff_date.timestamp()
+        
+        files_removed = 0
+        dirs_removed = 0
+        bytes_freed = 0
+        downloads_dir = get_app_subdir('downloads')
+        
+        # 遍历下载目录
+        for item_name in os.listdir(downloads_dir):
+            item_path = os.path.join(downloads_dir, item_name)
+            
+            # 检查是否是目录（通常每个任务一个目录）
+            if os.path.isdir(item_path):
+                # 获取目录修改时间
+                dir_mtime = os.path.getmtime(item_path)
+                
+                # 如果目录修改时间早于截止日期，则删除整个目录及其内容
+                if dir_mtime < cutoff_timestamp:
+                    # 计算目录大小
+                    dir_size = 0
+                    file_count = 0
+                    for root, dirs, files in os.walk(item_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            try:
+                                dir_size += os.path.getsize(file_path)
+                                file_count += 1
+                            except (OSError, IOError):
+                                pass  # 忽略无法访问的文件
+                    
+                    # 删除目录
+                    shutil.rmtree(item_path)
+                    
+                    # 更新统计信息
+                    dirs_removed += 1
+                    files_removed += file_count
+                    bytes_freed += dir_size
+                    
+                    logger.info(f"已删除下载目录: {item_name} (包含{file_count}个文件)")
+            elif os.path.isfile(item_path):
+                # 处理单个文件
+                file_mtime = os.path.getmtime(item_path)
+                if file_mtime < cutoff_timestamp:
+                    # 获取文件大小
+                    file_size = os.path.getsize(item_path)
+                    
+                    # 删除文件
+                    os.remove(item_path)
+                    
+                    # 更新统计信息
+                    files_removed += 1
+                    bytes_freed += file_size
+                    
+                    logger.info(f"已删除下载文件: {item_name}")
+        
+        # 转换字节为可读大小
+        if bytes_freed < 1024:
+            bytes_freed_str = f"{bytes_freed} 字节"
+        elif bytes_freed < 1024 * 1024:
+            bytes_freed_str = f"{bytes_freed / 1024:.2f} KB"
+        elif bytes_freed < 1024 * 1024 * 1024:
+            bytes_freed_str = f"{bytes_freed / (1024 * 1024):.2f} MB"
+        else:
+            bytes_freed_str = f"{bytes_freed / (1024 * 1024 * 1024):.2f} GB"
+            
+        logger.info(f"下载内容清理完成，已删除{dirs_removed}个目录、{files_removed}个文件，释放{bytes_freed_str}")
+        
+        return {
+            "success": True,
+            "dirs_removed": dirs_removed,
+            "files_removed": files_removed,
+            "bytes_freed": bytes_freed,
+            "bytes_freed_readable": bytes_freed_str,
+            "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
+        }
+    except Exception as e:
+        logger.error(f"清理下载内容时出错: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 def schedule_log_cleanup():
     """根据配置设置日志清理定时任务"""
     config = load_config()
@@ -1713,6 +1809,39 @@ def schedule_log_cleanup():
         logger.info("日志自动清理已禁用")
         return None
 
+def schedule_download_cleanup():
+    """根据配置设置下载内容清理定时任务"""
+    try:
+        config = load_config()
+        
+        if config.get('DOWNLOAD_CLEANUP_ENABLED', False):
+            hours = int(config.get('DOWNLOAD_CLEANUP_HOURS', 720))  # 默认保留30天=720小时
+            interval_hours = int(config.get('DOWNLOAD_CLEANUP_INTERVAL', 24))
+            
+            # 创建调度器
+            scheduler = BackgroundScheduler()
+            
+            # 添加定时任务，每隔指定小时执行一次
+            scheduler.add_job(
+                cleanup_downloads,
+                'interval',
+                hours=interval_hours,
+                kwargs={'hours': hours},
+                id='download_cleanup_job'
+            )
+            
+            # 启动调度器
+            scheduler.start()
+            
+            logger.info(f"已启用下载内容自动清理，保留{hours}小时内的下载内容，每{interval_hours}小时清理一次")
+            return scheduler
+        else:
+            logger.info("下载内容自动清理已禁用")
+            return None
+    except Exception as e:
+        logger.error(f"设置下载内容清理定时任务时出错: {str(e)}")
+        return None
+
 @app.route('/maintenance/cleanup_logs', methods=['POST'])
 @login_required
 def cleanup_logs_route():
@@ -1740,6 +1869,22 @@ def clear_logs_route():
         flash(f"日志清理成功，已处理{result['files_processed']}个文件（{processed_files_str}），释放了{result['bytes_freed_readable']}空间", 'success')
     else:
         flash(f"日志清理失败: {result.get('error', '未知错误')}", 'danger')
+    
+    return redirect(url_for('settings'))
+
+@app.route('/maintenance/cleanup_downloads', methods=['POST'])
+@login_required
+def cleanup_downloads_route():
+    """手动触发下载内容清理"""
+    config = load_config()
+    hours = int(request.form.get('hours', config.get('DOWNLOAD_CLEANUP_HOURS', 720)))
+    
+    result = cleanup_downloads(hours)
+    
+    if result.get('success'):
+        flash(f"下载内容清理成功，删除了{result['dirs_removed']}个目录、{result['files_removed']}个文件，释放了{result['bytes_freed_readable']}空间", 'success')
+    else:
+        flash(f"下载内容清理失败: {result.get('error', '未知错误')}", 'danger')
     
     return redirect(url_for('settings'))
 
@@ -2190,6 +2335,9 @@ if __name__ == '__main__':
     # 设置日志清理定时任务
     log_cleanup_scheduler = schedule_log_cleanup()
     
+    # 设置下载内容清理定时任务
+    download_cleanup_scheduler = schedule_download_cleanup()
+    
     try:
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{5000}")
         # 使用标准Flask运行
@@ -2204,4 +2352,6 @@ if __name__ == '__main__':
         
         if log_cleanup_scheduler:
             log_cleanup_scheduler.shutdown()
+        if download_cleanup_scheduler:
+            download_cleanup_scheduler.shutdown()
         logger.info("服务已关闭") 
