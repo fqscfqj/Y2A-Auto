@@ -59,8 +59,6 @@ class SpeechRecognitionConfig:
     # Gating: treat as no subtitles if cues less than threshold
     min_lines_enabled: bool = True
     min_lines_threshold: int = 5
-    # Parakeet API compatibility mode
-    parakeet_compatibility_mode: bool = False
 
 
 class SpeechRecognizer:
@@ -271,8 +269,7 @@ class SpeechRecognizer:
                 'OPENAI_BASE_URL': detect_base_url,
             }
             self.detect_client = _get_openai_client(detect_openai_config)
-            mode_info = " (parakeet兼容模式)" if self.config.parakeet_compatibility_mode else ""
-            self.logger.info(f"语音识别客户端初始化成功(含语言检测){mode_info}")
+            self.logger.info(f"语音识别客户端初始化成功(含语言检测)")
         except Exception as e:
             self.logger.error(f"初始化语音识别客户端失败: {e}")
 
@@ -453,8 +450,8 @@ class SpeechRecognizer:
 
     def _parse_transcription_response(self, resp, kwargs: Optional[dict] = None) -> Optional[str]:
         """
-        Parse transcription response with support for multiple API formats.
-        Handles both OpenAI standard format and parakeet-api-docker format.
+        Parse transcription response from OpenAI Whisper API.
+        Handles the official OpenAI response format.
         
         Args:
             resp: Response from API call
@@ -490,61 +487,40 @@ class SpeechRecognizer:
                         return None
                 self.logger.error(f"语音转写失败：{err}")
                 return None
-                
-            # Parakeet compatibility: check for parakeet-specific response format
-            if self.config.parakeet_compatibility_mode and isinstance(resp, dict):
-                # Handle parakeet-api-docker specific response structure
-                if 'text' in resp:
-                    text = resp['text']
-                    self.logger.debug("使用parakeet兼容模式解析响应：找到text字段")
-                elif 'result' in resp:
-                    result = resp['result']
-                    if isinstance(result, dict) and 'text' in result:
-                        text = result['text']
-                        self.logger.debug("使用parakeet兼容模式解析响应：找到result.text字段")
-                    elif isinstance(result, str):
-                        text = result
-                        self.logger.debug("使用parakeet兼容模式解析响应：使用result字符串")
-                elif 'transcription' in resp:
-                    transcription = resp['transcription']
-                    if isinstance(transcription, str):
-                        text = transcription
-                        self.logger.debug("使用parakeet兼容模式解析响应：找到transcription字段")
             
             # Standard OpenAI response handling
-            if not text:
-                if isinstance(resp, str):
-                    # Try parse JSON error
-                    import json as _json
-                    try:
-                        maybe = _json.loads(resp)
-                        if isinstance(maybe, dict) and 'error' in maybe:
-                            err = maybe.get('error')
-                            if isinstance(err, dict):
-                                code = str(err.get('code', '')).lower()
-                                etype = str(err.get('type', '')).lower()
-                                message = str(err.get('message', ''))
-                                param = str(err.get('param', ''))
-                                if (
-                                    'unsupported_language' in code
-                                    or 'unsupported language' in message
-                                    or ('language' == param)
-                                ):
-                                    bad_lang = kwargs.get('language', 'unknown')
-                                    self.logger.warning(
-                                        f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
-                                    )
-                                    return None
-                            self.logger.error(f"语音转写失败：{err}")
-                            return None
-                    except Exception:
-                        pass
-                    text = resp
-                elif not isinstance(resp, dict) and hasattr(resp, 'text'):
-                    text = getattr(resp, 'text', None)
-                else:
-                    # Fallback to string representation
-                    text = str(resp)
+            if isinstance(resp, str):
+                # Try parse JSON error
+                import json as _json
+                try:
+                    maybe = _json.loads(resp)
+                    if isinstance(maybe, dict) and 'error' in maybe:
+                        err = maybe.get('error')
+                        if isinstance(err, dict):
+                            code = str(err.get('code', '')).lower()
+                            etype = str(err.get('type', '')).lower()
+                            message = str(err.get('message', ''))
+                            param = str(err.get('param', ''))
+                            if (
+                                'unsupported_language' in code
+                                or 'unsupported language' in message
+                                or ('language' == param)
+                            ):
+                                bad_lang = kwargs.get('language', 'unknown')
+                                self.logger.warning(
+                                    f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
+                                )
+                                return None
+                        self.logger.error(f"语音转写失败：{err}")
+                        return None
+                except Exception:
+                    pass
+                text = resp
+            elif not isinstance(resp, dict) and hasattr(resp, 'text'):
+                text = getattr(resp, 'text', None)
+            else:
+                # Fallback to string representation
+                text = str(resp)
         except Exception as e:
             self.logger.warning(f"解析转写响应时出错: {e}")
             text = None
@@ -611,8 +587,8 @@ class SpeechRecognizer:
 
     def _parse_language_detection_response(self, resp) -> Tuple[Optional[str], Optional[float]]:
         """
-        Parse language detection response with support for multiple API formats.
-        Handles both OpenAI standard format and parakeet-api-docker format.
+        Parse language detection response from OpenAI Whisper API.
+        Handles the official OpenAI response format.
         
         Returns:
             Tuple of (language_code, confidence)
@@ -641,28 +617,9 @@ class SpeechRecognizer:
                     ):
                         self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
                         raise SpeechRecognizer.ServerFatalError(str(err))
-                        
-            # Parakeet compatibility: check for parakeet-specific response format
-            if self.config.parakeet_compatibility_mode:
-                # Handle parakeet-api-docker specific language detection response
-                if 'language' in resp and 'confidence' in resp:
-                    # Direct language/confidence format
-                    data = resp
-                    self.logger.debug("使用parakeet兼容模式解析语言检测响应：直接格式")
-                elif 'result' in resp:
-                    result = resp['result']
-                    if isinstance(result, dict):
-                        data = result
-                        self.logger.debug("使用parakeet兼容模式解析语言检测响应：result对象")
-                elif 'detection' in resp:
-                    detection = resp['detection']
-                    if isinstance(detection, dict):
-                        data = detection
-                        self.logger.debug("使用parakeet兼容模式解析语言检测响应：detection对象")
-                        
-            # Fall back to standard response if parakeet parsing didn't work
-            if not data:
-                data = resp
+            
+            # Standard response format
+            data = resp
         else:
             try:
                 # OpenAI SDK returns pydantic models; use .model_dump if available, else vars()
@@ -709,10 +666,6 @@ class SpeechRecognizer:
             # Standard OpenAI format
             language = data.get('language') or data.get('detected_language')
             
-            # Parakeet compatibility: check alternative field names
-            if not language and self.config.parakeet_compatibility_mode:
-                language = data.get('lang') or data.get('language_code') or data.get('predicted_language')
-                
             # try to derive confidence from avg segment probs
             segs = data.get('segments') or []
             if isinstance(segs, list) and segs:
@@ -725,10 +678,6 @@ class SpeechRecognizer:
                     # Convert logprob to a rough [0,1] scale (heuristic)
                     import math as _math
                     confidence = sum(_math.exp(p) for p in probs) / len(probs)
-            
-            # Parakeet compatibility: check for direct confidence field
-            if confidence is None and self.config.parakeet_compatibility_mode:
-                confidence = data.get('confidence') or data.get('score') or data.get('probability')
                 
         # Normalize language code (e.g., 'zh', 'en')
         if language is not None:
@@ -800,9 +749,7 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             detect_base_url=app_config.get('WHISPER_DETECT_BASE_URL', ''),
             detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', ''),
             min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
-            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
-            # parakeet compatibility mode
-            parakeet_compatibility_mode=app_config.get('WHISPER_PARAKEET_COMPATIBILITY_MODE', False)
+            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0)
         )
         return SpeechRecognizer(config, task_id)
     except Exception:
