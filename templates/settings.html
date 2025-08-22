@@ -254,7 +254,7 @@
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="download-cleanup-hours">保留下载内容小时数:</label>
-                                            <input type="number" id="download-cleanup-hours" name="DOWNLOAD_CLEANUP_HOURS" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 720) }}" min="1" max="17520" class="form-control">
+                                            <input type="number" id="download-cleanup-hours" name="DOWNLOAD_CLEANUP_HOURS" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}" min="1" max="17520" class="form-control">
                                             <p class="help-text">默认保留30天（720小时）</p>
                                         </div>
                                     </div>
@@ -271,7 +271,7 @@
                                     <button type="button" id="manual-download-cleanup-btn" class="btn btn-warning">
                                         <i class="bi bi-trash"></i> 按时间清理下载内容
                                     </button>
-                                    <span class="help-text">将删除 <span class="text-primary">{{ config.get('DOWNLOAD_CLEANUP_HOURS', 720) }}</span> 小时前的下载文件</span>
+                                    <span class="help-text">将删除 <span class="text-primary">{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}</span> 小时前的下载文件</span>
                                 </div>
 
                                 <div class="alert alert-info mt-3">
@@ -753,7 +753,7 @@
 
     <!-- 独立的下载内容清理表单 -->
     <form method="post" action="{{ url_for('cleanup_downloads_route') }}" class="d-none" id="download-cleanup-form">
-        <input type="hidden" name="hours" id="download-cleanup-hours-input" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 720) }}">
+    <input type="hidden" name="hours" id="download-cleanup-hours-input" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}">
     </form>
 </div>
 

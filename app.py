@@ -1685,7 +1685,7 @@ def auto_start_pending_tasks(config):
         logger.error(f"自动启动pending任务时出错: {str(e)}")
 
 # 下载内容清理功能
-def cleanup_downloads(hours=720):
+def cleanup_downloads(hours=72):
     """
     清理指定小时数以前的下载内容
     
@@ -1815,7 +1815,7 @@ def schedule_download_cleanup():
         config = load_config()
         
         if config.get('DOWNLOAD_CLEANUP_ENABLED', False):
-            hours = int(config.get('DOWNLOAD_CLEANUP_HOURS', 720))  # 默认保留30天=720小时
+            hours = int(config.get('DOWNLOAD_CLEANUP_HOURS', 72))  # 默认保留72小时
             interval_hours = int(config.get('DOWNLOAD_CLEANUP_INTERVAL', 24))
             
             # 创建调度器
@@ -1877,7 +1877,7 @@ def clear_logs_route():
 def cleanup_downloads_route():
     """手动触发下载内容清理"""
     config = load_config()
-    hours = int(request.form.get('hours', config.get('DOWNLOAD_CLEANUP_HOURS', 720)))
+    hours = int(request.form.get('hours', config.get('DOWNLOAD_CLEANUP_HOURS', 72)))
     
     result = cleanup_downloads(hours)
     
