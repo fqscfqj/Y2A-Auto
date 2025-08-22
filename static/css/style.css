@@ -195,3 +195,49 @@ body {
 .task-card .flex-grow-1 { min-width: 0; }
 .task-card .task-title { overflow-wrap: anywhere; word-break: break-word; }
 .task-card .small.text-muted { overflow-wrap: anywhere; word-break: break-word; }
+
+/* Login page specific enhancements (moved from template inline styles) */
+:root{
+    --bg-start: #f6f9ff;
+    --bg-end: #eef6ff;
+    --card-bg: rgba(255,255,255,0.85);
+    --accent: #0d6efd;
+}
+body.login-fullscreen header, body.login-fullscreen footer { display: none; }
+body.login-fullscreen html, body.login-fullscreen body { height: 100%; margin: 0; }
+body.login-fullscreen {
+    font-family: "Microsoft YaHei", "Segoe UI", Roboto, Arial, sans-serif;
+    background: linear-gradient(135deg,var(--bg-start),var(--bg-end));
+    -webkit-font-smoothing:antialiased;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.login-wrapper {
+    width: 100%;
+    max-width: 420px;
+    margin: 0 auto;
+}
+
+.login-card {
+    background: var(--card-bg);
+    border-radius: 14px;
+    box-shadow: 0 6px 30px rgba(18,38,63,0.12);
+    overflow: hidden;
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(13,110,253,0.06);
+}
+
+.login-card .card-body { padding: 2rem 1.75rem; }
+.login-brand{ display:flex;align-items:center;gap:.75rem;justify-content:center;margin-bottom:0.75rem; }
+.login-brand img{ width:56px;height:56px;border-radius:12px;object-fit:cover;box-shadow:0 6px 18px rgba(13,110,253,0.12); }
+.login-brand .title{ font-size:1.125rem;font-weight:700;color:#0b5ed7; }
+.login-subtitle{ color:#6c757d;margin-bottom:1rem;text-align:center }
+.form-floating .form-control{ height: calc(2.75rem + 2px); padding: .75rem .75rem; font-size: .95rem; border-radius: 8px; }
+.btn-login{ background: linear-gradient(90deg,var(--accent), #0a58ca); border: none; color: #fff; font-weight:600; border-radius:10px; padding:.75rem 1rem; box-shadow: 0 8px 20px rgba(13,110,253,0.12); }
+.login-help{ text-align:center;color:#6c757d;font-size:.9rem;margin-top:.75rem }
+
+@media (max-width:420px){ .login-card .card-body{ padding:1.25rem } .login-brand img{ width:48px;height:48px } }

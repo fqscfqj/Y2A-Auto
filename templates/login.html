@@ -2,65 +2,46 @@
 
 {% block title %}登录 - Y2A-Auto{% endblock %}
 
-{% block extra_css %}
-<style>
-    body {
-        background-color: #f8f9fa;
-        min-height: 100vh;
-        margin: 0;
-        padding: 0;
-    }
-    header, footer {
-        display: none;
-    }
-    main.container {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-        margin: 0 !important;
-        padding: 0 !important;
-        max-width: 100% !important;
-    }
-    .login-container {
-        max-width: 400px;
-        width: 90%;
-        margin: 0;
-    }
-    .card {
-        border: none;
-        border-radius: 10px;
-    }
-    .card-body {
-        padding: 2rem;
-    }
-</style>
-{% endblock %}
+{% block extra_css %}{% endblock %}
 
 {% block content %}
-<div class="login-container">
-    <div class="card shadow-sm">
+<div class="login-wrapper">
+    <div class="login-card card shadow-sm">
         <div class="card-body">
-            <div class="text-center mb-4">
-                <h1 class="h3 mb-3 fw-normal">Y2A-Auto 登录</h1>
-                <p class="text-muted">请输入密码以继续</p>
+            <div class="login-brand">
+                <img src="{{ url_for('static', filename='img/favicon.png') }}" alt="logo">
+                <div>
+                    <div class="title">Y2A-Auto</div>
+                    <div class="text-muted small">快速批量转码与上传工具</div>
+                </div>
             </div>
-            
+
+            <div class="text-center login-subtitle">请输入管理员密码以继续访问控制台</div>
+
             <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
                 <div class="form-floating mb-3">
                     <input type="password" class="form-control" id="password" name="password" placeholder="密码" required>
                     <label for="password">密码</label>
                 </div>
-                <button class="w-100 btn btn-lg btn-primary" type="submit">登录</button>
+
+                <div class="d-grid">
+                    <button class="btn btn-login" type="submit">登录</button>
+                </div>
             </form>
+
+            <div class="login-help">忘记密码请联系系统管理员 • 版本 {{ config.get('APP_VERSION', 'N/A') }}</div>
         </div>
     </div>
+    
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-    // 聚焦密码输入框
-    document.getElementById('password').focus();
+    // 聚焦密码输入框，若元素存在
+    const pwd = document.getElementById('password');
+    if(pwd){ pwd.focus(); pwd.select(); }
+    // 给 body 添加登录专用类以启用全屏布局样式（在 base.html 中不会干扰其他页面）
+    if(document && document.body) document.body.classList.add('login-fullscreen');
 </script>
-{% endblock %} 
+{% endblock %}
