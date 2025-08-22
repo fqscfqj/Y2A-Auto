@@ -91,4 +91,26 @@ document.addEventListener('DOMContentLoaded', function() {
              document.getElementById('clear-form').submit();
         });
     }
+
+    // --- 设置页面的下载内容清理按钮逻辑 ---
+    // 绑定手动下载内容清理按钮
+    const manualDownloadCleanupBtn = document.getElementById('manual-download-cleanup-btn');
+    const downloadCleanupHoursField = document.getElementById('download-cleanup-hours');
+    const downloadCleanupHoursHidden = document.getElementById('download-cleanup-hours-input');
+    if(manualDownloadCleanupBtn) {
+        manualDownloadCleanupBtn.addEventListener('click', function() {
+            // 使用当前输入的小时数（若存在）
+            if (downloadCleanupHoursField && downloadCleanupHoursHidden) {
+                const hours = parseInt(downloadCleanupHoursField.value, 10);
+                if (!isNaN(hours) && hours > 0) {
+                    downloadCleanupHoursHidden.value = hours;
+                }
+            }
+            const confirmMsg = `确定要手动清理旧的下载内容吗？将删除 ${downloadCleanupHoursHidden ? downloadCleanupHoursHidden.value : ''} 小时前的下载文件和目录。`;
+            if (confirm(confirmMsg)) {
+                const form = document.getElementById('download-cleanup-form');
+                if (form) form.submit();
+            }
+        });
+    }
 }); 
