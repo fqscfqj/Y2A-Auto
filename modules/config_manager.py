@@ -21,8 +21,8 @@ DEFAULT_CONFIG = {
     "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志 (7天=168小时)
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
     "DOWNLOAD_CLEANUP_ENABLED": False, # 是否启用下载内容自动清理
-    "DOWNLOAD_CLEANUP_HOURS": 72, # 保留最近多少小时的下载内容 (30天=720小时)
-    "DOWNLOAD_CLEANUP_INTERVAL": 12, # 下载内容清理间隔（小时）
+    "DOWNLOAD_CLEANUP_HOURS": 72, # 保留最近多少小时的下载内容（默认72小时）
+    "DOWNLOAD_CLEANUP_INTERVAL": 24, # 下载内容清理间隔（小时），默认24小时
     "password_protection_enabled": False,
     "password": "",
     # 登录安全控制
