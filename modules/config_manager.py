@@ -60,14 +60,14 @@ DEFAULT_CONFIG = {
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
     "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
     "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (仅支持openai)
-    "SUBTITLE_BATCH_SIZE": 5,  # 批次大小
+    "SUBTITLE_BATCH_SIZE": 3,  # 批次大小（降低以优化内存使用）
     "SUBTITLE_MAX_RETRIES": 3,  # 最大重试次数
     "SUBTITLE_RETRY_DELAY": 2,  # 重试延迟(秒)
     "SUBTITLE_EMBED_IN_VIDEO": True,  # 是否将字幕嵌入视频
     "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
-    "SUBTITLE_MAX_WORKERS": 0,  # 字幕翻译最大并发线程数（0 表示不设上限，按任务量动态分配）
+    "SUBTITLE_MAX_WORKERS": 2,  # 字幕翻译最大并发线程数（降低以优化内存使用）
     # 并发控制配置
-    "MAX_CONCURRENT_TASKS": 3,  # 最大并发任务数
+    "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数（降低以优化内存使用）
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
     # 视频转码相关
     "VIDEO_ENCODER": "cpu"  # 选择视频编码器：cpu / nvenc / qsv / amf

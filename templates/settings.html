@@ -532,8 +532,8 @@
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label for="max-concurrent-tasks">最大并发任务数:</label>
-                                        <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 3) }}" min="1" max="10" class="form-control">
-                                        <p class="help-text">同时处理的最大任务数量（包括下载、翻译等操作）</p>
+                                        <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 2) }}" min="1" max="10" class="form-control">
+                                        <p class="help-text">同时处理的最大任务数量（包括下载、翻译等操作），推荐2个以平衡性能与内存使用</p>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
@@ -549,9 +549,10 @@
                                 <i class="bi bi-info-circle"></i>
                                 <strong class="ms-1">并发控制说明</strong>
                                 <ul class="mb-0 mt-2">
-                                    <li>任务并发：控制整体任务处理的并发数，影响系统资源使用</li>
+                                    <li>任务并发：控制整体任务处理的并发数，影响系统资源使用（推荐2个）</li>
                                     <li>上传并发：控制同时上传到AcFun的视频数，建议设置为1</li>
-                                    <li>推荐配置：任务并发3，上传并发1（避免触发AcFun限制）</li>
+                                    <li>推荐配置：任务并发2，上传并发1（平衡性能与内存使用）</li>
+                                    <li>内存优化：系统会在高内存使用时自动降低并发数</li>
                                 </ul>
                             </div>
                         </div>

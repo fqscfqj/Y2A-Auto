@@ -9,6 +9,7 @@ import sqlite3
 import logging
 import shutil
 import threading
+import gc  # 添加垃圾回收模块以优化内存使用
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
@@ -26,6 +27,23 @@ from .utils import get_app_subdir
 # from modules.ai_enhancer import translate_text, generate_acfun_tags, recommend_acfun_partition
 # from modules.content_moderator import AlibabaCloudModerator
 # from modules.acfun_uploader import AcfunUploader
+
+def _get_memory_usage_percent():
+    """获取系统内存使用百分比，用于内存感知处理"""
+    try:
+        import psutil
+        memory = psutil.virtual_memory()
+        return memory.percent
+    except ImportError:
+        # 如果没有psutil，返回一个保守的估计值
+        return 50.0
+    except Exception:
+        return 50.0
+
+def _should_reduce_concurrency():
+    """判断是否应该降低并发数以节省内存"""
+    memory_percent = _get_memory_usage_percent()
+    return memory_percent > 80.0  # 内存使用超过80%时降低并发
 
 # 全局变量
 DB_DIR = get_app_subdir('db')
@@ -111,8 +129,8 @@ def setup_task_logger(task_id):
     if not logger.handlers:  # 避免重复添加处理器
         logger.setLevel(logging.INFO)
         
-        # 文件处理器
-        file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5, encoding='utf-8')
+        # 文件处理器 - 减少文件大小以降低内存使用
+        file_handler = RotatingFileHandler(log_file, maxBytes=5242880, backupCount=3, encoding='utf-8')
         file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.INFO)
@@ -559,7 +577,7 @@ class TaskProcessor:
             except Exception:
                 return int(default)
 
-        max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 3), 3)
+        max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2)
         max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1)
         
         # 初始化上传信号量
@@ -692,7 +710,7 @@ class TaskProcessor:
         if task_semaphore is None:
             # 兜底：根据当前配置重新初始化
             task_logger.warning("task_semaphore 为 None，正在重新初始化...")
-            init_task_semaphore(self.config.get('MAX_CONCURRENT_TASKS', 3))
+            init_task_semaphore(self.config.get('MAX_CONCURRENT_TASKS', 2))
             task_logger.info(f"task_semaphore 重新初始化完成，当前值: {task_semaphore}")
             # 确保初始化成功
             if task_semaphore is None:
@@ -801,6 +819,14 @@ class TaskProcessor:
                 task_logger.info("已释放任务并发配额")
             except Exception:
                 pass
+            
+            # 主动清理内存以降低系统资源占用
+            try:
+                gc.collect()
+                task_logger.debug("已执行垃圾回收以优化内存使用")
+            except Exception:
+                pass
+                
             # 任务完成后，检查是否有其他pending任务需要启动
             task_logger.info("任务处理完成，检查是否有其他pending任务...")
             # 延迟1秒后检查，确保数据库状态更新完成
@@ -845,11 +871,17 @@ class TaskProcessor:
             
             # 如果有任务正在运行且并发限制为1，则不启动新任务
             # 兼容字符串配置，安全转换为整数
-            max_concurrent = self.config.get('MAX_CONCURRENT_TASKS', 3)
+            max_concurrent = self.config.get('MAX_CONCURRENT_TASKS', 2)
             try:
                 max_concurrent = int(str(max_concurrent).strip())
             except Exception:
-                max_concurrent = 3
+                max_concurrent = 2
+            
+            # 内存感知并发控制：如果内存使用过高，降低并发数
+            if _should_reduce_concurrency():
+                max_concurrent = max(1, max_concurrent // 2)
+                logger.info(f"检测到高内存使用，降低并发数至 {max_concurrent}")
+                
             if len(running_tasks) >= max_concurrent:
                 logger.info(f"当前有 {len(running_tasks)} 个任务正在运行，达到并发限制 {max_concurrent}，暂不启动新任务")
                 return
