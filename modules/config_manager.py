@@ -18,11 +18,11 @@ DEFAULT_CONFIG = {
     "RECOMMEND_PARTITION": False,
     "CONTENT_MODERATION_ENABLED": False,
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
-    "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志 (7天=168小时)
+    "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
     "DOWNLOAD_CLEANUP_ENABLED": False, # 是否启用下载内容自动清理
-    "DOWNLOAD_CLEANUP_HOURS": 72, # 保留最近多少小时的下载内容（默认72小时）
-    "DOWNLOAD_CLEANUP_INTERVAL": 24, # 下载内容清理间隔（小时），默认24小时
+    "DOWNLOAD_CLEANUP_HOURS": 72, # 保留最近多少小时的下载内容
+    "DOWNLOAD_CLEANUP_INTERVAL": 24, # 下载内容清理间隔（小时）
     "password_protection_enabled": False,
     "password": "",
     # 登录安全控制
@@ -60,14 +60,14 @@ DEFAULT_CONFIG = {
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
     "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
     "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (仅支持openai)
-    "SUBTITLE_BATCH_SIZE": 3,  # 批次大小（降低以优化内存使用）
+    "SUBTITLE_BATCH_SIZE": 3,  # 批次大小
     "SUBTITLE_MAX_RETRIES": 3,  # 最大重试次数
     "SUBTITLE_RETRY_DELAY": 2,  # 重试延迟(秒)
     "SUBTITLE_EMBED_IN_VIDEO": True,  # 是否将字幕嵌入视频
     "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
-    "SUBTITLE_MAX_WORKERS": 2,  # 字幕翻译最大并发线程数（降低以优化内存使用）
+    "SUBTITLE_MAX_WORKERS": 2,  # 字幕翻译最大并发线程数
     # 并发控制配置
-    "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数（降低以优化内存使用）
+    "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
     # 视频转码相关
     "VIDEO_ENCODER": "cpu"  # 选择视频编码器：cpu / nvenc / qsv / amf
