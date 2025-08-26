@@ -6,6 +6,7 @@ import re
 import json
 import time
 import logging
+import gc  # 添加垃圾回收模块以优化内存使用
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Callable
 from dataclasses import dataclass
@@ -35,8 +36,8 @@ def setup_task_logger(task_id):
     if not logger.handlers:  # 避免重复添加处理器
         logger.setLevel(logging.INFO)
         
-        # 文件处理器
-        file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5, encoding='utf-8')
+        # 文件处理器 - 减少文件大小以降低内存使用
+        file_handler = RotatingFileHandler(log_file, maxBytes=5242880, backupCount=3, encoding='utf-8')
         file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.INFO)
@@ -92,10 +93,10 @@ class TranslationConfig:
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     model_name: str = "gpt-3.5-turbo"
-    batch_size: int = 5
+    batch_size: int = 3  # 减少批次大小以降低内存使用
     max_retries: int = 3
     retry_delay: int = 2
-    max_workers: int = 3  # 新增：最大并发线程数
+    max_workers: int = 2  # 减少最大并发线程数以降低内存使用
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -638,6 +639,18 @@ class SubtitleTranslator:
             else:
                 max_workers = required_workers
             
+            # 内存感知处理：在高内存使用时降低并发数
+            try:
+                import psutil
+                memory = psutil.virtual_memory()
+                if memory.percent > 80.0:
+                    max_workers = max(1, max_workers // 2)
+                    self.logger.info(f"检测到高内存使用({memory.percent:.1f}%)，降低并发数至 {max_workers}")
+            except ImportError:
+                pass  # 如果没有psutil，跳过内存检查
+            except Exception:
+                pass
+            
             self.logger.info(f"开始并发翻译，批次大小: {batch_size}, 并发线程数: {max_workers}")
             
             # 创建批次
@@ -723,6 +736,13 @@ class SubtitleTranslator:
                         self.logger.error(f"批次 {batch['batch_id']} 执行异常: {e}")
                 
                 self.logger.info(f"并发翻译完成，成功批次: {successful_batches}/{len(batches)}")
+            
+            # 清理内存以降低系统资源占用
+            try:
+                gc.collect()
+                self.logger.debug("翻译完成后执行垃圾回收以优化内存使用")
+            except Exception:
+                pass
             
             # 二次修复：补翻漏译项（例如返回空串或仍是英文）
             self._repair_untranslated_items(items)
@@ -916,7 +936,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         logger.debug(f"create_translator_from_config 调用，task_id: {task_id}")
         
         # 确保数值配置被正确转换为整数
-        batch_size = app_config.get('SUBTITLE_BATCH_SIZE', 5)
+        batch_size = app_config.get('SUBTITLE_BATCH_SIZE', 3)  # 降低默认批次大小
         if isinstance(batch_size, str):
             batch_size = int(batch_size)
         
@@ -928,7 +948,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         if isinstance(retry_delay, str):
             retry_delay = int(retry_delay)
         
-        max_workers = app_config.get('SUBTITLE_MAX_WORKERS', 3)
+        max_workers = app_config.get('SUBTITLE_MAX_WORKERS', 2)  # 降低默认并发数
         if isinstance(max_workers, str):
             max_workers = int(max_workers)
         
