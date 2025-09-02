@@ -750,7 +750,7 @@ class TaskProcessor:
                 self._translate_content(task_id, task_logger)
             if self.config.get('GENERATE_TAGS', True):
                 self._generate_tags(task_id, task_logger)
-            if self.config.get('RECOMMEND_PARTITION', True):
+            if self.config.get('RECOMMEND_PARTITION', False):
                 self._recommend_partition(task_id, task_logger)
                 task = get_task(task_id)
                 # 确保 task 不是 None
@@ -2159,14 +2159,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
-        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', True)}")
+        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
         task_logger.info(f"标题长度: {len(title)}, 描述长度: {len(description)}")
         task_logger.info(f"分区数据长度: {len(id_mapping_data)}")
         
         recommended_partition_id = None
         
         # 检查分区推荐的前置条件
-        if not self.config.get('RECOMMEND_PARTITION', True):
+        if not self.config.get('RECOMMEND_PARTITION', False):
             task_logger.info("分区推荐功能已禁用，跳过推荐")
         elif not (title or description):
             task_logger.warning("缺少标题和描述，无法进行分区推荐")
