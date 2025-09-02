@@ -750,7 +750,7 @@ class TaskProcessor:
                 self._translate_content(task_id, task_logger)
             if self.config.get('GENERATE_TAGS', True):
                 self._generate_tags(task_id, task_logger)
-            if self.config.get('RECOMMEND_PARTITION', True):
+            if self.config.get('RECOMMEND_PARTITION', False):
                 self._recommend_partition(task_id, task_logger)
                 task = get_task(task_id)
                 # 确保 task 不是 None
@@ -2159,12 +2159,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
-        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', True)}")
+        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
         task_logger.info(f"标题长度: {len(title)}, 描述长度: {len(description)}")
         task_logger.info(f"分区数据长度: {len(id_mapping_data)}")
         
         recommended_partition_id = None
-        if self.config.get('RECOMMEND_PARTITION', True) and (title or description) and id_mapping_data:
+        
+        # 检查分区推荐的前置条件
+        if not self.config.get('RECOMMEND_PARTITION', False):
+            task_logger.info("分区推荐功能已禁用，跳过推荐")
+        elif not (title or description):
+            task_logger.warning("缺少标题和描述，无法进行分区推荐")
+        elif not id_mapping_data:
+            task_logger.error("分区映射数据为空，无法进行分区推荐")
+        else:
             task_logger.info("满足推荐分区的所有条件，开始调用推荐函数")
             
             # 调用推荐函数，现在它返回分区ID字符串或None
@@ -2187,19 +2195,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     update_task(task_id, selected_partition_id=recommended_partition_id)
                     task_logger.info(f"已自动选择推荐分区: {recommended_partition_id}")
             else:
-                task_logger.warning("分区推荐失败")
-        else:
-            conditions = []
-            if not self.config.get('RECOMMEND_PARTITION', True):
-                conditions.append("分区推荐功能已禁用")
-            if not (title or description):
-                conditions.append("缺少标题和描述")
-            if not id_mapping_data:
-                conditions.append("分区映射数据为空")
+                # 提供更详细的失败原因
+                if not openai_config.get('OPENAI_API_KEY'):
+                    task_logger.warning("分区推荐失败: 未配置OpenAI API密钥，且规则匹配未命中")
+                else:
+                    task_logger.warning("分区推荐失败: OpenAI推荐和规则匹配均未成功")
             
-            task_logger.warning(f"分区推荐已禁用或缺少必要信息: {', '.join(conditions)}")
-            
-        task_logger.info(f"分区推荐完成: {recommended_partition_id}")
+        task_logger.info(f"分区推荐流程完成，结果: {recommended_partition_id or '无推荐'}")
         return True
     
     def _moderate_content(self, task_id, task_logger):
