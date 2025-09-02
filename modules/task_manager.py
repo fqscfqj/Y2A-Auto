@@ -335,6 +335,59 @@ def get_all_tasks():
     finally:
         conn.close()
 
+def get_tasks_paginated(page=1, per_page=20):
+    """
+    获取分页任务信息
+    
+    Args:
+        page (int): 页码，从1开始
+        per_page (int): 每页数量，默认20
+    
+    Returns:
+        dict: 包含tasks、total、page、per_page、total_pages等信息的字典
+    """
+    conn = get_db_connection()
+    try:
+        # 获取总数
+        cursor = conn.execute('SELECT COUNT(*) FROM tasks')
+        total = cursor.fetchone()[0]
+        
+        # 计算分页参数
+        total_pages = (total + per_page - 1) // per_page  # 向上取整
+        offset = (page - 1) * per_page
+        
+        # 获取分页数据
+        cursor = conn.execute('SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?', 
+                            (per_page, offset))
+        tasks = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            'tasks': tasks,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': total_pages,
+            'has_prev': page > 1,
+            'has_next': page < total_pages,
+            'prev_page': page - 1 if page > 1 else None,
+            'next_page': page + 1 if page < total_pages else None
+        }
+    except Exception as e:
+        logger.error(f"获取分页任务失败: {str(e)}")
+        return {
+            'tasks': [],
+            'total': 0,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': 0,
+            'has_prev': False,
+            'has_next': False,
+            'prev_page': None,
+            'next_page': None
+        }
+    finally:
+        conn.close()
+
 def get_tasks_by_status(status):
     """
     获取指定状态的任务
@@ -2084,9 +2137,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         task_logger.info("开始生成视频标签")
         update_task(task_id, status=TASK_STATES['TAGGING'])
         
-        # 优先使用翻译后的标题和描述
-        title = task.get('video_title_translated', '') or task.get('video_title_original', '')
-        description = task.get('description_translated', '') or task.get('description_original', '')
+        # 优先使用原始视频信息进行AI标签生成，确保生成简体中文标签
+        title = task.get('video_title_original', '') or task.get('video_title_translated', '')
+        description = task.get('description_original', '') or task.get('description_translated', '')
         
         # 构建OpenAI配置
         openai_config = {
@@ -2129,9 +2182,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         task_logger.info("开始推荐视频分区")
         update_task(task_id, status=TASK_STATES['PARTITIONING'])
         
-        # 优先使用翻译后的标题和描述
-        title = task.get('video_title_translated', '') or task.get('video_title_original', '')
-        description = task.get('description_translated', '') or task.get('description_original', '')
+        # 优先使用原始视频信息进行AI分区推荐
+        title = task.get('video_title_original', '') or task.get('video_title_translated', '')
+        description = task.get('description_original', '') or task.get('description_translated', '')
         
         # 读取分区ID映射
         from .utils import get_app_subdir
