@@ -310,6 +310,85 @@
         <i class="bi bi-info-circle"></i> 暂无任务，请点击"新建任务"按钮添加任务。
     </div>
     {% endif %}
+    
+    <!-- 分页导航 -->
+    {% if pagination and pagination.total > 0 %}
+    <nav aria-label="任务列表分页" class="mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <span class="text-muted small">
+                显示第 {{ (pagination.page - 1) * pagination.per_page + 1 }} - {{ (pagination.page - 1) * pagination.per_page + pagination.tasks|length }} 条，共 {{ pagination.total }} 条任务
+            </span>
+            {% if pagination.total_pages > 1 %}
+            <ul class="pagination pagination-sm mb-0">
+                {% if pagination.has_prev %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('tasks', page=pagination.prev_page) }}" aria-label="上一页">
+                            <span aria-hidden="true">&laquo;</span>
+                        </a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled">
+                        <span class="page-link" aria-label="上一页">
+                            <span aria-hidden="true">&laquo;</span>
+                        </span>
+                    </li>
+                {% endif %}
+                
+                {% set start_page = pagination.page - 2 if pagination.page > 2 else 1 %}
+                {% set end_page = pagination.page + 2 if pagination.page + 2 < pagination.total_pages else pagination.total_pages %}
+                
+                {% if start_page > 1 %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('tasks', page=1) }}">1</a>
+                    </li>
+                    {% if start_page > 2 %}
+                        <li class="page-item disabled">
+                            <span class="page-link">...</span>
+                        </li>
+                    {% endif %}
+                {% endif %}
+                
+                {% for page_num in range(start_page, end_page + 1) %}
+                    {% if page_num == pagination.page %}
+                        <li class="page-item active">
+                            <span class="page-link">{{ page_num }}</span>
+                        </li>
+                    {% else %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('tasks', page=page_num) }}">{{ page_num }}</a>
+                        </li>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if end_page < pagination.total_pages %}
+                    {% if end_page < pagination.total_pages - 1 %}
+                        <li class="page-item disabled">
+                            <span class="page-link">...</span>
+                        </li>
+                    {% endif %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('tasks', page=pagination.total_pages) }}">{{ pagination.total_pages }}</a>
+                    </li>
+                {% endif %}
+                
+                {% if pagination.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('tasks', page=pagination.next_page) }}" aria-label="下一页">
+                            <span aria-hidden="true">&raquo;</span>
+                        </a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled">
+                        <span class="page-link" aria-label="下一页">
+                            <span aria-hidden="true">&raquo;</span>
+                        </span>
+                    </li>
+                {% endif %}
+            </ul>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
 </div>
 
 <!-- 新建任务对话框 -->

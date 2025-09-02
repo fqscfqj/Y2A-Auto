@@ -16,7 +16,7 @@ from flask_cors import CORS, cross_origin
 from modules.youtube_handler import download_video_data, extract_video_urls_from_playlist
 from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
-from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
+from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
 from modules.youtube_monitor import youtube_monitor
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -523,8 +523,17 @@ def index():
 def tasks():
     """任务列表页面"""
     logger.info("访问任务列表页面")
-    tasks_list = get_all_tasks()
-    return render_template('tasks.html', tasks=tasks_list)
+    
+    # 获取分页参数
+    page = request.args.get('page', 1, type=int)
+    per_page = 20  # 每页显示20条记录
+    
+    # 获取分页数据
+    pagination_data = get_tasks_paginated(page=page, per_page=per_page)
+    
+    return render_template('tasks.html', 
+                         tasks=pagination_data['tasks'],
+                         pagination=pagination_data)
 
 @app.route('/manual_review')
 @login_required
