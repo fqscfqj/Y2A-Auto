@@ -2348,6 +2348,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 task_logger.info("释放上传锁")
         except Exception as e:
             task_logger.error(f"获取或使用上传锁时出错: {e}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            # 确保更新任务状态为失败
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=f"上传锁异常: {str(e)}"
+            )
             return
     
     def _do_upload_to_acfun(self, task_id, task_logger):
@@ -2531,41 +2539,51 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(task_id, error_message="AcFun登录信息不完整，需要有效的Cookie文件或用户名密码")
             return
         
-        # 创建上传器
-        uploader = AcfunUploader(
-            acfun_username=acfun_username,
-            acfun_password=acfun_password,
-            cookie_file=acfun_cookies_path
-        )
-        
-        # 上传视频
-        success, result = uploader.upload_video(
-            video_file_path=video_path,
-            cover_file_path=cover_path,
-            title=title,
-            description=description,
-            tags=tags,
-            partition_id=partition_id,
-            original_url=original_url,
-            original_uploader=original_uploader,
-            original_upload_date=original_upload_date,
-            task_id=task_id,
-            cover_mode=cover_mode
-        )
-        
-        if success:
-            task_logger.info(f"视频上传成功: {result}")
-            update_task(
-                task_id,
-                status=TASK_STATES['COMPLETED'],
-                acfun_upload_response=json.dumps(result, ensure_ascii=False)
+        # 创建上传器并执行上传
+        try:
+            uploader = AcfunUploader(
+                acfun_username=acfun_username,
+                acfun_password=acfun_password,
+                cookie_file=acfun_cookies_path
             )
-        else:
-            task_logger.error(f"视频上传失败: {result}")
+            
+            # 上传视频
+            success, result = uploader.upload_video(
+                video_file_path=video_path,
+                cover_file_path=cover_path,
+                title=title,
+                description=description,
+                tags=tags,
+                partition_id=partition_id,
+                original_url=original_url,
+                original_uploader=original_uploader,
+                original_upload_date=original_upload_date,
+                task_id=task_id,
+                cover_mode=cover_mode
+            )
+            
+            if success:
+                task_logger.info(f"视频上传成功: {result}")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['COMPLETED'],
+                    acfun_upload_response=json.dumps(result, ensure_ascii=False)
+                )
+            else:
+                task_logger.error(f"视频上传失败: {result}")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['FAILED'],
+                    error_message=f"上传失败: {result}"
+                )
+        except Exception as e:
+            task_logger.error(f"上传过程中发生异常: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
             update_task(
                 task_id,
                 status=TASK_STATES['FAILED'],
-                error_message=f"上传失败: {result}"
+                error_message=f"上传异常: {str(e)}"
             )
 
 # 任务控制函数
@@ -2671,7 +2689,7 @@ def force_upload_task(task_id, config=None):
         task_logger.error(f"强制上传任务 {task_id} 失败: {str(e)}")
         import traceback
         task_logger.error(traceback.format_exc())
-        update_task(task_id, error_message=f"强制上传失败: {str(e)}")
+        update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"强制上传失败: {str(e)}")
         return False
 
 # 全局任务处理器实例
