@@ -562,9 +562,10 @@ def edit_task(task_id):
             'tags_generated': tags_json
         }
         
-        if task['status'] == TASK_STATES['AWAITING_REVIEW']:
-            # 如果是从等待审核状态修改，则设置为等待上传
-            update_data['status'] = TASK_STATES['PENDING']
+        # 如果任务不在可上传状态，且用户手动编辑了信息，则将其设置为准备上传状态
+        if task['status'] not in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD'], TASK_STATES['UPLOADING']]:
+            # 对于已下载、已审核、等待审核等状态的任务，手动编辑后应该可以上传
+            update_data['status'] = TASK_STATES['READY_FOR_UPLOAD']
         
         # 调试：检查update_task函数参数类型
         print(f"DEBUG: update_task参数 - task_id: {type(task_id)}, update_data: {type(update_data)}")
