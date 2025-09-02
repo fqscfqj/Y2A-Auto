@@ -15,7 +15,7 @@ DEFAULT_CONFIG = {
     "TRANSLATE_TITLE": False,
     "TRANSLATE_DESCRIPTION": False,
     "GENERATE_TAGS": False,
-    "RECOMMEND_PARTITION": True,
+    "RECOMMEND_PARTITION": False,
     "CONTENT_MODERATION_ENABLED": False,
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
     "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志
