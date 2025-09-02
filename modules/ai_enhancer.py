@@ -525,6 +525,8 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
     Returns:
         str or None: 推荐分区ID，出错时返回None
     """
+    from typing import Optional
+    
     logger = setup_task_logger(task_id or "unknown")
     logger.info(f"开始推荐AcFun视频分区")
     
@@ -537,15 +539,58 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         logger.warning("缺少分区映射数据 (id_mapping_data is empty or None)，无法推荐分区")
         return None
     
-    if not openai_config or not openai_config.get('OPENAI_API_KEY'):
-        logger.warning("缺少OpenAI配置或API密钥，无法推荐分区")
-        return None
-    
     # 将分区数据扁平化为易于处理的列表
     partitions = flatten_partitions(id_mapping_data)
     if not partitions:
         logger.warning("分区映射数据格式错误或为空 (flatten_partitions returned empty list)，无法推荐分区")
         return None
+    
+    # 如果没有OpenAI配置，直接尝试规则匹配
+    if not openai_config or not openai_config.get('OPENAI_API_KEY'):
+        logger.info("缺少OpenAI配置或API密钥，尝试使用规则匹配")
+        
+        def rule_based_fallback(t: str, d: str) -> Optional[str]:
+            """基于简单关键词的回退分类策略。"""
+            text = f"{t or ''}\n{d or ''}".lower()
+            # 音乐相关
+            if any(k in text for k in [' mv', '官方mv', 'official video', 'music', '歌曲', '演唱', '单曲', '专辑', 'mv']):
+                for p in partitions:
+                    if '综合音乐' in p.get('name', '') or '原创·翻唱' in p.get('name', '') or '演奏·乐器' in p.get('name', ''):
+                        return p['id']
+            # 舞蹈相关
+            if any(k in text for k in ['舞蹈', 'dance', '编舞', '翻跳']):
+                for p in partitions:
+                    if '综合舞蹈' in p.get('name', '') or '宅舞' in p.get('name', ''):
+                        return p['id']
+            # 影视预告/花絮
+            if any(k in text for k in ['预告', '花絮', 'trailer', 'behind the scenes']):
+                for p in partitions:
+                    if '预告·花絮' in p.get('name', ''):
+                        return p['id']
+            # 游戏相关
+            if any(k in text for k in ['game', '游戏', '实况', '攻略', '电竞']):
+                for p in partitions:
+                    if '主机单机' in p.get('name', '') or '电子竞技' in p.get('name', '') or '网络游戏' in p.get('name', ''):
+                        return p['id']
+            # 科技/数码
+            if any(k in text for k in ['科技', '数码', '评测', '开箱', '测评']):
+                for p in partitions:
+                    if '数码家电' in p.get('name', '') or '科技制造' in p.get('name', ''):
+                        return p['id']
+            # 生活
+            if any(k in text for k in ['vlog', '生活', '美食', '旅行', '宠物']):
+                for p in partitions:
+                    if '生活日常' in p.get('name', '') or '美食' in p.get('name', '') or '旅行' in p.get('name', ''):
+                        return p['id']
+            return None
+        
+        fallback_result = rule_based_fallback(title or '', description or '')
+        if fallback_result:
+            logger.info(f"规则匹配成功，推荐分区ID: {fallback_result}")
+            return fallback_result
+        else:
+            logger.warning("规则匹配未找到合适的分区")
+            return None
     
     try:
         # 获取OpenAI客户端 (1.x版本)
