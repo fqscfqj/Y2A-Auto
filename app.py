@@ -562,9 +562,17 @@ def edit_task(task_id):
             'tags_generated': tags_json
         }
         
-        if task['status'] == TASK_STATES['AWAITING_REVIEW']:
-            # 如果是从等待审核状态修改，则设置为等待上传
-            update_data['status'] = TASK_STATES['PENDING']
+        # 只有在安全状态下才允许设置为可上传状态，避免与正在处理的任务产生竞态条件
+        safe_states_to_make_uploadable = [
+            TASK_STATES['DOWNLOADED'],        # 已下载，可以上传
+            TASK_STATES['MODERATING'],        # 审核中，可以手动干预
+            TASK_STATES['AWAITING_REVIEW'],   # 等待人工审核
+            TASK_STATES['FAILED'],            # 失败状态，可以重试
+            TASK_STATES['UPLOADING']          # 允许重置卡住的上传状态
+        ]
+        
+        if task['status'] in safe_states_to_make_uploadable:
+            update_data['status'] = TASK_STATES['READY_FOR_UPLOAD']
         
         # 调试：检查update_task函数参数类型
         print(f"DEBUG: update_task参数 - task_id: {type(task_id)}, update_data: {type(update_data)}")
