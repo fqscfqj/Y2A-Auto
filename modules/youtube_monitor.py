@@ -165,6 +165,12 @@ class YouTubeMonitor:
             except sqlite3.OperationalError:
                 pass
             
+            # 添加可监控内容类型字段（逗号分隔: video,short,live）
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN video_types TEXT DEFAULT 'video,short,live'")
+            except sqlite3.OperationalError:
+                pass
+            
             # 添加历史搬运进度记录字段
             try:
                 cursor.execute("ALTER TABLE monitor_configs ADD COLUMN historical_progress_date TEXT DEFAULT ''")
@@ -183,6 +189,7 @@ class YouTubeMonitor:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     config_id INTEGER,
                     video_id TEXT NOT NULL,
+                    video_type TEXT,
                     video_title TEXT,
                     channel_title TEXT,
                     view_count INTEGER,
@@ -195,6 +202,12 @@ class YouTubeMonitor:
                     FOREIGN KEY (config_id) REFERENCES monitor_configs (id)
                 )
             ''')
+            
+            # 为历史表新增 video_type 字段（向后兼容）
+            try:
+                cursor.execute("ALTER TABLE monitor_history ADD COLUMN video_type TEXT")
+            except sqlite3.OperationalError:
+                pass
             
             conn.commit()
         
@@ -291,8 +304,9 @@ class YouTubeMonitor:
                             exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
                             min_duration, max_duration, schedule_type, schedule_interval,
                             order_by, start_date, end_date, latest_days, latest_max_results,
-                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
+                            video_types
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         target_id,
                         config_data.get('name'),
@@ -324,7 +338,8 @@ class YouTubeMonitor:
                         config_data.get('rate_limit_window', 60),
                         config_data.get('auto_add_to_tasks', False),
                         config_data.get('historical_progress_date', ''),
-                        config_data.get('historical_offset', 0)
+                        config_data.get('historical_offset', 0),
+                        config_data.get('video_types', 'video,short,live')
                     ))
                     
                     # 使用指定的ID
@@ -338,8 +353,9 @@ class YouTubeMonitor:
                             exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
                             min_duration, max_duration, schedule_type, schedule_interval,
                             order_by, start_date, end_date, latest_days, latest_max_results,
-                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
+                            video_types
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         config_data.get('name'),
                         config_data.get('enabled', True),
@@ -370,7 +386,8 @@ class YouTubeMonitor:
                         config_data.get('rate_limit_window', 60),
                         config_data.get('auto_add_to_tasks', False),
                         config_data.get('historical_progress_date', ''),
-                        config_data.get('historical_offset', 0)
+                        config_data.get('historical_offset', 0),
+                        config_data.get('video_types', 'video,short,live')
                     ))
                     
                     config_id = cursor.lastrowid
@@ -433,8 +450,9 @@ class YouTubeMonitor:
                         exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
                         min_duration, max_duration, schedule_type, schedule_interval,
                         order_by, start_date, end_date, latest_days, latest_max_results,
-                        rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
+                        video_types
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     config_data.get('name'),
                     config_data.get('enabled', True),
@@ -465,7 +483,8 @@ class YouTubeMonitor:
                     config_data.get('rate_limit_window', 60),
                     config_data.get('auto_add_to_tasks', False),
                     config_data.get('historical_progress_date', ''),
-                    config_data.get('historical_offset', 0)
+                    config_data.get('historical_offset', 0),
+                    config_data.get('video_types', 'video,short,live')
                 ))
                 
                 config_id = cursor.lastrowid
@@ -610,7 +629,7 @@ class YouTubeMonitor:
                         schedule_interval = ?, order_by = ?, start_date = ?, end_date = ?,
                         latest_days = ?, latest_max_results = ?,
                         rate_limit_requests = ?, rate_limit_window = ?, auto_add_to_tasks = ?,
-                        historical_progress_date = ?, historical_offset = ?, updated_time = CURRENT_TIMESTAMP
+                        historical_progress_date = ?, historical_offset = ?, video_types = ?, updated_time = CURRENT_TIMESTAMP
                     WHERE id = ?
                 ''', (
                     config_data.get('name'),
@@ -643,6 +662,7 @@ class YouTubeMonitor:
                     config_data.get('auto_add_to_tasks', False),
                     config_data.get('historical_progress_date', ''),
                     config_data.get('historical_offset', old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0),
+                    config_data.get('video_types', old_config.get('video_types', 'video,short,live') if old_config else 'video,short,live'),
                     config_id
                 ))
                 
@@ -907,6 +927,18 @@ class YouTubeMonitor:
             'maxResults': min(config['max_results'] * 2, 50),  # 获取更多结果用于筛选
             'regionCode': config['region_code']
         }
+
+        # 根据所选类型决定是否在搜索阶段过滤直播或非直播
+        selected_types = str(config.get('video_types', 'video,short,live')).split(',')
+        selected_types = [t.strip() for t in selected_types if t.strip()]
+        only_live = set(selected_types) == {'live'}
+        include_live = 'live' in set(selected_types)
+        only_non_live = not include_live
+        # live 精准过滤在搜索阶段；Shorts 不使用 videoDuration=short（过宽），改为详情阶段判断
+        if only_live:
+            search_params['eventType'] = 'live'
+        elif only_non_live:
+            search_params['eventType'] = 'completed'
         
         # 添加结束日期限制
         if published_before:
@@ -920,23 +952,29 @@ class YouTubeMonitor:
         if config['category_id'] and config['category_id'] != '0':
             search_params['videoCategoryId'] = config['category_id']
         
-        # 执行搜索（带重试）
-        logger.debug(f"准备执行搜索请求，YouTube API 对象: {type(self.youtube)}")
-        search_request = self.youtube.search().list(**search_params)
-        logger.debug(f"搜索请求已创建: {type(search_request)}")
-        search_response = self._execute_with_retry(search_request, 'search.list')
-        
-        # 添加调试日志 - 检查搜索响应
-        logger.debug(f"搜索响应类型: {type(search_response)}, 值: {search_response}")
-        if search_response is None:
-            logger.error("搜索响应为 None")
-            return []
-        
-        if 'items' not in search_response:
-            logger.error(f"搜索响应中缺少 'items' 字段，响应内容: {search_response}")
-            return []
-        
-        video_ids = [item['id']['videoId'] for item in search_response['items']]
+        # 不再按 videoDuration 分批搜索，统一一次搜索后在详情阶段精确分类
+        search_batches = [dict(search_params)]
+
+        all_video_ids = []
+        for idx, sp in enumerate(search_batches, 1):
+            logger.debug(f"准备执行搜索请求({idx}/{len(search_batches)})，参数: {sp}")
+            search_request = self.youtube.search().list(**sp)
+            search_response = self._execute_with_retry(search_request, 'search.list')
+            if not search_response or 'items' not in search_response:
+                logger.error(f"搜索响应异常: {search_response}")
+                continue
+            ids = [item['id']['videoId'] for item in search_response['items'] if 'id' in item and 'videoId' in item['id']]
+            all_video_ids.extend(ids)
+
+        # 去重并限制数量
+        video_ids = []
+        seen = set()
+        for vid in all_video_ids:
+            if vid not in seen:
+                seen.add(vid)
+                video_ids.append(vid)
+            if len(video_ids) >= min(config['max_results'] * 2, 50):
+                break
         
         if not video_ids:
             return []
@@ -944,7 +982,7 @@ class YouTubeMonitor:
         # 获取视频详细信息（带重试）
         logger.debug(f"准备执行视频详情请求，YouTube API 对象: {type(self.youtube)}")
         videos_request = self.youtube.videos().list(
-            part='id,snippet,statistics,contentDetails',
+            part='id,snippet,statistics,contentDetails,liveStreamingDetails',
             id=','.join(video_ids)
         )
         logger.debug(f"视频详情请求已创建: {type(videos_request)}")
@@ -1021,20 +1059,27 @@ class YouTubeMonitor:
             
         try:
             keywords = config.get('channel_keywords', '')
-            if not keywords:
-                logger.warning(f"频道搜索模式但未设置关键词，跳过频道: {channel_id}")
-                return []
             
             # 构建搜索参数
             search_params = {
                 'part': 'id,snippet',
                 'type': 'video',
                 'channelId': channel_id,
-                'q': keywords,
+                'q': keywords or None,
                 'publishedAfter': published_after,
                 'maxResults': config.get('max_results', 10),
                 'order': config.get('order_by', 'relevance')
             }
+            # 根据选择增加 eventType/videoDuration
+            selected_types = str(config.get('video_types', 'video,short,live')).split(',')
+            selected_types = [t.strip() for t in selected_types if t.strip()]
+            only_live = set(selected_types) == {'live'}
+            include_live = 'live' in set(selected_types)
+            only_non_live = not include_live
+            if only_live:
+                search_params['eventType'] = 'live'
+            elif only_non_live:
+                search_params['eventType'] = 'completed'
             
             # 添加结束日期限制
             if published_before:
@@ -1044,6 +1089,8 @@ class YouTubeMonitor:
             
             # 执行搜索（带重试）
             logger.debug(f"准备执行频道搜索请求，YouTube API 对象: {type(self.youtube)}")
+            # 清理 None 值，避免 API 报错
+            search_params = {k: v for k, v in search_params.items() if v is not None}
             search_request = self.youtube.search().list(**search_params)
             logger.debug(f"频道搜索请求已创建: {type(search_request)}")
             search_response = self._execute_with_retry(search_request, f'search.list (channel {channel_id})')
@@ -1067,7 +1114,7 @@ class YouTubeMonitor:
             # 获取视频详细信息（带重试）
             logger.debug(f"准备执行频道视频详情请求，YouTube API 对象: {type(self.youtube)}")
             videos_request = self.youtube.videos().list(
-                part='id,snippet,statistics,contentDetails',
+                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
                 id=','.join(video_ids)
             )
             logger.debug(f"频道视频详情请求已创建: {type(videos_request)}")
@@ -1189,7 +1236,7 @@ class YouTubeMonitor:
                 logger.error(f"频道 {channel_id} YouTube API 对象为 None")
                 return []
             videos_request = self.youtube.videos().list(
-                part='id,snippet,statistics,contentDetails',
+                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
                 id=','.join(video_ids)
             )
             videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
@@ -1267,6 +1314,11 @@ class YouTubeMonitor:
                 'like_count': int(video['statistics'].get('likeCount', 0)),
                 'comment_count': int(video['statistics'].get('commentCount', 0))
             }
+            # 基于 API 字段的内容类型判定：live 优先，其次 shorts，再否则 video
+            try:
+                video_info['video_type'] = self._detect_video_type(video)
+            except Exception:
+                video_info['video_type'] = 'video'
             
             # 应用筛选条件
             if not self._meets_criteria(video_info, config):
@@ -1279,6 +1331,65 @@ class YouTubeMonitor:
                 break
         
         return filtered
+
+    def _detect_video_type(self, video: Dict[str, Any]) -> str:
+        """根据 API 字段判定视频类型: live / short / video
+        - live: 有 liveStreamingDetails 或 snippet.liveBroadcastContent in {live, upcoming}
+        - short: 结合 API 信号判定 Shorts（不单纯依赖时长）：
+            1) 标题/描述/标签包含 #shorts 或 shorts（大小写不敏感）
+            2) 竖屏缩略图比例（通过 snippet.thumbnails 宽高比判断）且时长 <= 61 秒（作为辅证）
+        备注：YouTube Data API 无官方 Shorts 标记，只能多信号近似。
+        """
+        # 直播判定
+        live_flag = str(video.get('snippet', {}).get('liveBroadcastContent', '')).lower()
+        has_live_details = bool(video.get('liveStreamingDetails'))
+        if has_live_details or live_flag in ('live', 'upcoming'):
+            return 'live'
+
+        # Shorts 判定
+        if self._is_shorts(video):
+            return 'short'
+
+        return 'video'
+
+    def _is_shorts(self, video: Dict[str, Any]) -> bool:
+        """综合 API 线索判断是否为 Shorts。
+        优先依据 #shorts 标签/文本；其次以竖屏+<=61s 作为辅证，避免仅用时长误判。
+        """
+        snippet = video.get('snippet', {})
+        title = str(snippet.get('title', '')).lower()
+        description = str(snippet.get('description', '')).lower()
+        tags = [str(t).lower() for t in snippet.get('tags', [])] if isinstance(snippet.get('tags'), list) else []
+
+        # 1) 文本或标签中包含 shorts 相关标识
+        shorts_keywords = ['#shorts', 'shorts']
+        if any(kw in title or kw in description for kw in shorts_keywords):
+            return True
+        if any('short' == t or 'shorts' == t or '#shorts' == t for t in tags):
+            return True
+
+        # 2) 竖屏比例 + 短时长（<= 61s）作为辅证
+        duration_seconds = self._parse_duration(video.get('contentDetails', {}).get('duration', '') or 'PT0S')
+        if duration_seconds <= 61 and self._is_vertical_from_thumbnails(snippet):
+            return True
+
+        return False
+
+    def _is_vertical_from_thumbnails(self, snippet: Dict[str, Any]) -> bool:
+        """根据缩略图宽高判断是否竖屏。取可用缩略图中最接近原比例的一个进行判断。"""
+        thumbs = snippet.get('thumbnails', {}) or {}
+        # 选取一个具有明确宽高的缩略图条目
+        order = ['maxres', 'standard', 'high', 'medium', 'default']
+        for key in order:
+            t = thumbs.get(key)
+            if not t:
+                continue
+            w = t.get('width')
+            h = t.get('height')
+            if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+                # 竖屏：高度/宽度比 >= 1.2 视为竖屏
+                return (h / w) >= 1.2
+        return False
     
     def _meets_criteria(self, video_info, config):
         """检查视频是否符合筛选条件"""
@@ -1292,6 +1403,14 @@ class YouTubeMonitor:
             except Exception as e:
                 logger.warning(f"日期比较失败: {str(e)}")
         
+        # 类型过滤
+        allowed_types = str(config.get('video_types', 'video,short,live')).split(',') if config.get('video_types') is not None else ['video','short','live']
+        allowed_types = [t.strip() for t in allowed_types if t.strip()]
+        # 兼容旧记录：若未检测出类型，按普通视频处理
+        vtype = video_info.get('video_type', 'video')
+        if allowed_types and vtype not in allowed_types:
+            return False
+
         # 检查观看数
         if video_info['view_count'] < config['min_view_count']:
             return False
@@ -1367,13 +1486,14 @@ class YouTubeMonitor:
             
             cursor.execute('''
                 INSERT INTO monitor_history (
-                    config_id, video_id, video_title, channel_title,
+                    config_id, video_id, video_type, video_title, channel_title,
                     view_count, like_count, comment_count, duration,
                     published_at, added_to_tasks
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 config_id,
                 video_info['id'],
+                video_info.get('video_type', 'video'),
                 video_info['title'],
                 video_info['channel_title'],
                 video_info['view_count'],
