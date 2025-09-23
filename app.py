@@ -1961,7 +1961,8 @@ def youtube_monitor_config():
                 'latest_max_results': safe_int(request.form.get('latest_max_results'), 20),
                 'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 20),
                 'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
-                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
+                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form,
+                'video_types': ','.join(request.form.getlist('video_types') or ['video','short','live'])
             }
             
             # 验证必填项
@@ -2030,7 +2031,8 @@ def youtube_monitor_config_edit(config_id):
                 'latest_max_results': safe_int(request.form.get('latest_max_results'), 20),
                 'rate_limit_requests': safe_int(request.form.get('rate_limit_requests'), 20),
                 'rate_limit_window': safe_int(request.form.get('rate_limit_window'), 60),
-                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form
+                'auto_add_to_tasks': 'auto_add_to_tasks' in request.form,
+                'video_types': ','.join(request.form.getlist('video_types') or ['video','short','live'])
             }
             
             # 验证必填项

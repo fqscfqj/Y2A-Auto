@@ -137,6 +137,13 @@
                 </td>
                 <td>
                     <div class="text-truncate-300" title="{{ record.video_title }}">
+                        {% if record.video_type %}
+                            {% if record.video_type == 'short' %}
+                                <span class="badge bg-info text-dark" title="短视频">短</span>
+                            {% elif record.video_type == 'live' %}
+                                <span class="badge bg-danger" title="直播">直播</span>
+                            {% endif %}
+                        {% endif %}
                         {{ record.video_title }}
                     </div>
                 </td>
