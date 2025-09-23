@@ -641,15 +641,18 @@ class SubtitleTranslator:
             
             # 内存感知处理：在高内存使用时降低并发数
             try:
-                import psutil
-                memory = psutil.virtual_memory()
-                if memory.percent > 80.0:
-                    max_workers = max(1, max_workers // 2)
-                    self.logger.info(f"检测到高内存使用({memory.percent:.1f}%)，降低并发数至 {max_workers}")
-            except ImportError:
-                pass  # 如果没有psutil，跳过内存检查
+                import psutil  # type: ignore
             except Exception:
-                pass
+                psutil = None
+
+            if psutil:
+                try:
+                    memory = psutil.virtual_memory()
+                    if memory.percent > 80.0:
+                        max_workers = max(1, max_workers // 2)
+                        self.logger.info(f"检测到高内存使用({memory.percent:.1f}%)，降低并发数至 {max_workers}")
+                except Exception:
+                    pass
             
             self.logger.info(f"开始并发翻译，批次大小: {batch_size}, 并发线程数: {max_workers}")
             
@@ -673,8 +676,9 @@ class SubtitleTranslator:
                 nonlocal completed_items
                 with progress_lock:
                     completed_items += batch_size
+                    # 始终计算 progress，避免在未传入 progress_callback 时未绑定变量
+                    progress = (completed_items / total_items) * 100
                     if progress_callback:
-                        progress = (completed_items / total_items) * 100
                         progress_callback(progress, completed_items, total_items)
                     # 将逐条翻译进度降低到 debug 级别，保留网页上显示的进度
                     self.logger.debug(f"翻译进度: {completed_items}/{total_items} ({progress:.1f}%)")

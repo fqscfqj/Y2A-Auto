@@ -360,13 +360,17 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 如果提供了cookie文件，添加到命令中
         if cookies_path:
             cmd.extend(['--cookies', cookies_path])
-        
+
         # 添加进度显示选项
         if progress_callback and not skip_download:
             cmd.extend(['--progress'])
-        
+
         # 重试机制
         max_retries = 3
+        # 预先初始化，避免在异常分支中未绑定导致静态分析报错
+        process = None
+        output = ""
+
         for attempt in range(max_retries):
             try:
                 logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
@@ -470,7 +474,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 
             except subprocess.CalledProcessError as e:
                 logger.warning(f"尝试 {attempt + 1} 失败: {str(e)}")
-                error_output = output if 'output' in locals() else (e.stdout or "")
+                # 使用已初始化的 output 优先，其次回退到异常对象中的 stdout/stderr
+                error_output = output or getattr(e, 'stdout', "")
                 error_stderr = getattr(e, 'stderr', "") or ""
                 logger.warning(f"标准输出: {error_output}")
                 logger.warning(f"标准错误: {error_stderr}")
@@ -525,8 +530,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 time.sleep(2)
                 continue
         
-        # 处理输出结果
-        if process.returncode == 0:
+        # 处理输出结果 — 使用安全检查以防 process 未被创建
+        if process is not None and getattr(process, 'returncode', None) == 0:
             logger.info("下载完成，正在收集文件信息")
             
             # 获取下载的文件信息
@@ -601,10 +606,11 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             logger.info(f"下载成功: {json.dumps(result, ensure_ascii=False)}")
             return True, result
         else:
-            error_msg = f"yt-dlp返回非零状态码: {process.returncode}"
+            proc_code = getattr(process, 'returncode', None)
+            error_msg = f"yt-dlp返回非零状态码: {proc_code}"
             logger.error(error_msg)
-            final_output = output if 'output' in locals() else getattr(process, 'stdout', "")
-            final_stderr = getattr(process, 'stderr', "") or ""
+            final_output = output or (getattr(process, 'stdout', "") if process is not None else "")
+            final_stderr = (getattr(process, 'stderr', "") or "") if process is not None else ""
             logger.error(f"标准输出: {final_output}")
             logger.error(f"标准错误: {final_stderr}")
             return False, error_msg

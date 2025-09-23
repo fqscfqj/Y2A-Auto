@@ -17,6 +17,12 @@ try:
 except ImportError as e:
     ALIBABA_CLOUD_AVAILABLE = False
     _import_error = str(e)
+    # Provide fallbacks for static analyzers (Pylance) so these names are always defined
+    from typing import Any
+    Green20220302Client: Any = None
+    models: Any = None
+    open_api_models: Any = None
+    RuntimeOptions: Any = None
 
 def setup_task_logger(task_id):
     """

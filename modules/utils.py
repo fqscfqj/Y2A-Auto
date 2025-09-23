@@ -219,3 +219,25 @@ def strip_reasoning_thoughts(text):
         return cleaned
     except Exception:
         return text
+
+def safe_str(value, default=''):
+    """
+    将任意值安全转换为字符串，如果为 None 则返回默认值（默认为空字符串）。
+
+    Args:
+        value: 可能为 None 或其他类型的值
+        default: 当 value 为 None 或空时返回的默认字符串
+
+    Returns:
+        str: 安全的字符串表示
+    """
+    try:
+        if value is None:
+            return default
+        # 如果已经是字符串，直接返回（保持原样）
+        if isinstance(value, str):
+            return value
+        # 否则尝试转换为字符串
+        return str(value)
+    except Exception:
+        return default

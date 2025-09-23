@@ -1,7 +1,7 @@
 services:
   y2a-auto:
-    image: fqscfqj/y2a-auto:latest #DockerHub
-    # image: ghcr.io/fqscfqj/y2a-auto:latest #GHCR
+    # image: fqscfqj/y2a-auto:latest #DockerHub
+    image: ghcr.io/fqscfqj/y2a-auto:latest
     container_name: y2a-auto
     restart: unless-stopped
     ports:
