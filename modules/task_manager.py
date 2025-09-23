@@ -20,6 +20,8 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_subdir
+import subprocess
+import tempfile
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -31,7 +33,11 @@ from .utils import get_app_subdir
 def _get_memory_usage_percent():
     """获取系统内存使用百分比，用于内存感知处理"""
     try:
-        import psutil
+        try:
+            import psutil  # type: ignore
+        except Exception:
+            # psutil可能未安装，返回保守估计
+            return 50.0
         memory = psutil.virtual_memory()
         return memory.percent
     except ImportError:
@@ -1190,6 +1196,7 @@ class TaskProcessor:
                 task_logger.info("未找到字幕文件，尝试语音识别生成字幕（如已启用）")
                 # 若启用了语音识别，使用Whisper兼容API从视频生成字幕
                 if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                    out_path = None
                     try:
                         from modules.speech_recognition import create_speech_recognizer_from_config
                         recognizer = create_speech_recognizer_from_config(self.config, task_id)
@@ -1206,6 +1213,7 @@ class TaskProcessor:
                             # 输出字幕路径（与配置格式一致）
                             asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
                             asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                            out_path = None
                             out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                             # 恢复到字幕翻译状态
                             update_task(task_id, status=prev_status)
@@ -1508,7 +1516,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         previous_status = task_before_encoding['status'] if task_before_encoding else TASK_STATES['TRANSLATING_SUBTITLE']
         
         try:
-            import subprocess
+            # subprocess imported at module level
             import os
             import tempfile
             import shutil
@@ -1556,7 +1564,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # FFmpeg能力探测工具
             def _ffmpeg_has_encoder(encoder_name: str) -> bool:
                 try:
-                    import subprocess
+                    # subprocess imported at module level
                     result = subprocess.run(
                         ['ffmpeg', '-hide_banner', '-encoders'],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
@@ -1569,7 +1577,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             def _ffmpeg_has_filter(filter_name: str) -> bool:
                 try:
-                    import subprocess
+                    # subprocess imported at module level
                     result = subprocess.run(
                         ['ffmpeg', '-hide_banner', '-filters'],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
@@ -1595,6 +1603,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 shutil.copy2(subtitle_path, simple_subtitle)
                 
                 # 将默认字体复制到临时字体目录，确保libass可用
+                # Ensure temp_font_path is defined for static analyzers
+                temp_font_path = None
                 try:
                     from .utils import get_app_subdir, get_app_root_dir
                     search_paths = [
@@ -2014,7 +2024,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     def _get_video_duration(self, video_path, task_logger):
         """获取视频时长（秒）"""
         try:
-            import subprocess
+            # subprocess imported at module level
             
             cmd = [
                 'ffprobe', '-v', 'quiet', '-print_format', 'json', 
@@ -2048,7 +2058,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 使用类型注解明确字典值的类型
         info: dict[str, float | int | str | None] = {"width": None, "height": None, "fps": None, "pix_fmt": None}
         try:
-            import subprocess, json
+            # subprocess/json handled at module level where needed
             cmd = [
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'v:0', '-show_streams', video_path
@@ -2092,7 +2102,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """获取音频流信息（采样率等），用于音频参数设置"""
         info: dict[str, int | str | None] = {"sample_rate": None, "channels": None, "sample_fmt": None}
         try:
-            import subprocess, json
+            # subprocess/json handled at module level where needed
             cmd = [
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'a:0', '-show_streams', video_path
@@ -2138,8 +2148,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         update_task(task_id, status=TASK_STATES['TAGGING'])
         
         # 优先使用原始视频信息进行AI标签生成，确保生成简体中文标签
-        title = task.get('video_title_original', '') or task.get('video_title_translated', '')
-        description = task.get('description_original', '') or task.get('description_translated', '')
+        # 防御性处理：确保 title/description 为字符串，避免传入 None 导致后续处理出错
+        from modules.utils import safe_str
+        title = safe_str(task.get('video_title_original') or task.get('video_title_translated'))
+        description = safe_str(task.get('description_original') or task.get('description_translated'))
         
         # 构建OpenAI配置
         openai_config = {
@@ -2213,7 +2225,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }
         
         task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
-        task_logger.info(f"标题长度: {len(title)}, 描述长度: {len(description)}")
+        from modules.utils import safe_str
+        task_logger.info(f"标题长度: {len(safe_str(title))}, 描述长度: {len(safe_str(description))}")
         task_logger.info(f"分区数据长度: {len(id_mapping_data)}")
         
         recommended_partition_id = None
@@ -2296,7 +2309,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 将标签附加到描述文本后进行审核 (这部分可以保留，也可以考虑是否还需要)
         # description_with_tags = description + tags_string 
         # 为了更清晰，我们先只审核原始描述，标签单独审核
-        filtered_description = re.sub(url_pattern, '', description)
+        from modules.utils import safe_str
+        filtered_description = re.sub(url_pattern, '', safe_str(description))
         filtered_description = re.sub(email_pattern, '', filtered_description)
         filtered_description = re.sub(r'\\n{3,}', '\\n\\n', filtered_description)
         
@@ -2495,6 +2509,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                     update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
                                     asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
                                     asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                                    out_path = None
                                     out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                                     # 恢复上传状态
                                     update_task(task_id, status=prev_status2)

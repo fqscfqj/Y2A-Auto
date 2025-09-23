@@ -73,6 +73,13 @@
                                     <i class="bi bi-search text-warning" title="频道内搜索"></i> 
                                     <span title="{{ config.channel_keywords }}">关键词: {{ config.channel_keywords[:20] }}...</span>
                                 {% endif %}
+                                <br>
+                                {% set types = (config.video_types.split(',') if config.video_types else ['video','short','live']) %}
+                                <i class="bi bi-collection-play"></i>
+                                类型：
+                                {% if 'video' in types %}<span class="badge bg-secondary">普通</span>{% endif %}
+                                {% if 'short' in types %}<span class="badge bg-info text-dark">短</span>{% endif %}
+                                {% if 'live' in types %}<span class="badge bg-danger">直播</span>{% endif %}
                             {% else %}
                                 <i class="bi bi-calendar-event" title="时间段"></i> 最近 {{ config.time_period or 7 }} 天
                                 <br>
@@ -83,6 +90,13 @@
                                 {% elif config.order_by == 'relevance' %}相关度
                                 {% else %}{{ config.order_by }}
                                 {% endif %}
+                                <br>
+                                {% set types = (config.video_types.split(',') if config.video_types else ['video','short','live']) %}
+                                <i class="bi bi-collection-play"></i>
+                                类型：
+                                {% if 'video' in types %}<span class="badge bg-secondary">普通</span>{% endif %}
+                                {% if 'short' in types %}<span class="badge bg-info text-dark">短</span>{% endif %}
+                                {% if 'live' in types %}<span class="badge bg-danger">直播</span>{% endif %}
                             {% endif %}
                         </td>
                         <td class="text-center" data-label="调度类型">
@@ -171,6 +185,13 @@
                         <td data-label="配置名称">{{ record.config_name }}</td>
                         <td data-label="视频标题">
                             <div class="text-truncate-300" title="{{ record.video_title }}">
+                                {% if record.video_type %}
+                                    {% if record.video_type == 'short' %}
+                                        <span class="badge bg-info text-dark" title="短视频">短</span>
+                                    {% elif record.video_type == 'live' %}
+                                        <span class="badge bg-danger" title="直播">直播</span>
+                                    {% endif %}
+                                {% endif %}
                                 {{ record.video_title }}
                             </div>
                         </td>

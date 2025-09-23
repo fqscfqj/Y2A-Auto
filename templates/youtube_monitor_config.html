@@ -326,6 +326,25 @@
                     <h5 class="mb-0"><i class="bi bi-funnel"></i> 筛选条件</h5>
                 </div>
                 <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">内容类型</label>
+                        <div class="d-flex flex-wrap gap-3">
+                            {% set types = (config.video_types.split(',') if config and config.video_types else ['video','short','live']) %}
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="type_video" name="video_types" value="video" {% if 'video' in types %}checked{% endif %}>
+                                <label class="form-check-label" for="type_video">普通视频</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="type_short" name="video_types" value="short" {% if 'short' in types %}checked{% endif %}>
+                                <label class="form-check-label" for="type_short">短视频</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="type_live" name="video_types" value="live" {% if 'live' in types %}checked{% endif %}>
+                                <label class="form-check-label" for="type_live">直播/预告</label>
+                            </div>
+                        </div>
+                        <div class="form-text">可多选；默认三者皆选。</div>
+                    </div>
                     <div class="row">
                         <div class="col-md-4">
                             <div class="mb-3">
@@ -538,7 +557,8 @@
     "order_by": "{{ config.order_by or 'viewCount' }}",
     "schedule_type": "{{ config.schedule_type or 'manual' }}",
     "schedule_interval": {{ config.schedule_interval or 120 }},
-    "auto_add_to_tasks": {{ 'true' if config.auto_add_to_tasks else 'false' }}
+    "auto_add_to_tasks": {{ 'true' if config.auto_add_to_tasks else 'false' }},
+    "video_types": "{{ (config.video_types or 'video,short,live') if config else 'video,short,live' }}"
 }
 {% else %}
 null
