@@ -1231,26 +1231,26 @@ class YouTubeMonitor:
             if not video_ids:
                 return []
             
-            # 获取视频详细信息
+            # 获取视频详细信息，分批请求（每批最多50个）
             if self.youtube is None:
                 logger.error(f"频道 {channel_id} YouTube API 对象为 None")
                 return []
-            videos_request = self.youtube.videos().list(
-                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
-                id=','.join(video_ids)
-            )
-            videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
-            
-            videos = videos_response['items']
-            
+            batch_size = 50
+            all_videos = []
+            for i in range(0, len(video_ids), batch_size):
+                batch_ids = video_ids[i:i+batch_size]
+                videos_request = self.youtube.videos().list(
+                    part='id,snippet,statistics,contentDetails,liveStreamingDetails',
+                    id=','.join(batch_ids)
+                )
+                videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
+                all_videos.extend(videos_response.get('items', []))
             # 历史搬运模式需要按时间正序排列（从最老到最新）
             channel_mode = config.get('channel_mode', 'latest')
             if channel_mode == 'historical':
-                # 按发布时间正序排列（最老的在前）
-                videos.sort(key=lambda x: x['snippet']['publishedAt'])
+                all_videos.sort(key=lambda x: x['snippet']['publishedAt'])
                 logger.info(f"历史搬运模式：已按时间正序排列视频（从最老到最新）")
-            
-            return videos
+            return all_videos
                     
         except Exception as e:
             logger.error(f"频道播放列表获取失败 {channel_id}: {str(e)}")
