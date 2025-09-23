@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from logging.handlers import RotatingFileHandler
-from .utils import get_app_subdir, strip_reasoning_thoughts
+from .utils import get_app_subdir, strip_reasoning_thoughts, safe_str
 
 import openai
 
@@ -346,6 +346,9 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
     """
     logger = setup_task_logger(task_id or "unknown")
     logger.info(f"开始生成AcFun标签")
+    # 防御性处理：确保 title/description 为字符串，避免 None 导致切片/len 时抛出异常
+    title = safe_str(title)
+    description = safe_str(description)
     logger.info(f"视频标题: {title}")
     logger.info(f"视频描述 (截取前100字符用于显示): {description[:100]}...")
     logger.info(f"视频描述总长度: {len(description)} 字符")
@@ -529,7 +532,11 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
     
     logger = setup_task_logger(task_id or "unknown")
     logger.info(f"开始推荐AcFun视频分区")
-    
+
+    # 防御性归一化
+    title = safe_str(title)
+    description = safe_str(description)
+
     # 检查必要信息
     if not title and not description:
         logger.warning("缺少标题和描述，无法推荐分区")
@@ -606,12 +613,14 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         
         partitions_text = "\n".join(partitions_info)
         
-    # 构建提示内容
+        # 构建提示内容
+        # 在构造 prompt 时防护 description 的切片
+        short_desc = (description[:500] + '...') if len(description) > 500 else description
         prompt = f"""请根据以下视频的标题和描述，从给定的AcFun分区列表中，选择最合适的一个分区。
 
 视频标题: {title}
 
-视频描述: {description[:500] + '...' if len(description) > 500 else description}
+视频描述: {short_desc}
 
 AcFun分区列表:
 {partitions_text}
