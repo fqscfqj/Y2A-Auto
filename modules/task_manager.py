@@ -118,6 +118,53 @@ def setup_logger(name):
 # 任务管理器日志
 logger = setup_logger('task_manager')
 
+# 实时任务事件订阅管理
+_TASK_EVENT_SUBSCRIBERS = set()
+_TASK_EVENT_LOCK = threading.Lock()
+_TASK_EVENT_QUEUE_SIZE = 32
+
+
+def register_task_updates_listener():
+    """注册一个实时任务事件监听队列。"""
+    listener_queue = queue.Queue(maxsize=_TASK_EVENT_QUEUE_SIZE)
+    with _TASK_EVENT_LOCK:
+        _TASK_EVENT_SUBSCRIBERS.add(listener_queue)
+    return listener_queue
+
+
+def unregister_task_updates_listener(listener_queue):
+    """移除实时任务事件监听队列。"""
+    with _TASK_EVENT_LOCK:
+        _TASK_EVENT_SUBSCRIBERS.discard(listener_queue)
+
+
+def _emit_task_event(event):
+    with _TASK_EVENT_LOCK:
+        subscribers = list(_TASK_EVENT_SUBSCRIBERS)
+
+    for listener in subscribers:
+        try:
+            listener.put_nowait(event)
+        except queue.Full:
+            try:
+                listener.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                listener.put_nowait(event)
+            except queue.Full:
+                continue
+
+
+def publish_task_event(event_type='refresh', data=None):
+    """向所有监听者广播任务事件。"""
+    event_payload = {
+        'type': event_type,
+        'data': data or {},
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    _emit_task_event(event_payload)
+
 # 任务处理日志
 def setup_task_logger(task_id):
     """
@@ -254,7 +301,9 @@ def add_task(youtube_url):
         task_id = None
     finally:
         conn.close()
-    
+    if task_id:
+        publish_task_event('task_added', {'task_id': task_id})
+
     return task_id
 
 def update_task(task_id, silent=False, **kwargs):
@@ -291,6 +340,10 @@ def update_task(task_id, silent=False, **kwargs):
             values
         )
         conn.commit()
+        publish_task_event('task_updated', {
+            'task_id': task_id,
+            'status': kwargs.get('status')
+        })
         if not silent:  # 只有非静默模式才记录到主日志
             logger.info(f"任务 {task_id} 更新成功: {kwargs}")
         return True
@@ -441,6 +494,7 @@ def delete_task(task_id, delete_files=True):
         conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
         conn.commit()
         logger.info(f"任务 {task_id} 删除成功")
+        publish_task_event('task_deleted', {'task_id': task_id})
         return True
     except Exception as e:
         logger.error(f"删除任务 {task_id} 失败: {str(e)}")
@@ -470,12 +524,65 @@ def clear_all_tasks(delete_files=True):
         conn.execute('DELETE FROM tasks')
         conn.commit()
         logger.info("所有任务已清空")
+        publish_task_event('tasks_cleared', {})
         return True
     except Exception as e:
         logger.error(f"清空任务失败: {str(e)}")
         return False
     finally:
         conn.close()
+
+def retry_failed_tasks(config=None):
+    """重新调度所有失败的任务。"""
+    failed_tasks = get_tasks_by_status(TASK_STATES['FAILED'])
+    total = len(failed_tasks)
+    if total == 0:
+        return {
+            'total': 0,
+            'scheduled': 0,
+            'failed_ids': []
+        }
+
+    if config is None:
+        try:
+            from modules.config_manager import load_config
+            config = load_config()
+        except Exception as e:
+            logger.warning(f"加载配置失败，将使用默认配置重试失败任务: {e}")
+            config = {}
+
+    scheduled = 0
+    failed_ids = []
+
+    for task in failed_tasks:
+        task_id = task['id']
+        original_error = task.get('error_message')
+
+        # 先重置状态与错误信息，便于前端展示最新状态
+        update_task(
+            task_id,
+            silent=True,
+            status=TASK_STATES['PENDING'],
+            error_message=None,
+            upload_progress=None
+        )
+
+        if start_task(task_id, config):
+            scheduled += 1
+        else:
+            failed_ids.append(task_id)
+            update_task(
+                task_id,
+                silent=True,
+                status=TASK_STATES['FAILED'],
+                error_message=original_error or '批量重试调度失败，请稍后重试。'
+            )
+
+    return {
+        'total': total,
+        'scheduled': scheduled,
+        'failed_ids': failed_ids
+    }
 
 def delete_task_files(task_id):
     """

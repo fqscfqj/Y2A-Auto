@@ -10,13 +10,14 @@ import time
 import datetime
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
 from flask_cors import CORS, cross_origin
 from modules.youtube_handler import download_video_data, extract_video_urls_from_playlist
 from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
 from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
-from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks
+from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
+from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -534,6 +535,31 @@ def tasks():
     return render_template('tasks.html', 
                          tasks=pagination_data['tasks'],
                          pagination=pagination_data)
+    
+@app.route('/tasks/stream')
+@login_required
+def tasks_event_stream():
+    """Server-Sent Events stream for realtime task updates."""
+
+    def generate():
+        listener = register_task_updates_listener()
+        try:
+            yield 'data: {"type":"welcome"}\n\n'
+            while True:
+                try:
+                    event = listener.get(timeout=25)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except Empty:
+                    yield 'data: {"type":"heartbeat"}\n\n'
+        except GeneratorExit:
+            pass
+        finally:
+            unregister_task_updates_listener(listener)
+
+    response = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
 
 @app.route('/manual_review')
 @login_required
@@ -1446,6 +1472,33 @@ def add_task_via_extension():
             "success": False,
             "message": f"处理请求时发生错误: {str(e)}"
         }), 500
+
+@app.route('/tasks/retry_failed', methods=['POST'])
+@login_required
+def retry_failed_tasks_route():
+    """重试所有失败的任务"""
+    config = load_config()
+    result = retry_failed_tasks(config)
+
+    total = result.get('total', 0)
+    scheduled = result.get('scheduled', 0)
+    failed_ids = result.get('failed_ids', [])
+
+    if total == 0:
+        flash('当前没有失败的任务需要重试', 'info')
+    else:
+        if scheduled:
+            flash(f'已重新调度 {scheduled} 个失败任务', 'success')
+
+        skipped = total - scheduled
+        if skipped > 0:
+            preview_list = [f"{task_id[:8]}..." for task_id in failed_ids[:5]]
+            preview_ids = ', '.join(preview_list) if preview_list else '未知任务'
+            if len(failed_ids) > len(preview_list):
+                preview_ids += ' 等'
+            flash(f'{skipped} 个任务未能重试：{preview_ids}', 'danger')
+
+    return redirect(url_for('tasks'))
 
 @app.route('/tasks/clear_all', methods=['POST'])
 @login_required
