@@ -3,16 +3,20 @@
 {% block title %}Y2A-Auto - 任务列表{% endblock %}
 
 {% block content %}
-<div class="tasks-container">
+<div class="tasks-container" data-tasks-stream="{{ url_for('tasks_event_stream') }}">
+    {% set failed_tasks = tasks|selectattr('status', 'equalto', 'failed')|list if tasks else [] %}
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
         <h2 class="mb-0">任务列表</h2>
-        <div class="d-flex gap-2 flex-wrap">
-            <button type="button" class="btn btn-outline-secondary me-2" id="autoRefreshBtn" onclick="toggleAutoRefresh()">
-                <i class="bi bi-arrow-clockwise"></i> 开启自动刷新
-            </button>
+        <div class="d-flex gap-2 flex-wrap align-items-center">
             <button type="button" class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#addTaskModal">
                 <i class="bi bi-plus-circle"></i> 新建任务
             </button>
+            {% if failed_tasks %}
+            <button type="button" class="btn btn-outline-danger me-2" id="retryFailedTasksBtn" onclick="confirmRetryFailed()">
+                <i class="bi bi-arrow-repeat"></i> 重试失败任务
+                <span class="badge bg-danger ms-1">{{ failed_tasks|length }}</span>
+            </button>
+            {% endif %}
             {% if tasks %}
             <button type="button" class="btn btn-danger" onclick="confirmClearAll()">
                 <i class="bi bi-trash"></i> 清除所有任务
@@ -21,6 +25,7 @@
         </div>
     </div>
 
+    <div id="tasksContent">
     {% if tasks %}
     <div class="modern-list">
         <!-- 桌面端表格（md及以上显示） -->
@@ -319,76 +324,49 @@
                 显示第 {{ (pagination.page - 1) * pagination.per_page + 1 }} - {{ (pagination.page - 1) * pagination.per_page + pagination.tasks|length }} 条，共 {{ pagination.total }} 条任务
             </span>
             {% if pagination.total_pages > 1 %}
-            <ul class="pagination pagination-sm mb-0">
-                {% if pagination.has_prev %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('tasks', page=pagination.prev_page) }}" aria-label="上一页">
-                            <span aria-hidden="true">&laquo;</span>
-                        </a>
-                    </li>
-                {% else %}
-                    <li class="page-item disabled">
-                        <span class="page-link" aria-label="上一页">
-                            <span aria-hidden="true">&laquo;</span>
-                        </span>
-                    </li>
-                {% endif %}
-                
-                {% set start_page = pagination.page - 2 if pagination.page > 2 else 1 %}
-                {% set end_page = pagination.page + 2 if pagination.page + 2 < pagination.total_pages else pagination.total_pages %}
-                
-                {% if start_page > 1 %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('tasks', page=1) }}">1</a>
-                    </li>
-                    {% if start_page > 2 %}
-                        <li class="page-item disabled">
-                            <span class="page-link">...</span>
-                        </li>
-                    {% endif %}
-                {% endif %}
-                
-                {% for page_num in range(start_page, end_page + 1) %}
-                    {% if page_num == pagination.page %}
-                        <li class="page-item active">
-                            <span class="page-link">{{ page_num }}</span>
-                        </li>
-                    {% else %}
-                        <li class="page-item">
-                            <a class="page-link" href="{{ url_for('tasks', page=page_num) }}">{{ page_num }}</a>
-                        </li>
-                    {% endif %}
-                {% endfor %}
-                
-                {% if end_page < pagination.total_pages %}
-                    {% if end_page < pagination.total_pages - 1 %}
-                        <li class="page-item disabled">
-                            <span class="page-link">...</span>
-                        </li>
-                    {% endif %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('tasks', page=pagination.total_pages) }}">{{ pagination.total_pages }}</a>
-                    </li>
-                {% endif %}
-                
-                {% if pagination.has_next %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('tasks', page=pagination.next_page) }}" aria-label="下一页">
-                            <span aria-hidden="true">&raquo;</span>
-                        </a>
-                    </li>
-                {% else %}
-                    <li class="page-item disabled">
-                        <span class="page-link" aria-label="下一页">
-                            <span aria-hidden="true">&raquo;</span>
-                        </span>
-                    </li>
-                {% endif %}
-            </ul>
+            {%- set start_page = pagination.page - 2 if pagination.page > 2 else 1 -%}
+            {%- set end_page = pagination.page + 2 if pagination.page + 2 < pagination.total_pages else pagination.total_pages -%}
+            <div class="pagination pagination-sm mb-0" role="list">{{- '' -}}
+            {%- if pagination.has_prev -%}
+                <div class="page-item" role="listitem"><a class="page-link" href="{{ url_for('tasks', page=pagination.prev_page) }}" aria-label="上一页"><span aria-hidden="true">&laquo;</span></a></div>{{- '' -}}
+            {%- else -%}
+                <div class="page-item disabled" role="listitem"><span class="page-link" aria-label="上一页"><span aria-hidden="true">&laquo;</span></span></div>{{- '' -}}
+            {%- endif -%}
+
+            {%- if start_page > 1 -%}
+                <div class="page-item" role="listitem"><a class="page-link" href="{{ url_for('tasks', page=1) }}">1</a></div>{{- '' -}}
+                {%- if start_page > 2 -%}
+                    <div class="page-item disabled" role="listitem"><span class="page-link">...</span></div>{{- '' -}}
+                {%- endif -%}
+            {%- endif -%}
+
+            {%- for page_num in range(start_page, end_page + 1) -%}
+                {%- if page_num == pagination.page -%}
+                    <div class="page-item active" role="listitem" aria-current="page"><span class="page-link">{{ page_num }}</span></div>{{- '' -}}
+                {%- else -%}
+                    <div class="page-item" role="listitem"><a class="page-link" href="{{ url_for('tasks', page=page_num) }}">{{ page_num }}</a></div>{{- '' -}}
+                {%- endif -%}
+            {%- endfor -%}
+
+            {%- if end_page < pagination.total_pages -%}
+                {%- if end_page < pagination.total_pages - 1 -%}
+                    <div class="page-item disabled" role="listitem"><span class="page-link">...</span></div>{{- '' -}}
+                {%- endif -%}
+                <div class="page-item" role="listitem"><a class="page-link" href="{{ url_for('tasks', page=pagination.total_pages) }}">{{ pagination.total_pages }}</a></div>{{- '' -}}
+            {%- endif -%}
+
+            {%- if pagination.has_next -%}
+                <div class="page-item" role="listitem"><a class="page-link" href="{{ url_for('tasks', page=pagination.next_page) }}" aria-label="下一页"><span aria-hidden="true">&raquo;</span></a></div>{{- '' -}}
+            {%- else -%}
+                <div class="page-item disabled" role="listitem"><span class="page-link" aria-label="下一页"><span aria-hidden="true">&raquo;</span></span></div>{{- '' -}}
+            {%- endif -%}
+            {{- '' -}}
+            </div>
             {% endif %}
         </div>
     </nav>
     {% endif %}
+    </div>
 </div>
 
 <!-- 新建任务对话框 -->
@@ -479,6 +457,32 @@
                     <input type="hidden" name="delete_files" id="clearAllFilesInput" value="true">
                     <button type="submit" class="btn btn-danger">
                         <i class="bi bi-trash"></i> 确认清除
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 重试失败任务确认对话框 -->
+<div class="modal fade" id="retryFailedTasksModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-arrow-repeat"></i> 重试所有失败任务</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要重新调度所有失败的任务吗？</p>
+                <p class="mb-0 text-muted">当前共有 <span class="badge bg-danger">{{ failed_tasks|length }}</span> 个失败任务。</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form method="post" action="{{ url_for('retry_failed_tasks_route') }}">
+                    <button type="submit" class="btn btn-outline-danger">
+                        <i class="bi bi-arrow-repeat"></i> 确认重试
                     </button>
                 </form>
             </div>
@@ -632,8 +636,14 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             navigator.clipboard.writeText(text).catch(() => {});
         } else {
             const ta = document.createElement('textarea');
-            ta.value = text; document.body.appendChild(ta); ta.select();
-            try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+            } finally {
+                document.body.removeChild(ta);
+            }
         }
     }
 
@@ -641,117 +651,188 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     function confirmDelete(taskId, taskTitle) {
         document.getElementById('deleteTaskTitle').textContent = taskTitle;
         document.getElementById('deleteTaskForm').action = "{{ url_for('delete_task_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
-        
-        // 绑定复选框变化
-        document.getElementById('deleteFiles').addEventListener('change', function() {
-            document.getElementById('deleteFilesInput').value = this.checked ? 'true' : 'false';
-        });
-        
-        // 显示模态框
+
+        const deleteFilesCheckbox = document.getElementById('deleteFiles');
+        const deleteFilesInput = document.getElementById('deleteFilesInput');
+        if (deleteFilesCheckbox && deleteFilesInput) {
+            deleteFilesCheckbox.onchange = function() {
+                deleteFilesInput.value = this.checked ? 'true' : 'false';
+            };
+        }
+
         new bootstrap.Modal(document.getElementById('deleteTaskModal')).show();
     }
-    
+
     // 清除所有任务确认框
     function confirmClearAll() {
-        // 绑定复选框变化
-        document.getElementById('clearAllFiles').addEventListener('change', function() {
-            document.getElementById('clearAllFilesInput').value = this.checked ? 'true' : 'false';
-        });
-        
-        // 显示模态框
+        const clearAllFilesCheckbox = document.getElementById('clearAllFiles');
+        const clearAllFilesInput = document.getElementById('clearAllFilesInput');
+        if (clearAllFilesCheckbox && clearAllFilesInput) {
+            clearAllFilesCheckbox.onchange = function() {
+                clearAllFilesInput.value = this.checked ? 'true' : 'false';
+            };
+        }
+
         new bootstrap.Modal(document.getElementById('clearAllTasksModal')).show();
     }
-    
-    // 自动刷新功能
-    let autoRefreshEnabled = false;
-    let autoRefreshInterval = null;
-    let refreshInProgress = false;
-    
-    function updateTasksTable(newContent) {
-        // 使用AJAX更新任务表格，避免整页刷新
-        const parser = new DOMParser();
-        const newDoc = parser.parseFromString(newContent, 'text/html');
-        const newTasksContainer = newDoc.querySelector('.tasks-container');
-        
-        if (newTasksContainer) {
-            const currentContainer = document.querySelector('.tasks-container');
-            if (currentContainer) {
-                // 保存自动刷新按钮状态
-                const autoRefreshBtn = document.getElementById('autoRefreshBtn');
-                const currentBtnState = {
-                    innerHTML: autoRefreshBtn.innerHTML,
-                    classes: Array.from(autoRefreshBtn.classList)
-                };
-                
-                // 更新内容
-                currentContainer.innerHTML = newTasksContainer.innerHTML;
-                
-                // 恢复自动刷新按钮状态
-                const newAutoRefreshBtn = document.getElementById('autoRefreshBtn');
-                if (newAutoRefreshBtn) {
-                    newAutoRefreshBtn.innerHTML = currentBtnState.innerHTML;
-                    newAutoRefreshBtn.className = currentBtnState.classes.join(' ');
-                    newAutoRefreshBtn.onclick = toggleAutoRefresh;
-                }
-                
-                // 重新绑定事件
-                bindTasksEvents();
-                
-                // 更新时间显示
-                updateTaskDateTimes();
 
-                // 设置动态进度条宽度（避免模板内联样式导致的lint警告）
-                document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
-                    var v = parseInt(el.getAttribute('data-pct') || '0', 10);
-                    v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
-                    el.style.width = v + '%';
-                    el.setAttribute('aria-valuenow', String(v));
-                });
-            }
+    // 重试失败任务确认框
+    function confirmRetryFailed() {
+        const modalEl = document.getElementById('retryFailedTasksModal');
+        if (modalEl) {
+            new bootstrap.Modal(modalEl).show();
         }
     }
-    
+
+    const REFRESH_INTERVAL_ACTIVE = 4000;
+    const REFRESH_INTERVAL_IDLE = 15000;
+    const REFRESH_INTERVAL_EMPTY = 30000;
+
+    let refreshTimer = null;
+    let refreshInProgress = false;
+    let fallbackMode = false;
+    let tasksEventSource = null;
+
+    function showRefreshIndicator(isVisible) {
+        const indicator = document.getElementById('tasksRefreshIndicator');
+        if (!indicator) return;
+
+        if (isVisible) {
+            indicator.classList.remove('d-none');
+            indicator.setAttribute('aria-hidden', 'false');
+        } else {
+            indicator.classList.add('d-none');
+            indicator.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    function clearScheduledRefresh() {
+        if (refreshTimer) {
+            clearTimeout(refreshTimer);
+            refreshTimer = null;
+        }
+    }
+
+    function enableFallbackPolling(initialDelay) {
+        if (fallbackMode) {
+            if (typeof initialDelay === 'number') {
+                scheduleNextRefresh(initialDelay);
+            }
+            return;
+        }
+        fallbackMode = true;
+        scheduleNextRefresh(typeof initialDelay === 'number' ? initialDelay : undefined);
+    }
+
+    function disableFallbackPolling() {
+        const wasFallback = fallbackMode;
+        fallbackMode = false;
+        clearScheduledRefresh();
+        return wasFallback;
+    }
+
+    function updateProgressBars() {
+        document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el) {
+            let v = parseInt(el.getAttribute('data-pct') || '0', 10);
+            v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+            el.style.width = v + '%';
+            el.setAttribute('aria-valuenow', String(v));
+        });
+    }
+
+    function updateTasksTable(newContent) {
+        const parser = new DOMParser();
+        const newDoc = parser.parseFromString(newContent, 'text/html');
+        const newTasksContent = newDoc.querySelector('#tasksContent');
+        const currentContent = document.querySelector('#tasksContent');
+
+        if (newTasksContent && currentContent) {
+            currentContent.innerHTML = newTasksContent.innerHTML;
+            bindTasksEvents();
+            initTooltips();
+            updateTaskDateTimes();
+            updateProgressBars();
+        }
+    }
+
+    function initTasksEventStream() {
+        const container = document.querySelector('.tasks-container[data-tasks-stream]');
+        if (!container || typeof window.EventSource === 'undefined') {
+            enableFallbackPolling(hasProcessingTasks() ? REFRESH_INTERVAL_ACTIVE : REFRESH_INTERVAL_IDLE);
+            return;
+        }
+
+        const streamUrl = container.getAttribute('data-tasks-stream');
+        if (!streamUrl) {
+            enableFallbackPolling(REFRESH_INTERVAL_IDLE);
+            return;
+        }
+
+        tasksEventSource = new EventSource(streamUrl, { withCredentials: true });
+
+        tasksEventSource.onopen = function() {
+            const wasFallback = disableFallbackPolling();
+            if (wasFallback) {
+                refreshTasksData(true);
+            }
+        };
+
+        tasksEventSource.onmessage = function(event) {
+            if (!event || !event.data) {
+                return;
+            }
+
+            try {
+                const payload = JSON.parse(event.data);
+                if (payload.type === 'heartbeat') {
+                    return;
+                }
+                refreshTasksData(true);
+            } catch (err) {
+                console.error('解析任务实时事件失败:', err, event.data);
+            }
+        };
+
+        tasksEventSource.onerror = function() {
+            enableFallbackPolling(REFRESH_INTERVAL_IDLE);
+        };
+
+        window.addEventListener('beforeunload', function cleanupStream() {
+            if (tasksEventSource) {
+                tasksEventSource.close();
+                tasksEventSource = null;
+            }
+            window.removeEventListener('beforeunload', cleanupStream);
+        });
+    }
+
     function bindTasksEvents() {
-        // 重新绑定删除按钮事件
         document.querySelectorAll('[onclick*="confirmDelete"]').forEach(btn => {
             btn.onclick = function() {
                 confirmDelete(this.dataset.taskId, this.dataset.taskTitle);
             };
         });
-        
-        // 重新绑定清除所有任务按钮事件
-        const clearAllBtn = document.querySelector('[onclick*="confirmClearAll"]');
-        if (clearAllBtn) {
-            clearAllBtn.onclick = confirmClearAll;
-        }
-        
-        // 重新初始化tooltips
-        initTooltips();
-        
-        // 更新时间显示
-        updateTaskDateTimes();
 
-        // 设置动态进度条宽度
-        document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
-            var v = parseInt(el.getAttribute('data-pct') || '0', 10);
-            v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
-            el.style.width = v + '%';
-            el.setAttribute('aria-valuenow', String(v));
+        document.querySelectorAll('[onclick*="confirmClearAll"]').forEach(btn => {
+            btn.onclick = confirmClearAll;
         });
 
-        // 绑定复制按钮
+        document.querySelectorAll('[onclick*="confirmRetryFailed"]').forEach(btn => {
+            btn.onclick = confirmRetryFailed;
+        });
+
         document.querySelectorAll('.copy-id-btn').forEach(btn => {
             btn.addEventListener('click', () => copyToClipboard(btn.dataset.fullId));
         });
+
         document.querySelectorAll('.copy-ac-btn').forEach(btn => {
             btn.addEventListener('click', () => copyToClipboard('AC' + btn.dataset.acNumber));
         });
     }
-    
+
     function initTooltips() {
-        // 销毁旧的tooltips
         const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        tooltipTriggerList.map(function (tooltipTriggerEl) {
+        tooltipTriggerList.map(function(tooltipTriggerEl) {
             const existingTooltip = bootstrap.Tooltip.getInstance(tooltipTriggerEl);
             if (existingTooltip) {
                 existingTooltip.dispose();
@@ -759,49 +840,34 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             return new bootstrap.Tooltip(tooltipTriggerEl);
         });
     }
-    
+
     function formatLocalDateTime(dateTimeString) {
         try {
-            // 解析服务器时间（假设为UTC或服务器时区）
             const date = new Date(dateTimeString);
-            
-            // 如果日期无效，返回原始字符串
             if (isNaN(date.getTime())) {
                 return dateTimeString;
             }
-            
-            // 格式化为本地时间
+
             const now = new Date();
             const diffMs = now - date;
             const diffMinutes = Math.floor(diffMs / (1000 * 60));
             const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
             const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-            
-            // 如果是刚刚（5分钟内）
+
             if (diffMinutes < 5) {
                 return '刚刚';
-            }
-            // 如果是今天且在1小时内
-            else if (diffMinutes < 60) {
+            } else if (diffMinutes < 60) {
                 return diffMinutes + '分钟前';
-            }
-            // 如果是今天且在24小时内
-            else if (diffHours < 24 && date.toDateString() === now.toDateString()) {
+            } else if (diffHours < 24 && date.toDateString() === now.toDateString()) {
                 return diffHours + '小时前';
-            }
-            // 如果是昨天
-            else if (diffDays === 1) {
+            } else if (diffDays === 1) {
                 return '昨天 ' + date.toLocaleTimeString('zh-CN', {
                     hour: '2-digit',
                     minute: '2-digit'
                 });
-            }
-            // 如果是本周内（7天内）
-            else if (diffDays < 7) {
+            } else if (diffDays < 7) {
                 return diffDays + '天前';
-            }
-            // 如果是本年
-            else if (date.getFullYear() === now.getFullYear()) {
+            } else if (date.getFullYear() === now.getFullYear()) {
                 return date.toLocaleDateString('zh-CN', {
                     month: '2-digit',
                     day: '2-digit'
@@ -810,29 +876,31 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                     minute: '2-digit'
                 });
             }
-            // 其他情况显示完整日期
-            else {
-                return date.toLocaleDateString('zh-CN', {
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit'
-                });
-            }
+
+            return date.toLocaleDateString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            });
         } catch (error) {
             console.error('时间格式化错误:', error);
             return dateTimeString;
         }
     }
-    
+
     function updateTaskDateTimes() {
         document.querySelectorAll('.task-datetime').forEach(function(element) {
             const originalDateTime = element.getAttribute('data-datetime');
-            if (originalDateTime) {
-                const formattedTime = formatLocalDateTime(originalDateTime);
-                element.textContent = formattedTime;
-                
-                // 设置详细的tooltip
-                const fullDateTime = new Date(originalDateTime).toLocaleString('zh-CN', {
+            if (!originalDateTime) {
+                return;
+            }
+
+            const formattedTime = formatLocalDateTime(originalDateTime);
+            element.textContent = formattedTime;
+
+            const parsedDate = new Date(originalDateTime);
+            if (!isNaN(parsedDate.getTime())) {
+                const fullDateTime = parsedDate.toLocaleString('zh-CN', {
                     year: 'numeric',
                     month: '2-digit',
                     day: '2-digit',
@@ -842,27 +910,33 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                     weekday: 'long'
                 });
                 element.title = fullDateTime;
+            } else {
+                element.title = originalDateTime;
             }
         });
     }
-    
-    async function refreshTasksData() {
-        if (refreshInProgress) return;
+
+    async function refreshTasksData(forceImmediate = false) {
+        if (refreshInProgress) {
+            return;
+        }
+
+        if (document.hidden && !forceImmediate) {
+            scheduleNextRefresh();
+            return;
+        }
+
         refreshInProgress = true;
-        
-        // 添加加载指示器
-        const autoRefreshBtn = document.getElementById('autoRefreshBtn');
-        const originalContent = autoRefreshBtn.innerHTML;
-        autoRefreshBtn.innerHTML = '<i class="bi bi-arrow-repeat" style="animation: spin 1s linear infinite;"></i> 刷新中...';
-        
+        showRefreshIndicator(true);
+
         try {
-            const response = await fetch(window.location.href, {
+            const response = await fetch(window.location.pathname + window.location.search, {
                 method: 'GET',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest'
                 }
             });
-            
+
             if (response.ok) {
                 const content = await response.text();
                 updateTasksTable(content);
@@ -871,140 +945,74 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             }
         } catch (error) {
             console.error('刷新任务数据失败:', error);
-            // 网络错误时不频繁重试，避免影响用户体验
         } finally {
             refreshInProgress = false;
-            // 恢复按钮状态
-            setTimeout(function() {
-                if (autoRefreshEnabled) {
-                    autoRefreshBtn.innerHTML = '<i class="bi bi-stop-circle"></i> 关闭自动刷新';
-                } else {
-                    autoRefreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 开启自动刷新';
-                }
-            }, 500);
+            showRefreshIndicator(false);
+            if (fallbackMode) {
+                scheduleNextRefresh();
+            }
         }
     }
-    
+
     function hasProcessingTasks() {
         const statusBadges = document.querySelectorAll('.task-status-badge');
         let hasProcessing = false;
-        
+
         statusBadges.forEach(function(badge) {
             const statusText = badge.textContent.trim();
-            if (statusText.includes('下载中') || statusText.includes('上传中') || 
-                statusText.includes('翻译中') || statusText.includes('生成标签中') || 
+            if (statusText.includes('下载中') || statusText.includes('上传中') ||
+                statusText.includes('翻译中') || statusText.includes('生成标签中') ||
                 statusText.includes('推荐分区中') || statusText.includes('内容审核中') ||
-                statusText.includes('翻译字幕中') || statusText.includes('语音转写中') || statusText.includes('转码视频中') || 
-                statusText.includes('处理中') || statusText.includes('等待') || 
+                statusText.includes('翻译字幕中') || statusText.includes('语音转写中') || statusText.includes('转码视频中') ||
+                statusText.includes('处理中') || statusText.includes('等待') ||
                 statusText.includes('队列中')) {
                 hasProcessing = true;
             }
         });
-        
+
         return hasProcessing;
     }
-    
-    function toggleAutoRefresh() {
-        const button = document.getElementById('autoRefreshBtn');
-        
-        if (autoRefreshEnabled) {
-            // 关闭自动刷新
-            autoRefreshEnabled = false;
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
-            button.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 开启自动刷新';
-            button.classList.remove('btn-success');
-            button.classList.add('btn-outline-secondary');
-            
-            // 保存状态到localStorage
-            localStorage.setItem('tasksAutoRefresh', 'false');
-        } else {
-            // 开启自动刷新
-            autoRefreshEnabled = true;
-            autoRefreshInterval = setInterval(function() {
-                // 检查是否有正在处理中的任务，或者无条件刷新（用户手动开启）
-                if (hasProcessingTasks() || localStorage.getItem('tasksAutoRefreshForced') === 'true') {
-                    refreshTasksData();
-                }
-            }, 2000); // 每2秒刷新一次，更加及时
-            
-            button.innerHTML = '<i class="bi bi-stop-circle"></i> 关闭自动刷新';
-            button.classList.remove('btn-outline-secondary');
-            button.classList.add('btn-success');
-            
-            // 保存状态到localStorage
-            localStorage.setItem('tasksAutoRefresh', 'true');
-            localStorage.setItem('tasksAutoRefreshForced', 'true');
-            
-            // 立即执行一次刷新
-            setTimeout(refreshTasksData, 500);
-        }
-    }
-    
-    // 页面加载完成后初始化
-    document.addEventListener('DOMContentLoaded', function() {
-        // 检查localStorage中的自动刷新状态
-        const savedAutoRefresh = localStorage.getItem('tasksAutoRefresh');
-        const hasActiveTasks = hasProcessingTasks();
-        
-        // 如果之前开启了自动刷新，或者有正在处理的任务，则自动开启
-        if (savedAutoRefresh === 'true' || hasActiveTasks) {
-            setTimeout(function() {
-                toggleAutoRefresh(); // 自动开启刷新
-            }, 500); // 减少延迟时间
-        }
-        
-        // 绑定初始事件
-        bindTasksEvents();
-        
-        // 初始化tooltips
-        initTooltips();
-        
-        // 初始化时间显示
-        updateTaskDateTimes();
 
-        // 初次设置动态进度条宽度
-        document.querySelectorAll('.progress-bar[data-pct]').forEach(function(el){
-            var v = parseInt(el.getAttribute('data-pct') || '0', 10);
-            v = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
-            el.style.width = v + '%';
-            el.setAttribute('aria-valuenow', String(v));
-        });
-        
-        // 清理强制刷新标记（5分钟后）
-        setTimeout(function() {
-            localStorage.removeItem('tasksAutoRefreshForced');
-        }, 300000);
-        
-        // 每分钟更新一次相对时间显示
-        setInterval(function() {
-            updateTaskDateTimes();
-        }, 60000);
-        
-        // 处理页面可见性变化，页面隐藏时暂停刷新，恢复时继续
+    function determineRefreshDelay() {
+        if (hasProcessingTasks()) {
+            return REFRESH_INTERVAL_ACTIVE;
+        }
+
+        const hasTasks = !!document.querySelector('.tasks-table tbody tr') || !!document.querySelector('.task-card');
+        return hasTasks ? REFRESH_INTERVAL_IDLE : REFRESH_INTERVAL_EMPTY;
+    }
+
+    function scheduleNextRefresh(delayOverride) {
+        if (!fallbackMode) {
+            clearScheduledRefresh();
+            return;
+        }
+        const delay = typeof delayOverride === 'number' ? delayOverride : determineRefreshDelay();
+        clearScheduledRefresh();
+        refreshTimer = setTimeout(() => {
+            refreshTasksData();
+        }, delay);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        bindTasksEvents();
+        initTooltips();
+        updateTaskDateTimes();
+        updateProgressBars();
+
+        setInterval(updateTaskDateTimes, 60000);
+
+        initTasksEventStream();
+        setTimeout(() => refreshTasksData(true), 400);
+
         document.addEventListener('visibilitychange', function() {
-            if (autoRefreshEnabled) {
-                if (document.hidden) {
-                    // 页面隐藏时清除定时器
-                    if (autoRefreshInterval) {
-                        clearInterval(autoRefreshInterval);
-                        autoRefreshInterval = null;
-                    }
-                } else {
-                    // 页面恢复时重新启动定时器
-                    if (!autoRefreshInterval) {
-                        autoRefreshInterval = setInterval(function() {
-                            if (hasProcessingTasks() || localStorage.getItem('tasksAutoRefreshForced') === 'true') {
-                                refreshTasksData();
-                            }
-                        }, 2000);
-                        
-                        // 页面恢复时立即刷新一次
-                        setTimeout(refreshTasksData, 100);
-                    }
-                }
+            if (!fallbackMode) {
+                return;
+            }
+            if (document.hidden) {
+                clearScheduledRefresh();
+            } else {
+                refreshTasksData(true);
             }
         });
     });
