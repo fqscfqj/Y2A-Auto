@@ -488,57 +488,73 @@ class AcfunUploader:
         return result["videoId"]
     
     def upload_cover(self, image_path: str, mode='crop') -> str:
-        """上传封面图片"""
+        """上传封面图片（支持 jpg/png/webp，尽量保留原格式）"""
         self.log(f"处理封面图片: {image_path}")
-        
+
         # 创建临时目录用于处理封面
         temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'temp')
         os.makedirs(temp_dir, exist_ok=True)
-        
-        # 处理封面
-        processed_image = os.path.join(temp_dir, 'processed_cover.jpg')
-        process_cover(image_path, processed_image, mode)
-        
-        # 如果处理封面失败，使用原始封面
+
+        # 推断源扩展名
+        src_ext = os.path.splitext(image_path)[1].lower()
+        if src_ext not in {'.jpg', '.jpeg', '.png', '.webp'}:
+            # 不识别的格式默认处理为 jpg
+            src_ext = '.jpg'
+
+        # 处理后文件名与扩展名保持一致
+        processed_image = os.path.join(temp_dir, f'processed_cover{src_ext}')
+
+        try:
+            process_cover(image_path, processed_image, mode)
+        except Exception as e:
+            self.log(f"调用 process_cover 失败，使用原始封面: {e}")
+            processed_image = image_path
+
+        # 如果处理封面失败或未生成文件，使用原始封面
         if not os.path.exists(processed_image):
             processed_image = image_path
-        
-        # 生成随机文件名
+            src_ext = os.path.splitext(processed_image)[1].lower() or '.jpg'
+
+        # 生成随机文件名（与扩展名匹配）
         import random
         import string
-        
         file_name = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-        
-        # 获取七牛token
+        token_file_name = f"{file_name}{src_ext if src_ext != '.jpeg' else '.jpg'}"
+
+        # 获取七牛token（使用匹配的扩展名）
         response = self.session.post(
             self.QINIU_URL,
-            data={"fileName": f"{file_name}.jpeg"}
+            data={"fileName": token_file_name}
         )
-        
-        token = response.json()["info"]["token"]
-        
+
+        token = response.json().get("info", {}).get("token")
+        if not token:
+            raise RuntimeError(f"获取封面上传token失败: {response.text}")
+
         # 上传图片
         with open(processed_image, "rb") as f:
             chunk_data = f.read()
-        
+
         self.upload_chunk(chunk_data, 0, token)
         self.complete_upload(1, token)
-        
+
         # 获取上传后的URL
         response = self.session.post(
             self.COVER_URL,
             data={"bizFlag": "web-douga-cover", "token": token}
         )
         
-        cover_url = response.json()["url"]
-        
+        cover_url = response.json().get("url")
+        if not cover_url:
+            raise RuntimeError(f"获取封面URL失败: {response.text}")
+
         # 清理临时文件
         try:
             if os.path.exists(processed_image) and processed_image != image_path:
                 os.remove(processed_image)
-        except:
-            pass
-        
+        except Exception as e:
+            self.log(f"临时封面清理失败: {e}")
+
         return cover_url
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
