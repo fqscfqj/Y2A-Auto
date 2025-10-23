@@ -55,6 +55,9 @@ DEFAULT_CONFIG = {
     "YOUTUBE_PROXY_PASSWORD": "",  # 代理密码（可选）
     "YOUTUBE_DOWNLOAD_THREADS": 4,  # yt-dlp下载线程数（并发片段数）
     "YOUTUBE_THROTTLED_RATE": "",  # 限制下载速度，格式如：1M、500K等，留空不限制
+    # 外部工具路径
+    "FFMPEG_LOCATION": "",  # 可选：指定 ffmpeg 可执行文件路径；留空则使用内置/自动下载
+    "FFMPEG_AUTO_DOWNLOAD": True,  # 首次运行若缺失则自动下载到应用根目录的 ffmpeg/
     # 字幕翻译相关配置
     "SUBTITLE_TRANSLATION_ENABLED": False,  # 是否启用字幕翻译
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)

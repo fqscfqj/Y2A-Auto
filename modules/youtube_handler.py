@@ -16,10 +16,121 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 from modules.config_manager import load_config
 from logging.handlers import RotatingFileHandler
-from .utils import get_app_subdir
+from .utils import get_app_subdir, get_app_root_dir
+from shutil import which as _which
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
+
+
+def is_docker_env() -> bool:
+    """粗略判断是否运行在 Docker 中"""
+    try:
+        if os.path.exists('/.dockerenv'):
+            return True
+        cgroup_path = '/proc/1/cgroup'
+        if os.path.exists(cgroup_path):
+            with open(cgroup_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read().lower()
+                return 'docker' in content or 'kubepods' in content
+    except Exception:
+        pass
+    return False
+
+
+def download_ffmpeg_bundled(logger: logging.Logger | None = None) -> str | None:
+    """下载 ffmpeg 到应用根目录的 ffmpeg/ 下并返回可执行文件路径（仅 Windows）。"""
+    log = logger or logging.getLogger(__name__)
+    if os.name != 'nt':
+        log.info("非 Windows 平台不进行自动下载，请通过系统包管理安装 ffmpeg")
+        return None
+
+    import zipfile
+    app_root = get_app_root_dir()
+    target_dir = os.path.join(app_root, 'ffmpeg')
+    os.makedirs(target_dir, exist_ok=True)
+
+    ffmpeg_exe = os.path.join(target_dir, 'ffmpeg.exe')
+    if os.path.exists(ffmpeg_exe):
+        return ffmpeg_exe
+
+    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    zip_path = os.path.join(target_dir, 'ffmpeg.zip')
+    try:
+        log.info(f"开始下载 ffmpeg: {url}")
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(zip_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        log.info("下载完成，开始解压...")
+        extract_dir = os.path.join(target_dir, 'tmp_extract')
+        os.makedirs(extract_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(extract_dir)
+        ffmpeg_path = None
+        for root, dirs, files in os.walk(extract_dir):
+            if 'ffmpeg.exe' in files:
+                ffmpeg_path = os.path.join(root, 'ffmpeg.exe')
+                break
+        if not ffmpeg_path:
+            raise RuntimeError("压缩包未找到 ffmpeg.exe")
+        shutil.copy2(ffmpeg_path, ffmpeg_exe)
+        prob_src = os.path.join(os.path.dirname(ffmpeg_path), 'ffprobe.exe')
+        if os.path.exists(prob_src):
+            shutil.copy2(prob_src, os.path.join(target_dir, 'ffprobe.exe'))
+        try:
+            os.remove(zip_path)
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        except Exception:
+            pass
+        return ffmpeg_exe
+    except Exception as e:
+        log.warning(f"下载/解压 ffmpeg 失败: {e}")
+        try:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+        except Exception:
+            pass
+        return None
+
+
+def find_ffmpeg_location(config=None, logger: logging.Logger | None = None) -> str | None:
+    """定位 ffmpeg 路径：配置 > 内置 ffmpeg > （Windows）自动下载 > 其他平台返回 None。"""
+    log = logger or logging.getLogger(__name__)
+    try:
+        if not config:
+            config = load_config()
+        # 显式配置优先
+        ff_cfg = (config or {}).get('FFMPEG_LOCATION', '').strip()
+        if ff_cfg and os.path.exists(ff_cfg):
+            log.info(f"使用配置中的ffmpeg路径: {ff_cfg}")
+            return ff_cfg
+        if ff_cfg and not os.path.exists(ff_cfg):
+            log.warning(f"配置的 FFMPEG_LOCATION 不存在: {ff_cfg}")
+
+        # 内置 ffmpeg 目录
+        try:
+            app_root = get_app_root_dir()
+            bundled = os.path.join(app_root, 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+            if os.path.exists(bundled):
+                log.info(f"使用项目内置ffmpeg: {bundled}")
+                return bundled
+        except Exception as e:
+            log.debug(f"检测内置 ffmpeg 发生异常: {e}")
+
+        # Windows: 自动下载
+        auto_download = bool((config or {}).get('FFMPEG_AUTO_DOWNLOAD', True))
+        if auto_download and os.name == 'nt':
+            path = download_ffmpeg_bundled(log)
+            if path and os.path.exists(path):
+                log.info(f"已自动下载 ffmpeg: {path}")
+                return path
+    except Exception as e:
+        log.debug(f"定位 ffmpeg 异常: {e}")
+    return None
+
 
 def build_proxy_url(config):
     """
@@ -289,6 +400,9 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             logger.error(f"视频不可用或无法访问: {error_msg}")
             return False, f"视频不可用或无法访问: {error_msg}"
         
+        # 预先检测 ffmpeg（内部会在未提供config时自行加载配置）
+        ffmpeg_location = find_ffmpeg_location(None, logger)
+
         # 准备yt-dlp命令
         cmd = [
             yt_dlp_path,
@@ -325,19 +439,25 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         
         # 添加格式选择策略 - 改进的格式选择
         if not skip_download:
-            # 优先选择高质量视频格式，回退到可用格式
-            cmd.extend([
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
-                '--merge-output-format', 'mp4'
-            ])
+            has_ffmpeg = bool(ffmpeg_location) or is_docker_env()
+            if has_ffmpeg:
+                # 有可用 ffmpeg（内置或 Docker 环境）：选择分离的视频+音频并合并
+                cmd.extend([
+                    '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
+                    '--merge-output-format', 'mp4'
+                ])
+            else:
+                # 无 ffmpeg：避免触发合并，直接选单路流
+                cmd.extend([
+                    '--format', 'best[ext=mp4]/best'
+                ])
         
-        # 根据参数调整命令
+        # 根据参数调整命令（不再进行缩略图格式转换，直接使用原生格式）
         if skip_download:
             cmd.extend([
                 '--skip-download',
                 '--write-info-json',
                 '--write-thumbnail',
-                '--convert-thumbnails', 'jpg',
                 '--write-subs',
                 '--all-subs',
             ])
@@ -352,10 +472,13 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             cmd.extend([
                 '--write-info-json',
                 '--write-thumbnail',
-                '--convert-thumbnails', 'jpg',
                 '--write-subs',
                 '--all-subs',
             ])
+
+        # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）
+        if ffmpeg_location and os.path.isabs(ffmpeg_location):
+            cmd.extend(['--ffmpeg-location', ffmpeg_location])
         
         # 如果提供了cookie文件，添加到命令中
         if cookies_path:
@@ -540,11 +663,11 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             cover_path = None
             subtitles_paths = []
             
-            # 查找实际的视频文件
+            # 查找实际的视频文件与封面
             for file in os.listdir(task_dir):
                 file_path = os.path.join(task_dir, file)
                 if os.path.isfile(file_path):
-                    if file.startswith('video.') and not (file.endswith('.info.json') or '.vtt' in file or '.srt' in file or file.endswith('.jpg')):
+                    if file.startswith('video.') and not (file.endswith('.info.json') or '.vtt' in file or '.srt' in file or file.endswith('.jpg') or file.endswith('.webp') or file.endswith('.png')):
                         video_path = file_path
                     elif file.endswith('.info.json'):
                         metadata_path = file_path
@@ -556,6 +679,11 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                             logger.info(f"将封面图片 {file} 重命名为 cover.jpg")
                         else:
                             cover_path = file_path
+                    elif (file.lower().endswith('.webp') or file.lower().endswith('.png')) and file.startswith('video'):
+                        # 直接使用 webp/png 作为封面（AcFun 已支持，不强制转 jpg）
+                        if not cover_path:
+                            cover_path = file_path
+                            logger.info(f"检测到封面 {os.path.basename(file_path)}，将直接作为封面文件")
                     elif file.startswith('video.') and ('.vtt' in file or '.srt' in file):
                         subtitles_paths.append(file_path)
             
@@ -590,9 +718,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         metadata_path = metadata_path_default
                 
                 if not cover_path:
-                    cover_path_default = os.path.join(task_dir, 'cover.jpg')
-                    if os.path.exists(cover_path_default):
-                        cover_path = cover_path_default
+                    # 优先 jpg，其次 webp、png
+                    for name in ['cover.jpg', 'video.webp', 'video.png', 'cover.webp', 'cover.png']:
+                        p = os.path.join(task_dir, name)
+                        if os.path.exists(p):
+                            cover_path = p
+                            break
                 
                 result["metadata_path"] = metadata_path
                 result["cover_path"] = cover_path

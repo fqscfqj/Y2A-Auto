@@ -63,3 +63,6 @@ tests/
 # Documentation build
 docs/_build/
 site/ 
+
+# FFMPEG
+ffmpeg/
