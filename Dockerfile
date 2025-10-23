@@ -46,6 +46,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a

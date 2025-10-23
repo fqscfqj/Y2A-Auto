@@ -218,7 +218,9 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
         youtube_url,
         '--list-formats',
         '--no-warnings',
-        '--simulate'
+        '--simulate',
+        '--force-ipv4',            # 避免容器内IPv6导致的连接问题
+        '--no-check-certificates'  # 与下载阶段保持一致，规避容器缺失CA证书导致的握手失败
     ]
     
     # 检查是否需要使用代理
@@ -238,7 +240,7 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
             cmd, 
             capture_output=True, 
             text=True, 
-            timeout=30,
+            timeout=90,  # 放宽可用性检查超时时间
             encoding='utf-8',
             errors='replace'  # 遇到无法解码的字符时用?替换
         )
