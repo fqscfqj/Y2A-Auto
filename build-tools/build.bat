@@ -21,7 +21,7 @@ echo 检查Python环境...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo 错误: 未找到Python环境
-    echo 请先安装Python 3.8或更高版本
+    echo 请先安装Python 3.11或更高版本
     echo.
     pause
     exit /b 1
