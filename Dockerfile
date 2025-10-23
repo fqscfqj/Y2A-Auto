@@ -1,7 +1,7 @@
 # 多阶段构建 Dockerfile
-# 第一阶段：构建阶段
+# 第一阶段:构建阶段
 # syntax=docker/dockerfile:1.4
-FROM python:3.10-slim AS builder
+FROM python:3.11-slim AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN /root/.local/bin/yt-dlp --version
 
 # 第二阶段：运行阶段
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # 设置工作目录
 WORKDIR /app
@@ -83,7 +83,7 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
 # 确保本地包在PATH中
 ENV PATH=/home/y2a/.local/bin:$PATH
 # 避免引用未定义变量的告警，直接补充常见站点路径
-ENV PYTHONPATH=/home/y2a/.local/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
+ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
 
 # 切换到非root用户
 USER y2a

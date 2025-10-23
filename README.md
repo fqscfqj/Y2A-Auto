@@ -5,7 +5,7 @@
 把 YouTube 视频搬运到 AcFun 的自动化工具
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
 
 从下载、翻译字幕、内容审核、智能打标签，到分区推荐与上传，全流程自动化；附带 Web 管理界面与 YouTube 监控功能。
@@ -120,7 +120,7 @@ docker compose up -d
 
 前置依赖：
 
-- Python 3.10+
+- Python 3.11+
 - FFmpeg（命令行可执行）
 - yt-dlp（`pip install yt-dlp`）
 
@@ -128,7 +128,7 @@ docker compose up -d
 
 ```powershell
 # 1) 创建并启用虚拟环境（Windows PowerShell）
-py -3.10 -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
 # 2) 安装依赖
@@ -283,7 +283,7 @@ ffmpeg -hide_banner -encoders | grep -i qsv
 ```dockerfile
 FROM jrottenberg/ffmpeg:6.1-nvidia AS ffmpeg
 
-FROM python:3.10-slim
+FROM python:3.11-slim
 WORKDIR /app
 
 # 拷贝 ffmpeg 到运行镜像
