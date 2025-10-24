@@ -408,7 +408,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             yt_dlp_path,
             youtube_url,
             '--output', video_output,  # 输出视频文件
-            '--force-ipv4',  # 强制使用IPv4
             '--no-check-certificates',  # 不检查SSL证书
             '--geo-bypass',  # 尝试绕过地理限制
             '--extractor-retries', '10',  # 增加提取器重试次数
