@@ -33,10 +33,10 @@ jobs:
           jq -r '. | sort_by(.createdAt) | reverse | .[5:] | .[] | .tagName' | \
           while read tag; do
             echo "Checking release $tag for asset Y2A-Auto-win64.zip"
-            asset_id=$(gh release view --repo "$REPO" "$tag" --json assets --jq '.assets[] | select(.name == "Y2A-Auto-win64.zip") | .id')
-            if [ -n "$asset_id" ]; then
-              echo "Deleting asset $asset_id (Y2A-Auto-win64.zip) from release $tag"
-              gh api "repos/$REPO/releases/assets/$asset_id" -X DELETE
+            asset_exists=$(gh release view --repo "$REPO" "$tag" --json assets --jq '.assets[] | select(.name == "Y2A-Auto-win64.zip") | .name')
+            if [ -n "$asset_exists" ]; then
+              echo "Deleting asset Y2A-Auto-win64.zip from release $tag"
+              gh release delete-asset --repo "$REPO" "$tag" Y2A-Auto-win64.zip --yes
             else
               echo "No Y2A-Auto-win64.zip asset found in release $tag"
             fi
