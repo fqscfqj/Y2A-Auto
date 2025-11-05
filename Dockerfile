@@ -58,6 +58,9 @@ COPY --chown=y2a:y2a . .
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \
+    && mkdir -p /app/ffmpeg \
+    && ln -sf /usr/bin/ffmpeg /app/ffmpeg/ffmpeg || true \
+    && ln -sf /usr/bin/ffprobe /app/ffmpeg/ffprobe || true \
     && chown -R y2a:y2a /app \
     && chown -R y2a:y2a /home/y2a/.local \
     && chmod +x /home/y2a/.local/bin/* 2>/dev/null || true \

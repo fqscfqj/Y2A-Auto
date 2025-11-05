@@ -27,6 +27,9 @@
                 <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
                     <i class="bi bi-mic"></i> 语音识别
                 </a>
+                <a class="nav-link" id="vtab-vad-tab" data-bs-toggle="pill" href="#vtab-vad" role="tab" aria-controls="vtab-vad" aria-selected="false">
+                    <i class="bi bi-soundwave"></i> VAD检测
+                </a>
                 <a class="nav-link" id="vtab-concurrency-tab" data-bs-toggle="pill" href="#vtab-concurrency" role="tab" aria-controls="vtab-concurrency" aria-selected="false">
                     <i class="bi bi-cpu"></i> 并发与日志
                 </a>
@@ -495,31 +498,99 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    </div>
 
-                            <hr>
+                    <!-- VAD 设置 -->
+                    <div class="tab-pane fade" id="vtab-vad" role="tabpanel" aria-labelledby="vtab-vad-tab">
+                        <div class="settings-section">
+                            <h3>语音活动检测（VAD）</h3>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="VAD_ENABLED" {% if config.get('VAD_ENABLED', False) %}checked{% endif %}>
+                                    启用VAD语音段检测
+                                </label>
+                                <p class="help-text">在调用Whisper前先检测语音段，过滤长静音可有效降低“幻觉”内容。</p>
+                            </div>
+
                             <div class="row g-3">
-                                <div class="col-12">
-                                    <h5>语言检测（可选，默认复用上方 Whisper 设置）</h5>
-                                </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
-                                        <label for="whisper-detect-api-key">Whisper Detect API Key:</label>
-                                        <input type="password" id="whisper-detect-api-key" name="WHISPER_DETECT_API_KEY" value="{{ config.get('WHISPER_DETECT_API_KEY', '') }}" class="form-control" placeholder="留空复用上方 Whisper API Key">
+                                        <label for="vad-provider">VAD提供商:</label>
+                                        <select id="vad-provider" name="VAD_PROVIDER" class="form-select">
+                                            <option value="silero" {% if config.get('VAD_PROVIDER', 'silero') == 'silero' %}selected{% endif %}>Silero VAD</option>
+                                        </select>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
-                                        <label for="whisper-detect-model">Whisper Detect 模型名:</label>
-                                        <input type="text" id="whisper-detect-model" name="WHISPER_DETECT_MODEL_NAME" value="{{ config.get('WHISPER_DETECT_MODEL_NAME', '') }}" class="form-control" placeholder="留空复用上方 Whisper 模型">
-                                    </div>
-                                </div>
-                                <div class="col-12">
-                                    <div class="form-group">
-                                        <label for="whisper-detect-base-url">Whisper Detect Base URL:</label>
-                                        <input type="text" id="whisper-detect-base-url" name="WHISPER_DETECT_BASE_URL" value="{{ config.get('WHISPER_DETECT_BASE_URL', '') }}" class="form-control" placeholder="留空复用上方 Whisper Base URL">
+                                        <label for="vad-api-url">API地址:</label>
+                                        <input type="text" id="vad-api-url" name="VAD_API_URL" value="{{ config.get('VAD_API_URL', 'http://localhost:8080/vad') }}" class="form-control" placeholder="http://192.168.x.x:8080/vad">
+                                        <p class="help-text">填写VAD接口地址。</p>
                                     </div>
                                 </div>
                             </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="vad-api-token">API鉴权Token（可选）:</label>
+                                        <input type="password" id="vad-api-token" name="VAD_API_TOKEN" value="{{ config.get('VAD_API_TOKEN', '') }}" class="form-control" placeholder="sk-xxx">
+                                        <p class="help-text">如未开启鉴权可留空。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="vad-threshold">语音触发阈值:</label>
+                                        <input type="number" step="0.01" min="0" max="1" id="vad-threshold" name="VAD_SILERO_THRESHOLD" value="{{ config.get('VAD_SILERO_THRESHOLD', 0.5) }}" class="form-control">
+                                        <p class="help-text">范围0-1，数值越大越严格，默认0.5。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="vad-min-speech">最短语音时长(ms):</label>
+                                        <input type="number" id="vad-min-speech" name="VAD_SILERO_MIN_SPEECH_MS" value="{{ config.get('VAD_SILERO_MIN_SPEECH_MS', 250) }}" min="0" class="form-control">
+                                        <p class="help-text">短于该时长的片段会被忽略。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="vad-min-silence">最短静音时长(ms):</label>
+                                        <input type="number" id="vad-min-silence" name="VAD_SILERO_MIN_SILENCE_MS" value="{{ config.get('VAD_SILERO_MIN_SILENCE_MS', 100) }}" min="0" class="form-control">
+                                        <p class="help-text">用于欠采样环境的降噪策略。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="vad-pad-ms">语音两侧留白(ms):</label>
+                                        <input type="number" id="vad-pad-ms" name="VAD_SILERO_SPEECH_PAD_MS" value="{{ config.get('VAD_SILERO_SPEECH_PAD_MS', 30) }}" min="0" class="form-control">
+                                        <p class="help-text">适当留白可避免截断单词。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="vad-max-speech">单段最长语音(s):</label>
+                                        <input type="number" id="vad-max-speech" name="VAD_SILERO_MAX_SPEECH_S" value="{{ config.get('VAD_SILERO_MAX_SPEECH_S', 120) }}" min="1" class="form-control">
+                                        <p class="help-text">过长片段将被自动截断。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="vad-max-segment">Whisper分段上限(s):</label>
+                                        <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 90) }}" min="10" class="form-control">
+                                        <p class="help-text">用于拼接VAD片段时的最大长度，超过会再次拆分。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            
                         </div>
                     </div>
 

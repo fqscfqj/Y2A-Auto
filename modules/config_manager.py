@@ -86,10 +86,21 @@ DEFAULT_CONFIG = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
-    # Whisper 语言检测专用（可选，留空将复用上面的 Whisper 配置）
+    # Whisper 语言检测专用（已废弃；现已与转写使用同一配置）
     "WHISPER_DETECT_API_KEY": "",
     "WHISPER_DETECT_BASE_URL": "",
     "WHISPER_DETECT_MODEL_NAME": "",
+    # 语音活动检测（VAD）
+    "VAD_ENABLED": False,
+    "VAD_PROVIDER": "silero",
+    "VAD_API_URL": "http://localhost:8080/vad",
+    "VAD_API_TOKEN": "",
+    "VAD_SILERO_THRESHOLD": 0.5,
+    "VAD_SILERO_MIN_SPEECH_MS": 250,
+    "VAD_SILERO_MIN_SILENCE_MS": 100,
+    "VAD_SILERO_MAX_SPEECH_S": 120,
+    "VAD_SILERO_SPEECH_PAD_MS": 30,
+    "VAD_MAX_SEGMENT_S": 90,
 }
 
 CONFIG_FILE = "config.json"

@@ -190,8 +190,8 @@ python app.py
 
 仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用会根据 `VIDEO_ENCODER` 选择编码器并使用统一参数：
 
-- CPU：libx264，CRF 18，preset=slow，profile=high，level=4.2，yuv420p
-- NVIDIA NVENC：hevc_nvenc，preset=p6，cq=20，rc-lookahead=32；若源为 10bit，自动使用 profile=main10 并输出 p010le，否则 profile=main + yuv420p
+- CPU：libx264，CRF 23，preset=slow，profile=high，level=4.2，yuv420p
+- NVIDIA NVENC：hevc_nvenc，preset=p6，cq=25，rc-lookahead=32；若源为 10bit，自动使用 profile=main10 并输出 p010le，否则 profile=main + yuv420p
 - 音频：AAC 320kbps，采样率跟随原视频
 
 提示：NVENC/QSV/AMF 取决于系统与 ffmpeg 的编译是否包含对应硬编支持；不可用时会自动回退到 CPU。

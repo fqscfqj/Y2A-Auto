@@ -9,7 +9,7 @@ import sqlite3
 import logging
 import shutil
 import threading
-import gc  # 添加垃圾回收模块以优化内存使用
+import gc
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
@@ -1631,16 +1631,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             import time
             import threading
             import queue
-            
-            # 如果是VTT格式，先转换为SRT
-            if subtitle_path.lower().endswith('.vtt'):
-                task_logger.info("检测到VTT格式字幕，转换为SRT格式以提高兼容性")
-                srt_path = self._convert_vtt_to_srt(subtitle_path, task_logger)
-                if srt_path and os.path.exists(srt_path):
-                    subtitle_path = srt_path
-                    task_logger.info(f"使用转换后的SRT文件: {subtitle_path}")
-                else:
-                    task_logger.warning("VTT转SRT失败，尝试直接使用VTT文件")
+
+            # 仅使用项目内置 ffmpeg/ffprobe，如缺失则尝试自动下载（仅 Windows）
+            try:
+                from modules.youtube_handler import find_ffmpeg_location
+                ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            except Exception:
+                ffmpeg_bin = None
+            if not ffmpeg_bin or not os.path.exists(ffmpeg_bin):
+                task_logger.error("未找到项目内置 FFmpeg，无法进行字幕嵌入。请在设置中启用相关功能时让系统自动下载，或手动将 ffmpeg.exe 放入 ffmpeg/ 目录。")
+                update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                return None
+            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
             
             # 生成嵌入字幕后的视频文件路径
             video_dir = os.path.dirname(video_path)
@@ -1673,7 +1675,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 try:
                     # subprocess imported at module level
                     result = subprocess.run(
-                        ['ffmpeg', '-hide_banner', '-encoders'],
+                        [ffmpeg_bin, '-hide_banner', '-encoders'],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
                     )
                     if result.returncode == 0 and encoder_name in result.stdout:
@@ -1686,7 +1688,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 try:
                     # subprocess imported at module level
                     result = subprocess.run(
-                        ['ffmpeg', '-hide_banner', '-filters'],
+                        [ffmpeg_bin, '-hide_banner', '-filters'],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20
                     )
                     if result.returncode == 0 and filter_name in result.stdout:
@@ -1698,7 +1700,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # 使用简化路径方式（已测试成功）
             temp_dir = tempfile.mkdtemp()
             simple_video = os.path.join(temp_dir, "input.mp4")
-            simple_subtitle = os.path.join(temp_dir, "sub.srt")
+            subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
+            if subtitle_ext not in ('.srt', '.ass', '.ssa', '.vtt'):
+                task_logger.warning(f"未知字幕扩展名 {subtitle_ext}，默认按srt处理")
+                subtitle_ext = '.srt'
+            simple_subtitle_name = f"sub{subtitle_ext}"
+            simple_subtitle = os.path.join(temp_dir, simple_subtitle_name)
             simple_output = os.path.join(temp_dir, "output.mp4")
             # 字体目录（在临时目录内放置一份，避免Windows路径转义问题）
             temp_fonts_dir = os.path.join(temp_dir, "fonts")
@@ -1772,7 +1779,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # 在参数中对空格进行转义，避免被解析为分隔符，并强制使用 UTF-8 字符集
                 font_family_escaped = font_family.replace(' ', '\\ ')
                 # 构建滤镜链：字幕 + 需要时的降分辨率
-                vf_filter = f"subtitles=sub.srt:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
+                vf_filter = f"subtitles={simple_subtitle_name}:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
 
                 # 读取编码器设置
                 encoder_pref = str(self.config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
@@ -1780,17 +1787,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # 若字幕滤镜不可用，提前报错并放弃嵌入
                 if not _ffmpeg_has_filter('subtitles'):
                     task_logger.error("当前FFmpeg不包含 'subtitles' 滤镜（需要libass支持），无法嵌入字幕")
+                    if subtitle_ext == '.vtt':
+                        task_logger.warning("使用VTT字幕嵌入失败，尝试转换为SRT后重试")
+                        converted_srt = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                        if converted_srt and os.path.exists(converted_srt) and converted_srt != subtitle_path:
+                            task_logger.info(f"改用转换后的SRT字幕再次尝试: {os.path.basename(converted_srt)}")
+                            return self._embed_subtitle_in_video(task_id, video_path, converted_srt, task_logger)
+
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
 
                 # 针对不同后端生成统一参数（不再区分分辨率档位）
                 def build_cpu_params():
-                    # 强制 libx264 crf18 preset:slow profile:high level:4.2
+                    # 强制 libx264 crf23 preset:slow profile:high level:4.2
                     return [
                         '-c:v', 'libx264',
                         '-pix_fmt', 'yuv420p',
                         '-preset', 'slow',
-                        '-crf', '18',
+                        '-crf', '23',
                         '-profile:v', 'high',
                         '-level', '4.2',
                         '-g', str(gop),
@@ -1799,7 +1813,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     ]
 
                 def build_nvenc_params():
-                    # hevc_nvenc preset:p6 cq 20 rc-lookahead:32；10bit源使用profile:main10并输出10bit像素格式
+                    # hevc_nvenc preset:p6 cq 25 rc-lookahead:32；10bit源使用profile:main10并输出10bit像素格式
                     is_10bit_src = False
                     try:
                         if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
@@ -1811,7 +1825,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-c:v', 'hevc_nvenc',
                         '-preset', 'p6',
                         '-rc', 'vbr',
-                        '-cq', '20',
+                        '-cq', '25',
                         '-rc-lookahead', '32',
                         '-g', str(gop)
                     ]
@@ -1822,7 +1836,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return vparams
 
                 def build_qsv_params():
-                    # 统一 HEVC QSV，接近 CQ 20；10bit 源输出 main10 + p010le
+                    # 统一 HEVC QSV，接近 CQ 25；10bit 源输出 main10 + p010le
                     is_10bit_src = False
                     try:
                         if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
@@ -1833,7 +1847,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-c:v', 'hevc_qsv',
                         '-preset', 'slow',
                         '-rc', 'icq',
-                        '-global_quality', '20',
+                        '-global_quality', '25',
                         '-g', str(gop)
                     ]
                     if is_10bit_src:
@@ -1843,7 +1857,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return vparams
 
                 def build_amf_params():
-                    # 统一 HEVC AMF，使用 CQP ≈ 20；10bit 源输出 main10 + p010le
+                    # 统一 HEVC AMF，使用 CQP ≈ 25；10bit 源输出 main10 + p010le
                     is_10bit_src = False
                     try:
                         if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
@@ -1854,9 +1868,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-c:v', 'hevc_amf',
                         '-quality', 'quality',
                         '-rc', 'cqp',
-                        '-qp_i', '20',
-                        '-qp_p', '20',
-                        '-qp_b', '20',
+                        '-qp_i', '25',
+                        '-qp_p', '25',
+                        '-qp_b', '25',
                         '-g', str(gop)
                     ]
                     if is_10bit_src:
@@ -1894,7 +1908,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         pass
 
                 cmd = [
-                    'ffmpeg', '-y',
+                    ffmpeg_bin, '-y',
                     '-i', 'input.mp4',
                     '-vf', vf_filter,
                     *vparams,
@@ -2072,7 +2086,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             except Exception:
                                 pass
                         cmd_retry = [
-                            'ffmpeg', '-y',
+                            ffmpeg_bin, '-y',
                             '-i', 'input.mp4',
                             '-vf', vf_filter,
                             *vparams,
@@ -2132,9 +2146,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """获取视频时长（秒）"""
         try:
             # subprocess imported at module level
-            
+            from modules.youtube_handler import find_ffmpeg_location
+            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            if not ffmpeg_bin:
+                raise FileNotFoundError('ffmpeg not found')
+            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
             cmd = [
-                'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+                ffprobe_bin, '-v', 'quiet', '-print_format', 'json', 
                 '-show_format', video_path
             ]
             
@@ -2166,8 +2184,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         info: dict[str, float | int | str | None] = {"width": None, "height": None, "fps": None, "pix_fmt": None}
         try:
             # subprocess/json handled at module level where needed
+            from modules.youtube_handler import find_ffmpeg_location
+            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            if not ffmpeg_bin:
+                raise FileNotFoundError('ffmpeg not found')
+            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
             cmd = [
-                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                ffprobe_bin, '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'v:0', '-show_streams', video_path
             ]
             result = subprocess.run(
@@ -2210,8 +2233,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         info: dict[str, int | str | None] = {"sample_rate": None, "channels": None, "sample_fmt": None}
         try:
             # subprocess/json handled at module level where needed
+            from modules.youtube_handler import find_ffmpeg_location
+            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            if not ffmpeg_bin:
+                raise FileNotFoundError('ffmpeg not found')
+            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
             cmd = [
-                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                ffprobe_bin, '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'a:0', '-show_streams', video_path
             ]
             result = subprocess.run(

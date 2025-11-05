@@ -13,7 +13,7 @@ import openai
 # --- Helpers: logger/client/cleaner (restored) ---
 def setup_task_logger(task_id):
     """
-    为特定任务设置日志记录器（与其他模块保持一致）。
+    为特定任务设置日志记录器。
     """
     log_dir = get_app_subdir('logs')
     os.makedirs(log_dir, exist_ok=True)
@@ -34,7 +34,7 @@ def setup_task_logger(task_id):
 
 def get_openai_client(openai_config):
     """
-    创建OpenAI客户端（与其它模块保持一致的实现）。
+    创建OpenAI客户端。
     """
     api_key = openai_config.get('OPENAI_API_KEY', '')
     options = {}

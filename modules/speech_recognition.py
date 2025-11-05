@@ -5,9 +5,12 @@ import os
 import tempfile
 import subprocess
 import logging
+import wave
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 import re
+import json
+import requests
 
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
@@ -52,13 +55,25 @@ class SpeechRecognitionConfig:
     base_url: str = ''
     model_name: str = 'whisper-1'
     output_format: str = 'srt'  # srt | vtt
-    # Separate whisper API for language detection (optional)
-    detect_api_key: str = ''
-    detect_base_url: str = ''
-    detect_model_name: str = ''
+    # Deprecated: language detection uses the same Whisper settings now
+    detect_api_key: str = ''  # deprecated, ignored
+    detect_base_url: str = ''  # deprecated, ignored
+    detect_model_name: str = ''  # deprecated, ignored
     # Gating: treat as no subtitles if cues less than threshold
     min_lines_enabled: bool = True
     min_lines_threshold: int = 5
+
+    # VAD settings
+    vad_enabled: bool = False
+    vad_provider: str = 'silero'
+    vad_api_url: str = ''
+    vad_api_token: str = ''
+    vad_threshold: float = 0.5
+    vad_min_speech_ms: int = 250
+    vad_min_silence_ms: int = 100
+    vad_max_speech_s: int = 120
+    vad_speech_pad_ms: int = 30
+    vad_max_segment_s: int = 90
 
 
 class SpeechRecognizer:
@@ -68,185 +83,8 @@ class SpeechRecognizer:
         self.config = config
         self.task_id = task_id or 'unknown'
         self.logger = _setup_task_logger(self.task_id)
-        self.client = None  # for transcription
-        self.detect_client = None  # for language detection
+        self.client: Any = None  # OpenAI/Whisper client for transcription
         self._init_client()
-
-    # --- ISO 639-1 language normalization helpers ---
-    # Complete ISO 639-1 2-letter code set (including legacy aliases mapped later)
-    ISO_639_1_CODES = {
-        'aa','ab','ae','af','ak','am','an','ar','as','av','ay','az',
-        'ba','be','bg','bh','bi','bm','bn','bo','br','bs',
-        'ca','ce','ch','co','cr','cs','cu','cv','cy',
-        'da','de','dv','dz',
-        'ee','el','en','eo','es','et','eu',
-        'fa','ff','fi','fj','fo','fr','fy',
-        'ga','gd','gl','gn','gu','gv',
-        'ha','he','hi','ho','hr','ht','hu','hy','hz',
-        'ia','id','ie','ig','ii','ik','io','is','it','iu',
-        'ja','jv',
-        'ka','kg','ki','kj','kk','kl','km','kn','ko','kr','ks','ku','kv','kw','ky',
-        'la','lb','lg','li','ln','lo','lt','lu','lv',
-        'mg','mh','mi','mk','ml','mn','mr','ms','mt','my',
-        'na','nb','nd','ne','ng','nl','nn','no','nr','nv','ny',
-        'oc','oj','om','or','os',
-        'pa','pi','pl','ps','pt',
-        'qu',
-        'rm','rn','ro','ru','rw',
-        'sa','sc','sd','se','sg','si','sk','sl','sm','sn','so','sq','sr','ss','st','su','sv','sw',
-        'ta','te','tg','th','ti','tk','tl','tn','to','tr','ts','tt','tw','ty',
-        'ug','uk','ur','uz',
-        've','vi','vo',
-        'wa','wo',
-        'xh',
-        'yi','yo',
-        'za','zh','zu'
-    }
-
-    # Common language-name and alias mapping to ISO 639-1 codes (English and a few Chinese names)
-    LANG_NAME_TO_ISO639_1 = {
-        # Top/common languages
-        'english': 'en', 'en-us': 'en', 'en-gb': 'en',
-        'chinese': 'zh', 'chinese (simplified)': 'zh', 'chinese (traditional)': 'zh',
-        'mandarin': 'zh', 'cantonese': 'zh', 'zh-cn': 'zh', 'zh-hans': 'zh', 'zh-tw': 'zh', 'zh-hant': 'zh',
-        'japanese': 'ja', 'jpn': 'ja',
-        'korean': 'ko', 'kor': 'ko',
-        'spanish': 'es', 'castilian': 'es',
-        'french': 'fr', 'francais': 'fr', 'français': 'fr',
-        'german': 'de',
-        'russian': 'ru',
-        'portuguese': 'pt', 'brazilian portuguese': 'pt', 'português': 'pt',
-        'italian': 'it',
-        'arabic': 'ar',
-        'hindi': 'hi',
-        'bengali': 'bn', 'bangla': 'bn',
-        'urdu': 'ur',
-        'turkish': 'tr',
-        'vietnamese': 'vi',
-        'thai': 'th',
-        'indonesian': 'id', 'bahasa indonesia': 'id',
-        'malay': 'ms', 'bahasa melayu': 'ms',
-        'dutch': 'nl',
-        'polish': 'pl',
-        'ukrainian': 'uk',
-        'romanian': 'ro',
-        'greek': 'el', 'modern greek': 'el',
-        'czech': 'cs',
-        'slovak': 'sk',
-        'slovenian': 'sl', 'slovene': 'sl',
-        'croatian': 'hr',
-        'serbian': 'sr',
-        'bosnian': 'bs',
-        'bulgarian': 'bg',
-        'hungarian': 'hu',
-        'finnish': 'fi',
-        'swedish': 'sv',
-        'norwegian': 'no', 'bokmal': 'nb', 'bokmål': 'nb', 'nynorsk': 'nn',
-        'danish': 'da',
-        'icelandic': 'is',
-        'estonian': 'et',
-        'latvian': 'lv',
-        'lithuanian': 'lt',
-        'hebrew': 'he', 'iw': 'he',
-        'yiddish': 'yi', 'ji': 'yi',
-        'persian': 'fa', 'farsi': 'fa',
-        'pashto': 'ps',
-        'kurdish': 'ku',
-        'amharic': 'am',
-        'swahili': 'sw',
-        'afrikaans': 'af',
-        'albanian': 'sq',
-        'armenian': 'hy',
-        'azerbaijani': 'az',
-        'basque': 'eu',
-        'belarusian': 'be',
-        'catalan': 'ca',
-        'filipino': 'tl', 'tagalog': 'tl',
-        'georgian': 'ka',
-        'irish': 'ga',
-        'kazakh': 'kk',
-        'kyrgyz': 'ky',
-        'lao': 'lo',
-        'macedonian': 'mk',
-        'mongolian': 'mn',
-        'nepali': 'ne',
-        'sinhala': 'si', 'sinhalese': 'si',
-        'somali': 'so',
-        'tamil': 'ta',
-        'telugu': 'te',
-        'tatar': 'tt',
-        'tigrinya': 'ti',
-        'turkmen': 'tk',
-        'uzbek': 'uz',
-        'welsh': 'cy',
-        'yoruba': 'yo',
-        'zulu': 'zu',
-        'xhosa': 'xh',
-        # Chinese names (简体/繁体)
-        '中文': 'zh', '中文（简体）': 'zh', '简体中文': 'zh', '中文（繁體）': 'zh', '繁体中文': 'zh', '普通话': 'zh', '粤语': 'zh',
-        # Legacy 2-letter aliases used historically
-        'in': 'id', 'jw': 'jv'
-    }
-
-    # Some common ISO 639-3 or legacy codes to ISO 639-1
-    ISO_639_3_TO_1 = {
-        'zho': 'zh', 'chi': 'zh', 'eng': 'en', 'jpn': 'ja', 'kor': 'ko', 'fra': 'fr', 'fre': 'fr',
-        'deu': 'de', 'ger': 'de', 'spa': 'es', 'ita': 'it', 'rus': 'ru', 'por': 'pt', 'hin': 'hi',
-        'ben': 'bn', 'urd': 'ur', 'tur': 'tr', 'vie': 'vi', 'tha': 'th', 'ind': 'id', 'msa': 'ms', 'may': 'ms',
-        'nld': 'nl', 'dut': 'nl', 'pol': 'pl', 'ukr': 'uk', 'ron': 'ro', 'rum': 'ro', 'ell': 'el', 'gre': 'el',
-        'ces': 'cs', 'cze': 'cs', 'slk': 'sk', 'slo': 'sk', 'slv': 'sl', 'hrv': 'hr', 'srp': 'sr', 'bos': 'bs',
-        'bul': 'bg', 'hun': 'hu', 'fin': 'fi', 'swe': 'sv', 'nor': 'no', 'dan': 'da', 'isl': 'is', 'est': 'et',
-        'lav': 'lv', 'lit': 'lt', 'heb': 'he', 'yid': 'yi', 'fas': 'fa', 'pus': 'ps', 'kur': 'ku', 'amh': 'am',
-        'swa': 'sw', 'afr': 'af', 'sqi': 'sq', 'hye': 'hy', 'aze': 'az', 'eus': 'eu', 'bel': 'be', 'cat': 'ca',
-        'tgl': 'tl', 'gle': 'ga', 'kat': 'ka', 'kaz': 'kk', 'kir': 'ky', 'lao': 'lo', 'mkd': 'mk', 'mon': 'mn',
-        'nep': 'ne', 'sin': 'si', 'som': 'so', 'tam': 'ta', 'tel': 'te', 'tat': 'tt', 'tir': 'ti', 'tuk': 'tk',
-        'uzb': 'uz', 'cym': 'cy', 'yor': 'yo', 'zul': 'zu', 'xho': 'xh', 'cmn': 'zh', 'yue': 'zh'
-    }
-
-    @classmethod
-    def _normalize_language_to_iso639_1(cls, lang: Optional[str]) -> Optional[str]:
-        """Normalize various language inputs to ISO 639-1 2-letter code.
-
-        Accepts codes (en, zh, zh-CN, en-US), names (English, 中文), and some 3-letter/legacy codes.
-        Returns lowercased 2-letter code if resolvable; otherwise None.
-        """
-        if not lang:
-            return None
-        # Basic cleanup
-        s = str(lang).strip().lower()
-        if not s:
-            return None
-        # If pure 2-letter code and valid
-        if len(s) == 2 and s in cls.ISO_639_1_CODES:
-            return s
-        # Legacy aliases that are already 2 letters
-        if s in ('iw', 'ji', 'in', 'jw'):
-            return {'iw': 'he', 'ji': 'yi', 'in': 'id', 'jw': 'jv'}[s]
-
-        # Normalize BCP-47 like tags (e.g., zh-CN, en_US)
-        s_tag = re.sub(r'[ _]', '-', s)
-        if '-' in s_tag:
-            primary = s_tag.split('-', 1)[0]
-            if len(primary) == 2 and primary in cls.ISO_639_1_CODES:
-                return primary
-            # Handle zh-Hans/zh-Hant etc.
-            if primary in ('zh', 'cmn', 'yue'):
-                return 'zh'
-
-        # Map common names/aliases
-        if s in cls.LANG_NAME_TO_ISO639_1:
-            return cls.LANG_NAME_TO_ISO639_1[s]
-
-        # 3-letter to 2-letter
-        if len(s) == 3 and s in cls.ISO_639_3_TO_1:
-            return cls.ISO_639_3_TO_1[s]
-
-        # Last attempt: if someone passed something like "english (us)"
-        s_base = re.split(r'[()\-_/ ]+', s)[0]
-        if s_base in cls.LANG_NAME_TO_ISO639_1:
-            return cls.LANG_NAME_TO_ISO639_1[s_base]
-
-        return None
 
     def _init_client(self):
         try:
@@ -261,29 +99,35 @@ class SpeechRecognizer:
                 'OPENAI_BASE_URL': self.config.base_url,
             }
             self.client = _get_openai_client(openai_config)
-            # setup detect client (fallback to main if not provided)
-            detect_api_key = self.config.detect_api_key or self.config.api_key
-            detect_base_url = self.config.detect_base_url or self.config.base_url
-            detect_openai_config = {
-                'OPENAI_API_KEY': detect_api_key,
-                'OPENAI_BASE_URL': detect_base_url,
-            }
-            self.detect_client = _get_openai_client(detect_openai_config)
-            self.logger.info(f"语音识别客户端初始化成功(含语言检测)")
+            self.logger.info("语音识别客户端初始化成功")
         except Exception as e:
             self.logger.error(f"初始化语音识别客户端失败: {e}")
 
     def _extract_audio_wav(self, video_path: str) -> Optional[str]:
         """Extract 16kHz mono WAV from video using ffmpeg. Returns temp file path."""
         try:
+            # 优先使用项目内置/配置中的 ffmpeg
+            ffmpeg_bin = 'ffmpeg'
+            try:
+                from .youtube_handler import find_ffmpeg_location  # 复用已有定位逻辑
+                ffmpeg_path = find_ffmpeg_location(logger=self.logger)
+                if ffmpeg_path and os.path.exists(ffmpeg_path):
+                    ffmpeg_bin = ffmpeg_path
+                    self.logger.info(f"语音识别提取音频将使用 ffmpeg: {ffmpeg_bin}")
+                else:
+                    self.logger.info("未找到配置的ffmpeg，尝试使用系统环境中的 ffmpeg")
+            except Exception as _e:
+                self.logger.debug(f"定位 ffmpeg 失败，退回系统命令: {_e}")
+
             tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_')
             audio_path = os.path.join(tmp_dir, 'audio.wav')
             cmd = [
-                'ffmpeg', '-y',
+                ffmpeg_bin, '-y',
                 '-i', video_path,
                 '-vn',
                 '-ac', '1',
                 '-ar', '16000',
+                '-acodec', 'pcm_s16le',
                 '-f', 'wav',
                 audio_path
             ]
@@ -304,41 +148,9 @@ class SpeechRecognizer:
             self.logger.error(f"提取音频异常: {e}")
             return None
 
-    def _extract_audio_wav_clip(self, video_path: str, seconds: int = 60) -> Optional[str]:
-        """Extract only the first N seconds of audio as 16kHz mono WAV for fast language detection."""
-        try:
-            tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_clip_')
-            audio_path = os.path.join(tmp_dir, f'audio_first_{seconds}s.wav')
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,
-                '-t', str(seconds),
-                '-vn',
-                '-ac', '1',
-                '-ar', '16000',
-                '-f', 'wav',
-                audio_path
-            ]
-            self.logger.info(f"提取音频片段用于语言检测: {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=180
-            )
-            if result.returncode != 0 or not os.path.exists(audio_path):
-                self.logger.warning(f"提取音频片段失败，将跳过语言检测: {result.stderr}\n{result.stdout}")
-                return None
-            return audio_path
-        except Exception as e:
-            self.logger.warning(f"提取语言检测音频片段异常，将跳过语言检测: {e}")
-            return None
-
     def transcribe_video_to_subtitles(self, video_path: str, output_path: str) -> Optional[str]:
         """
-        Transcribe a video file into SRT/VTT subtitles using Whisper-compatible API.
+        Transcribe a video file into SRT/VTT subtitles using OpenAI-compatible Whisper API.
 
         Returns the output_path on success, otherwise None.
         """
@@ -349,79 +161,77 @@ class SpeechRecognizer:
             if not os.path.exists(video_path):
                 self.logger.error(f"视频文件不存在: {video_path}")
                 return None
-
-            # 先用前60秒做语言检测（若失败则忽略，进入自动语言识别；若明确不支持语言，则直接停止）
-            detected_language = None
-            try:
-                clip_wav = self._extract_audio_wav_clip(video_path, seconds=60)
-                if clip_wav:
-                    detected_language, confidence = self._detect_language(clip_wav)
-                    if detected_language:
-                        self.logger.info(f"语言检测结果: {detected_language} (confidence={confidence})")
-            except SpeechRecognizer.UnsupportedLanguageError as e:
-                self.logger.warning(f"语言检测被明确拒绝（不支持语言），将停止转写：{e}")
-                return None
-            except SpeechRecognizer.ServerFatalError as e:
-                self.logger.warning(f"语言检测出现服务端错误(500)，将停止转写：{e}")
-                return None
-            except Exception as e:
-                self.logger.warning(f"语言检测失败，继续自动识别: {e}")
-
-            # 再提取整段音频进行完整转写
+            # 提取整段音频（16kHz单声道wav）
             audio_wav = self._extract_audio_wav(video_path)
             if not audio_wav:
                 return None
+
+            total_audio_duration = self._probe_media_duration(audio_wav)
+            if total_audio_duration is None:
+                # 兜底：使用视频时长
+                total_audio_duration = self._probe_media_duration(video_path) or 0.0
 
             model_name = self.config.model_name or 'whisper-1'
             response_format = (self.config.output_format or 'srt').lower()
             if response_format not in ('srt', 'vtt'):
                 response_format = 'srt'
 
-            self.logger.info(f"开始语音转写，模型: {model_name}，输出格式: {response_format}")
-            with open(audio_wav, 'rb') as f:
-                # OpenAI new SDK: returns string when response_format is text-like
-                kwargs = {
-                    'model': model_name,
-                    'file': f,
-                    'response_format': response_format,
-                }
-                if detected_language:
-                    # Provide language hint to improve accuracy and speed (normalize to ISO 639-1 code)
-                    lang_code = self._normalize_language_to_iso639_1(detected_language)
-                    if lang_code:
-                        kwargs['language'] = lang_code
-
+            # 如果启用了VAD，则先按语音段切分进行分段识别并拼接
+            cues: List[Dict[str, Any]] = []
+            used_vad = False
+            if self.config.vad_enabled:
                 try:
-                    resp = self.client.audio.transcriptions.create(**kwargs)
-                except Exception as e:
-                    # If server rejects unsupported language, stop without retrying
-                    msg = str(e)
-                    if (
-                        ('Unsupported language' in msg)
-                        or ('unsupported_language' in msg)
-                        or ('语言不支持' in msg)
-                        or ('不支持的语言' in msg)
-                        or ('param' in msg and 'language' in msg)
-                    ):
-                        bad_lang = kwargs.get('language', detected_language)
-                        self.logger.warning(
-                            f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。原始错误：{msg}"
-                        )
-                        return None
-                    # Other errors will bubble to outer except
+                    vad_segments = self._run_vad_on_audio(audio_wav, total_audio_duration)
+                    if vad_segments:
+                        used_vad = True
+                        self.logger.info(f"VAD启用：共检测到 {len(vad_segments)} 个语音片段，开始分段识别")
+                        for (seg_start_s, seg_end_s) in vad_segments:
+                            seg_start_s = max(0.0, float(seg_start_s))
+                            seg_end_s = max(seg_start_s, float(seg_end_s))
+                            # 限制分段最大长度
+                            max_len = max(5, int(self.config.vad_max_segment_s or 90))
+                            if seg_end_s - seg_start_s > max_len:
+                                # 二次切分
+                                t = seg_start_s
+                                while t < seg_end_s:
+                                    t2 = min(seg_end_s, t + max_len)
+                                    part_wav = self._extract_audio_clip(audio_wav, t, t2)
+                                    if part_wav:
+                                        cues.extend(self._transcribe_one_clip(part_wav, t, total_audio_duration))
+                                    t = t2
+                            else:
+                                part_wav = self._extract_audio_clip(audio_wav, seg_start_s, seg_end_s)
+                                if part_wav:
+                                    cues.extend(self._transcribe_one_clip(part_wav, seg_start_s, total_audio_duration))
                     else:
-                        raise
+                        self.logger.warning("VAD已启用但未返回有效语音段，回退为整段识别")
+                except Exception as e:
+                    self.logger.warning(f"VAD处理失败，回退整段识别: {e}")
 
-            # Parse response using compatibility-aware method
-            text = self._parse_transcription_response(resp, kwargs)
+            if not used_vad:
+                # 整段识别
+                self.logger.info(f"开始语音转写（一次请求），模型: {model_name}，输出格式: {response_format}")
+                with open(audio_wav, 'rb') as f:
+                    try:
+                        resp = self.client.audio.transcriptions.create(
+                            model=model_name,
+                            file=f,
+                            response_format='verbose_json'
+                        )
+                    except Exception as e:
+                        self.logger.error(f"语音转写请求失败: {e}")
+                        return None
 
-            if not text or len(text.strip()) == 0:
-                self.logger.error("语音转写API返回为空")
+                cues = self._convert_response_to_cues(resp, 0.0, total_audio_duration)
+                if not cues:
+                    self.logger.error("转写响应未生成任何字幕片段")
+                    return None
+
+            # 渲染字幕
+            text = self._render_cues(cues, response_format)
+            if not text:
+                self.logger.error("无法从转写结果渲染字幕")
                 return None
-
-            # Ensure VTT header if needed
-            if response_format == 'vtt' and not text.lstrip().upper().startswith('WEBVTT'):
-                text = 'WEBVTT\n\n' + text
 
             with open(output_path, 'w', encoding='utf-8') as out:
                 out.write(text)
@@ -429,9 +239,9 @@ class SpeechRecognizer:
             # Post-check: count subtitle cues; if below threshold and gating enabled, treat as no subtitles
             try:
                 if self.config.min_lines_enabled:
-                    cues = self._count_subtitle_cues(output_path, response_format)
-                    self.logger.info(f"ASR字幕条目数: {cues}")
-                    if isinstance(cues, int) and cues < max(0, int(self.config.min_lines_threshold)):
+                    cue_count = self._count_subtitle_cues(output_path, response_format)
+                    self.logger.info(f"ASR字幕条目数: {cue_count}")
+                    if isinstance(cue_count, int) and cue_count < max(0, int(self.config.min_lines_threshold)):
                         try:
                             os.remove(output_path)
                         except Exception:
@@ -448,245 +258,228 @@ class SpeechRecognizer:
             self.logger.error(f"语音转写失败: {e}")
             return None
 
-    def _parse_transcription_response(self, resp, kwargs: Optional[dict] = None) -> Optional[str]:
-        """
-        Parse transcription response from OpenAI Whisper API.
-        Handles the official OpenAI response format.
-        
-        Args:
-            resp: Response from API call
-            kwargs: Original request parameters for error context
-            
-        Returns:
-            Transcription text or None if error/empty
-        """
-        kwargs = kwargs or {}
-        
-        # Handle SDK variations: sometimes resp is str, sometimes has .text
-        text = None
+    # ---- Helpers for OpenAI response normalization and rendering ----
+    def _as_dict(self, resp) -> Optional[dict]:
         try:
-            # Some compatible servers may return an error payload instead of raising
-            # Normalize and early-stop if an error is present
-            if isinstance(resp, dict) and 'error' in resp:
-                err = resp.get('error')
-                # Try to identify unsupported language specifically
-                if isinstance(err, dict):
-                    code = str(err.get('code', '')).lower()
-                    etype = str(err.get('type', '')).lower()
-                    message = str(err.get('message', ''))
-                    param = str(err.get('param', ''))
-                    if (
-                        'unsupported_language' in code
-                        or 'unsupported language' in message
-                        or ('language' == param)
-                    ):
-                        bad_lang = kwargs.get('language', 'unknown')
-                        self.logger.warning(
-                            f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
-                        )
-                        return None
-                self.logger.error(f"语音转写失败：{err}")
-                return None
-            
-            # Standard OpenAI response handling
-            if isinstance(resp, str):
-                # Try parse JSON error
-                import json as _json
-                try:
-                    maybe = _json.loads(resp)
-                    if isinstance(maybe, dict) and 'error' in maybe:
-                        err = maybe.get('error')
-                        if isinstance(err, dict):
-                            code = str(err.get('code', '')).lower()
-                            etype = str(err.get('type', '')).lower()
-                            message = str(err.get('message', ''))
-                            param = str(err.get('param', ''))
-                            if (
-                                'unsupported_language' in code
-                                or 'unsupported language' in message
-                                or ('language' == param)
-                            ):
-                                bad_lang = kwargs.get('language', 'unknown')
-                                self.logger.warning(
-                                    f"语音转写被拒绝：不支持的语言（{bad_lang}）。将停止转写且不再重试。错误：{err}"
-                                )
-                                return None
-                        self.logger.error(f"语音转写失败：{err}")
-                        return None
-                except Exception:
-                    pass
-                text = resp
-            elif not isinstance(resp, dict) and hasattr(resp, 'text'):
-                text = getattr(resp, 'text', None)
+            if isinstance(resp, dict):
+                return resp
+            if hasattr(resp, 'model_dump'):
+                return resp.model_dump()
+            if hasattr(resp, 'to_dict'):
+                return resp.to_dict()
+            d = getattr(resp, '__dict__', None)
+            if isinstance(d, dict):
+                return d
+            # last resort: try JSON loads on str
+            import json as _json
+            return _json.loads(str(resp))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_timestamp(seconds: float) -> str:
+        if seconds is None:
+            seconds = 0.0
+        try:
+            ms = int(round(seconds * 1000))
+            h = ms // 3600000
+            ms %= 3600000
+            m = ms // 60000
+            ms %= 60000
+            s = ms // 1000
+            ms %= 1000
+            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+        except Exception:
+            return "00:00:00,000"
+
+    @staticmethod
+    def _srt_time_to_seconds(time_str: str) -> float:
+        """Convert HH:MM:SS,mmm (or HH:MM:SS.mmm) to seconds."""
+        if not time_str:
+            return 0.0
+        try:
+            normalized = time_str.strip().replace('.', ',')
+            hh, mm, rest = normalized.split(':')
+            sec, ms = rest.split(',')
+            return int(hh) * 3600 + int(mm) * 60 + int(sec) + int(ms) / 1000.0
+        except Exception:
+            return 0.0
+
+    def _parse_subtitle_text_to_cues(self, payload: str, base_offset_s: float) -> List[Dict[str, Any]]:
+        """Parse SRT/VTT payload and return cues in seconds."""
+        if not payload:
+            return []
+        text = payload.strip()
+        if not text:
+            return []
+
+        # Remove potential VTT header lines
+        if text.upper().startswith('WEBVTT'):
+            lines = text.splitlines()
+            # Skip the first header line(s) until an empty line or cue
+            idx = 1
+            while idx < len(lines) and lines[idx].strip():
+                idx += 1
+            text = '\n'.join(lines[idx:]).strip()
+
+        blocks = re.split(r'\n\s*\n', text)
+        cues: List[Dict[str, Any]] = []
+        for block in blocks:
+            block_text = block.strip()
+            if not block_text:
+                continue
+            lines = block_text.splitlines()
+            if len(lines) < 2:
+                continue
+            # Handle optional index line
+            if '-->' not in lines[0] and len(lines) >= 2 and '-->' in lines[1]:
+                time_line = lines[1]
+                content_lines = lines[2:]
             else:
-                # Fallback to string representation
-                text = str(resp)
-        except Exception as e:
-            self.logger.warning(f"解析转写响应时出错: {e}")
-            text = None
+                time_line = lines[0]
+                content_lines = lines[1:]
+            if '-->' not in time_line:
+                continue
+            try:
+                start_str, end_str = [part.strip() for part in time_line.split('-->')]
+            except ValueError:
+                continue
+            start_s = self._srt_time_to_seconds(start_str) + base_offset_s
+            end_s = self._srt_time_to_seconds(end_str) + base_offset_s
+            if end_s <= start_s:
+                end_s = start_s + 0.01
+            text_content = '\n'.join(line.strip() for line in content_lines if line.strip())
+            if not text_content:
+                continue
+            cues.append({
+                'start': max(0.0, start_s),
+                'end': max(end_s, start_s + 0.01),
+                'text': text_content
+            })
+        return cues
 
-        return text if text and len(text.strip()) > 0 else None
+    def _convert_response_to_cues(self, resp: Any, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
+        """Normalize Whisper/OpenAI/whisper.cpp style responses into cue list."""
+        payload_dict = self._as_dict(resp)
+        if isinstance(payload_dict, dict):
+            cues = self._normalize_verbose_segments_to_cues(payload_dict, base_offset_s, total_duration_s)
+            if cues:
+                return cues
 
-    class UnsupportedLanguageError(Exception):
-        pass
+        # Fallback: try textual payload (SRT/VTT)
+        text_payload: Optional[str] = None
+        if isinstance(resp, str):
+            text_payload = resp
+        elif hasattr(resp, 'text') and isinstance(getattr(resp, 'text'), str):
+            text_payload = getattr(resp, 'text')
+        elif isinstance(payload_dict, dict):
+            candidate = payload_dict.get('text')
+            if isinstance(candidate, str) and '-->' in candidate:
+                text_payload = candidate
+        if text_payload:
+            cues = self._parse_subtitle_text_to_cues(text_payload, base_offset_s)
+            if cues:
+                return cues
 
-    class ServerFatalError(Exception):
-        pass
+        return []
 
-    def _detect_language(self, audio_wav_path: str) -> Tuple[Optional[str], Optional[float]]:
-        """Detect language using Whisper-compatible API via verbose_json.
+    # ---- Rendering and normalization helpers ----
+    def _render_cues(self, cues: List[Dict[str, Any]], fmt: str) -> Optional[str]:
+        fmt = (fmt or 'srt').lower()
+        cues = [c for c in cues if (c.get('text') or '').strip()]
+        if not cues:
+            return None
+        if fmt == 'vtt':
+            lines = ["WEBVTT", ""]
+            for c in cues:
+                start_ms = self._format_timestamp(float(c['start'])).replace(',', '.')
+                end_ms = self._format_timestamp(float(c['end'])).replace(',', '.')
+                lines.append(f"{start_ms} --> {end_ms}")
+                lines.append((c['text'] or '').strip())
+                lines.append("")
+            return "\n".join(lines).strip() + "\n"
+        # SRT
+        lines = []
+        for idx, c in enumerate(cues, start=1):
+            start_srt = self._format_timestamp(float(c['start']))
+            end_srt = self._format_timestamp(float(c['end']))
+            lines.append(str(idx))
+            lines.append(f"{start_srt} --> {end_srt}")
+            lines.append((c['text'] or '').strip())
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
 
-        Returns (language_code, confidence) if available, else (None, None).
+    def _normalize_verbose_segments_to_cues(self, data: dict, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
+        """Adapt OpenAI/whisper.cpp verbose_json payloads to cue list.
+
+        官方 OpenAI Whisper 与 whisper.cpp 均以秒为单位返回 start/end，但仍保留
+        针对兼容实现可能使用毫秒/厘秒的容错缩放，以避免再次出现长度异常的字幕文件。
+        """
+        segments = data.get('segments') or []
+        text_fallback = (data.get('text') or '').strip()
+        if not isinstance(segments, list) or not segments:
+            if not text_fallback:
+                return []
+            return [{
+                'start': base_offset_s,
+                'end': base_offset_s + min( (total_duration_s or 0) - base_offset_s, 5.0) if total_duration_s else base_offset_s + 5.0,
+                'text': text_fallback
+            }]
+
+        # 自动判别时间单位（s / ms / centisecond)
+        max_end_raw = 0.0
+        for seg in segments:
+            try:
+                v = float(seg.get('end', 0.0))
+            except Exception:
+                v = 0.0
+            if v > max_end_raw:
+                max_end_raw = v
+        scale = self._infer_time_scale(max_end_raw, total_duration_s)
+        if scale != 1.0:
+            self.logger.info(f"检测到转写时间单位需要缩放: x{scale}")
+
+        cues: List[Dict[str, Any]] = []
+        for seg in segments:
+            try:
+                start = float(seg.get('start', 0.0)) * scale + base_offset_s
+                end = float(seg.get('end', start)) * scale + base_offset_s
+                text = (seg.get('text') or '').strip()
+                if not text:
+                    continue
+                cues.append({'start': max(0.0, start), 'end': max(end, start + 0.01), 'text': text})
+            except Exception:
+                continue
+        return cues
+
+    def _infer_time_scale(self, max_end_raw: float, total_duration_s: float) -> float:
+        """推断第三方API返回的时间单位。返回应乘以的缩放，使值变为秒。
+
+        规则：
+        - 如果 max_end_raw 在 [0.5x, 1.5x] * duration 之间，认为单位是秒 -> scale=1
+        - 如果 max_end_raw/1000 在该范围 -> 单位毫秒 -> scale=0.001
+        - 如果 max_end_raw/100 在该范围 -> 单位厘秒 -> scale=0.01
+        - 优先匹配更接近的比例；若 duration 不可用，默认按秒
         """
         try:
-            if not self.detect_client:
-                return None, None
-            detect_model = self.config.detect_model_name or self.config.model_name or 'whisper-1'
-            with open(audio_wav_path, 'rb') as f:
-                try:
-                    resp = self.detect_client.audio.transcriptions.create(
-                        model=detect_model,
-                        file=f,
-                        response_format='verbose_json'
-                    )
-                except Exception as e:
-                    # 如果返回明确不支持语言或 500 服务端错误，则直接终止
-                    msg = str(e)
-                    if (
-                        ('Unsupported language' in msg)
-                        or ('unsupported_language' in msg)
-                        or ('语言不支持' in msg)
-                        or ('不支持的语言' in msg)
-                        or ('param' in msg and 'language' in msg)
-                    ):
-                        self.logger.warning(
-                            f"语言检测被拒绝：不支持的语言。原始错误：{msg}"
-                        )
-                        raise SpeechRecognizer.UnsupportedLanguageError(msg)
-                    if (
-                        'status code 500' in msg.lower()
-                        or 'error code: 500' in msg.lower()
-                        or 'unknown_error' in msg.lower()
-                    ):
-                        self.logger.warning(
-                            f"语言检测出现服务端错误(500)，将停止转写。原始错误：{msg}"
-                        )
-                        raise SpeechRecognizer.ServerFatalError(msg)
-                    # 其他错误走原有流程，由上层忽略检测失败
-                    raise
-            
-            # Use compatibility-aware parsing
-            return self._parse_language_detection_response(resp)
-            
-        except Exception as e:
-            # 明确不支持语言或服务端致命错误时向上传递，其他异常仅告警
-            if isinstance(e, (SpeechRecognizer.UnsupportedLanguageError, SpeechRecognizer.ServerFatalError)):
-                raise
-            self.logger.warning(f"语言检测异常: {e}")
-            return None, None
-
-    def _parse_language_detection_response(self, resp) -> Tuple[Optional[str], Optional[float]]:
-        """
-        Parse language detection response from OpenAI Whisper API.
-        Handles the official OpenAI response format.
-        
-        Returns:
-            Tuple of (language_code, confidence)
-        """
-        # Some SDKs return dict-like, some return object; normalize
-        data = None
-        if isinstance(resp, dict):
-            # 检查错误载荷
-            if 'error' in resp:
-                err = resp.get('error')
-                if isinstance(err, dict):
-                    code = str(err.get('code', '')).lower()
-                    message = str(err.get('message', ''))
-                    param = str(err.get('param', ''))
-                    if (
-                        'unsupported_language' in code
-                        or 'unsupported language' in message
-                        or ('language' == param)
-                    ):
-                        self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
-                        raise SpeechRecognizer.UnsupportedLanguageError(str(err))
-                    if (
-                        'unknown_error' in code
-                        or 'status code 500' in message.lower()
-                        or '500' == code
-                    ):
-                        self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
-                        raise SpeechRecognizer.ServerFatalError(str(err))
-            
-            # Standard response format
-            data = resp
-        else:
-            try:
-                # OpenAI SDK returns pydantic models; use .model_dump if available, else vars()
-                if hasattr(resp, 'model_dump'):
-                    data = resp.model_dump()
-                elif hasattr(resp, 'to_dict'):
-                    data = resp.to_dict()
-                else:
-                    data = getattr(resp, '__dict__', None)
-            except Exception:
-                data = None
-
-        if not data:
-            # Last resort, try to parse as string JSON-like (unlikely)
-            try:
-                import json as _json
-                data = _json.loads(str(resp))
-                if isinstance(data, dict) and 'error' in data:
-                    err = data.get('error')
-                    if isinstance(err, dict):
-                        code = str(err.get('code', '')).lower()
-                        message = str(err.get('message', ''))
-                        param = str(err.get('param', ''))
-                        if (
-                            'unsupported_language' in code
-                            or 'unsupported language' in message
-                            or ('language' == param)
-                        ):
-                            self.logger.warning(f"语言检测被拒绝：不支持的语言。错误：{err}")
-                            raise SpeechRecognizer.UnsupportedLanguageError(str(err))
-                        if (
-                            'unknown_error' in code
-                            or 'status code 500' in message.lower()
-                            or code == '500'
-                        ):
-                            self.logger.warning(f"语言检测出现服务端错误(500)。错误：{err}")
-                            raise SpeechRecognizer.ServerFatalError(str(err))
-            except Exception:
-                data = None
-
-        language = None
-        confidence = None
-        if isinstance(data, dict):
-            # Standard OpenAI format
-            language = data.get('language') or data.get('detected_language')
-            
-            # try to derive confidence from avg segment probs
-            segs = data.get('segments') or []
-            if isinstance(segs, list) and segs:
-                probs = []
-                for s in segs:
-                    p = s.get('avg_logprob') if isinstance(s, dict) else None
-                    if isinstance(p, (int, float)):
-                        probs.append(p)
-                if probs:
-                    # Convert logprob to a rough [0,1] scale (heuristic)
-                    import math as _math
-                    confidence = sum(_math.exp(p) for p in probs) / len(probs)
-                
-        # Normalize language code (e.g., 'zh', 'en')
-        if language is not None:
-            lang_str = str(language) if isinstance(language, (str, bytes)) else None
-            language = self._normalize_language_to_iso639_1(lang_str) if lang_str else None
-        # ensure precise types for return
-        lang_ret: Optional[str] = language if isinstance(language, str) and language else None
-        conf_ret: Optional[float] = confidence if isinstance(confidence, (int, float)) else None
-        return lang_ret, conf_ret
+            dur = float(total_duration_s or 0)
+        except Exception:
+            dur = 0.0
+        if dur <= 0:
+            return 1.0
+        def in_range(val: float) -> bool:
+            return 0.5 * dur <= val <= 1.5 * dur
+        candidates = [
+            (1.0, max_end_raw),
+            (0.001, max_end_raw * 0.001),
+            (0.01, max_end_raw * 0.01),
+        ]
+        for scale, val in candidates:
+            if in_range(val):
+                return scale
+        # 选择与dur比值最近的
+        best = min(candidates, key=lambda x: abs((x[1] or 0) - dur))
+        return best[0]
 
     def _count_subtitle_cues(self, file_path: str, fmt: str) -> Optional[int]:
         """Count number of subtitle cues in SRT or VTT.
@@ -723,6 +516,153 @@ class SpeechRecognizer:
         except Exception:
             return None
 
+    # ---- VAD and chunking helpers ----
+    def _probe_media_duration(self, media_path: str) -> Optional[float]:
+        """使用ffprobe获取音/视频时长（秒）。"""
+        try:
+            from .youtube_handler import find_ffmpeg_location
+            ffmpeg_bin = find_ffmpeg_location(logger=self.logger)
+            if not ffmpeg_bin:
+                return None
+            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            cmd = [ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', media_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+            if result.returncode != 0:
+                return None
+            data = json.loads(result.stdout or '{}')
+            return float(data.get('format', {}).get('duration', 0.0))
+        except Exception:
+            return None
+
+    def _run_vad_on_audio(self, wav_path: str, total_duration_s: float) -> Optional[List[Tuple[float, float]]]:
+        """调用外部VAD服务（或将来本地实现）；返回片段列表（单位：秒）。"""
+        if not self.config.vad_api_url:
+            self.logger.warning("VAD已启用但未配置API地址，跳过")
+            return None
+        sample_rate = 16000
+        channels = 1
+        total_frames = 0
+        try:
+            with wave.open(wav_path, 'rb') as wf:
+                sample_rate = wf.getframerate() or sample_rate
+                channels = wf.getnchannels() or channels
+                total_frames = wf.getnframes()
+        except Exception as exc:
+            self.logger.debug(f"读取音频属性失败，将使用默认采样率: {exc}")
+
+        if sample_rate <= 0 or total_frames <= 0:
+            self.logger.warning("VAD前检测到音频帧数异常，跳过VAD")
+            return None
+
+        duration_from_wav = total_frames / float(sample_rate)
+        if duration_from_wav < 0.2:
+            self.logger.warning("音频长度不足0.2秒，跳过VAD")
+            return None
+
+        url = self.config.vad_api_url
+        headers = {}
+        if self.config.vad_api_token:
+            headers['Authorization'] = f"Bearer {self.config.vad_api_token}"
+        fields = {
+            'threshold': str(self.config.vad_threshold),
+            'min_speech_ms': str(self.config.vad_min_speech_ms),
+            'min_silence_ms': str(self.config.vad_min_silence_ms),
+            'max_speech_s': str(self.config.vad_max_speech_s),
+            'speech_pad_ms': str(self.config.vad_speech_pad_ms),
+            'sample_rate': str(int(sample_rate)),
+            'channels': str(int(channels)),
+            'format': 'wav',
+            'duration_ms': str(int(duration_from_wav * 1000))
+        }
+        try:
+            with open(wav_path, 'rb') as f:
+                files = {'audio': (os.path.basename(wav_path), f, 'audio/wav')}
+                self.logger.info(
+                    f"调用VAD接口: {url} (sample_rate={sample_rate}, duration={duration_from_wav:.2f}s)"
+                )
+                resp = requests.post(url, headers=headers, data=fields, files=files, timeout=60)
+            if resp.status_code != 200:
+                self.logger.warning(f"VAD接口响应非200: {resp.status_code} {resp.text[:200]}")
+                return None
+            data = resp.json()
+            segs = data.get('segments') or data.get('result') or []
+            if not isinstance(segs, list) or not segs:
+                return None
+            # 支持多种字段命名
+            raw_pairs: List[Tuple[float, float]] = []
+            max_end_raw = 0.0
+            for s in segs:
+                st = s.get('start_ms', s.get('start', 0))
+                ed = s.get('end_ms', s.get('end', 0))
+                try:
+                    stf = float(st)
+                    edf = float(ed)
+                except Exception:
+                    continue
+                max_end_raw = max(max_end_raw, edf)
+                raw_pairs.append((stf, edf))
+            if not raw_pairs:
+                return None
+            # 时间单位判别（假设ms/centisecond/second）
+            scale = self._infer_time_scale(max_end_raw, total_duration_s)
+            if scale != 1.0:
+                self.logger.info(f"检测到VAD时间单位需要缩放: x{scale}")
+            pairs_sec = [(a * scale, b * scale) for (a, b) in raw_pairs]
+            # 排序并去除交叠
+            pairs_sec.sort(key=lambda x: x[0])
+            merged: List[List[float]] = []
+            for st, ed in pairs_sec:
+                if not merged:
+                    merged.append([st, ed])
+                else:
+                    last = merged[-1]
+                    if st <= last[1] + 0.05:
+                        last[1] = max(last[1], ed)
+                    else:
+                        merged.append([st, ed])
+            return [(float(a), float(b)) for a, b in merged]
+        except Exception as e:
+            self.logger.warning(f"VAD请求异常: {e}")
+            return None
+
+    def _extract_audio_clip(self, wav_path: str, start_s: float, end_s: float) -> Optional[str]:
+        """用ffmpeg从wav中裁剪一段到临时wav，返回路径。"""
+        try:
+            from .youtube_handler import find_ffmpeg_location
+            ffmpeg_bin = find_ffmpeg_location(logger=self.logger) or 'ffmpeg'
+            out_dir = tempfile.mkdtemp(prefix='y2a_clip_')
+            out_wav = os.path.join(out_dir, 'clip.wav')
+            dur = max(0.01, end_s - start_s)
+            cmd = [
+                ffmpeg_bin, '-y', '-ss', f"{start_s:.3f}", '-t', f"{dur:.3f}", '-i', wav_path,
+                '-ac', '1', '-ar', '16000', '-f', 'wav', out_wav
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+            if result.returncode != 0 or not os.path.exists(out_wav):
+                self.logger.warning(f"裁剪音频失败: {result.stderr[:200]}")
+                return None
+            return out_wav
+        except Exception as e:
+            self.logger.warning(f"裁剪音频异常: {e}")
+            return None
+
+    def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
+        model_name = self.config.model_name or 'whisper-1'
+        try:
+            with open(wav_path, 'rb') as f:
+                resp = self.client.audio.transcriptions.create(
+                    model=model_name,
+                    file=f,
+                    response_format='verbose_json'
+                )
+            cues = self._convert_response_to_cues(resp, base_offset_s, total_duration_s)
+            if not cues:
+                self.logger.warning(f"分段转写响应为空 ({base_offset_s:.2f}s 起)" )
+            return cues
+        except Exception as e:
+            self.logger.warning(f"分段转写失败({base_offset_s:.2f}s): {e}")
+            return []
+
 
 def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str] = None) -> Optional[SpeechRecognizer]:
     """Factory: Build recognizer from app settings."""
@@ -744,12 +684,18 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             base_url=whisper_base_url,
             model_name=whisper_model,
             output_format=output_format,
-            # dedicated detect settings (optional)
-            detect_api_key=app_config.get('WHISPER_DETECT_API_KEY', ''),
-            detect_base_url=app_config.get('WHISPER_DETECT_BASE_URL', ''),
-            detect_model_name=app_config.get('WHISPER_DETECT_MODEL_NAME', ''),
             min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
-            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0)
+            min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
+            vad_enabled=bool(app_config.get('VAD_ENABLED', False)),
+            vad_provider=(app_config.get('VAD_PROVIDER') or 'silero'),
+            vad_api_url=app_config.get('VAD_API_URL') or '',
+            vad_api_token=app_config.get('VAD_API_TOKEN') or '',
+            vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
+            vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 250) or 250),
+            vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 100) or 100),
+            vad_max_speech_s=int(app_config.get('VAD_SILERO_MAX_SPEECH_S', 120) or 120),
+            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 30) or 30),
+            vad_max_segment_s=int(app_config.get('VAD_MAX_SEGMENT_S', 90) or 90),
         )
         return SpeechRecognizer(config, task_id)
     except Exception:

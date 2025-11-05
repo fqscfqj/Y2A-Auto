@@ -97,38 +97,28 @@ def download_ffmpeg_bundled(logger: logging.Logger | None = None) -> str | None:
 
 
 def find_ffmpeg_location(config=None, logger: logging.Logger | None = None) -> str | None:
-    """定位 ffmpeg 路径：配置 > 内置 ffmpeg > （Windows）自动下载 > 其他平台返回 None。"""
+    """仅使用项目内置 ffmpeg；若不存在，在 Windows 上自动下载；其他平台返回 None。
+
+    忽略 FFMPEG_LOCATION 与系统 PATH，统一走应用根目录 ffmpeg/ 下的组件。
+    """
     log = logger or logging.getLogger(__name__)
     try:
-        if not config:
-            config = load_config()
-        # 显式配置优先
-        ff_cfg = (config or {}).get('FFMPEG_LOCATION', '').strip()
-        if ff_cfg and os.path.exists(ff_cfg):
-            log.info(f"使用配置中的ffmpeg路径: {ff_cfg}")
-            return ff_cfg
-        if ff_cfg and not os.path.exists(ff_cfg):
-            log.warning(f"配置的 FFMPEG_LOCATION 不存在: {ff_cfg}")
+        app_root = get_app_root_dir()
+        bundled = os.path.join(app_root, 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+        if os.path.exists(bundled):
+            log.info(f"使用项目内置ffmpeg: {bundled}")
+            return bundled
 
-        # 内置 ffmpeg 目录
-        try:
-            app_root = get_app_root_dir()
-            bundled = os.path.join(app_root, 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
-            if os.path.exists(bundled):
-                log.info(f"使用项目内置ffmpeg: {bundled}")
-                return bundled
-        except Exception as e:
-            log.debug(f"检测内置 ffmpeg 发生异常: {e}")
-
-        # Windows: 自动下载
-        auto_download = bool((config or {}).get('FFMPEG_AUTO_DOWNLOAD', True))
-        if auto_download and os.name == 'nt':
+        # 不存在则尝试在 Windows 自动下载
+        if os.name == 'nt':
             path = download_ffmpeg_bundled(log)
             if path and os.path.exists(path):
                 log.info(f"已自动下载 ffmpeg: {path}")
                 return path
+            else:
+                log.warning("未能自动下载 ffmpeg，请检查网络或手动放置到 ffmpeg/ 目录")
     except Exception as e:
-        log.debug(f"定位 ffmpeg 异常: {e}")
+        log.debug(f"定位/下载 ffmpeg 异常: {e}")
     return None
 
 
