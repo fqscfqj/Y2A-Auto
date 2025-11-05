@@ -1241,7 +1241,8 @@ def settings():
             'GENERATE_TAGS', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
             'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
-            'SPEECH_RECOGNITION_ENABLED', 'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED'
+            'SPEECH_RECOGNITION_ENABLED', 'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED',
+            'VAD_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1253,7 +1254,9 @@ def settings():
             'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
             'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
             'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
-            'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES'
+            'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 'VAD_SILERO_MIN_SPEECH_MS',
+            'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
+            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S'
         ]
         for field in numeric_fields:
             if field in form_data:
@@ -1276,9 +1279,34 @@ def settings():
                         'SUBTITLE_MAX_WORKERS': 0,
                         'YOUTUBE_DOWNLOAD_THREADS': 4,
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
-                        'LOGIN_LOCKOUT_MINUTES': 15
+                        'LOGIN_LOCKOUT_MINUTES': 15,
+                        'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES': 5,
+                        'VAD_SILERO_MIN_SPEECH_MS': 250,
+                        'VAD_SILERO_MIN_SILENCE_MS': 100,
+                        'VAD_SILERO_MAX_SPEECH_S': 120,
+                        'VAD_SILERO_SPEECH_PAD_MS': 30,
+                        'VAD_MAX_SEGMENT_S': 90
                     }
                     form_data[field] = str(defaults.get(field, 1))  # 转换为str以满足类型要求
+                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+
+        # 处理浮点类型的配置项
+        float_fields = ['VAD_SILERO_THRESHOLD']
+        for field in float_fields:
+            if field in form_data:
+                try:
+                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    original_value = form_data[field]
+                    if str(original_value).strip() == '':
+                        raise ValueError('empty string')
+                    form_data[field] = str(float(original_value))
+                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    float_defaults = {
+                        'VAD_SILERO_THRESHOLD': 0.5
+                    }
+                    form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
         
         # 处理文件上传
@@ -1323,6 +1351,24 @@ def settings():
             logger.info("配置已更新并同步到任务处理器")
         except Exception as e:
             logger.warning(f"同步任务处理器配置失败: {e}")
+
+        # 若启用依赖 FFmpeg 的功能（ASR提取音频、字幕嵌入），尝试自动下载/准备项目内 ffmpeg
+        try:
+            need_ffmpeg = False
+            if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
+            if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
+            if need_ffmpeg:
+                from modules.youtube_handler import find_ffmpeg_location
+                ff_path = find_ffmpeg_location(None, logger)
+                if ff_path and os.path.exists(ff_path):
+                    logger.info(f"FFmpeg 已就绪: {ff_path}")
+                else:
+                    logger.warning("已启用依赖FFmpeg的功能，但未能自动准备 FFmpeg，请检查网络或手动放置到 ffmpeg/ 目录")
+                    flash('已启用依赖FFmpeg的功能，但未能自动准备 FFmpeg，请检查网络或手动放置到 ffmpeg/ 目录', 'warning')
+        except Exception as e:
+            logger.warning(f"自动准备 FFmpeg 失败: {e}")
         
         # 如果YouTube API密钥有更新，同步到监控系统
         if 'YOUTUBE_API_KEY' in form_data:

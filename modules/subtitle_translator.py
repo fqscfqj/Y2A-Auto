@@ -243,6 +243,24 @@ class SubtitleReader:
 class SubtitleWriter:
     """字幕文件输出器"""
     
+    _TRAILING_PUNCTUATION = re.compile(r'[,.，。．]+$')
+
+    @classmethod
+    def _strip_trailing_punctuation(cls, text: str) -> str:
+        """移除行尾的逗号或句号，保留其他标点。"""
+        if not text:
+            return text
+        cleaned_lines: List[str] = []
+        for line in text.split('\n'):
+            stripped_line = line.rstrip()
+            if not stripped_line:
+                cleaned_lines.append(stripped_line)
+                continue
+            # 仅当去除逗号/句号后仍有内容时才执行，避免将省略号等特殊标记清空
+            candidate = cls._TRAILING_PUNCTUATION.sub('', stripped_line)
+            cleaned_lines.append(candidate if candidate.strip() else stripped_line)
+        return '\n'.join(cleaned_lines)
+
     @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
         """写入SRT字幕文件"""
@@ -250,6 +268,7 @@ class SubtitleWriter:
             with open(output_path, 'w', encoding='utf-8') as f:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    text = SubtitleWriter._strip_trailing_punctuation(text)
                     f.write(f"{item.index}\n")
                     f.write(f"{item.time_range}\n")
                     f.write(f"{text}\n\n")
@@ -265,6 +284,7 @@ class SubtitleWriter:
                 f.write("WEBVTT\n\n")
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    text = SubtitleWriter._strip_trailing_punctuation(text)
                     start_time = item.start_time.replace(',', '.')
                     end_time = item.end_time.replace(',', '.')
                     f.write(f"{start_time} --> {end_time}\n")
@@ -285,6 +305,8 @@ class LLMRequester:
         
         # 线程锁，用于线程安全的日志记录
         self._log_lock = Lock()
+        self._batch_counter = 0
+        self._batch_log_interval = 10
     
     def _init_client(self):
         """初始化OpenAI客户端"""
@@ -306,6 +328,8 @@ class LLMRequester:
             return texts
         
         try:
+            self._batch_counter += 1
+            log_as_info = self._should_log_batch(batch_id)
             # 构建翻译提示词
             system_prompt = self._build_structured_system_prompt(target_language)
             user_prompt = self._build_structured_user_prompt(texts)
@@ -315,7 +339,10 @@ class LLMRequester:
             start_time = time.time()
             
             with self._log_lock:
-                self.logger.info(f"开始翻译批次 {batch_id}，包含 {len(texts)} 条字幕")
+                self.logger.log(
+                    logging.INFO if log_as_info else logging.DEBUG,
+                    f"开始翻译批次 {batch_id}，包含 {len(texts)} 条字幕"
+                )
             
             # 使用与ai_enhancer.py相同的API调用方式，添加JSON输出格式
             response = self.client.chat.completions.create(
@@ -331,7 +358,10 @@ class LLMRequester:
             response_time = time.time() - start_time
             
             with self._log_lock:
-                self.logger.info(f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒")
+                self.logger.log(
+                    logging.INFO if log_as_info else logging.DEBUG,
+                    f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒"
+                )
             
             message = response.choices[0].message
             # 优先使用最终答案；缺失时回退到 reasoning_content，并屏蔽 <think>
@@ -347,6 +377,17 @@ class LLMRequester:
                 import traceback
                 self.logger.error(traceback.format_exc())
             return texts  # 返回原文本
+
+    def _should_log_batch(self, batch_id: str) -> bool:
+        """控制批次日志的详细程度，减少日志文件体积。"""
+        try:
+            if batch_id.startswith('repair'):
+                return True
+            if self._batch_counter <= 2:
+                return True
+            return (self._batch_counter % self._batch_log_interval) == 0
+        except Exception:
+            return True
 
     def translate_batch_strict(self, texts: List[str], target_language: str, batch_id: str = "") -> List[str]:
         """严格模式批量翻译：用于补救仍未译的条目，强制全中文输出。"""
