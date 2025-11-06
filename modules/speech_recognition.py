@@ -67,7 +67,7 @@ class SpeechRecognitionConfig:
 
     # VAD settings
     vad_enabled: bool = False
-    vad_provider: str = 'silero'
+    vad_provider: str = 'silero-vad'
     vad_api_url: str = ''
     vad_api_token: str = ''
     vad_threshold: float = 0.5
@@ -328,6 +328,28 @@ class SpeechRecognizer:
                     cues = self._apply_text_processing_to_cues(cues)
 
             # Step 5: Render subtitles
+            # Validate and clamp timestamps to video duration
+            invalid_cues = []
+            for cue in cues:
+                if not isinstance(cue, dict) or 'start' not in cue or 'end' not in cue:
+                    continue
+                try:
+                    start = float(cue['start'])
+                    end = float(cue['end'])
+                    
+                    # Detect timestamps that exceed video duration
+                    if start > total_audio_duration or end > total_audio_duration:
+                        invalid_cues.append(cue)
+                        self.logger.warning(f"检测到超出视频时长的字幕: [{start:.2f}s - {end:.2f}s] > {total_audio_duration:.2f}s")
+                        # Clamp to video duration
+                        cue['start'] = min(start, total_audio_duration)
+                        cue['end'] = min(end, total_audio_duration)
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"字幕时间戳格式错误: {e}")
+            
+            if invalid_cues:
+                self.logger.warning(f"共发现 {len(invalid_cues)} 条超出视频时长的字幕，已自动修正")
+            
             # Ensure cues are ordered by time to avoid jumbled SRT indices
             try:
                 cues = sorted(
@@ -337,6 +359,13 @@ class SpeechRecognizer:
             except Exception:
                 # 如果排序失败，继续使用原顺序
                 pass
+            
+            # Log timestamp range for verification
+            if cues:
+                first_start = float(cues[0].get('start', 0))
+                last_end = float(cues[-1].get('end', 0))
+                self.logger.info(f"字幕时间范围: {first_start:.2f}s - {last_end:.2f}s (视频时长: {total_audio_duration:.2f}s)")
+            
             self.logger.info(f"步骤 5/6: 渲染字幕 (格式: {response_format}, 共 {len(cues)} 个片段)")
             text = self._render_cues(cues, response_format)
             if not text:
@@ -474,11 +503,17 @@ class SpeechRecognizer:
             })
         return cues
 
-    def _convert_response_to_cues(self, resp: Any, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
-        """Normalize Whisper/OpenAI/whisper.cpp style responses into cue list."""
+    def _convert_response_to_cues(self, resp: Any, base_offset_s: float, clip_duration_s: float) -> List[Dict[str, Any]]:
+        """Normalize Whisper/OpenAI/whisper.cpp style responses into cue list.
+        
+        Args:
+            resp: API response object
+            base_offset_s: Time offset of this clip in the original video
+            clip_duration_s: Duration of THIS audio clip (for scale inference)
+        """
         payload_dict = self._as_dict(resp)
         if isinstance(payload_dict, dict):
-            cues = self._normalize_verbose_segments_to_cues(payload_dict, base_offset_s, total_duration_s)
+            cues = self._normalize_verbose_segments_to_cues(payload_dict, base_offset_s, clip_duration_s)
             if cues:
                 return cues
 
@@ -525,11 +560,16 @@ class SpeechRecognizer:
             lines.append("")
         return "\n".join(lines).strip() + "\n"
 
-    def _normalize_verbose_segments_to_cues(self, data: dict, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
+    def _normalize_verbose_segments_to_cues(self, data: dict, base_offset_s: float, clip_duration_s: float) -> List[Dict[str, Any]]:
         """Adapt OpenAI/whisper.cpp verbose_json payloads to cue list.
 
         官方 OpenAI Whisper 与 whisper.cpp 均以秒为单位返回 start/end，但仍保留
         针对兼容实现可能使用毫秒/厘秒的容错缩放，以避免再次出现长度异常的字幕文件。
+        
+        Args:
+            data: Whisper API response as dict
+            base_offset_s: Time offset in the original video (for timestamp adjustment)
+            clip_duration_s: Duration of THIS audio clip (not the whole video)
         """
         segments = data.get('segments') or []
         text_fallback = (data.get('text') or '').strip()
@@ -538,7 +578,7 @@ class SpeechRecognizer:
                 return []
             return [{
                 'start': base_offset_s,
-                'end': base_offset_s + min( (total_duration_s or 0) - base_offset_s, 5.0) if total_duration_s else base_offset_s + 5.0,
+                'end': base_offset_s + min(clip_duration_s or 5.0, 5.0),
                 'text': text_fallback
             }]
 
@@ -551,21 +591,31 @@ class SpeechRecognizer:
                 v = 0.0
             if v > max_end_raw:
                 max_end_raw = v
-        scale = self._infer_time_scale(max_end_raw, total_duration_s)
+        
+        # CRITICAL: Use clip_duration_s for scale inference (not total video duration)
+        scale = self._infer_time_scale(max_end_raw, clip_duration_s)
         if scale != 1.0:
-            self.logger.info(f"检测到转写时间单位需要缩放: x{scale}")
+            self.logger.info(f"检测到转写时间单位需要缩放: x{scale} (片段时长: {clip_duration_s:.1f}s, 最大原始时间戳: {max_end_raw:.1f})")
 
         cues: List[Dict[str, Any]] = []
         for seg in segments:
             try:
-                start = float(seg.get('start', 0.0)) * scale + base_offset_s
-                end = float(seg.get('end', start)) * scale + base_offset_s
+                # Convert segment timestamps and add base offset
+                start_raw = float(seg.get('start', 0.0))
+                end_raw = float(seg.get('end', start_raw))
+                
+                start = start_raw * scale + base_offset_s
+                end = end_raw * scale + base_offset_s
+                
                 text = (seg.get('text') or '').strip()
                 if not text:
                     continue
+                
                 cues.append({'start': max(0.0, start), 'end': max(end, start + 0.01), 'text': text})
-            except Exception:
+            except Exception as e:
+                self.logger.warning(f"处理片段时出错: {e}")
                 continue
+        
         return cues
 
     def _infer_time_scale(self, max_end_raw: float, total_duration_s: float) -> float:
@@ -937,84 +987,119 @@ class SpeechRecognizer:
             return None
 
     def _run_vad_on_audio(self, wav_path: str, total_duration_s: float) -> Optional[List[Tuple[float, float]]]:
-        """调用外部VAD服务（或将来本地实现）；返回片段列表（单位：秒）。"""
+        """调用外部VAD服务（LocalAI silero-vad）；返回片段列表（单位：秒）。
+        
+        LocalAI VAD 端点需要 JSON 格式的 float32 数组，而不是文件上传。
+        """
         if not self.config.vad_api_url:
             self.logger.warning("VAD已启用但未配置API地址，跳过")
             return None
-        sample_rate = 16000
-        channels = 1
-        total_frames = 0
+        
         try:
+            # 读取 WAV 文件并转换为 float32 数组
+            import numpy as np
             with wave.open(wav_path, 'rb') as wf:
-                sample_rate = wf.getframerate() or sample_rate
-                channels = wf.getnchannels() or channels
+                sample_rate = wf.getframerate()
+                channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
                 total_frames = wf.getnframes()
-        except Exception as exc:
-            self.logger.debug(f"读取音频属性失败，将使用默认采样率: {exc}")
-
-        if sample_rate <= 0 or total_frames <= 0:
-            self.logger.warning("VAD前检测到音频帧数异常，跳过VAD")
-            return None
-
-        duration_from_wav = total_frames / float(sample_rate)
-        if duration_from_wav < 0.2:
-            self.logger.warning("音频长度不足0.2秒，跳过VAD")
-            return None
-
-        url = self.config.vad_api_url
-        headers = {}
-        if self.config.vad_api_token:
-            headers['Authorization'] = f"Bearer {self.config.vad_api_token}"
-        fields = {
-            'threshold': str(self.config.vad_threshold),
-            'min_speech_ms': str(self.config.vad_min_speech_ms),
-            'min_silence_ms': str(self.config.vad_min_silence_ms),
-            'max_speech_s': str(self.config.vad_max_speech_s),
-            'speech_pad_ms': str(self.config.vad_speech_pad_ms),
-            'sample_rate': str(int(sample_rate)),
-            'channels': str(int(channels)),
-            'format': 'wav',
-            'duration_ms': str(int(duration_from_wav * 1000))
-        }
-        try:
-            with open(wav_path, 'rb') as f:
-                files = {'audio': (os.path.basename(wav_path), f, 'audio/wav')}
-                self.logger.info(
-                    f"调用VAD接口: {url} (sample_rate={sample_rate}, duration={duration_from_wav:.2f}s)"
-                )
-                resp = requests.post(url, headers=headers, data=fields, files=files, timeout=60)
+                
+                if sample_rate != 16000 or channels != 1:
+                    self.logger.warning(f"VAD要求16kHz单声道，当前: {sample_rate}Hz {channels}声道，跳过VAD")
+                    return None
+                
+                # 读取音频数据
+                audio_bytes = wf.readframes(total_frames)
+            
+            duration_from_wav = total_frames / float(sample_rate)
+            
+            # VAD服务需要至少一定长度的音频
+            min_duration = 0.5  # 至少0.5秒
+            if duration_from_wav < min_duration:
+                self.logger.warning(f"音频长度不足 ({duration_from_wav:.3f}s < {min_duration}s)，跳过VAD")
+                return None
+            
+            # 将 PCM 数据转换为 float32 数组（归一化到 [-1, 1]）
+            if sample_width == 2:  # 16-bit PCM
+                audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                audio_array /= 32768.0  # 归一化到 [-1, 1]
+            elif sample_width == 4:  # 32-bit PCM
+                audio_array = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
+                audio_array /= 2147483648.0
+            else:
+                self.logger.warning(f"不支持的样本宽度: {sample_width} bytes")
+                return None
+            
+            self.logger.info(
+                f"准备调用VAD: {duration_from_wav:.2f}s, {total_frames}帧, 样本范围[{audio_array.min():.3f}, {audio_array.max():.3f}]"
+            )
+            
+            # 构造 JSON 请求
+            url = self.config.vad_api_url
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            if self.config.vad_api_token:
+                headers['Authorization'] = f"Bearer {self.config.vad_api_token}"
+            
+            # LocalAI VAD 需要 model 和 audio 字段
+            vad_model = self.config.vad_provider or 'silero-vad'
+            payload = {
+                'model': vad_model,
+                'audio': audio_array.tolist()
+            }
+            
+            self.logger.info(f"调用VAD接口: {url} (model={vad_model}, samples={len(audio_array)})")
+            
+            resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            
             if resp.status_code != 200:
                 self.logger.warning(f"VAD接口响应非200: {resp.status_code} {resp.text[:200]}")
                 return None
+            
             data = resp.json()
-            segs = data.get('segments') or data.get('result') or []
+            segs = data.get('segments', [])
+            
             if not isinstance(segs, list) or not segs:
+                self.logger.debug("VAD返回空片段列表")
                 return None
-            # 支持多种字段命名
+            
+            # LocalAI 返回的时间已经是秒为单位
             raw_pairs: List[Tuple[float, float]] = []
-            max_end_raw = 0.0
             for s in segs:
-                st = s.get('start_ms', s.get('start', 0))
-                ed = s.get('end_ms', s.get('end', 0))
                 try:
-                    stf = float(st)
-                    edf = float(ed)
+                    start_s = float(s.get('start', 0))
+                    end_s = float(s.get('end', 0))
+                    if end_s > start_s:
+                        raw_pairs.append((start_s, end_s))
                 except Exception:
                     continue
-                max_end_raw = max(max_end_raw, edf)
-                raw_pairs.append((stf, edf))
+            
             if not raw_pairs:
+                self.logger.debug("VAD未返回有效的语音片段")
                 return None
-            # 时间单位判别（假设ms/centisecond/second）
+            
+            self.logger.info(f"VAD检测到 {len(raw_pairs)} 个原始片段")
+            
+            # LocalAI 返回的时间单位应该已经是秒，但为了兼容性还是检查一下
+            max_end_raw = max(end for _, end in raw_pairs)
             scale = self._infer_time_scale(max_end_raw, total_duration_s)
             if scale != 1.0:
                 self.logger.info(f"检测到VAD时间单位需要缩放: x{scale}")
-            pairs_sec = [(a * scale, b * scale) for (a, b) in raw_pairs]
+                pairs_sec = [(a * scale, b * scale) for (a, b) in raw_pairs]
+            else:
+                pairs_sec = raw_pairs
+            
             # Apply VAD constraints (merge gaps, filter short segments, split long segments)
             constrained_segments = self._apply_vad_constraints(pairs_sec)
             return constrained_segments
+        except ImportError:
+            self.logger.error("VAD功能需要numpy库，请安装: pip install numpy")
+            return None
         except Exception as e:
             self.logger.warning(f"VAD请求异常: {e}")
+            import traceback
+            self.logger.debug(traceback.format_exc())
             return None
 
     def _extract_audio_clip(self, wav_path: str, start_s: float, end_s: float) -> Optional[str]:
@@ -1029,14 +1114,33 @@ class SpeechRecognizer:
             self._temp_dirs.append(out_dir)  # Track for cleanup
             out_wav = os.path.join(out_dir, 'clip.wav')
             dur = max(0.01, end_s - start_s)
+            # 将 -ss 和 -t 放在 -i 之前，这样可以更快速准确地定位和裁剪音频
             cmd = [
                 ffmpeg_bin, '-y', '-ss', f"{start_s:.3f}", '-t', f"{dur:.3f}", '-i', wav_path,
-                '-ac', '1', '-ar', '16000', '-f', 'wav', out_wav
+                '-ac', '1', '-ar', '16000', '-acodec', 'pcm_s16le', '-f', 'wav', out_wav
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
             if result.returncode != 0 or not os.path.exists(out_wav):
-                self.logger.warning(f"裁剪音频失败: {result.stderr[:200]}")
+                self.logger.warning(f"裁剪音频失败 (returncode={result.returncode}): {result.stderr[:200]}")
                 return None
+            
+            # 验证裁剪后的音频文件是否有足够的样本
+            try:
+                with wave.open(out_wav, 'rb') as wf:
+                    n_frames = wf.getnframes()
+                    sample_rate = wf.getframerate()
+                    actual_duration = n_frames / sample_rate if sample_rate > 0 else 0.0
+                    
+                    # 检查是否有足够的样本（至少0.1秒）
+                    if actual_duration < 0.1:
+                        self.logger.warning(f"裁剪后的音频时长不足 ({actual_duration:.3f}s < 0.1s)，跳过此片段")
+                        return None
+                    
+                    self.logger.debug(f"成功裁剪音频: {start_s:.2f}s-{end_s:.2f}s, 实际时长: {actual_duration:.2f}s, 样本数: {n_frames}")
+            except Exception as e:
+                self.logger.warning(f"验证裁剪音频失败: {e}")
+                return None
+            
             return out_wav
         except Exception as e:
             self.logger.warning(f"裁剪音频异常: {e}")
@@ -1057,8 +1161,19 @@ class SpeechRecognizer:
         """Transcribe a single audio clip with retry logic.
         
         Strategy: Use language parameter, prompt, and retry on failure.
+        
+        Args:
+            wav_path: Path to audio file to transcribe
+            base_offset_s: Time offset of this clip in the original video (for timestamp adjustment)
+            total_duration_s: Total duration of the ENTIRE video (not the clip)
         """
         model_name = self.config.model_name or 'whisper-1'
+        
+        # Get the duration of THIS clip (not the whole video)
+        clip_duration_s = self._probe_media_duration(wav_path)
+        if clip_duration_s is None:
+            self.logger.warning(f"无法获取音频片段时长 ({base_offset_s:.2f}s 起)，使用估计值")
+            clip_duration_s = 30.0  # Fallback estimate
         
         for attempt in range(self.config.max_retries):
             try:
@@ -1084,10 +1199,16 @@ class SpeechRecognizer:
                     else:
                         resp = self.client.audio.transcriptions.create(**params)
                 
-                cues = self._convert_response_to_cues(resp, base_offset_s, total_duration_s)
+                # CRITICAL: Pass clip_duration_s for time scale inference, not total_duration_s
+                cues = self._convert_response_to_cues(resp, base_offset_s, clip_duration_s)
                 if not cues:
                     self.logger.warning(f"分段转写响应为空 ({base_offset_s:.2f}s 起)")
                     return []
+                
+                # Clamp timestamps to video bounds (prevent overflow beyond total duration)
+                for cue in cues:
+                    cue['start'] = min(cue['start'], total_duration_s)
+                    cue['end'] = min(cue['end'], total_duration_s)
                 
                 # Apply text normalization and splitting
                 return self._apply_text_processing_to_cues(cues)
@@ -1127,7 +1248,7 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
             min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
             vad_enabled=bool(app_config.get('VAD_ENABLED', False)),
-            vad_provider=(app_config.get('VAD_PROVIDER') or 'silero'),
+            vad_provider=(app_config.get('VAD_PROVIDER') or 'silero-vad'),
             vad_api_url=app_config.get('VAD_API_URL') or '',
             vad_api_token=app_config.get('VAD_API_TOKEN') or '',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
