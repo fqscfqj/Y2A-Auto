@@ -50,35 +50,68 @@
 ```text
 Y2A-Auto/
 ├─ app.py                         # Flask Web 入口
+├─ wsgi.py                        # WSGI 入口（可选部署用）
 ├─ requirements.txt               # 依赖列表
 ├─ Dockerfile                     # Docker 构建
 ├─ docker-compose.yml             # 生产/拉取镜像运行
 ├─ docker-compose-build.yml       # 本地构建镜像运行
 ├─ Makefile                       # 常用 Docker 管理命令
+├─ README.md                      # 项目说明（此文件）
+├─ LICENSE                        # 许可证
 ├─ acfunid/                       # AcFun 分区映射
 │  └─ id_mapping.json
-├─ modules/                       # 核心后端模块
-│  ├─ youtube_handler.py          # YouTube 下载/元数据/封面/字幕
-│  ├─ youtube_monitor.py          # YouTube 监控与定时任务
-│  ├─ acfun_uploader.py           # AcFun 上传
-│  ├─ subtitle_translator.py      # 字幕翻译与嵌入
-│  ├─ ai_enhancer.py              # 标题/描述/标签 AI 生成
-│  ├─ content_moderator.py        # 内容审核
-│  ├─ speech_recognition.py       # 语音转写（Whisper/OpenAI 兼容）
-│  ├─ task_manager.py             # 任务编排、并发与转码
-│  ├─ config_manager.py           # 配置读写与默认项
-│  └─ utils.py                    # 工具函数
-├─ templates/                     # 前端页面（Jinja2）
-├─ static/                        # 前端静态资源（CSS/JS/图片）
+├─ build-tools/                   # 打包/构建相关脚本
+│  ├─ build_exe.py
+│  ├─ build.bat
+│  ├─ README.md
+│  └─ setup_app.py
 ├─ config/                        # 应用配置（首次运行生成）
 │  └─ config.json
-├─ cookies/                       # Cookie（自备：yt_cookies.txt、ac_cookies.txt）
-├─ db/                            # SQLite 数据库
-├─ downloads/                     # 任务产物（视频/封面/字幕/元数据）
-├─ logs/                          # 运行与任务日志（task_xxx.log）
-├─ fonts/                         # 字幕字体（思源黑体变体）
-├─ temp/                          # 临时目录
-└─ build-tools/                   # 打包相关脚本
+├─ cookies/                       # Cookie（需自行准备）
+│  ├─ ac_cookies.txt
+│  └─ yt_cookies.txt
+├─ db/                            # SQLite 数据库与持久化数据
+├─ downloads/                     # 任务产物（每任务一个子目录）
+├─ ffmpeg/                        # 可放置自定义 ffmpeg 二进制或脚本
+├─ fonts/                         # 字体（供字幕嵌入使用）
+├─ logs/                          # 运行与任务日志
+├─ modules/                       # 核心后端模块（应用逻辑）
+│  ├─ __init__.py
+│  ├─ acfun_uploader.py
+│  ├─ ai_enhancer.py
+│  ├─ config_manager.py
+│  ├─ content_moderator.py
+│  ├─ speech_recognition.py
+│  ├─ subtitle_translator.py
+│  ├─ task_manager.py
+│  ├─ youtube_handler.py
+│  ├─ youtube_monitor.py
+│  └─ utils.py
+├─ static/                        # 前端静态资源（CSS/JS/图标/第三方库）
+│  ├─ css/
+│  │  └─ style.css
+│  ├─ img/
+│  ├─ js/
+│  │  └─ main.js
+│  └─ lib/
+│     └─ bootstrap/
+│        ├─ bootstrap.bundle.min.js
+│        ├─ bootstrap.min.css
+│        └─ jquery.min.js
+│     └─ icons/
+│        └─ bootstrap-icons.css
+├─ temp/                          # 临时文件与中间产物
+└─ templates/                     # Jinja2 模板
+  ├─ base.html
+  ├─ edit_task.html
+  ├─ index.html
+  ├─ login.html
+  ├─ manual_review.html
+  ├─ settings.html
+  ├─ tasks.html
+  ├─ youtube_monitor_config.html
+  ├─ youtube_monitor_history.html
+  └─ youtube_monitor.html
 ```
 
 ## 快速开始
