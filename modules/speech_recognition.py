@@ -325,14 +325,7 @@ class SpeechRecognizer:
                         return None
                     
                     # Apply text normalization and splitting for whole transcription
-                    normalized_cues = []
-                    for cue in cues:
-                        cue['text'] = self._normalize_subtitle_text(cue['text'])
-                        if not cue['text']:
-                            continue
-                        split_cues = self._split_cue_by_text_length(cue)
-                        normalized_cues.extend(split_cues)
-                    cues = normalized_cues
+                    cues = self._apply_text_processing_to_cues(cues)
 
             # Step 5: Render subtitles
             # Ensure cues are ordered by time to avoid jumbled SRT indices
@@ -344,7 +337,7 @@ class SpeechRecognizer:
             except Exception:
                 # 如果排序失败，继续使用原顺序
                 pass
-            self.logger.info(f"步骤 4/5: 渲染字幕 (格式: {response_format}, 共 {len(cues)} 个片段)")
+            self.logger.info(f"步骤 5/6: 渲染字幕 (格式: {response_format}, 共 {len(cues)} 个片段)")
             text = self._render_cues(cues, response_format)
             if not text:
                 self.logger.error("无法从转写结果渲染字幕")
@@ -354,7 +347,7 @@ class SpeechRecognizer:
                 out.write(text)
 
             # Step 6: Quality check
-            self.logger.info("步骤 5/5: 质量检查")
+            self.logger.info("步骤 6/6: 质量检查")
             try:
                 if self.config.min_lines_enabled:
                     cue_count = self._count_subtitle_cues(output_path, response_format)
@@ -901,6 +894,31 @@ class SpeechRecognizer:
         
         return result_cues if result_cues else [cue]
 
+    def _apply_text_processing_to_cues(self, cues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply text normalization and splitting to a list of cues.
+        
+        This helper method reduces code duplication between whole-audio transcription
+        and segmented transcription paths.
+        
+        Args:
+            cues: List of cue dictionaries with 'start', 'end', 'text' keys
+            
+        Returns:
+            Processed list of cues with normalized and split text
+        """
+        normalized_cues = []
+        for cue in cues:
+            # Normalize text
+            cue['text'] = self._normalize_subtitle_text(cue['text'])
+            if not cue['text']:
+                continue
+            
+            # Split long cues
+            split_cues = self._split_cue_by_text_length(cue)
+            normalized_cues.extend(split_cues)
+        
+        return normalized_cues
+
     def _probe_media_duration(self, media_path: str) -> Optional[float]:
         """使用ffprobe获取音/视频时长（秒）。"""
         try:
@@ -1072,18 +1090,7 @@ class SpeechRecognizer:
                     return []
                 
                 # Apply text normalization and splitting
-                normalized_cues = []
-                for cue in cues:
-                    # Normalize text
-                    cue['text'] = self._normalize_subtitle_text(cue['text'])
-                    if not cue['text']:
-                        continue
-                    
-                    # Split long cues
-                    split_cues = self._split_cue_by_text_length(cue)
-                    normalized_cues.extend(split_cues)
-                
-                return normalized_cues if normalized_cues else cues
+                return self._apply_text_processing_to_cues(cues)
             except Exception as e:
                 self.logger.warning(f"分段转写失败 (尝试 {attempt + 1}/{self.config.max_retries}, {base_offset_s:.2f}s): {e}")
                 if attempt < self.config.max_retries - 1:
