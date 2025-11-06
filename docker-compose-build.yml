@@ -18,3 +18,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
+      - GUNICORN_WORKERS=2
+      - GUNICORN_THREADS=4
+      - GUNICORN_LOG_LEVEL=info
+    # 确保使用 Gunicorn 生产服务器
+    command: ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]

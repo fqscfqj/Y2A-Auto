@@ -85,9 +85,11 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
 
 # 确保本地包在PATH中
 ENV PATH=/home/y2a/.local/bin:$PATH
-# 避免引用未定义变量的告警，直接补充常见站点路径
+# 避免引用未定义变量的告警,直接补充常见站点路径
 ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
-ENV GUNICORN_CMD_ARGS="--workers 1 --threads 4 --timeout 120 --log-level info --access-logfile - --error-logfile -"
+
+# Gunicorn 配置环境变量
+ENV GUNICORN_CMD_ARGS="--workers 2 --threads 4 --worker-class gthread --timeout 120 --graceful-timeout 30 --keepalive 5 --log-level info --access-logfile - --error-logfile - --capture-output"
 
 # 切换到非root用户
 USER y2a
@@ -105,5 +107,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 # 设置入口点
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-# 启动应用
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "wsgi:app"] 
+# 使用 Gunicorn 配置文件启动应用
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"] 
