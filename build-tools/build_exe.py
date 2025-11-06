@@ -144,6 +144,7 @@ def create_spec_file():
 hiddenimports = [
     # 核心框架
     'flask',
+    'waitress',
     'sqlite3',
     'yt_dlp',
     'openai',
