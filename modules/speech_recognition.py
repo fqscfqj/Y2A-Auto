@@ -6,6 +6,8 @@ import tempfile
 import subprocess
 import logging
 import wave
+import time
+import shutil
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Any
 import re
@@ -999,7 +1001,6 @@ class SpeechRecognizer:
 
     def _cleanup_temp_files(self):
         """Clean up all temporary directories created during processing."""
-        import shutil
         for temp_dir in self._temp_dirs:
             try:
                 if os.path.exists(temp_dir):
@@ -1045,27 +1046,25 @@ class SpeechRecognizer:
                 cues = self._convert_response_to_cues(resp, base_offset_s, total_duration_s)
                 if not cues:
                     self.logger.warning(f"分段转写响应为空 ({base_offset_s:.2f}s 起)")
-                else:
-                    # Apply text normalization and splitting
-                    normalized_cues = []
-                    for cue in cues:
-                        # Normalize text
-                        cue['text'] = self._normalize_subtitle_text(cue['text'])
-                        if not cue['text']:
-                            continue
-                        
-                        # Split long cues
-                        split_cues = self._split_cue_by_text_length(cue)
-                        normalized_cues.extend(split_cues)
-                    
-                    return normalized_cues
+                    return []
                 
-                return cues
+                # Apply text normalization and splitting
+                normalized_cues = []
+                for cue in cues:
+                    # Normalize text
+                    cue['text'] = self._normalize_subtitle_text(cue['text'])
+                    if not cue['text']:
+                        continue
+                    
+                    # Split long cues
+                    split_cues = self._split_cue_by_text_length(cue)
+                    normalized_cues.extend(split_cues)
+                
+                return normalized_cues if normalized_cues else cues
             except Exception as e:
                 self.logger.warning(f"分段转写失败 (尝试 {attempt + 1}/{self.config.max_retries}, {base_offset_s:.2f}s): {e}")
                 if attempt < self.config.max_retries - 1:
                     # Exponential backoff
-                    import time
                     delay = self.config.retry_delay_s * (2 ** attempt)
                     self.logger.info(f"等待 {delay:.1f}s 后重试...")
                     time.sleep(delay)
