@@ -88,7 +88,7 @@ def check_dependencies():
     """检查运行时依赖"""
     required_modules = [
         'flask', 'yt_dlp', 'requests', 'sqlite3',
-        'openai', 'apscheduler'
+        'openai', 'apscheduler', 'waitress'
     ]
     
     missing_modules = []
@@ -131,31 +131,48 @@ def check_ffmpeg():
 
 def start_application(app_path, is_frozen):
     """启动主应用"""
+    app_module = None
     try:
         # 导入主应用模块
-        import app
-        
+        import app as app_module
+
         print("✓ 主应用模块加载成功")
-        
-        # 配置Flask应用
-        app.app.config['DEBUG'] = False
-        app.app.config['TEMPLATES_AUTO_RELOAD'] = False
-        
+
+        flask_app = app_module.initialize_runtime()
+        flask_app.config['DEBUG'] = False
+        flask_app.config['TEMPLATES_AUTO_RELOAD'] = False
+
+        def _safe_int(value, default):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        host = os.environ.get("Y2A_HOST", "0.0.0.0") or "0.0.0.0"
+        port = _safe_int(os.environ.get("Y2A_PORT", 5000), 5000)
+        threads = max(1, _safe_int(os.environ.get("Y2A_WAITRESS_THREADS", 8), 8))
+
         print("启动Web服务...")
         print("=" * 50)
-        print("🌐 Web界面地址: http://localhost:5000")
+        print(f"🌐 Web界面地址: http://{host}:{port}")
         print("📝 使用说明: README.txt")
         print("📋 按 Ctrl+C 停止程序")
         print("=" * 50)
-        
-        # 启动Flask应用
-        app.app.run(
-            host='0.0.0.0', 
-            port=5000, 
-            debug=False,
-            use_reloader=False,
-            threaded=True
-        )
+
+        try:
+            from waitress import serve
+        except ImportError:
+            print("⚠ 未检测到 Waitress，回退到 Flask 开发服务器（仅适用于调试）。")
+            flask_app.run(
+                host=host,
+                port=port,
+                debug=False,
+                use_reloader=False,
+                threaded=True
+            )
+        else:
+            print(f"🚀 使用 Waitress WSGI 服务器启动，线程数: {threads}")
+            serve(flask_app, host=host, port=port, threads=threads)
         
     except KeyboardInterrupt:
         print("\n程序被用户停止")
@@ -178,6 +195,13 @@ def start_application(app_path, is_frozen):
         
         input("\n按回车键退出...")
         sys.exit(1)
+    finally:
+        if app_module is not None:
+            try:
+                app_module.shutdown_runtime()
+            except Exception as e:
+                # 忽略关闭时的异常，但记录错误以便调试
+                print(f"⚠ 关闭应用时发生异常: {e}")
 
 def main():
     """主函数"""
