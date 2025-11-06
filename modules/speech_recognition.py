@@ -111,6 +111,7 @@ class SpeechRecognizer:
         self.task_id = task_id or 'unknown'
         self.logger = _setup_task_logger(self.task_id)
         self.client: Any = None  # OpenAI/Whisper client for transcription
+        self._temp_dirs: List[str] = []  # Track temp directories for cleanup
         self._init_client()
 
     def _init_client(self):
@@ -147,6 +148,7 @@ class SpeechRecognizer:
                 self.logger.debug(f"定位 ffmpeg 失败，退回系统命令: {_e}")
 
             tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_')
+            self._temp_dirs.append(tmp_dir)  # Track for cleanup
             audio_path = os.path.join(tmp_dir, 'audio.wav')
             cmd = [
                 ffmpeg_bin, '-y',
@@ -365,6 +367,9 @@ class SpeechRecognizer:
             import traceback
             self.logger.error(f"详细错误: {traceback.format_exc()}")
             return None
+        finally:
+            # Clean up temporary files
+            self._cleanup_temp_files()
 
     # ---- Helpers for OpenAI response normalization and rendering ----
     def _as_dict(self, resp) -> Optional[dict]:
@@ -968,11 +973,15 @@ class SpeechRecognizer:
             return None
 
     def _extract_audio_clip(self, wav_path: str, start_s: float, end_s: float) -> Optional[str]:
-        """用ffmpeg从wav中裁剪一段到临时wav，返回路径。"""
+        """用ffmpeg从wav中裁剪一段到临时wav，返回路径。
+        
+        Note: Caller is responsible for cleanup via _cleanup_temp_files() or use TemporaryDirectory context manager.
+        """
         try:
             from .youtube_handler import find_ffmpeg_location
             ffmpeg_bin = find_ffmpeg_location(logger=self.logger) or 'ffmpeg'
             out_dir = tempfile.mkdtemp(prefix='y2a_clip_')
+            self._temp_dirs.append(out_dir)  # Track for cleanup
             out_wav = os.path.join(out_dir, 'clip.wav')
             dur = max(0.01, end_s - start_s)
             cmd = [
@@ -987,6 +996,18 @@ class SpeechRecognizer:
         except Exception as e:
             self.logger.warning(f"裁剪音频异常: {e}")
             return None
+
+    def _cleanup_temp_files(self):
+        """Clean up all temporary directories created during processing."""
+        import shutil
+        for temp_dir in self._temp_dirs:
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    self.logger.debug(f"清理临时目录: {temp_dir}")
+            except Exception as e:
+                self.logger.warning(f"清理临时目录失败 {temp_dir}: {e}")
+        self._temp_dirs.clear()
 
     def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
         """Transcribe a single audio clip with retry logic.
