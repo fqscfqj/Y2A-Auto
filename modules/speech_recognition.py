@@ -85,13 +85,12 @@ class SpeechRecognitionConfig:
     vad_merge_gap_s: float = 0.25  # Merge segments if gap < this value (0.20-0.25s)
     vad_min_segment_s: float = 1.0  # Minimum segment duration (0.8-1.2s)
     vad_max_segment_s_for_split: float = 8.0  # Max segment before secondary splitting (8-10s)
-    vad_silence_threshold_s: float = 0.3  # Silence duration for secondary splitting
 
     # Transcription settings
     language: str = ''  # Force language (e.g., 'en', 'zh', 'ja'), empty = auto-detect
     prompt: str = ''  # Optional prompt to guide transcription
     translate: bool = False  # Translate to English
-    max_workers: int = 3  # Parallel transcription workers (2-4 recommended)
+    max_workers: int = 3  # Reserved for future parallel processing (currently sequential)
 
     # Text post-processing settings
     max_subtitle_line_length: int = 42  # Max characters per line
@@ -696,23 +695,30 @@ class SpeechRecognizer:
         # Step 2: Filter out segments shorter than minimum duration
         min_dur = self.config.vad_min_segment_s
         filtered: List[List[float]] = []
-        for i, seg in enumerate(merged):
+        i = 0
+        while i < len(merged):
+            seg = merged[i]
             duration = seg[1] - seg[0]
             if duration < min_dur:
                 # Try to merge with adjacent segment
-                if i > 0 and filtered:
+                if filtered:
                     # Merge with previous
                     filtered[-1][1] = seg[1]
                     self.logger.debug(f"短段合并到前段: {duration:.2f}s < {min_dur:.2f}s")
                 elif i < len(merged) - 1:
-                    # Merge with next (will be handled in next iteration)
-                    merged[i + 1][0] = seg[0]
+                    # Merge with next by extending current segment
+                    next_seg = merged[i + 1]
+                    merged[i + 1] = [seg[0], next_seg[1]]
                     self.logger.debug(f"短段合并到后段: {duration:.2f}s < {min_dur:.2f}s")
+                    # Skip current segment, it's merged into next
+                    i += 1
+                    continue
                 else:
                     # Keep it anyway if it's the only segment
                     filtered.append(seg)
             else:
                 filtered.append(seg)
+            i += 1
         
         # Step 3: Split long segments
         # Note: Secondary splitting at silence points would require re-analyzing audio
@@ -753,8 +759,8 @@ class SpeechRecognizer:
         
         # Normalize punctuation if enabled
         if self.config.normalize_punctuation:
-            # Ensure single space after punctuation
-            text = re.sub(r'([.!?,:;])\s*', r'\1 ', text)
+            # Ensure single space after punctuation (only when followed by non-whitespace)
+            text = re.sub(r'([.!?,:;])(?=\S)', r'\1 ', text)
             text = re.sub(r'\s+', ' ', text).strip()
         
         # Filter filler words if enabled
@@ -830,7 +836,19 @@ class SpeechRecognizer:
         
         # Split text into sentences/phrases
         sentences = re.split(r'([.!?。！？]+\s*)', text)
-        sentences = [''.join(sentences[i:i+2]) for i in range(0, len(sentences), 2)]
+        # Remove empty strings from split result
+        sentences = [s for s in sentences if s.strip()]
+        # Join pairs of (sentence, punctuation), handle odd-length case
+        joined_sentences = []
+        i = 0
+        while i < len(sentences):
+            if i + 1 < len(sentences):
+                joined_sentences.append(sentences[i] + sentences[i+1])
+                i += 2
+            else:
+                joined_sentences.append(sentences[i])
+                i += 1
+        sentences = joined_sentences
         
         # Group sentences into cues
         result_cues: List[Dict[str, Any]] = []
@@ -838,7 +856,6 @@ class SpeechRecognizer:
         start_time = cue['start']
         duration = cue['end'] - cue['start']
         total_chars = len(text)
-        chars_processed = 0
         
         for sentence in sentences:
             sentence = sentence.strip()
@@ -860,7 +877,6 @@ class SpeechRecognizer:
                     'text': current_text
                 })
                 
-                chars_processed += chars_in_cue
                 start_time = end_time
                 current_text = sentence
             else:
@@ -1035,13 +1051,11 @@ class SpeechRecognizer:
                     if self.config.prompt:
                         params['prompt'] = self.config.prompt
                     
-                    # Add translate flag if enabled
+                    # Use translation endpoint if translate is enabled
                     if self.config.translate:
-                        # Note: OpenAI API uses 'translate' endpoint separately
-                        # For transcribe with translation, we'd use a different endpoint
-                        pass
-                    
-                    resp = self.client.audio.transcriptions.create(**params)
+                        resp = self.client.audio.translations.create(**params)
+                    else:
+                        resp = self.client.audio.transcriptions.create(**params)
                 
                 cues = self._convert_response_to_cues(resp, base_offset_s, total_duration_s)
                 if not cues:
@@ -1113,7 +1127,6 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.25) or 0.25),
             vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 1.0) or 1.0),
             vad_max_segment_s_for_split=float(app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 8.0) or 8.0),
-            vad_silence_threshold_s=float(app_config.get('VAD_SILENCE_THRESHOLD_S', 0.3) or 0.3),
             # Transcription settings
             language=app_config.get('WHISPER_LANGUAGE') or '',
             prompt=app_config.get('WHISPER_PROMPT') or '',
