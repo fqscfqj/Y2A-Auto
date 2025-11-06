@@ -101,6 +101,28 @@ DEFAULT_CONFIG = {
     "VAD_SILERO_MAX_SPEECH_S": 120,
     "VAD_SILERO_SPEECH_PAD_MS": 30,
     "VAD_MAX_SEGMENT_S": 90,
+    # 音频分片策略（针对长音频）
+    "AUDIO_CHUNK_WINDOW_S": 25.0,  # 固定窗口大小（20-30s推荐）
+    "AUDIO_CHUNK_OVERLAP_S": 0.2,  # 重叠时间确保连续性
+    # VAD后处理约束（控制字幕粒度）
+    "VAD_MERGE_GAP_S": 0.25,  # 合并间隙小于此值的片段（0.20-0.25s）
+    "VAD_MIN_SEGMENT_S": 1.0,  # 最短片段时长（0.8-1.2s）
+    "VAD_MAX_SEGMENT_S_FOR_SPLIT": 8.0,  # 超过此时长需二次切分（8-10s）
+    "VAD_SILENCE_THRESHOLD_S": 0.3,  # 用于二次切分的静音阈值
+    # 转写参数
+    "WHISPER_LANGUAGE": "",  # 强制语言（如 en, zh, ja），空=自动检测
+    "WHISPER_PROMPT": "",  # 转写提示（引导生成，减少幻觉）
+    "WHISPER_TRANSLATE": False,  # 是否翻译为英文
+    "WHISPER_MAX_WORKERS": 3,  # 并行转写线程数（2-4推荐）
+    # 文本后处理
+    "SUBTITLE_MAX_LINE_LENGTH": 42,  # 每行最大字符数
+    "SUBTITLE_MAX_LINES": 2,  # 每个字幕最多行数
+    "SUBTITLE_NORMALIZE_PUNCTUATION": True,  # 标准化标点
+    "SUBTITLE_FILTER_FILLER_WORDS": False,  # 过滤填充词（um, uh等）
+    # 重试与回退策略
+    "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
+    "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
+    "WHISPER_FALLBACK_TO_FIXED_CHUNKS": True,  # VAD失败时回退到固定切分
 }
 
 CONFIG_FILE = "config.json"
