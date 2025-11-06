@@ -199,8 +199,9 @@ def start_application(app_path, is_frozen):
         if app_module is not None:
             try:
                 app_module.shutdown_runtime()
-            except Exception:
-                pass
+            except Exception as e:
+                # 忽略关闭时的异常，但记录错误以便调试
+                print(f"⚠ 关闭应用时发生异常: {e}")
 
 def main():
     """主函数"""
