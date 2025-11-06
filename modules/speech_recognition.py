@@ -335,6 +335,15 @@ class SpeechRecognizer:
                     cues = normalized_cues
 
             # Step 5: Render subtitles
+            # Ensure cues are ordered by time to avoid jumbled SRT indices
+            try:
+                cues = sorted(
+                    [c for c in cues if isinstance(c, dict) and 'start' in c and 'end' in c],
+                    key=lambda x: (float(x.get('start', 0.0)), float(x.get('end', 0.0)))
+                )
+            except Exception:
+                # 如果排序失败，继续使用原顺序
+                pass
             self.logger.info(f"步骤 4/5: 渲染字幕 (格式: {response_format}, 共 {len(cues)} 个片段)")
             text = self._render_cues(cues, response_format)
             if not text:
