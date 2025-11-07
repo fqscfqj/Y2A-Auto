@@ -86,13 +86,9 @@ DEFAULT_CONFIG = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
-    # Whisper 语言检测专用（已废弃；现已与转写使用同一配置）
-    "WHISPER_DETECT_API_KEY": "",
-    "WHISPER_DETECT_BASE_URL": "",
-    "WHISPER_DETECT_MODEL_NAME": "",
     # 语音活动检测（VAD）
     "VAD_ENABLED": False,
-    "VAD_PROVIDER": "silero",
+    "VAD_PROVIDER": "silero-vad",
     "VAD_API_URL": "http://localhost:8080/vad",
     "VAD_API_TOKEN": "",
     "VAD_SILERO_THRESHOLD": 0.5,
