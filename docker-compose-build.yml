@@ -2,6 +2,7 @@ services:
   app:
     build:
       context: .
+      # dockerfile: Dockerfile.nobuildkit
       dockerfile: Dockerfile
     image: y2a-auto:local
     container_name: y2a-auto
