@@ -1,0 +1,96 @@
+# 多阶段构建（兼容无 BuildKit 构建器）
+FROM python:3.11-slim AS builder
+
+# 设置工作目录
+WORKDIR /app
+
+# 安装构建依赖（不使用 BuildKit 的 --mount 语法）
+ENV DEBIAN_FRONTEND=noninteractive
+RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
+    && dpkg --configure -a || true \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && apt-get clean
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装 Python 依赖到本地用户目录（不使用缓存挂载）
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN pip install --user --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+
+# 验证 yt-dlp 安装
+RUN /root/.local/bin/yt-dlp --version
+
+# 运行阶段
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装运行时依赖（不使用 BuildKit 的 --mount 语法）
+ENV DEBIAN_FRONTEND=noninteractive
+RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock || true \
+    && dpkg --configure -a || true \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        curl \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+    && apt-get clean \
+    && useradd --create-home --shell /bin/bash y2a
+
+# 从构建阶段复制 Python 包
+COPY --from=builder /root/.local /home/y2a/.local
+
+# 复制应用代码
+COPY --chown=y2a:y2a . .
+
+# 创建必要的目录并设置权限
+RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \
+    && mkdir -p /app/ffmpeg \
+    && ln -sf /usr/bin/ffmpeg /app/ffmpeg/ffmpeg || true \
+    && ln -sf /usr/bin/ffprobe /app/ffmpeg/ffprobe || true \
+    && chown -R y2a:y2a /app \
+    && chown -R y2a:y2a /home/y2a/.local \
+    && chmod +x /home/y2a/.local/bin/* 2>/dev/null || true \
+    && chmod 755 /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp
+
+# 启动脚本
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Y2A-Auto Docker 容器启动中..."\n\
+export PYTHONUNBUFFERED=1\n\
+export PYTHONIOENCODING=utf-8\n\
+\n\
+# 确保目录权限\n\
+for dir in /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp; do\n\
+    [ -d "$dir" ] || mkdir -p "$dir"\n\
+    [ -w "$dir" ] || chmod 755 "$dir" 2>/dev/null || true\n\
+done\n\
+\n\
+echo "🎯 启动 Y2A-Auto 应用..."\n\
+exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# PATH 与 PYTHONPATH
+ENV PATH=/home/y2a/.local/bin:$PATH
+ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
+
+# 切换到非 root 用户
+USER y2a
+
+# 验证 yt-dlp 在运行阶段可用
+RUN yt-dlp --version
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:5000/ || exit 1
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["python", "app.py"]
