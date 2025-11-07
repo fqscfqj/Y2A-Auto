@@ -50,7 +50,6 @@
 ```text
 Y2A-Auto/
 ├─ app.py                         # Flask Web 入口
-├─ wsgi.py                        # WSGI 入口（可选部署用）
 ├─ requirements.txt               # 依赖列表
 ├─ Dockerfile                     # Docker 构建
 ├─ docker-compose.yml             # 生产/拉取镜像运行
