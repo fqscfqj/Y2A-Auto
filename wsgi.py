@@ -1,13 +1,11 @@
-"""WSGI entrypoint for production deployments.
+"""
+Deprecated stub: WSGI entry is no longer supported by default.
 
-This module exposes a pre-initialised Flask application instance that
-production-grade WSGI servers (e.g. Gunicorn, Waitress) can import.
+This module intentionally raises at import time to prevent accidental
+use in server deployments. Please start the app via `python app.py`
+or Docker `CMD ["python", "app.py"]`.
 """
 
-from app import initialize_runtime
-
-# Gunicorn and other WSGI servers look for a module-level variable named
-# ``app`` by default. ``initialize_runtime`` makes sure all background
-# services, schedulers, and configuration are ready before serving
-# requests.
-app = initialize_runtime()
+raise RuntimeError(
+	"WSGI entry has been removed. Start the application with 'python app.py' instead."
+)

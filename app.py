@@ -8,8 +8,7 @@ import uuid
 import shutil
 import time
 import datetime
-import atexit
-from threading import Lock
+
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
@@ -26,16 +25,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
-
-# 运行时状态，用于确保初始化逻辑在WSGI环境中只执行一次
-_runtime_lock = Lock()
-_runtime_state = {
-    "initialized": False,
-    "log_cleanup_scheduler": None,
-    "download_cleanup_scheduler": None,
-    "task_processor_shutdown": None,
-    "config": None,
-}
 # 登录安全状态存储
 def _get_security_state_path():
     try:
@@ -1973,103 +1962,7 @@ def schedule_download_cleanup(config=None):
         return None
 
 
-def initialize_runtime():
-    """初始化应用运行时环境并返回Flask应用实例"""
-    if _runtime_state["initialized"]:
-        return app
 
-    with _runtime_lock:
-        if _runtime_state["initialized"]:
-            return app
-
-        logger.info("Y2A-Auto 服务初始化中...")
-
-        # 初始化静态资源和配置
-        init_id_mapping()
-
-        config = load_config()
-        app.config['Y2A_SETTINGS'] = config
-        configure_app(app, config)
-
-        try:
-            from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
-
-            get_global_task_processor(config)
-            _runtime_state['task_processor_shutdown'] = shutdown_global_task_processor
-            logger.info("全局任务处理器已初始化")
-        except Exception as exc:
-            logger.error(f"初始化任务处理器失败: {exc}")
-            raise
-
-        # 自动启动待处理任务
-        if config.get('AUTO_MODE_ENABLED', False):
-            try:
-                auto_start_pending_tasks(config)
-            except Exception as exc:
-                logger.error(f"自动启动pending任务失败: {exc}")
-
-        # 初始化YouTube监控系统（如果配置了API KEY）
-        if config.get('YOUTUBE_API_KEY'):
-            try:
-                youtube_monitor.set_api_key(config['YOUTUBE_API_KEY'])
-                youtube_monitor.start_all_schedules()
-                logger.info("YouTube监控系统已初始化")
-            except Exception as exc:
-                logger.error(f"初始化YouTube监控系统失败: {exc}")
-        else:
-            logger.info("未提供YouTube API KEY，跳过监控系统初始化")
-
-        # 定时任务
-        _runtime_state['log_cleanup_scheduler'] = schedule_log_cleanup(config)
-        _runtime_state['download_cleanup_scheduler'] = schedule_download_cleanup(config)
-
-        _runtime_state['config'] = config
-        _runtime_state['initialized'] = True
-
-        logger.info("Y2A-Auto 服务初始化完成")
-
-    return app
-
-
-def shutdown_runtime():
-    """清理运行时资源"""
-    with _runtime_lock:
-        if not _runtime_state["initialized"]:
-            return
-
-        logger.info("Y2A-Auto 服务正在关闭，开始清理资源")
-
-        try:
-            youtube_monitor.stop_all_schedules()
-        except Exception as exc:
-            logger.warning(f"停止YouTube监控调度失败: {exc}")
-
-        for key in ('log_cleanup_scheduler', 'download_cleanup_scheduler'):
-            scheduler = _runtime_state.get(key)
-            if scheduler:
-                try:
-                    scheduler.shutdown()
-                except Exception as exc:
-                    logger.warning(f"关闭调度器 {key} 失败: {exc}")
-                finally:
-                    _runtime_state[key] = None
-
-        shutdown_fn = _runtime_state.get('task_processor_shutdown')
-        if shutdown_fn:
-            try:
-                shutdown_fn()
-            except Exception as exc:
-                logger.warning(f"关闭任务处理器失败: {exc}")
-            finally:
-                _runtime_state['task_processor_shutdown'] = None
-
-        _runtime_state['config'] = None
-        _runtime_state['initialized'] = False
-
-        logger.info("Y2A-Auto 服务资源清理完成")
-
-
-atexit.register(shutdown_runtime)
 
 @app.route('/maintenance/cleanup_logs', methods=['POST'])
 @login_required
@@ -2534,42 +2427,55 @@ def cookie_refresh_needed():
         return jsonify({'error': f'处理失败: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    flask_app = initialize_runtime()
+    logger.info("Y2A-Auto 启动中...")
 
-    host = os.environ.get('Y2A_HOST', '0.0.0.0') or '0.0.0.0'
-    port_env = os.environ.get('Y2A_PORT', '5000')
+    # 初始化AcFun分区ID映射
+    init_id_mapping()
+
+    # 加载配置
+    config = load_config()
+    app.config['Y2A_SETTINGS'] = config
+    logger.info(f"配置已加载: {json.dumps(config, ensure_ascii=False, indent=2)}")
+
+    # 初始化全局任务处理器，确保并发控制生效
+    from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
+    get_global_task_processor(config)
+    logger.info("全局任务处理器已初始化")
+
+    # 自动启动所有pending任务（如果启用了自动模式）
+    if config.get('AUTO_MODE_ENABLED', False):
+        logger.info("自动模式已启用，正在启动所有pending任务...")
+        auto_start_pending_tasks(config)
+
+    # 初始化YouTube监控API
+    if config.get('YOUTUBE_API_KEY'):
+        youtube_monitor.set_api_key(config['YOUTUBE_API_KEY'])
+        youtube_monitor.start_all_schedules()
+        logger.info("YouTube监控系统已初始化")
+
+    # 配置应用
+    configure_app(app, config)
+
+    # 设置日志清理定时任务
+    log_cleanup_scheduler = schedule_log_cleanup()
+
+    # 设置下载内容清理定时任务
+    download_cleanup_scheduler = schedule_download_cleanup()
+
     try:
-        port = int(port_env)
-    except (TypeError, ValueError):
-        logger.warning(f"环境变量 Y2A_PORT 值无效: {port_env}，已回退到5000")
-        port = 5000
-
-    use_waitress = os.environ.get('Y2A_USE_WAITRESS', '').lower() in {'1', 'true', 'yes', 'on'}
-
-    try:
-        if use_waitress:
-            try:
-                from waitress import serve
-            except ImportError:
-                logger.warning("未找到 Waitress，回退到 Flask 开发服务器。请在生产环境中确保已安装 Waitress。")
-                flask_app.run(host=host, port=port, debug=False)
-            else:
-                threads_env = os.environ.get('Y2A_WAITRESS_THREADS', '8')
-                try:
-                    threads = max(1, int(threads_env))
-                except (TypeError, ValueError):
-                    logger.warning(f"环境变量 Y2A_WAITRESS_THREADS 值无效: {threads_env}，已回退到8")
-                    threads = 8
-
-                logger.warning(f"使用 Waitress WSGI 服务器启动，监听 http://{host}:{port} (threads={threads})")
-                serve(flask_app, host=host, port=port, threads=threads)
-        else:
-            logger.warning("使用 Flask 内置开发服务器启动，仅建议在开发环境中使用")
-            flask_app.run(host=host, port=port, debug=False)
+        logger.info(f"服务启动，监听地址: http://127.0.0.1:{5000}")
+        # 使用标准Flask运行
+        app.run(host='0.0.0.0', port=5000, debug=False)
     except KeyboardInterrupt:
         logger.info("接收到退出信号，服务正在关闭...")
-    except Exception as exc:
-        logger.error(f"服务启动失败: {exc}")
-        raise
+    except Exception as e:
+        logger.error(f"服务启动失败: {str(e)}")
     finally:
-        shutdown_runtime()
+        # 关闭全局任务处理器
+        shutdown_global_task_processor()
+
+        if log_cleanup_scheduler:
+            log_cleanup_scheduler.shutdown()
+        if download_cleanup_scheduler:
+            download_cleanup_scheduler.shutdown()
+        logger.info("服务已关闭")

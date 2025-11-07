@@ -16,5 +16,3 @@ python-dotenv
 pytz
 google-api-python-client==2.116.0
 websockets
-gunicorn==23.0.0
-waitress==3.0.0
