@@ -1243,7 +1243,11 @@ def settings():
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
             'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
             'SPEECH_RECOGNITION_ENABLED', 'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED',
-            'VAD_ENABLED'
+            'VAD_ENABLED',
+            # 新增：字幕后处理布尔项
+            'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
+            # 新增：FFmpeg 自动下载、Whisper翻译、Whisper回退
+            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1257,7 +1261,11 @@ def settings():
             'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
             'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 'VAD_SILERO_MIN_SPEECH_MS',
             'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
-            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S'
+            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
+            # 新增：字幕后处理 - 最小文本长度
+            'SUBTITLE_MIN_TEXT_LENGTH',
+            # 新增：Whisper 并发与重试
+            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
         ]
         for field in numeric_fields:
             if field in form_data:
@@ -1292,7 +1300,15 @@ def settings():
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
 
         # 处理浮点类型的配置项
-        float_fields = ['VAD_SILERO_THRESHOLD']
+        float_fields = [
+            'VAD_SILERO_THRESHOLD',
+            # 字幕后处理
+            'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
+            # Whisper 高级参数：重试延迟、分片窗口/重叠
+            'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
+            # VAD 约束参数
+            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
+        ]
         for field in float_fields:
             if field in form_data:
                 try:
