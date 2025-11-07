@@ -52,6 +52,76 @@
                     <div class="tab-pane fade show active" id="vtab-general" role="tabpanel" aria-labelledby="vtab-general-tab">
                         <div class="settings-section">
                             <h3>基本设置</h3>
+                        <div class="settings-section mt-3">
+                            <h3>字幕后处理与格式</h3>
+                            <p class="help-text">用于清理极短/碎片字幕、统一时间轴和控制显示粒度，减少单独的“i/嗯”等无意义片段。</p>
+                            <div class="row g-3">
+                                <div class="col-md-3">
+                                    <div class="form-group">
+                                        <label for="subtitle-time-offset">全局时间偏移(秒):</label>
+                                        <input type="number" step="0.1" id="subtitle-time-offset" name="SUBTITLE_TIME_OFFSET_S" value="{{ config.get('SUBTITLE_TIME_OFFSET_S', 0.0) }}" class="form-control">
+                                        <p class="help-text">可为负数：整体提前或延后字幕（如 -0.5 提前半秒）</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="form-group">
+                                        <label for="subtitle-min-cue-dur">最短字幕时长(秒):</label>
+                                        <input type="number" step="0.1" min="0" id="subtitle-min-cue-dur" name="SUBTITLE_MIN_CUE_DURATION_S" value="{{ config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) }}" class="form-control">
+                                        <p class="help-text">短于该时长的字幕将尝试延长或与相邻合并</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="form-group">
+                                        <label for="subtitle-merge-gap">合并间隙(秒):</label>
+                                        <input type="number" step="0.05" min="0" id="subtitle-merge-gap" name="SUBTITLE_MERGE_GAP_S" value="{{ config.get('SUBTITLE_MERGE_GAP_S', 0.3) }}" class="form-control">
+                                        <p class="help-text">相邻字幕间隙 ≤ 该值时自动合并</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="form-group">
+                                        <label for="subtitle-min-text-len">最小文本长度(字符):</label>
+                                        <input type="number" min="0" step="1" id="subtitle-min-text-len" name="SUBTITLE_MIN_TEXT_LENGTH" value="{{ config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) }}" class="form-control">
+                                        <p class="help-text">长度低于该值的字幕会尝试合并或被丢弃</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-max-line-length">每行最大字符数:</label>
+                                        <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control">
+                                        <p class="help-text">超过会按标点/空格自动拆分</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="subtitle-max-lines">单条字幕最大行数:</label>
+                                        <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control">
+                                        <p class="help-text">控制单条字幕的垂直高度，常用 2 行</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="SUBTITLE_NORMALIZE_PUNCTUATION" {% if config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True) %}checked{% endif %}>
+                                            标准化标点与空白
+                                        </label>
+                                        <p class="help-text">保证标点后统一空格，清理多余空白字符</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="SUBTITLE_FILTER_FILLER_WORDS" {% if config.get('SUBTITLE_FILTER_FILLER_WORDS', False) %}checked{% endif %}>
+                                            过滤填充词(um/uh/嗯/啊)
+                                        </label>
+                                        <p class="help-text">去除语气词可减少噪声，对口语内容效果明显</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
 
                             <div class="form-group">
                                 <label class="checkbox-label">
@@ -111,6 +181,29 @@
                                     <option value="pad" {% if config.COVER_PROCESSING_MODE == 'pad' %}selected{% endif %}>填充模式 (保持完整性)</option>
                                 </select>
                                 <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="fixed-partition-id">固定分区ID（可选）:</label>
+                                        <input type="text" id="fixed-partition-id" name="FIXED_PARTITION_ID" value="{{ config.get('FIXED_PARTITION_ID', '') }}" class="form-control" placeholder="如：123；留空则自动推荐">
+                                        <p class="help-text">设置后将直接使用该分区ID，跳过自动推荐。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
+                                            自动下载/准备 FFmpeg
+                                        </label>
+                                        <p class="help-text">首次运行或缺失时自动下载到项目的 ffmpeg/ 目录。</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="ffmpeg-location">FFmpeg 自定义路径（可选）:</label>
+                                <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="如：C:/tools/ffmpeg/ffmpeg.exe 或留空">
+                                <p class="help-text">留空则使用自动下载的可执行文件或系统 PATH 中的 ffmpeg。</p>
                             </div>
 
                             
@@ -408,6 +501,15 @@
                                 </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
+                                        <label for="subtitle-api-provider">API提供商:</label>
+                                        <select id="subtitle-api-provider" name="SUBTITLE_API_PROVIDER" class="form-select">
+                                            <option value="openai" {% if config.get('SUBTITLE_API_PROVIDER', 'openai') == 'openai' %}selected{% endif %}>OpenAI兼容</option>
+                                        </select>
+                                        <p class="help-text">当前仅支持 OpenAI 兼容接口，后续可扩展。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
                                         <label class="checkbox-label">
                                             <input type="checkbox" name="SUBTITLE_KEEP_ORIGINAL" {% if config.SUBTITLE_KEEP_ORIGINAL %}checked{% endif %}>
                                             保留原始字幕文件
@@ -495,6 +597,74 @@
                                     <div class="form-group">
                                         <label for="whisper-base-url">Whisper Base URL（可选）:</label>
                                         <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI Base URL">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-section mt-3">
+                                <h3>Whisper 高级参数</h3>
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="whisper-language">强制语言(可选):</label>
+                                            <input type="text" id="whisper-language" name="WHISPER_LANGUAGE" value="{{ config.get('WHISPER_LANGUAGE', '') }}" class="form-control" placeholder="如 en/zh/ja，留空自动检测">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-8">
+                                        <div class="form-group">
+                                            <label for="whisper-prompt">提示词(可选):</label>
+                                            <input type="text" id="whisper-prompt" name="WHISPER_PROMPT" value="{{ config.get('WHISPER_PROMPT', '') }}" class="form-control" placeholder="引导模型避免幻觉，如：Technical interview">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="WHISPER_TRANSLATE" {% if config.get('WHISPER_TRANSLATE', False) %}checked{% endif %}> 翻译为英文
+                                            </label>
+                                            <p class="help-text">开启后输出英文而非原语言。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label for="whisper-max-workers">并发处理数:</label>
+                                            <input type="number" min="1" step="1" id="whisper-max-workers" name="WHISPER_MAX_WORKERS" value="{{ config.get('WHISPER_MAX_WORKERS', 3) }}" class="form-control">
+                                            <p class="help-text">预留，当前顺序处理。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label for="whisper-max-retries">最大重试次数:</label>
+                                            <input type="number" min="1" step="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label for="whisper-retry-delay">初始重试延迟(秒):</label>
+                                            <input type="number" min="0" step="0.1" id="whisper-retry-delay" name="WHISPER_RETRY_DELAY_S" value="{{ config.get('WHISPER_RETRY_DELAY_S', 2.0) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label for="audio-chunk-window">分片窗口时长(秒):</label>
+                                            <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 25.0) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="form-group">
+                                            <label for="audio-chunk-overlap">分片重叠(秒):</label>
+                                            <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="WHISPER_FALLBACK_TO_FIXED_CHUNKS" {% if config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True) %}checked{% endif %}> VAD失败时回退到固定窗口
+                                            </label>
+                                            <p class="help-text">当语音活动检测接口异常或无片段时仍尝试完整转写。</p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -589,7 +759,32 @@
                                     </div>
                                 </div>
                             </div>
-
+                            <div class="settings-section mt-3">
+                                <h3>VAD 后处理约束</h3>
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="vad-merge-gap">合并间隙阈值(秒):</label>
+                                            <input type="number" step="0.05" min="0" id="vad-merge-gap" name="VAD_MERGE_GAP_S" value="{{ config.get('VAD_MERGE_GAP_S', 0.25) }}" class="form-control">
+                                            <p class="help-text">间隙小于该值的相邻段会合并。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="vad-min-segment">最短片段时长(秒):</label>
+                                            <input type="number" step="0.1" min="0" id="vad-min-segment" name="VAD_MIN_SEGMENT_S" value="{{ config.get('VAD_MIN_SEGMENT_S', 1.0) }}" class="form-control">
+                                            <p class="help-text">短于该值的片段将尝试与前后合并。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="vad-max-split">二次切分上限(秒):</label>
+                                            <input type="number" step="0.5" min="1" id="vad-max-split" name="VAD_MAX_SEGMENT_S_FOR_SPLIT" value="{{ config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 8.0) }}" class="form-control">
+                                            <p class="help-text">超过该时长的长段会按规则再次拆分。</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                             
                         </div>
                     </div>

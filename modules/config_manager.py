@@ -114,6 +114,11 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MAX_LINES": 2,  # 每个字幕最多行数
     "SUBTITLE_NORMALIZE_PUNCTUATION": True,  # 标准化标点
     "SUBTITLE_FILTER_FILLER_WORDS": False,  # 过滤填充词（um, uh等）
+    # 最终字幕后处理（时序与极短片段处理）
+    "SUBTITLE_TIME_OFFSET_S": 0.0,  # 全局时间偏移（秒，可为负）
+    "SUBTITLE_MIN_CUE_DURATION_S": 0.6,  # 每条字幕最短时长（秒）
+    "SUBTITLE_MERGE_GAP_S": 0.3,  # 若相邻间隙不超过该值则合并
+    "SUBTITLE_MIN_TEXT_LENGTH": 2,  # 文本长度不足时进行合并/丢弃
     # 重试与回退策略
     "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）

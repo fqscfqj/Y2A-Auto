@@ -98,6 +98,12 @@ class SpeechRecognitionConfig:
     normalize_punctuation: bool = True  # Normalize punctuation
     filter_filler_words: bool = False  # Remove filler words like "um", "uh"
 
+    # Final subtitle post-processing (timing/text granularity)
+    subtitle_time_offset_s: float = 0.0  # Shift all cues by this offset in seconds (can be negative)
+    subtitle_min_cue_duration_s: float = 0.6  # Ensure each cue lasts at least this long
+    subtitle_merge_gap_s: float = 0.3  # Merge adjacent cues if gap <= this value
+    subtitle_min_text_length: int = 2  # Drop/merge cues with text shorter than this
+
     # Retry and fallback settings
     max_retries: int = 3  # Max retries for failed API calls
     retry_delay_s: float = 2.0  # Initial retry delay (with exponential backoff)
@@ -366,6 +372,9 @@ class SpeechRecognizer:
                 last_end = float(cues[-1].get('end', 0))
                 self.logger.info(f"字幕时间范围: {first_start:.2f}s - {last_end:.2f}s (视频时长: {total_audio_duration:.2f}s)")
             
+            # Apply final short-cue and timing post-processing (merge tiny fragments, apply offset)
+            cues = self._finalize_cues(cues, total_audio_duration)
+
             self.logger.info(f"步骤 5/6: 渲染字幕 (格式: {response_format}, 共 {len(cues)} 个片段)")
             text = self._render_cues(cues, response_format)
             if not text:
@@ -969,6 +978,99 @@ class SpeechRecognizer:
         
         return normalized_cues
 
+    def _finalize_cues(self, cues: List[Dict[str, Any]], total_duration_s: float) -> List[Dict[str, Any]]:
+        """Final post-processing to reduce extremely short standalone subtitles.
+
+        Steps:
+        1. Sort cues by start time.
+        2. Apply global time offset (can be negative) and clamp into [0, total_duration].
+        3. Merge adjacent cues if gap <= subtitle_merge_gap_s OR either text length < subtitle_min_text_length.
+        4. Enforce minimum cue duration; extend or merge with neighbor.
+        5. Drop remaining cues whose text length < subtitle_min_text_length and duration < subtitle_min_cue_duration_s.
+        """
+        if not cues:
+            return []
+
+        try:
+            offset = float(self.config.subtitle_time_offset_s)
+        except Exception:
+            offset = 0.0
+        merge_gap = max(0.0, float(getattr(self.config, 'subtitle_merge_gap_s', 0.3)))
+        min_text_len = max(0, int(getattr(self.config, 'subtitle_min_text_length', 2)))
+        min_dur = max(0.05, float(getattr(self.config, 'subtitle_min_cue_duration_s', 0.6)))
+
+        # 1. sort
+        cues = sorted(cues, key=lambda c: float(c.get('start', 0.0)))
+
+        # 2. apply offset & clamp
+        for c in cues:
+            try:
+                c['start'] = max(0.0, min(total_duration_s, float(c['start']) + offset))
+                c['end'] = max(0.0, min(total_duration_s, float(c['end']) + offset))
+                if c['end'] <= c['start']:
+                    c['end'] = min(total_duration_s, c['start'] + 0.05)
+            except Exception:
+                continue
+
+        # 3. merge adjacent cues
+        merged: List[Dict[str, Any]] = []
+        for c in cues:
+            if not merged:
+                merged.append(c)
+                continue
+            prev = merged[-1]
+            gap = float(c['start']) - float(prev['end'])
+            prev_text = (prev.get('text') or '').strip()
+            cur_text = (c.get('text') or '').strip()
+            need_merge = False
+            if gap <= merge_gap:
+                need_merge = True
+            elif len(prev_text) < min_text_len or len(cur_text) < min_text_len:
+                # Merge ultra-short isolated pieces even if gap slightly bigger (<= 2*merge_gap)
+                if gap <= merge_gap * 2:
+                    need_merge = True
+            if need_merge:
+                # Merge texts with space (avoid duplicate punctuation spacing)
+                new_text = (prev_text + ' ' + cur_text).strip()
+                prev['text'] = re.sub(r'\s+', ' ', new_text)
+                prev['end'] = max(prev['end'], c['end'])
+            else:
+                merged.append(c)
+
+        # 4. enforce minimum duration by extending forward (without overlapping next) or merging
+        finalized: List[Dict[str, Any]] = []
+        for i, c in enumerate(merged):
+            start = float(c['start'])
+            end = float(c['end'])
+            dur = end - start
+            text_len = len((c.get('text') or '').strip())
+            if dur < min_dur:
+                # Try to extend to min_dur without passing next cue start
+                next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
+                target_end = min(start + min_dur, next_start - 0.01 if next_start - start > 0.05 else next_start)
+                if target_end > end:
+                    c['end'] = target_end
+                else:
+                    # Merge with next if still too short and text also short
+                    if i + 1 < len(merged) and (text_len < min_text_len or len((merged[i+1].get('text') or '').strip()) < min_text_len):
+                        merged[i+1]['start'] = start
+                        merged[i+1]['text'] = (c['text'].strip() + ' ' + merged[i+1]['text'].strip()).strip()
+                        continue  # Skip adding current; it's merged forward
+            finalized.append(c)
+
+        # 5. drop remaining ultra-short single-character cues
+        cleaned: List[Dict[str, Any]] = []
+        for c in finalized:
+            text = (c.get('text') or '').strip()
+            dur = float(c['end']) - float(c['start'])
+            if len(text) < min_text_len and dur < min_dur:
+                # Skip dropping pronoun "I" if appears inside a longer word—here it's standalone so drop
+                self.logger.debug(f"移除极短字幕: '{text}' ({dur:.2f}s)")
+                continue
+            cleaned.append(c)
+
+        return cleaned
+
     def _probe_media_duration(self, media_path: str) -> Optional[float]:
         """使用ffprobe获取音/视频时长（秒）。"""
         try:
@@ -1274,6 +1376,11 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             max_subtitle_lines=int(app_config.get('SUBTITLE_MAX_LINES', 2) or 2),
             normalize_punctuation=bool(app_config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True)),
             filter_filler_words=bool(app_config.get('SUBTITLE_FILTER_FILLER_WORDS', False)),
+            # Final subtitle post-processing (optional params)
+            subtitle_time_offset_s=float(app_config.get('SUBTITLE_TIME_OFFSET_S', 0.0) or 0.0),
+            subtitle_min_cue_duration_s=float(app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) or 0.6),
+            subtitle_merge_gap_s=float(app_config.get('SUBTITLE_MERGE_GAP_S', 0.3) or 0.3),
+            subtitle_min_text_length=int(app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2),
             # Retry and fallback settings
             max_retries=int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3),
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
