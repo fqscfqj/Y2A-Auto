@@ -33,6 +33,8 @@ RUN /root/.local/bin/yt-dlp --version
 # 第二阶段：运行阶段
 FROM python:3.11-slim
 
+ARG TARGETARCH
+
 # 设置工作目录
 WORKDIR /app
 
@@ -45,6 +47,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a
@@ -54,6 +57,25 @@ COPY --from=builder /root/.local /home/y2a/.local
 
 # 复制应用代码
 COPY --chown=y2a:y2a . .
+
+# 下载静态版 ffmpeg 并封装进镜像，避免依赖宿主环境
+RUN set -eux \
+    && mkdir -p /app/ffmpeg \
+    && rm -rf /app/ffmpeg/* \
+    && arch="${TARGETARCH:-amd64}" \
+    && case "$arch" in \
+        amd64|x86_64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" ;; \
+        arm64|aarch64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" ;; \
+        arm|armv7l)   ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz" ;; \
+        *) echo "Unsupported TARGETARCH: $arch" >&2 && exit 1 ;; \
+    esac \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "$ffmpeg_url" -o "$tmpdir/ffmpeg.tar.xz" \
+    && tar -xf "$tmpdir/ffmpeg.tar.xz" --strip-components=1 -C /app/ffmpeg \
+    && rm -rf "$tmpdir" \
+    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe \
+    && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
+    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \

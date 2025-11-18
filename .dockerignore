@@ -28,6 +28,9 @@ temp/
 downloads/
 static/covers/
 
+# FFmpeg binaries (Docker will install its own)
+ffmpeg/
+
 # Database files (exclude from image)  
 db/
 tasks.db
