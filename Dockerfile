@@ -44,7 +44,6 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ffmpeg \
         curl \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
@@ -59,8 +58,9 @@ COPY --chown=y2a:y2a . .
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \
     && mkdir -p /app/ffmpeg \
-    && ln -sf /usr/bin/ffmpeg /app/ffmpeg/ffmpeg || true \
-    && ln -sf /usr/bin/ffprobe /app/ffmpeg/ffprobe || true \
+    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe 2>/dev/null || true \
+    && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg || true \
+    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe || true \
     && chown -R y2a:y2a /app \
     && chown -R y2a:y2a /home/y2a/.local \
     && chmod +x /home/y2a/.local/bin/* 2>/dev/null || true \

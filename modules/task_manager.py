@@ -1632,14 +1632,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             import threading
             import queue
 
-            # 仅使用项目内置 ffmpeg/ffprobe，如缺失则尝试自动下载（仅 Windows）
+            # 仅使用项目内置 ffmpeg/ffprobe，如缺失仅在 Windows 上尝试下载作为兜底
             try:
                 from modules.youtube_handler import find_ffmpeg_location
                 ffmpeg_bin = find_ffmpeg_location(None, task_logger)
             except Exception:
                 ffmpeg_bin = None
             if not ffmpeg_bin or not os.path.exists(ffmpeg_bin):
-                task_logger.error("未找到项目内置 FFmpeg，无法进行字幕嵌入。请在设置中启用相关功能时让系统自动下载，或手动将 ffmpeg.exe 放入 ffmpeg/ 目录。")
+                task_logger.error("未找到项目内置 FFmpeg，无法进行字幕嵌入。请确认仓库自带的 ffmpeg/ 目录完整（可重新解压或手动放置二进制）。")
                 update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                 return None
             ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')

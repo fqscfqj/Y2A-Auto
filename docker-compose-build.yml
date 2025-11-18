@@ -19,3 +19,13 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
+    # GPU 加速可选配置（根据实际硬件选择）
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # devices:
+    #   - /dev/dri:/dev/dri

@@ -71,7 +71,7 @@ Y2A-Auto/
 │  └─ yt_cookies.txt
 ├─ db/                            # SQLite 数据库与持久化数据
 ├─ downloads/                     # 任务产物（每任务一个子目录）
-├─ ffmpeg/                        # 可放置自定义 ffmpeg 二进制或脚本
+├─ ffmpeg/                        # 仓库内置 Windows/Linux ffmpeg，可按需替换
 ├─ fonts/                         # 字体（供字幕嵌入使用）
 ├─ logs/                          # 运行与任务日志
 ├─ modules/                       # 核心后端模块（应用逻辑）
@@ -153,7 +153,7 @@ docker compose up -d
 前置依赖：
 
 - Python 3.11+
-- FFmpeg（命令行可执行）
+- FFmpeg（仓库已附带 Windows/Linux 版本，可直接使用）
 - yt-dlp（`pip install yt-dlp`）
 
 步骤：
@@ -202,7 +202,7 @@ python app.py
 
 - 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
 - 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
-- Windows/NVIDIA 用户可将 `VIDEO_ENCODER` 设为 `nvenc` 获得更快的嵌字/转码。
+- 需要硬件编码时，请先在 README 的“硬件转码指南”章节确认驱动/容器挂载是否已就绪，再在设置页选择 `VIDEO_ENCODER`。
 
 ## 使用指南
 
@@ -218,6 +218,16 @@ python app.py
 - `db/` SQLite 数据库
 - `cookies/` 存放 cookies.txt（需自行准备）
 
+## 内置 FFmpeg
+
+- 仓库自带 `ffmpeg/` 目录，其中包含：
+  - `ffmpeg.exe` / `ffprobe.exe`：Windows 64 位版本（来自 BtbN Builds）。
+  - `ffmpeg` / `ffprobe`：Linux/amd64 静态版本（来自 johnvansickle.com）。
+  - `FFMPEG_GPLv3.txt` 与 `FFMPEG_README.txt`：对应的许可证与上游说明。
+- 本地运行、Docker 镜像以及 Windows 打包版本都会优先使用该目录，无需首次启动时在线下载。
+- 若需要升级 FFmpeg，请将新的二进制文件覆盖到 `ffmpeg/` 目录，并保留相应的许可证文件；Docker 镜像与打包脚本会自动随仓库内容更新。
+- 预编译二进制已启用 NVENC / QSV / AMF / VA-API / libx264 等常用编码器（以 `ffmpeg -hide_banner -encoders` 输出为准）。GPU 能否成功加速仍取决于宿主机驱动或容器是否正确挂载对应设备。
+
 ## 嵌字转码参数与硬件加速
 
 仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用会根据 `VIDEO_ENCODER` 选择编码器并使用统一参数：
@@ -226,37 +236,53 @@ python app.py
 - NVIDIA NVENC：hevc_nvenc，preset=p6，cq=25，rc-lookahead=32；若源为 10bit，自动使用 profile=main10 并输出 p010le，否则 profile=main + yuv420p
 - 音频：AAC 320kbps，采样率跟随原视频
 
-提示：NVENC/QSV/AMF 取决于系统与 ffmpeg 的编译是否包含对应硬编支持；不可用时会自动回退到 CPU。
+提示：NVENC/QSV/AMF 的可用性仍取决于系统驱动、容器所挂设备以及硬件型号；不可用时应用会自动回退到 CPU 并在日志中给出提示。
 
-## 硬件转码（Docker）
+## 硬件转码指南
 
-应用支持通过 `VIDEO_ENCODER` 选择编码器：`cpu`（默认）/ `nvenc`（NVIDIA）/ `qsv`（Intel）。注意：容器内需有“包含对应硬件编码器的 ffmpeg”。默认镜像为发行版 ffmpeg，通常不含 NVENC/QSV；若需硬件转码，请按下述方案：
+应用通过 `VIDEO_ENCODER` 控制所使用的编码器：`cpu` / `nvenc` / `qsv` / `amf`。项目内置的 FFmpeg 已包含这些编码器，额外需要做的是：
 
-- 使用自定义镜像引入已启用 NVENC/QSV 的 ffmpeg
-- 或改用已包含硬件编码器的 ffmpeg 基础镜像
+1. 宿主机或容器必须能访问相应的 GPU 设备。
+2. 设备驱动/运行时需已正确安装（NVIDIA 驱动 + Container Toolkit、Intel VAAPI/QSV 驱动、AMD Adrenalin/ROCm 等）。
+3. 在设置页选择编码器，或在 `config/config.json` 写入 `"VIDEO_ENCODER": "nvenc"` 等配置。
 
-### NVIDIA NVENC（Linux 宿主机）
+### Windows / 裸机 Linux
 
-前提：安装 NVIDIA 驱动与 NVIDIA Container Toolkit。
+- Windows 版本直接使用 `ffmpeg/ffmpeg.exe`。只要显卡驱动支持 NVENC/QSV/AMF，对应选项即可生效。
+- Linux 裸机运行（非容器）时，同样使用仓库 `ffmpeg/ffmpeg`，需要确保用户对 `/dev/dri`（QSV/VA-API）或 NVIDIA 设备节点有访问权限。
+- 自检命令：
 
-docker-compose 关键配置示例：
+```powershell
+# Windows PowerShell
+.fmpeg\ffmpeg.exe -hide_banner -encoders ^| Select-String nvenc
+```
+
+```bash
+# Linux 裸机/WSL
+./ffmpeg/ffmpeg -hide_banner -encoders | grep -Ei "nvenc|qsv|amf"
+```
+
+若自检命令未输出对应编码器，请更新显卡驱动或将 `ffmpeg/` 替换为拥有目标编码器的版本。
+
+### Docker（Linux）
+
+容器镜像会打包 `ffmpeg/` 目录；要让硬件编码生效，需要按厂商类型进行额外挂载：
+
+#### NVIDIA NVENC
+
+1. 宿主机安装官方 NVIDIA 驱动及 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
+1. 运行容器时附加 GPU 资源，例如：
+
+```bash
+docker compose --profile gpu up -d --build
+```
+
+`docker-compose.yml` 片段：
 
 ```yaml
 services:
   y2a-auto:
     image: fqscfqj/y2a-auto:latest
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./config:/app/config
-      - ./db:/app/db
-      - ./downloads:/app/downloads
-      - ./logs:/app/logs
-      - ./cookies:/app/cookies
-      - ./temp:/app/temp
-    environment:
-      - TZ=Asia/Shanghai
-      - PYTHONIOENCODING=utf-8
     deploy:
       resources:
         reservations:
@@ -264,25 +290,24 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # 对于 Compose v2 也可以使用
+    # runtime: nvidia
+    # device_requests:
+    #   - driver: nvidia
+    #     count: 1
+    #     capabilities: [[gpu]]
 ```
 
-并在应用设置或 `config/config.json` 中设置：
-
-```json
-{"VIDEO_ENCODER": "nvenc"}
-```
-
-可选自检（容器内）：
+1. 设置 `VIDEO_ENCODER=nvenc`，并在容器内自检：
 
 ```bash
 ffmpeg -hide_banner -encoders | grep -i nvenc
 ```
 
-### Intel QSV（Linux 宿主机）
+#### Intel QSV / VA-API
 
-前提：宿主机启用 iGPU，驱动正常；容器映射 `/dev/dri`。
-
-docker-compose 关键配置示例：
+1. 启用 Intel iGPU，并安装 VAAPI/QSV 驱动（例如 `intel-media-va-driver-non-free`）。
+1. 将 `/dev/dri` 映射进容器，同时根据需要设置 `LIBVA_DRIVER_NAME`。
 
 ```yaml
 services:
@@ -292,25 +317,20 @@ services:
       - /dev/dri:/dev/dri
     environment:
       - LIBVA_DRIVER_NAME=iHD
-      - TZ=Asia/Shanghai
-      - PYTHONIOENCODING=utf-8
 ```
 
-并在应用设置或 `config/config.json` 中设置：
+1. 设置 `VIDEO_ENCODER=qsv`，并在容器内执行 `ffmpeg -hide_banner -encoders | grep -i qsv` 进行确认。
 
-```json
-{"VIDEO_ENCODER": "qsv"}
-```
+#### AMD AMF / VAAPI
 
-可选自检（容器内）：
+- AMF 仅在 Windows 上可用；Linux 环境可使用 VA-API (`VIDEO_ENCODER=cpu` + `-vf subtitles` + `-vaapi_device`) 或自行更换带有 `h264_vaapi`/`hevc_vaapi` 的 FFmpeg 并调整代码。
+- 如需 Linux 上的 AMD 编码，可在 `ffmpeg/` 中放置包含 `h264_vaapi`/`hevc_vaapi` 的构建，并在 Docker 运行时挂载 `/dev/dri`；随后在 `config.json` 中设置 `VIDEO_ENCODER` 为 `cpu` 并在 `FFMPEG_LOCATION` 指向自定义脚本。
 
-```bash
-ffmpeg -hide_banner -encoders | grep -i qsv
-```
+> 提示：容器内 `ffmpeg -encoders` 是判断编码器是否可用的唯一依据；若输出缺失，请检查驱动或替换 `ffmpeg/` 内容。应用在检测到硬件编码失败时会写入任务日志，并自动回退到 CPU。
 
-### 自定义镜像内置硬件编码 ffmpeg（示例）
+### 自定义镜像（可选）
 
-若默认镜像缺少硬件编码器，可在自定义镜像中引入已编译好的 ffmpeg，例如基于 `jrottenberg/ffmpeg`（示意）：
+如果你希望完全控制 FFmpeg 版本，仍可以参考以下模式自定义镜像（例如从 `jrottenberg/ffmpeg` 提取 ffmpeg）：
 
 ```dockerfile
 FROM jrottenberg/ffmpeg:6.1-nvidia AS ffmpeg
@@ -318,21 +338,14 @@ FROM jrottenberg/ffmpeg:6.1-nvidia AS ffmpeg
 FROM python:3.11-slim
 WORKDIR /app
 
-# 拷贝 ffmpeg 到运行镜像
 COPY --from=ffmpeg /usr/local /usr/local
-
-# 安装依赖与应用
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 CMD ["python", "app.py"]
 ```
 
-构建完成后，按前述 NVENC/QSV 的 compose 示例分配设备即可。
-
-提示：容器内 ffmpeg 的编码器可用性以 `ffmpeg -encoders` 为准；若不可用，请更换镜像或自行编译。
+构建完自定义镜像后，仍需按上文步骤为容器挂载 GPU 设备。
 
 ## 常见问题
 

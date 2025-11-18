@@ -194,7 +194,7 @@
                                     <div>
                                         <span class="section-eyebrow text-primary">Dependencies</span>
                                         <h3 class="mb-1">工具与依赖</h3>
-                                        <p class="section-lead mb-0">确保FFmpeg等核心依赖准备齐全，遇到缺失可自动修复。</p>
+                                        <p class="section-lead mb-0">项目已内置 Windows/Linux 双平台 FFmpeg，可按需覆盖或自定义。</p>
                                     </div>
                                 </div>
                                 <div class="row g-3 align-items-start">
@@ -202,16 +202,16 @@
                                         <div class="form-group mb-0">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
-                                                自动下载/准备 FFmpeg
+                                                Windows 缺失时允许联网补全 FFmpeg
                                             </label>
-                                            <p class="help-text">首次运行或缺失时自动下载到项目的 ffmpeg/ 目录。</p>
+                                            <p class="help-text">默认使用仓库附带的 ffmpeg/ 目录，仅在 Windows 且文件缺失时才会尝试联网补齐。</p>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="ffmpeg-location">FFmpeg 自定义路径（可选）:</label>
-                                            <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="如：C:/tools/ffmpeg/ffmpeg.exe 或留空">
-                                            <p class="help-text">留空则使用自动下载的可执行文件或系统 PATH 中的 ffmpeg。</p>
+                                            <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="如：C:/tools/ffmpeg/bin/ffmpeg.exe 或留空">
+                                            <p class="help-text">留空则默认使用项目根目录 ffmpeg/ 下的内置二进制。</p>
                                         </div>
                                     </div>
                                 </div>
@@ -589,6 +589,7 @@
                                                 <option value="qsv" {% if config.get('VIDEO_ENCODER', 'cpu') == 'qsv' %}selected{% endif %}>Intel QSV</option>
                                                 <option value="amf" {% if config.get('VIDEO_ENCODER', 'cpu') == 'amf' %}selected{% endif %}>AMD AMF</option>
                                             </select>
+                                            <p class="help-text">项目内置的 Windows/Linux FFmpeg 均包含上述硬件编码器；请选择与显卡匹配的项，并确保系统/容器已按 README 的“硬件转码”指南挂载对应驱动（如 Windows 装好显卡驱动、Docker 使用 <code>--gpus all</code> 或挂载 /dev/dri）。</p>
                                         </div>
                                     </div>
                                     <div class="col-md-6">

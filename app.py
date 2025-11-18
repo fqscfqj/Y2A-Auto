@@ -1246,7 +1246,7 @@ def settings():
             'VAD_ENABLED',
             # 新增：字幕后处理布尔项
             'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
-            # 新增：FFmpeg 自动下载、Whisper翻译、Whisper回退
+            # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
         ]
         for checkbox in checkboxes:
@@ -1369,7 +1369,7 @@ def settings():
         except Exception as e:
             logger.warning(f"同步任务处理器配置失败: {e}")
 
-        # 若启用依赖 FFmpeg 的功能（ASR提取音频、字幕嵌入），尝试自动下载/准备项目内 ffmpeg
+        # 若启用依赖 FFmpeg 的功能（ASR提取音频、字幕嵌入），确保项目内置 ffmpeg 可用
         try:
             need_ffmpeg = False
             if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
@@ -1382,10 +1382,11 @@ def settings():
                 if ff_path and os.path.exists(ff_path):
                     logger.info(f"FFmpeg 已就绪: {ff_path}")
                 else:
-                    logger.warning("已启用依赖FFmpeg的功能，但未能自动准备 FFmpeg，请检查网络或手动放置到 ffmpeg/ 目录")
-                    flash('已启用依赖FFmpeg的功能，但未能自动准备 FFmpeg，请检查网络或手动放置到 ffmpeg/ 目录', 'warning')
+                    warning_msg = '已启用依赖FFmpeg的功能，但未检测到内置 FFmpeg，请确认项目根目录 ffmpeg/ 目录完整。'
+                    logger.warning(warning_msg)
+                    flash(warning_msg, 'warning')
         except Exception as e:
-            logger.warning(f"自动准备 FFmpeg 失败: {e}")
+            logger.warning(f"检查内置 FFmpeg 状态失败: {e}")
         
         # 如果YouTube API密钥有更新，同步到监控系统
         if 'YOUTUBE_API_KEY' in form_data:

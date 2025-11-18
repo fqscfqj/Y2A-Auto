@@ -64,5 +64,3 @@ tests/
 docs/_build/
 site/ 
 
-# FFMPEG
-ffmpeg/

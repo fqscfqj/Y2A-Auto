@@ -16,3 +16,13 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
+    # 硬件加速示例：取消下列注释并安装对应驱动
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # devices:
+    #   - /dev/dri:/dev/dri   # Intel/AMD VA-API（可按需调整）

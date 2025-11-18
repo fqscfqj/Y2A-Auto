@@ -11,7 +11,6 @@ import json
 import shutil
 import subprocess
 import zipfile
-import requests
 from pathlib import Path
 
 # 修复 Windows 控制台输出中文时报 UnicodeEncodeError
@@ -57,58 +56,35 @@ def install_dependencies():
             print(f"安装 {dep}...")
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', dep])
 
-def download_ffmpeg():
-    """下载FFmpeg Windows版本"""
-    print("正在下载FFmpeg...")
-    
-    ffmpeg_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    ffmpeg_zip = "ffmpeg.zip"
-    
-    try:
-        # 如果已存在则跳过
-        if os.path.exists("dist/Y2A-Auto/ffmpeg/ffmpeg.exe"):
-            print("FFmpeg已存在，跳过下载")
-            return
-        
-        response = requests.get(ffmpeg_url, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        
-        with open(ffmpeg_zip, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total_size > 0:
-                    percent = (downloaded / total_size) * 100
-                    print(f"\r下载进度: {percent:.1f}%", end='', flush=True)
-        
-        print("\n解压FFmpeg...")
-        
-        # 解压FFmpeg
-        with zipfile.ZipFile(ffmpeg_zip, 'r') as zip_ref:
-            zip_ref.extractall("ffmpeg_temp")
-        
-        # 移动到dist目录
-        ffmpeg_dir = next(Path("ffmpeg_temp").glob("ffmpeg-*"))
-        bin_dir = ffmpeg_dir / "bin"
-        
-        os.makedirs("dist/Y2A-Auto/ffmpeg", exist_ok=True)
-        
-        for file in bin_dir.glob("*.exe"):
-            shutil.copy2(file, "dist/Y2A-Auto/ffmpeg/")
-            print(f"✓ 复制 {file.name}")
-        
-        # 清理
-        shutil.rmtree("ffmpeg_temp")
-        os.remove(ffmpeg_zip)
-        
-        print("FFmpeg下载完成")
-        
-    except Exception as e:
-        print(f"FFmpeg下载失败: {e}")
-        print("请手动下载FFmpeg并放置到dist/Y2A-Auto/ffmpeg/目录")
+def prepare_ffmpeg(project_root: str):
+    """将仓库内置的 FFmpeg 拷贝到打包目录，避免联网下载。"""
+    print("准备内置 FFmpeg ...")
+
+    repo_ffmpeg_dir = Path(project_root) / 'ffmpeg'
+    target_dir = Path('dist') / 'Y2A-Auto' / 'ffmpeg'
+    os.makedirs(target_dir, exist_ok=True)
+
+    expected_files = [
+        ('ffmpeg.exe', '核心二进制'),
+        ('ffprobe.exe', '探测工具'),
+        ('FFMPEG_GPLv3.txt', 'GPLv3 许可文本'),
+        ('FFMPEG_README.txt', '上游 README')
+    ]
+
+    missing = []
+    for file_name, desc in expected_files:
+        src = repo_ffmpeg_dir / file_name
+        if src.exists():
+            shutil.copy2(src, target_dir / file_name)
+            print(f"✓ 复制 {desc}: {file_name}")
+        else:
+            missing.append(file_name)
+
+    if missing:
+        print(f"⚠ 以下 FFmpeg 文件在仓库中未找到: {', '.join(missing)}")
+        print("  请确认已同步最新的仓库内置二进制，或手动放置到 ffmpeg/ 目录。")
+    else:
+        print("FFmpeg 已准备完毕，无需联网下载。")
 
 def create_spec_file():
     """创建PyInstaller spec文件"""
@@ -621,8 +597,8 @@ def main():
         # 构建可执行文件
         build_executable()
         
-        # 下载FFmpeg
-        download_ffmpeg()
+        # 准备内置 FFmpeg
+        prepare_ffmpeg(project_root)
         
         # 创建便携式包
         create_portable_package()

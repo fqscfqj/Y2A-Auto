@@ -43,7 +43,7 @@ python build_exe.py
 1. **环境检查** - 验证Python版本和依赖
 2. **依赖安装** - 自动安装PyInstaller等工具
 3. **代码打包** - 使用PyInstaller打包Python代码
-4. **资源下载** - 自动下载FFmpeg等依赖
+4. **资源准备** - 复制仓库内置的 FFmpeg 及相关资源
 5. **目录创建** - 生成完整的应用目录结构
 6. **文档生成** - 创建启动脚本和说明文档
 7. **清理优化** - 清理临时文件，优化包大小
@@ -100,21 +100,14 @@ dist/Y2A-Auto/
 ## 🔧 构建选项
 
 ### 自定义构建
-可以修改 `build_exe.py` 中的配置：
 
-```python
-# FFmpeg下载地址
-ffmpeg_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-
-# 隐藏导入模块列表
-hiddenimports = [...]
-
-# 数据文件收集
-datas = [...]
-```
+- `ffmpeg/` 目录：仓库已经附带 Windows/Linux 双平台二进制。如需升级版本，直接替换该目录下的文件后重新构建即可。
+- `hiddenimports` / `datas`：仍可在 `build_exe.py` 中按需扩展，确保 PyInstaller 收集到额外模块或静态资源。
 
 ### 环境变量
+
 支持以下环境变量：
+
 - `PYTHONIOENCODING=utf-8` - Python编码设置
 - `LANG=zh_CN.UTF-8` - 系统语言设置
 
@@ -123,88 +116,114 @@ datas = [...]
 ### 构建问题
 
 #### Python版本错误
-```
+
+```text
 错误: 需要Python 3.11或更高版本
 ```
+
 **解决方案**: 升级Python到3.11+
 
-#### 网络连接失败
+#### FFmpeg 文件缺失
+
+```text
+警告: 未找到仓库内置的 FFmpeg，请确认 ffmpeg/ 目录完整
 ```
-FFmpeg下载失败: 网络连接错误
-```
-**解决方案**: 
-1. 检查网络连接
-2. 使用代理或VPN
-3. 手动下载FFmpeg到指定目录
+
+**解决方案**:
+
+1. 回到仓库根目录，确认 `ffmpeg/` 文件夹已同步（`git lfs`/`git pull`）。
+1. 若需自定义版本，请将新的 `ffmpeg.exe`/`ffprobe.exe` 或 Linux 二进制复制到该目录。
+1. 重新运行 `build_exe.py`，脚本会自动复制最新的二进制。
 
 #### 依赖安装失败
-```
+
+```text
 pip install pyinstaller 失败
 ```
+
 **解决方案**:
-1. 升级pip: `python -m pip install --upgrade pip`
-2. 使用国内镜像: `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pyinstaller`
+
+1. 升级 pip：`python -m pip install --upgrade pip`
+1. 使用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pyinstaller`
 
 #### 内存不足
-```
+
+```text
 构建过程中内存溢出
 ```
+
 **解决方案**:
+
 1. 关闭其他程序释放内存
-2. 增加虚拟内存
-3. 使用更强配置的机器
+1. 增加虚拟内存
+1. 使用更强配置的机器
 
 ### 运行问题
 
 #### 杀毒软件拦截
-**现象**: exe文件被删除或无法运行
-**解决方案**: 
+
+**现象**: exe 文件被删除或无法运行
+
+**解决方案**:
+
 1. 添加到杀毒软件白名单
-2. 临时关闭实时保护
-3. 使用Windows Defender排除项
+1. 临时关闭实时保护
+1. 使用 Windows Defender 排除项
 
 #### 中文乱码
+
 **现象**: 界面或日志出现乱码
+
 **解决方案**:
-1. 确保Windows系统支持UTF-8
-2. 检查系统区域设置
-3. 使用管理员权限运行
+
+1. 确保 Windows 系统支持 UTF-8
+1. 检查系统区域设置
+1. 使用管理员权限运行
 
 #### 端口占用
-**现象**: 5000端口被占用
+
+**现象**: 5000 端口被占用
+
 **解决方案**:
+
 1. 关闭占用端口的程序
-2. 修改程序配置使用其他端口
-3. 重启系统
+1. 修改程序配置使用其他端口
+1. 重启系统
 
 ## 🔄 更新说明
 
 ### 版本兼容性
-- 支持Python 3.11+
-- 兼容Windows 10/11
+
+- 支持 Python 3.11+
+- 兼容 Windows 10/11
 - 向前兼容旧版配置文件
 
 ### 更新方法
+
 1. 替换构建工具文件
-2. 重新运行构建脚本
-3. 测试新版本功能
+1. 重新运行构建脚本
+1. 测试新版本功能
 
 ## 📞 技术支持
 
 ### 获取帮助
-- **项目主页**: https://github.com/fqscfqj/Y2A-Auto
-- **问题反馈**: GitHub Issues
-- **使用文档**: 项目Wiki
+
+- **项目主页**：[GitHub Repo](https://github.com/fqscfqj/Y2A-Auto)
+- **问题反馈**：GitHub Issues
+- **使用文档**：项目 Wiki
 
 ### 日志调试
+
 构建过程中的日志信息可以帮助诊断问题：
+
 - 详细的错误信息
 - 构建步骤追踪
 - 依赖检查结果
 
 ### 常见问题
-查看项目Wiki的FAQ部分获取更多帮助。
+
+查看项目 Wiki 的 FAQ 部分获取更多帮助。
 
 ---
 
-**注意**: 首次构建需要下载大量依赖，请确保网络稳定。构建完成的exe文件可以在任何Windows系统上运行，无需额外安装。 
+**注意**: 首次构建需要下载大量依赖，请确保网络稳定。构建完成的 exe 文件可以在任何 Windows 系统上运行，无需额外安装。
