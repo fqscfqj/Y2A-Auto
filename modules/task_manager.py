@@ -1701,6 +1701,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             temp_dir = tempfile.mkdtemp()
             simple_video = os.path.join(temp_dir, "input.mp4")
             subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
+
+            # FFmpeg 的 subtitles 过滤器不支持直接渲染 VTT，因此先转换为 SRT
+            if subtitle_ext == '.vtt':
+                task_logger.info("检测到VTT字幕，转换为SRT以兼容FFmpeg")
+                converted_subtitle = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                if converted_subtitle and os.path.exists(converted_subtitle):
+                    subtitle_path = converted_subtitle
+                    subtitle_ext = '.srt'
+                else:
+                    task_logger.error("VTT字幕转换失败，无法继续嵌入字幕流程")
+                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                    return None
+
             if subtitle_ext not in ('.srt', '.ass', '.ssa', '.vtt'):
                 task_logger.warning(f"未知字幕扩展名 {subtitle_ext}，默认按srt处理")
                 subtitle_ext = '.srt'
