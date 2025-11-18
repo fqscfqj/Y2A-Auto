@@ -51,9 +51,7 @@ body {
 }
 
 .settings-container h2 {
-    margin-top: 0;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #eee;
+    margin: 0;
     color: #0d6efd;
 }
 
@@ -69,6 +67,153 @@ body {
     margin-top: 0;
     color: #0d6efd;
     font-size: 1.2em;
+}
+
+.settings-nav {
+    position: sticky;
+    top: 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.settings-nav-folder {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background-color: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+    overflow: hidden;
+}
+
+.settings-folder-toggle {
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    color: #0d6efd;
+    cursor: pointer;
+}
+
+.settings-folder-toggle:focus-visible {
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+.folder-caret {
+    transition: transform 0.2s ease;
+}
+
+.settings-nav-folder:not(.open) .folder-caret {
+    transform: rotate(180deg);
+}
+
+.settings-folder-body {
+    padding: 0 0.75rem 0.75rem;
+    display: none;
+    gap: 0.25rem;
+}
+
+.settings-folder-body.show {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-layout .settings-nav .nav-link {
+    border-radius: 6px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+}
+
+.settings-layout .settings-nav .nav-link:last-child {
+    margin-bottom: 0;
+}
+
+.settings-layout .settings-nav .nav-link i {
+    font-size: 1rem;
+}
+
+.settings-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+}
+
+.settings-page-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    justify-content: flex-end;
+}
+
+.section-eyebrow {
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.section-lead {
+    color: #6c757d;
+    font-size: 0.95rem;
+}
+
+.settings-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.settings-stack .settings-section {
+    margin-bottom: 0;
+}
+
+.settings-section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.settings-actions-bar {
+    position: sticky;
+    bottom: -20px;
+    background: #fff;
+    padding-top: 12px;
+    margin-top: 8px;
+    border-top: 1px solid #eee;
+}
+
+.settings-container .form-group {
+    margin-bottom: 12px;
+}
+
+.checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+@media (max-width: 991.98px) {
+    .settings-nav {
+        position: static;
+        margin-bottom: 1rem;
+    }
+    .settings-page-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
 }
 
 /* 任务卡片 */
