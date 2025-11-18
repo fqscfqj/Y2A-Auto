@@ -27,6 +27,7 @@ temp/
 # Downloads and generated content
 downloads/
 static/covers/
+ffmpeg/
 
 # Database files
 tasks.db
