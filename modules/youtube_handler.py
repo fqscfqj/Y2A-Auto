@@ -17,6 +17,7 @@ from datetime import datetime
 from modules.config_manager import load_config
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
+from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
 
 # 其他导入和常量定义
@@ -38,87 +39,83 @@ def is_docker_env() -> bool:
     return False
 
 
-def download_ffmpeg_bundled(logger: logging.Logger | None = None) -> str | None:
-    """下载 ffmpeg 到应用根目录的 ffmpeg/ 下并返回可执行文件路径（仅 Windows）。"""
+def merge_streams_with_ffmpeg(task_dir: str, ffmpeg_path: str | None = None, logger: logging.Logger | None = None) -> str | None:
+    """Fallback merger for cases where yt-dlp fails during the internal merging phase."""
     log = logger or logging.getLogger(__name__)
-    if os.name != 'nt':
-        log.info("非 Windows 平台不进行自动下载，请通过系统包管理安装 ffmpeg")
+    task_path = Path(task_dir)
+    if not task_path.exists():
+        log.warning("手动合并失败: 任务目录不存在")
         return None
 
-    import zipfile
-    app_root = get_app_root_dir()
-    target_dir = os.path.join(app_root, 'ffmpeg')
-    os.makedirs(target_dir, exist_ok=True)
-
-    ffmpeg_exe = os.path.join(target_dir, 'ffmpeg.exe')
-    if os.path.exists(ffmpeg_exe):
-        return ffmpeg_exe
-
-    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-    zip_path = os.path.join(target_dir, 'ffmpeg.zip')
+    output_file = task_path / 'video.mp4'
     try:
-        log.info(f"开始下载 ffmpeg: {url}")
-        with requests.get(url, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            with open(zip_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        log.info("下载完成，开始解压...")
-        extract_dir = os.path.join(target_dir, 'tmp_extract')
-        os.makedirs(extract_dir, exist_ok=True)
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(extract_dir)
-        ffmpeg_path = None
-        for root, dirs, files in os.walk(extract_dir):
-            if 'ffmpeg.exe' in files:
-                ffmpeg_path = os.path.join(root, 'ffmpeg.exe')
-                break
-        if not ffmpeg_path:
-            raise RuntimeError("压缩包未找到 ffmpeg.exe")
-        shutil.copy2(ffmpeg_path, ffmpeg_exe)
-        prob_src = os.path.join(os.path.dirname(ffmpeg_path), 'ffprobe.exe')
-        if os.path.exists(prob_src):
-            shutil.copy2(prob_src, os.path.join(target_dir, 'ffprobe.exe'))
-        try:
-            os.remove(zip_path)
-            shutil.rmtree(extract_dir, ignore_errors=True)
-        except Exception:
-            pass
-        return ffmpeg_exe
-    except Exception as e:
-        log.warning(f"下载/解压 ffmpeg 失败: {e}")
-        try:
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-        except Exception:
-            pass
+        if output_file.exists() and output_file.stat().st_size > 0:
+            log.info("检测到已存在的合并视频文件: %s", output_file)
+            return str(output_file)
+    except OSError as exc:
+        log.debug("检查视频输出文件出错: %s", exc)
+
+    def _pick_largest(paths):
+        valid = [p for p in paths if p.exists() and p.is_file()]
+        if not valid:
+            return None
+        return max(valid, key=lambda p: p.stat().st_size)
+
+    video_exts = {'.mp4', '.webm', '.mkv', '.mov'}
+    audio_exts = {'.m4a', '.weba', '.webm', '.opus', '.mp3'}
+
+    video_candidates = [p for p in task_path.glob('video.*')
+                        if p.suffix.lower() in video_exts and p.name not in {'video.mp4'} and '.info' not in p.name]
+    audio_candidates = [p for p in task_path.glob('video.*')
+                        if p.suffix.lower() in audio_exts and '.info' not in p.name]
+
+    video_file = _pick_largest(video_candidates)
+    audio_file = _pick_largest(audio_candidates)
+
+    if not video_file or not audio_file:
+        log.warning("手动合并失败: 未找到可用的视频/音频分离文件")
         return None
 
+    candidates = []
+    if ffmpeg_path:
+        candidates.append(ffmpeg_path)
 
-def find_ffmpeg_location(config=None, logger: logging.Logger | None = None) -> str | None:
-    """仅使用项目内置 ffmpeg；若不存在，在 Windows 上自动下载；其他平台返回 None。
+    which_target = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+    path_ffmpeg = _which(which_target)
+    if path_ffmpeg and path_ffmpeg not in candidates:
+        candidates.append(path_ffmpeg)
 
-    忽略 FFMPEG_LOCATION 与系统 PATH，统一走应用根目录 ffmpeg/ 下的组件。
-    """
-    log = logger or logging.getLogger(__name__)
-    try:
-        app_root = get_app_root_dir()
-        bundled = os.path.join(app_root, 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
-        if os.path.exists(bundled):
-            log.info(f"使用项目内置ffmpeg: {bundled}")
-            return bundled
+    # 最后尝试项目内置目录（防止绝对路径因为被移动而失效）
+    bundled = os.path.join(get_app_root_dir(), 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if bundled not in candidates:
+        candidates.append(bundled)
 
-        # 不存在则尝试在 Windows 自动下载
-        if os.name == 'nt':
-            path = download_ffmpeg_bundled(log)
-            if path and os.path.exists(path):
-                log.info(f"已自动下载 ffmpeg: {path}")
-                return path
-            else:
-                log.warning("未能自动下载 ffmpeg，请检查网络或手动放置到 ffmpeg/ 目录")
-    except Exception as e:
-        log.debug(f"定位/下载 ffmpeg 异常: {e}")
+    for candidate in candidates:
+        if not candidate or not is_ffmpeg_usable(candidate, log):
+            continue
+
+        cmd = [candidate, '-y', '-i', str(video_file), '-i', str(audio_file), '-c', 'copy', str(output_file)]
+        log.info("尝试通过ffmpeg手动合并音视频: %s", ' '.join(cmd))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+        except Exception as exc:
+            log.warning(f"手动合并过程中发生异常: {exc}")
+            continue
+
+        if result.returncode == 0:
+            log.info("已通过ffmpeg成功合并音视频: %s", output_file)
+            return str(output_file)
+
+        log.warning("手动合并失败，ffmpeg输出: %s", result.stderr)
+
+    log.warning("所有可用ffmpeg路径均无法完成手动合并")
     return None
 
 
@@ -391,7 +388,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             return False, f"视频不可用或无法访问: {error_msg}"
         
         # 预先检测 ffmpeg（内部会在未提供config时自行加载配置）
-        ffmpeg_location = find_ffmpeg_location(None, logger)
+        ffmpeg_location = get_ffmpeg_path(logger=logger)
 
         # 准备yt-dlp命令
         cmd = [
@@ -482,6 +479,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 预先初始化，避免在异常分支中未绑定导致静态分析报错
         process = None
         output = ""
+        manual_merge_success = False
 
         for attempt in range(max_retries):
             try:
@@ -594,6 +592,15 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 
                 # 检查是否是格式问题
                 combined_error = error_output + error_stderr
+
+                if "'NoneType' object has no attribute 'lower'" in combined_error:
+                    merged_file = merge_streams_with_ffmpeg(task_dir, ffmpeg_location, logger)
+                    if merged_file:
+                        manual_merge_success = True
+                        logger.info("yt-dlp在合并阶段触发NoneType错误，已使用ffmpeg手动合并成功")
+                        break
+                    logger.warning("手动合并失败，将继续进行下载重试")
+
                 if "Requested format is not available" in combined_error or "Only images are available" in combined_error:
                     if attempt < max_retries - 1:
                         # 降级格式选择策略
@@ -643,7 +650,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 continue
         
         # 处理输出结果 — 使用安全检查以防 process 未被创建
-        if process is not None and getattr(process, 'returncode', None) == 0:
+        download_success = manual_merge_success or (process is not None and getattr(process, 'returncode', None) == 0)
+        if download_success:
             logger.info("下载完成，正在收集文件信息")
             
             # 获取下载的文件信息

@@ -20,6 +20,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_subdir
+from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 import subprocess
 import tempfile
 
@@ -1633,16 +1634,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             import queue
 
             # 仅使用项目内置 ffmpeg/ffprobe，如缺失仅在 Windows 上尝试下载作为兜底
-            try:
-                from modules.youtube_handler import find_ffmpeg_location
-                ffmpeg_bin = find_ffmpeg_location(None, task_logger)
-            except Exception:
-                ffmpeg_bin = None
+            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
             if not ffmpeg_bin or not os.path.exists(ffmpeg_bin):
                 task_logger.error("未找到项目内置 FFmpeg，无法进行字幕嵌入。请确认仓库自带的 ffmpeg/ 目录完整（可重新解压或手动放置二进制）。")
                 update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                 return None
-            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=task_logger)
+            if not ffprobe_bin:
+                task_logger.error("未能定位 ffprobe，无法继续字幕嵌入")
+                update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                return None
             
             # 生成嵌入字幕后的视频文件路径
             video_dir = os.path.dirname(video_path)
@@ -2159,11 +2160,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """获取视频时长（秒）"""
         try:
             # subprocess imported at module level
-            from modules.youtube_handler import find_ffmpeg_location
-            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
             if not ffmpeg_bin:
                 raise FileNotFoundError('ffmpeg not found')
-            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=task_logger)
+            if not ffprobe_bin:
+                raise FileNotFoundError('ffprobe not found')
             cmd = [
                 ffprobe_bin, '-v', 'quiet', '-print_format', 'json', 
                 '-show_format', video_path
@@ -2197,11 +2199,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         info: dict[str, float | int | str | None] = {"width": None, "height": None, "fps": None, "pix_fmt": None}
         try:
             # subprocess/json handled at module level where needed
-            from modules.youtube_handler import find_ffmpeg_location
-            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
             if not ffmpeg_bin:
                 raise FileNotFoundError('ffmpeg not found')
-            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=task_logger)
+            if not ffprobe_bin:
+                raise FileNotFoundError('ffprobe not found')
             cmd = [
                 ffprobe_bin, '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'v:0', '-show_streams', video_path
@@ -2246,11 +2249,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         info: dict[str, int | str | None] = {"sample_rate": None, "channels": None, "sample_fmt": None}
         try:
             # subprocess/json handled at module level where needed
-            from modules.youtube_handler import find_ffmpeg_location
-            ffmpeg_bin = find_ffmpeg_location(None, task_logger)
+            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
             if not ffmpeg_bin:
                 raise FileNotFoundError('ffmpeg not found')
-            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=task_logger)
+            if not ffprobe_bin:
+                raise FileNotFoundError('ffprobe not found')
             cmd = [
                 ffprobe_bin, '-v', 'quiet', '-print_format', 'json',
                 '-select_streams', 'a:0', '-show_streams', video_path

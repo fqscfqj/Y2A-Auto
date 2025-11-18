@@ -13,6 +13,7 @@ from typing import Optional, Tuple, List, Dict, Any
 import re
 import json
 import requests
+from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
@@ -142,17 +143,12 @@ class SpeechRecognizer:
         """Extract 16kHz mono WAV from video using ffmpeg. Returns temp file path."""
         try:
             # 优先使用项目内置/配置中的 ffmpeg
-            ffmpeg_bin = 'ffmpeg'
-            try:
-                from .youtube_handler import find_ffmpeg_location  # 复用已有定位逻辑
-                ffmpeg_path = find_ffmpeg_location(logger=self.logger)
-                if ffmpeg_path and os.path.exists(ffmpeg_path):
-                    ffmpeg_bin = ffmpeg_path
-                    self.logger.info(f"语音识别提取音频将使用 ffmpeg: {ffmpeg_bin}")
-                else:
-                    self.logger.info("未找到配置的ffmpeg，尝试使用系统环境中的 ffmpeg")
-            except Exception as _e:
-                self.logger.debug(f"定位 ffmpeg 失败，退回系统命令: {_e}")
+            ffmpeg_bin = get_ffmpeg_path(logger=self.logger)
+            if ffmpeg_bin and os.path.exists(ffmpeg_bin):
+                self.logger.info(f"语音识别提取音频将使用 ffmpeg: {ffmpeg_bin}")
+            else:
+                ffmpeg_bin = 'ffmpeg'
+                self.logger.info("未找到配置的ffmpeg，尝试使用系统环境中的 ffmpeg")
 
             tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_')
             self._temp_dirs.append(tmp_dir)  # Track for cleanup
@@ -1074,11 +1070,12 @@ class SpeechRecognizer:
     def _probe_media_duration(self, media_path: str) -> Optional[float]:
         """使用ffprobe获取音/视频时长（秒）。"""
         try:
-            from .youtube_handler import find_ffmpeg_location
-            ffmpeg_bin = find_ffmpeg_location(logger=self.logger)
+            ffmpeg_bin = get_ffmpeg_path(logger=self.logger)
             if not ffmpeg_bin:
                 return None
-            ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+            ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=self.logger)
+            if not ffprobe_bin:
+                return None
             cmd = [ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', media_path]
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
             if result.returncode != 0:
@@ -1210,8 +1207,7 @@ class SpeechRecognizer:
         Note: Caller is responsible for cleanup via _cleanup_temp_files() or use TemporaryDirectory context manager.
         """
         try:
-            from .youtube_handler import find_ffmpeg_location
-            ffmpeg_bin = find_ffmpeg_location(logger=self.logger) or 'ffmpeg'
+            ffmpeg_bin = get_ffmpeg_path(logger=self.logger) or 'ffmpeg'
             out_dir = tempfile.mkdtemp(prefix='y2a_clip_')
             self._temp_dirs.append(out_dir)  # Track for cleanup
             out_wav = os.path.join(out_dir, 'clip.wav')
