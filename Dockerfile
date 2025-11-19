@@ -34,6 +34,8 @@ RUN /root/.local/bin/yt-dlp --version
 FROM python:3.11-slim
 
 ARG TARGETARCH
+ARG FFMPEG_VARIANT=btbn
+ENV FFMPEG_VARIANT=${FFMPEG_VARIANT}
 
 # 设置工作目录
 WORKDIR /app
@@ -46,7 +48,16 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
         curl \
+        libfontconfig1 \
+        libfreetype6 \
+        libfribidi0 \
+        libgnutls30 \
+        libgomp1 \
+        libharfbuzz0b \
+        libunistring5 \
+        libxml2 \
         xz-utils \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
@@ -58,24 +69,40 @@ COPY --from=builder /root/.local /home/y2a/.local
 # 复制应用代码
 COPY --chown=y2a:y2a . .
 
-# 下载静态版 ffmpeg 并封装进镜像，避免依赖宿主环境
+# 下载带硬件编码支持的 ffmpeg，并在必要时回退到纯 CPU 版本
 RUN set -eux \
     && mkdir -p /app/ffmpeg \
     && rm -rf /app/ffmpeg/* \
     && arch="${TARGETARCH:-amd64}" \
-    && case "$arch" in \
-        amd64|x86_64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" ;; \
-        arm64|aarch64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" ;; \
-        arm|armv7l)   ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz" ;; \
-        *) echo "Unsupported TARGETARCH: $arch" >&2 && exit 1 ;; \
-    esac \
     && tmpdir="$(mktemp -d)" \
+    && case "${FFMPEG_VARIANT}" in \
+        btbn) \
+            case "$arch" in \
+                amd64|x86_64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" ;; \
+                arm64|aarch64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz" ;; \
+                *) echo "FFMPEG_VARIANT=btbn is not available for $arch" >&2 && exit 1 ;; \
+            esac ;; \
+        static) \
+            case "$arch" in \
+                amd64|x86_64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" ;; \
+                arm64|aarch64) ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" ;; \
+                arm|armv7l)   ffmpeg_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz" ;; \
+                *) echo "Unsupported TARGETARCH: $arch" >&2 && exit 1 ;; \
+            esac ;; \
+        *) echo "Unknown FFMPEG_VARIANT: ${FFMPEG_VARIANT}" >&2 && exit 1 ;; \
+    esac \
     && curl -fsSL "$ffmpeg_url" -o "$tmpdir/ffmpeg.tar.xz" \
-    && tar -xf "$tmpdir/ffmpeg.tar.xz" --strip-components=1 -C /app/ffmpeg \
+    && tar -xf "$tmpdir/ffmpeg.tar.xz" -C "$tmpdir" \
+    && payload_dir="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -name 'ffmpeg*' | head -n 1)" \
+    && if [ -z "$payload_dir" ]; then echo "Unable to locate extracted ffmpeg directory" >&2 && exit 1; fi \
+    && cp -a "$payload_dir"/. /app/ffmpeg/ \
     && rm -rf "$tmpdir" \
-    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe \
+    && if [ -x /app/ffmpeg/bin/ffmpeg ]; then ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg; fi \
+    && if [ -x /app/ffmpeg/bin/ffprobe ]; then ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe; fi \
+    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe 2>/dev/null || true \
     && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
-    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe
+    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe \
+    && /app/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi nvenc && echo "✅ NVENC encoders detected" || echo "ℹ️ NVENC not found in current build"
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \

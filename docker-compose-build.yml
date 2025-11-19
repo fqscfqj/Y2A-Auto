@@ -19,7 +19,13 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
-    # GPU 加速可选配置（根据实际硬件选择）
+      # - VIDEO_ENCODER=nvenc          # NVIDIA NVENC（同时取消下方 NVIDIA 块注释）
+      # - VIDEO_ENCODER=qsv            # Intel QSV（同时取消下方 Intel 块注释）
+      # - VIDEO_ENCODER=amf            # AMD AMF（同时取消下方 AMD 块注释）
+      # - LIBVA_DRIVER_NAME=iHD        # Intel: 驱动名称
+      # - LD_LIBRARY_PATH=/opt/amdgpu-pro/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH  # AMD: AMF 运行库
+    # GPU 配置：按需取消相应块注释
+    # --- NVIDIA / NVENC ---
     # deploy:
     #   resources:
     #     reservations:
@@ -27,5 +33,15 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+    # runtime: nvidia
+    # --- Intel QSV / VA-API ---
     # devices:
     #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    # --- AMD AMF / VA-API ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # volumes:
+    #   - /opt/amdgpu-pro/lib/x86_64-linux-gnu:/opt/amdgpu-pro/lib/x86_64-linux-gnu:ro

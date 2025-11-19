@@ -220,13 +220,10 @@ python app.py
 
 ## 内置 FFmpeg
 
-- 仓库自带 `ffmpeg/` 目录，其中包含：
-  - `ffmpeg.exe` / `ffprobe.exe`：Windows 64 位版本（来自 BtbN Builds）。
-  - `ffmpeg` / `ffprobe`：Linux/amd64 静态版本（来自 johnvansickle.com）。
-  - `FFMPEG_GPLv3.txt` 与 `FFMPEG_README.txt`：对应的许可证与上游说明。
-- 本地运行、Docker 镜像以及 Windows 打包版本都会优先使用该目录，无需首次启动时在线下载。
-- 若需要升级 FFmpeg，请将新的二进制文件覆盖到 `ffmpeg/` 目录，并保留相应的许可证文件；Docker 镜像与打包脚本会自动随仓库内容更新。
-- 预编译二进制已启用 NVENC / QSV / AMF / VA-API / libx264 等常用编码器（以 `ffmpeg -hide_banner -encoders` 输出为准）。GPU 能否成功加速仍取决于宿主机驱动或容器是否正确挂载对应设备。
+- Release 包含 `ffmpeg/` 目录，内置 Windows 版 BtbN 构建与 Linux 静态版二进制及配套许可证。
+- Docker 镜像与本地构建会根据 `FFMPEG_VARIANT`（默认 `btbn`）在线拉取 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) 的 GPU 友好版本；如需最小体积的纯 CPU 版本，可在构建时附加 `--build-arg FFMPEG_VARIANT=static` 回退到 johnvansickle 静态包。
+- 运行时始终优先使用 `ffmpeg/` 目录中的二进制；若需要升级，可直接替换该目录并保留许可证文件。
+- 预编译二进制均启用 NVENC / QSV / AMF / VA-API / libx264 等常用编码器（请以 `ffmpeg -hide_banner -encoders` 输出为准）。GPU 的实际可用性仍取决于宿主机驱动、容器挂载及权限。
 
 ## 嵌字转码参数与硬件加速
 
@@ -266,65 +263,59 @@ python app.py
 
 ### Docker（Linux）
 
-容器镜像会打包 `ffmpeg/` 目录；要让硬件编码生效，需要按厂商类型进行额外挂载：
+容器镜像在构建阶段已预装支持 NVENC/QSV/AMF 的 FFmpeg；要让硬件编码生效，需要为容器挂载对应 GPU 设备。所有 GPU 配置示例均已写入 `docker-compose.yml` 与 `docker-compose-build.yml`，按需取消相应注释即可。
 
 #### NVIDIA NVENC
 
 1. 宿主机安装官方 NVIDIA 驱动及 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
-1. 运行容器时附加 GPU 资源，例如：
+1. 编辑 `docker-compose.yml`（如本地构建同时编辑 `docker-compose-build.yml`），在 `environment` 块取消 `VIDEO_ENCODER=nvenc` 注释，并取消 NVIDIA GPU 栏位（`deploy.resources...` 与 `runtime: nvidia`）注释。
+1. 重新部署：
 
 ```bash
-docker compose --profile gpu up -d --build
+docker compose up -d --build
 ```
 
-`docker-compose.yml` 片段：
+  只需一次即可，后续运行 `docker compose up -d` 会沿用已有容器。
 
-```yaml
-services:
-  y2a-auto:
-    image: fqscfqj/y2a-auto:latest
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    # 对于 Compose v2 也可以使用
-    # runtime: nvidia
-    # device_requests:
-    #   - driver: nvidia
-    #     count: 1
-    #     capabilities: [[gpu]]
-```
-
-1. 设置 `VIDEO_ENCODER=nvenc`，并在容器内自检：
+1. 自检确认容器能看到 NVENC：
 
 ```bash
-ffmpeg -hide_banner -encoders | grep -i nvenc
+docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i nvenc
 ```
 
 #### Intel QSV / VA-API
 
 1. 启用 Intel iGPU，并安装 VAAPI/QSV 驱动（例如 `intel-media-va-driver-non-free`）。
-1. 将 `/dev/dri` 映射进容器，同时根据需要设置 `LIBVA_DRIVER_NAME`。
+1. 编辑 `docker-compose.yml`，取消 `VIDEO_ENCODER=qsv` 与（可选）`LIBVA_DRIVER_NAME=iHD` 的注释，并取消 Intel 块（`/dev/dri` 映射、`group_add`）注释。需要多个用户共享时，可确保宿主机用户属于 `video/render` 组。
+1. 重新部署：
 
-```yaml
-services:
-  y2a-auto:
-    image: fqscfqj/y2a-auto:latest
-    devices:
-      - /dev/dri:/dev/dri
-    environment:
-      - LIBVA_DRIVER_NAME=iHD
+```bash
+docker compose up -d --build
 ```
 
-1. 设置 `VIDEO_ENCODER=qsv`，并在容器内执行 `ffmpeg -hide_banner -encoders | grep -i qsv` 进行确认。
+1. 自检：
+
+```bash
+docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i qsv
+```
 
 #### AMD AMF / VAAPI
 
-- AMF 仅在 Windows 上可用；Linux 环境可使用 VA-API (`VIDEO_ENCODER=cpu` + `-vf subtitles` + `-vaapi_device`) 或自行更换带有 `h264_vaapi`/`hevc_vaapi` 的 FFmpeg 并调整代码。
-- 如需 Linux 上的 AMD 编码，可在 `ffmpeg/` 中放置包含 `h264_vaapi`/`hevc_vaapi` 的构建，并在 Docker 运行时挂载 `/dev/dri`；随后在 `config.json` 中设置 `VIDEO_ENCODER` 为 `cpu` 并在 `FFMPEG_LOCATION` 指向自定义脚本。
+- AMF 在 Windows 与新版本 amdgpu-pro (24.x+) 上均可使用；Docker 场景需确保宿主机已安装 AMD 官方驱动并可访问 `/dev/dri`。
+- 编辑 `docker-compose.yml`，取消 `VIDEO_ENCODER=amf`、`LD_LIBRARY_PATH=...` 与 AMD 块（挂载 `/dev/dri`、可选运行库 `volumes`）注释。
+- 重新部署：
+
+```bash
+docker compose up -d --build
+```
+
+- 自检：
+
+```bash
+docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i amf
+```
+
+- 若当前驱动不包含 AMF，可退回到 VA-API：自备含 `h264_vaapi/hevc_vaapi` 的 FFmpeg，运行容器时挂载 `/dev/dri`，并在 `config.json` 指向自定义转码脚本。
 
 > 提示：容器内 `ffmpeg -encoders` 是判断编码器是否可用的唯一依据；若输出缺失，请检查驱动或替换 `ffmpeg/` 内容。应用在检测到硬件编码失败时会写入任务日志，并自动回退到 CPU。
 
@@ -345,7 +336,7 @@ COPY . .
 CMD ["python", "app.py"]
 ```
 
-构建完自定义镜像后，仍需按上文步骤为容器挂载 GPU 设备。
+构建完自定义镜像后，仍需按上文步骤为容器挂载 GPU 设备；或者在默认 Dockerfile 构建时追加 `--build-arg FFMPEG_VARIANT=static`，即可获得体积更小的纯 CPU 版本镜像。
 
 ## 常见问题
 

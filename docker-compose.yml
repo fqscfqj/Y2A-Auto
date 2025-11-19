@@ -16,7 +16,33 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
-    # 硬件加速示例：取消下列注释并安装对应驱动
+      # - VIDEO_ENCODER=nvenc          # NVIDIA NVENC（同时取消下方 NVIDIA 块注释）
+      # - VIDEO_ENCODER=qsv            # Intel QSV（同时取消下方 Intel 块注释）
+      # - VIDEO_ENCODER=amf            # AMD AMF（同时取消下方 AMD 块注释）
+      # - LIBVA_DRIVER_NAME=iHD        # Intel: 视驱动决定，可为 iHD / i965
+      # - LD_LIBRARY_PATH=/opt/amdgpu-pro/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH  # AMD: 载入 AMF 运行库
+    # GPU 配置：按需取消相应块注释
+    # --- NVIDIA / NVENC ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # runtime: nvidia   # 旧版 Docker 需要
+    # --- Intel QSV / VA-API ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    # --- AMD AMF / VA-API ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # volumes:
+    #   - /opt/amdgpu-pro/lib/x86_64-linux-gnu:/opt/amdgpu-pro/lib/x86_64-linux-gnu:ro
+    # （若已在宿主机安装 amdgpu-pro，可挂载其运行库；路径按实际情况调整）
     # deploy:
     #   resources:
     #     reservations:
