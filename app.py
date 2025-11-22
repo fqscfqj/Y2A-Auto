@@ -799,6 +799,43 @@ def delete_task_route(task_id):
     
     return redirect(url_for('tasks'))
 
+
+@app.route('/tasks/clear_all', methods=['POST'])
+@login_required
+def clear_all_tasks_route():
+    """清空所有任务（可选择同时删除任务文件）"""
+    try:
+        delete_files = request.form.get('delete_files', 'true').lower() in ['true', '1', 'on']
+        success = clear_all_tasks(delete_files=delete_files)
+        if success:
+            flash('所有任务已清空', 'success')
+        else:
+            flash('清空任务失败，请查看日志', 'danger')
+    except Exception as e:
+        logger.error(f"清空所有任务失败: {e}")
+        flash(f'清空任务失败: {e}', 'danger')
+    return redirect(url_for('tasks'))
+
+
+@app.route('/tasks/retry_failed', methods=['POST'])
+@login_required
+def retry_failed_tasks_route():
+    """重新调度所有失败的任务（从任务管理器调用）"""
+    try:
+        # 加载最新配置
+        cfg = load_config()
+        result = retry_failed_tasks(cfg)
+        if isinstance(result, dict):
+            scheduled = result.get('scheduled', 0)
+            total = result.get('total', 0)
+            flash(f'已重新调度 {scheduled}/{total} 个失败任务', 'success')
+        else:
+            flash('重新调度失败，请查看日志', 'danger')
+    except Exception as e:
+        logger.error(f"重试失败任务失败: {e}")
+        flash(f'重试失败任务失败: {e}', 'danger')
+    return redirect(url_for('tasks'))
+
 @app.route('/tasks/<task_id>/force_upload', methods=['POST'])
 @login_required
 def force_upload_task_route(task_id):
