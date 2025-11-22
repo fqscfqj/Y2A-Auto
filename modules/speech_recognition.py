@@ -57,7 +57,6 @@ class SpeechRecognitionConfig:
     api_key: str = ''
     base_url: str = ''
     model_name: str = 'whisper-1'
-    output_format: str = 'srt'  # srt | vtt
     # Deprecated: language detection uses the same Whisper settings now
     detect_api_key: str = ''  # deprecated, ignored
     detect_base_url: str = ''  # deprecated, ignored
@@ -71,11 +70,11 @@ class SpeechRecognitionConfig:
     vad_provider: str = 'silero-vad'
     vad_api_url: str = ''
     vad_api_token: str = ''
-    vad_threshold: float = 0.5
-    vad_min_speech_ms: int = 250
-    vad_min_silence_ms: int = 100
+    vad_threshold: float = 0.6      # 提高阈值，减少误判
+    vad_min_speech_ms: int = 300    # 忽略过短的声音
+    vad_min_silence_ms: int = 500   # 增加静音判定时长，避免句子被切断
     vad_max_speech_s: int = 120
-    vad_speech_pad_ms: int = 30
+    vad_speech_pad_ms: int = 100    # 增加前后缓冲
     vad_max_segment_s: int = 90
 
     # Audio chunking settings (for long audio processing)
@@ -83,7 +82,7 @@ class SpeechRecognitionConfig:
     chunk_overlap_s: float = 0.2  # Overlap between chunks to ensure continuity
 
     # VAD post-processing constraints (control subtitle granularity)
-    vad_merge_gap_s: float = 0.25  # Merge segments if gap < this value (0.20-0.25s)
+    vad_merge_gap_s: float = 0.5  # Merge segments if gap < this value (0.20-0.25s)
     vad_min_segment_s: float = 1.0  # Minimum segment duration (0.8-1.2s)
     vad_max_segment_s_for_split: float = 8.0  # Max segment before secondary splitting (8-10s)
 
@@ -97,7 +96,7 @@ class SpeechRecognitionConfig:
     max_subtitle_line_length: int = 42  # Max characters per line
     max_subtitle_lines: int = 2  # Max lines per subtitle cue
     normalize_punctuation: bool = True  # Normalize punctuation
-    filter_filler_words: bool = False  # Remove filler words like "um", "uh"
+    filter_filler_words: bool = True  # Remove filler words like "um", "uh"
 
     # Final subtitle post-processing (timing/text granularity)
     subtitle_time_offset_s: float = 0.0  # Shift all cues by this offset in seconds (can be negative)
@@ -215,9 +214,8 @@ class SpeechRecognizer:
             self.logger.info(f"音频时长: {total_audio_duration:.1f}s")
 
             model_name = self.config.model_name or 'whisper-1'
-            response_format = (self.config.output_format or 'srt').lower()
-            if response_format not in ('srt', 'vtt'):
-                response_format = 'srt'
+            # 强制使用 srt 格式
+            response_format = 'srt'
 
             cues: List[Dict[str, Any]] = []
             
@@ -313,8 +311,13 @@ class SpeechRecognizer:
                             }
                             if self.config.language:
                                 params['language'] = self.config.language
+                            
+                            # Add prompt to reduce hallucinations and non-speech sounds
+                            base_prompt = "Transcribe only spoken words. Ignore non-speech sounds, ASMR triggers, repetition, and background noise."
                             if self.config.prompt:
-                                params['prompt'] = self.config.prompt
+                                params['prompt'] = f"{base_prompt} {self.config.prompt}"
+                            else:
+                                params['prompt'] = base_prompt
                             
                             resp = self.client.audio.transcriptions.create(**params)
                         except Exception as e:
@@ -825,7 +828,12 @@ class SpeechRecognizer:
             # Common filler words in English and Chinese
             filler_patterns = [
                 r'\b(um|uh|er|ah|hmm|like|you know)\b',
-                r'[嗯啊呃哦唔]+'
+                r'[嗯啊呃哦唔]+',
+                # ASMR / Nonsense sounds
+                r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper)\b',
+                r'\*.*?\*',  # Remove content in asterisks like *chewing sounds*
+                r'\[.*?\]',  # Remove content in brackets
+                r'\(.*?\)',  # Remove content in parentheses
             ]
             for pattern in filler_patterns:
                 text = re.sub(pattern, '', text, flags=re.IGNORECASE)
@@ -888,18 +896,21 @@ class SpeechRecognizer:
         max_lines = self.config.max_subtitle_lines
         max_total_chars = max_line_len * max_lines
         
-        if len(text) <= max_total_chars:
+        # 如果文本长度超过限制，或者包含多个句子，强制切分
+        if len(text) <= max_total_chars and text.count('.') < 2 and text.count('?') < 2 and text.count('!') < 2:
             return [cue]
         
         # Split text into sentences/phrases
-        sentences = re.split(r'([.!?。！？]+\s*)', text)
+        # 增强切分逻辑：支持更多标点，保留分隔符
+        sentences = re.split(r'([.!?。！？;；]+\s*)', text)
         # Remove empty strings from split result
         sentences = [s for s in sentences if s.strip()]
-        # Join pairs of (sentence, punctuation), handle odd-length case
+        
+        # Reconstruct sentences with their punctuation
         joined_sentences = []
         i = 0
         while i < len(sentences):
-            if i + 1 < len(sentences):
+            if i + 1 < len(sentences) and re.match(r'[.!?。！？;；]+\s*', sentences[i+1]):
                 joined_sentences.append(sentences[i] + sentences[i+1])
                 i += 2
             else:
@@ -914,6 +925,10 @@ class SpeechRecognizer:
         duration = cue['end'] - cue['start']
         total_chars = len(text)
         
+        # 如果总时长很长，但字符数很少（语速极慢），也应该切分
+        # 例如 ASMR 中一句话说了 10 秒
+        chars_per_sec = total_chars / duration if duration > 0 else 10
+        
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
@@ -921,11 +936,31 @@ class SpeechRecognizer:
             
             # Check if adding this sentence would exceed the limit
             test_text = (current_text + ' ' + sentence).strip() if current_text else sentence
-            if len(test_text) > max_total_chars and current_text:
+            
+            # 切分条件：
+            # 1. 长度超过最大字符数
+            # 2. 当前累积文本已有一定长度，且加上新句子会过长
+            # 3. 强制单句切分（如果配置了更严格的切分）
+            
+            should_split = False
+            if len(test_text) > max_total_chars:
+                should_split = True
+            elif current_text and len(current_text) > max_line_len: # 超过一行长度就倾向于切分
+                should_split = True
+            
+            if should_split and current_text:
                 # Save current cue
                 chars_in_cue = len(current_text)
+                # 估算时间：按字符比例分配时间
                 time_fraction = chars_in_cue / total_chars if total_chars > 0 else 0
                 cue_duration = duration * time_fraction
+                
+                # 保证最小持续时间
+                cue_duration = max(cue_duration, 1.0)
+                # 保证不超出剩余总时间
+                remaining_duration = cue['end'] - start_time
+                cue_duration = min(cue_duration, remaining_duration)
+                
                 end_time = start_time + cue_duration
                 
                 result_cues.append({
@@ -936,6 +971,9 @@ class SpeechRecognizer:
                 
                 start_time = end_time
                 current_text = sentence
+                # 更新剩余字符数，用于后续估算
+                total_chars -= chars_in_cue
+                duration -= cue_duration
             else:
                 current_text = test_text
         

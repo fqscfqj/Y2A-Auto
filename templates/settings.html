@@ -632,7 +632,7 @@
                                     <input type="checkbox" name="SPEECH_RECOGNITION_ENABLED" {% if config.get('SPEECH_RECOGNITION_ENABLED', False) %}checked{% endif %}>
                                     启用语音识别生成字幕（Whisper API）
                                 </label>
-                                <p class="help-text">当yt-dlp未能获取到 .vtt/.srt 字幕时，使用Whisper将音频自动转写为字幕，再配合字幕翻译功能形成完整链路。</p>
+                                <p class="help-text">当yt-dlp未能获取到字幕时，使用Whisper将音频自动转写为SRT字幕，再配合字幕翻译功能形成完整链路。</p>
                             </div>
 
                             <div class="row g-3">
@@ -641,15 +641,6 @@
                                         <label for="asr-provider">识别提供商:</label>
                                         <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
                                             <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI兼容）</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="asr-output-format">输出格式:</label>
-                                        <select id="asr-output-format" name="SPEECH_RECOGNITION_OUTPUT_FORMAT" class="form-select">
-                                            <option value="srt" {% if config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt') == 'srt' %}selected{% endif %}>SRT</option>
-                                            <option value="vtt" {% if config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt') == 'vtt' %}selected{% endif %}>VTT</option>
                                         </select>
                                     </div>
                                 </div>

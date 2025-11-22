@@ -624,10 +624,12 @@ class SubtitleTranslator:
 
             # 输出到目标文件（默认覆盖原文件）
             out_path = str(output_path or input_path)
-            if ext == '.srt':
-                self.writer.write_srt(items, out_path, translated=True)
-            else:
-                self.writer.write_vtt(items, out_path, translated=True)
+            
+            # 强制转换为 SRT 格式输出
+            if out_path.lower().endswith('.vtt'):
+                out_path = out_path[:-4] + '.srt'
+                
+            self.writer.write_srt(items, out_path, translated=True)
 
             self.logger.info(f"快速修复完成：{out_path}")
             return True

@@ -78,7 +78,6 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
-    "SPEECH_RECOGNITION_OUTPUT_FORMAT": "srt",  # srt 或 vtt
     # 语音识别结果质量门槛（开关+阈值）：少于最小条目数则视为无字幕
     "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED": True,
     "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES": 5,

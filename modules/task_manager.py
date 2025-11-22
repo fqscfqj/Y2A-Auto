@@ -1295,8 +1295,18 @@ class TaskProcessor:
                     if not isinstance(name, str):
                         continue
                     lower = name.lower()
-                    if lower.endswith('.srt') or lower.endswith('.vtt'):
+                    if lower.endswith('.srt'):
                         subtitle_files.append(os.path.join(task_dir, name))
+                    elif lower.endswith('.vtt'):
+                        # 自动将 VTT 转换为 SRT
+                        vtt_path = os.path.join(task_dir, name)
+                        srt_path = self._convert_vtt_to_srt(vtt_path, task_logger)
+                        if srt_path and os.path.exists(srt_path):
+                            subtitle_files.append(srt_path)
+                            task_logger.info(f"已将 VTT 转换为 SRT: {name} -> {os.path.basename(srt_path)}")
+                        else:
+                            # 转换失败，仍保留 VTT 以防万一
+                            subtitle_files.append(vtt_path)
             except Exception:
                 pass
             
@@ -1318,8 +1328,8 @@ class TaskProcessor:
                             _t = get_task(task_id)
                             prev_status = _t['status'] if _t else TASK_STATES['TRANSLATING_SUBTITLE']
                             update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
-                            # 输出字幕路径（与配置格式一致）
-                            asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
+                            # 输出字幕路径（强制使用 SRT）
+                            asr_ext = '.srt'
                             asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
                             out_path = None
                             out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
@@ -1403,10 +1413,10 @@ class TaskProcessor:
                 task_logger.info("优先使用英文字幕进行翻译")
             
             # 生成翻译后的文件路径
-            subtitle_ext = os.path.splitext(subtitle_file)[1]
+            # 强制使用 .srt 格式
             translated_subtitle_path = os.path.join(
                 task_dir, 
-                f"translated_{task_id}{subtitle_ext}"
+                f"translated_{task_id}.srt"
             )
             
             # 定义进度回调函数

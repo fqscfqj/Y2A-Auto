@@ -446,6 +446,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 '--write-thumbnail',
                 '--write-subs',
                 '--all-subs',
+                '--convert-subs', 'srt',
             ])
         elif only_video:
             cmd.extend([
@@ -460,6 +461,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 '--write-thumbnail',
                 '--write-subs',
                 '--all-subs',
+                '--convert-subs', 'srt',
             ])
 
         # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）
