@@ -1058,7 +1058,7 @@ def system_health():
         health_status['docker_volumes'] = check_docker_volumes()
     
     # 检查数据库
-    try {
+    try:
         logger.info("开始数据库健康检查...")
         conn = get_db_connection()
         
@@ -1106,14 +1106,14 @@ def system_health():
         
         conn.close()
         logger.info("数据库健康检查完成")
-    } except Exception as e {
+    except Exception as e:
         logger.error(f"数据库健康检查失败: {str(e)}")
         health_status['database'] = {
             'status': 'error',
             'message': f'数据库错误: {str(e)}',
             'details': get_database_debug_info()
         }
-    }
+    
 
     # 检查cookies - 使用更健壮的路径处理
     try:
@@ -1378,8 +1378,8 @@ def settings():
             if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
                 need_ffmpeg = True
             if need_ffmpeg:
-                from modules.youtube_handler import find_ffmpeg_location
-                ff_path = find_ffmpeg_location(None, logger)
+                from modules.youtube_handler import get_ffmpeg_path
+                ff_path = get_ffmpeg_path(logger=logger)
                 if ff_path and os.path.exists(ff_path):
                     logger.info(f"FFmpeg 已就绪: {ff_path}")
                 else:
@@ -1470,6 +1470,209 @@ def cleanup_downloads_route():
         flash(f"下载内容清理失败: {result.get('error', '未知错误')}", 'danger')
     
     return redirect(url_for('settings'))
+
+
+def _human_readable_size(num_bytes: float) -> str:
+    # Simple helper for human readable file sizes
+    if num_bytes is None:
+        return '0B'
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if num_bytes < 1024.0:
+            return f"{num_bytes:.2f}{unit}"
+        num_bytes /= 1024.0
+    return f"{num_bytes:.2f}PB"
+
+
+def cleanup_logs(hours: int):
+    """删除logs目录下指定小时之前的日志文件（不包括当前运行日志）"""
+    try:
+        logs_dir = get_app_subdir('logs')
+        if not os.path.exists(logs_dir):
+            return {'success': True, 'files_removed': 0, 'bytes_freed': 0, 'bytes_freed_readable': '0B'}
+
+        cutoff = time.time() - float(hours) * 3600
+        files_removed = 0
+        bytes_freed = 0
+
+        for filename in os.listdir(logs_dir):
+            path = os.path.join(logs_dir, filename)
+            # skip current top-level app and manager logs when present
+            if filename in ('app.log', 'task_manager.log'):
+                continue
+            try:
+                stat = os.stat(path)
+                if stat.st_mtime < cutoff:
+                    bytes_freed += stat.st_size if stat.st_size else 0
+                    if os.path.isfile(path):
+                        os.remove(path)
+                        files_removed += 1
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path)
+                        files_removed += 1
+            except Exception:
+                continue
+
+        return {'success': True, 'files_removed': files_removed, 'bytes_freed': bytes_freed, 'bytes_freed_readable': _human_readable_size(bytes_freed)}
+    except Exception as e:
+        logger.warning(f"日志清理失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def clear_specific_logs():
+    """清空特定日志文件并删除 task_xxx.log 文件"""
+    try:
+        logs_dir = get_app_subdir('logs')
+        processed_files = []
+        bytes_freed = 0
+
+        # 清空 app.log 和 task_manager.log
+        for fname in ('app.log', 'task_manager.log'):
+            fpath = os.path.join(logs_dir, fname)
+            if os.path.exists(fpath):
+                try:
+                    bytes_freed += os.path.getsize(fpath)
+                    open(fpath, 'w', encoding='utf-8').close()
+                    processed_files.append(fname)
+                except Exception:
+                    pass
+
+        # 删除所有task_xxx.log文件
+        for filename in os.listdir(logs_dir):
+            if filename.startswith('task_') and filename.endswith('.log'):
+                path = os.path.join(logs_dir, filename)
+                try:
+                    bytes_freed += os.path.getsize(path) if os.path.exists(path) else 0
+                    os.remove(path)
+                    processed_files.append(filename)
+                except Exception:
+                    pass
+
+        return {'success': True, 'files_processed': len(processed_files), 'processed_files': processed_files, 'bytes_freed': bytes_freed, 'bytes_freed_readable': _human_readable_size(bytes_freed)}
+    except Exception as e:
+        logger.warning(f"清空日志失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def cleanup_downloads(hours: int):
+    """清理下载目录中指定hours之前的任务目录"""
+    try:
+        downloads_dir = get_app_subdir('downloads')
+        if not os.path.exists(downloads_dir):
+            return {'success': True, 'dirs_removed': 0, 'files_removed': 0, 'bytes_freed': 0, 'bytes_freed_readable': '0B'}
+
+        cutoff = time.time() - float(hours) * 3600
+        dirs_removed = 0
+        files_removed = 0
+        bytes_freed = 0
+
+        for entry in os.listdir(downloads_dir):
+            path = os.path.join(downloads_dir, entry)
+            try:
+                if os.path.isdir(path):
+                    # check last modification
+                    mtime = os.path.getmtime(path)
+                    if mtime < cutoff:
+                        # accumulate size
+                        for root, dirs, files in os.walk(path):
+                            for f in files:
+                                fp = os.path.join(root, f)
+                                if os.path.exists(fp):
+                                    bytes_freed += os.path.getsize(fp)
+                                    files_removed += 1
+                        shutil.rmtree(path)
+                        dirs_removed += 1
+            except Exception:
+                continue
+
+        return {'success': True, 'dirs_removed': dirs_removed, 'files_removed': files_removed, 'bytes_freed': bytes_freed, 'bytes_freed_readable': _human_readable_size(bytes_freed)}
+    except Exception as e:
+        logger.warning(f"下载内容清理失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def configure_app(app, config):
+    """为Flask app应用一些基础配置值（如 secret_key、上传限制等）"""
+    try:
+        # 使用配置中的SECRET_KEY提高会话安全
+        secret = config.get('SECRET_KEY') if isinstance(config, dict) else None
+        if secret:
+            app.secret_key = secret
+
+        max_content = config.get('MAX_CONTENT_LENGTH_MB', None) if isinstance(config, dict) else None
+        if max_content:
+            try:
+                app.config['MAX_CONTENT_LENGTH'] = int(max_content) * 1024 * 1024
+            except Exception:
+                pass
+
+        # 允许覆盖的内容
+        app.config['Y2A_SETTINGS'] = config
+    except Exception as e:
+        logger.warning(f"应用配置失败: {e}")
+
+
+def auto_start_pending_tasks(config):
+    """在启动时尝试自动启动pending状态的任务"""
+    try:
+        from modules.task_manager import get_global_task_processor, get_tasks_by_status, TASK_STATES
+        processor = get_global_task_processor(config)
+        if not processor:
+            return
+
+        # 循环尝试启动下一个pending任务，直到并发数或没有更多pending
+        # 我们设置一个上限避免无限循环
+        attempts = 0
+        while attempts < 200:
+            attempts += 1
+            try:
+                processor._check_and_start_next_pending_task()
+            except Exception:
+                break
+            # 如果没有pending则退出
+            pending = get_tasks_by_status(TASK_STATES['PENDING'])
+            if not pending:
+                break
+            time.sleep(0.05)
+    except Exception as e:
+        logger.warning(f"自动启动pending任务失败: {e}")
+
+
+def schedule_log_cleanup():
+    """为日志清理创建并启动一个BackgroundScheduler, 返回调度器对象"""
+    try:
+        config = load_config()
+        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
+        if not config.get('LOG_CLEANUP_ENABLED', False):
+            return None
+
+        scheduler = BackgroundScheduler()
+        def _job():
+            cleanup_logs(int(config.get('LOG_CLEANUP_HOURS', 168)))
+        scheduler.add_job(_job, 'interval', hours=interval_hours, id='log_cleanup', replace_existing=True)
+        scheduler.start()
+        return scheduler
+    except Exception as e:
+        logger.warning(f"启动日志清理定时任务失败: {e}")
+        return None
+
+
+def schedule_download_cleanup():
+    try:
+        config = load_config()
+        interval_hours = int(config.get('DOWNLOAD_CLEANUP_INTERVAL', 24))
+        if not config.get('DOWNLOAD_CLEANUP_ENABLED', False):
+            return None
+
+        scheduler = BackgroundScheduler()
+        def _job():
+            cleanup_downloads(int(config.get('DOWNLOAD_CLEANUP_HOURS', 72)))
+        scheduler.add_job(_job, 'interval', hours=interval_hours, id='download_cleanup', replace_existing=True)
+        scheduler.start()
+        return scheduler
+    except Exception as e:
+        logger.warning(f"启动下载内容清理定时任务失败: {e}")
+        return None
+
 
 # YouTube监控系统路由
 @app.route('/youtube_monitor')
@@ -1777,7 +1980,7 @@ def sync_cookies():
                 f.write(cookies_content)
             
             # 记录同步信息
-                       sync_info = {
+            sync_info = {
                 'timestamp': data['timestamp'],
                 'sync_time': time.time(),
                 'cookie_count': data['cookieCount'],
