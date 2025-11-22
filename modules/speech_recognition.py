@@ -82,9 +82,9 @@ class SpeechRecognitionConfig:
     chunk_overlap_s: float = 0.2  # Overlap between chunks to ensure continuity
 
     # VAD post-processing constraints (control subtitle granularity)
-    vad_merge_gap_s: float = 0.5  # Merge segments if gap < this value (0.20-0.25s)
+    vad_merge_gap_s: float = 1.0  # Merge segments if gap < this value (0.20-0.25s) -> Increased to 1.0s to keep context
     vad_min_segment_s: float = 1.0  # Minimum segment duration (0.8-1.2s)
-    vad_max_segment_s_for_split: float = 8.0  # Max segment before secondary splitting (8-10s)
+    vad_max_segment_s_for_split: float = 29.0  # Max segment before secondary splitting (8-10s) -> Increased to 29s for Whisper window
 
     # Transcription settings
     language: str = ''  # Force language (e.g., 'en', 'zh', 'ja'), empty = auto-detect
@@ -780,18 +780,16 @@ class SpeechRecognizer:
                 filtered.append(seg)
             i += 1
         
-        # Step 3: Split long segments
-        # Note: Secondary splitting at silence points would require re-analyzing audio
-        # For now, we'll just mark segments that are too long for potential secondary splitting
-        max_dur = self.config.vad_max_segment_s_for_split
+        # Step 3: Split long segments (Relaxed)
+        # Whisper handles segments up to 30s well, and even longer with context.
+        # We rely on VAD's vad_max_segment_s to keep segments reasonable.
+        # Only split if extremely long to avoid memory issues or timeouts.
+        max_dur = max(self.config.vad_max_segment_s_for_split, 60.0) # Ensure at least 60s
         final: List[Tuple[float, float]] = []
         for seg in filtered:
             duration = seg[1] - seg[0]
             if duration > max_dur:
-                # Split into smaller chunks at regular intervals
-                # In a real implementation, we'd look for silence points within the segment
-                self.logger.info(f"长段标记为需要二次切分: {duration:.1f}s > {max_dur:.1f}s")
-                # For now, split at regular intervals as fallback
+                self.logger.info(f"长段强制切分: {duration:.1f}s > {max_dur:.1f}s")
                 t = seg[0]
                 while t < seg[1]:
                     t_end = min(t + max_dur, seg[1])
@@ -809,11 +807,13 @@ class SpeechRecognizer:
         Strategy:
         - Normalize punctuation
         - Remove excessive whitespace
-        - Optionally filter filler words
+        - Filter filler words and ASMR sounds
+        - Remove repeated words/phrases
         """
         if not text:
             return ""
         
+        original_text = text
         # Remove excessive whitespace
         text = re.sub(r'\s+', ' ', text).strip()
         
@@ -829,15 +829,24 @@ class SpeechRecognizer:
             filler_patterns = [
                 r'\b(um|uh|er|ah|hmm|like|you know)\b',
                 r'[嗯啊呃哦唔]+',
-                # ASMR / Nonsense sounds
-                r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper)\b',
+                # ASMR / Nonsense sounds / Repetitive sounds
+                r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b',
                 r'\*.*?\*',  # Remove content in asterisks like *chewing sounds*
                 r'\[.*?\]',  # Remove content in brackets
                 r'\(.*?\)',  # Remove content in parentheses
             ]
             for pattern in filler_patterns:
                 text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            
+            # Remove repeated words (e.g., "scan, scan, scan" -> "scan")
+            # Matches a word followed by punctuation/space and the same word, repeated 2+ times
+            # \b(\w+)(?:[,\s]+\1\b)+ -> \1
+            text = re.sub(r'\b(\w+)(?:[,\s]+\1\b)+', r'\1', text, flags=re.IGNORECASE)
+            
             text = re.sub(r'\s+', ' ', text).strip()
+        
+        if text != original_text and len(original_text) < 100:
+             self.logger.debug(f"文本清洗: '{original_text}' -> '{text}'")
         
         return text
 
@@ -880,7 +889,7 @@ class SpeechRecognizer:
         
         return lines
 
-    def _split_cue_by_text_length(self, cue: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _split_cue_by_text_length(self, cue: Dict[str, Any]) -> List[Dict[str
         """Split a cue into multiple cues if text is too long.
         
         Strategy:
@@ -896,21 +905,22 @@ class SpeechRecognizer:
         max_lines = self.config.max_subtitle_lines
         max_total_chars = max_line_len * max_lines
         
-        # 如果文本长度超过限制，或者包含多个句子，强制切分
-        if len(text) <= max_total_chars and text.count('.') < 2 and text.count('?') < 2 and text.count('!') < 2:
-            return [cue]
-        
         # Split text into sentences/phrases
-        # 增强切分逻辑：支持更多标点，保留分隔符
-        sentences = re.split(r'([.!?。！？;；]+\s*)', text)
+        # 增强切分逻辑：支持更多标点，保留分隔符，加入逗号
+        # Split by . ! ? ; , and their CJK equivalents
+        sentences = re.split(r'([.!?。！？;；,，]+\s*)', text)
         # Remove empty strings from split result
         sentences = [s for s in sentences if s.strip()]
         
+        if len(text) > max_total_chars:
+             self.logger.debug(f"尝试切分长字幕 ({len(text)} chars): {text[:50]}...")
+             self.logger.debug(f"切分出的句子数: {len(sentences)}")
+
         # Reconstruct sentences with their punctuation
         joined_sentences = []
         i = 0
         while i < len(sentences):
-            if i + 1 < len(sentences) and re.match(r'[.!?。！？;；]+\s*', sentences[i+1]):
+            if i + 1 < len(sentences) and re.match(r'[.!?。！？;；,，]+\s*', sentences[i+1]):
                 joined_sentences.append(sentences[i] + sentences[i+1])
                 i += 2
             else:
@@ -926,7 +936,6 @@ class SpeechRecognizer:
         total_chars = len(text)
         
         # 如果总时长很长，但字符数很少（语速极慢），也应该切分
-        # 例如 ASMR 中一句话说了 10 秒
         chars_per_sec = total_chars / duration if duration > 0 else 10
         
         for sentence in sentences:
@@ -934,13 +943,57 @@ class SpeechRecognizer:
             if not sentence:
                 continue
             
+            # 如果单句本身就超过最大长度，强制硬切分
+            if len(sentence) > max_total_chars:
+                self.logger.debug(f"单句过长 ({len(sentence)} > {max_total_chars})，强制硬切分: {sentence[:30]}...")
+                # 先处理掉 current_text
+                if current_text:
+                    chars_in_cue = len(current_text)
+                    time_fraction = chars_in_cue / total_chars if total_chars > 0 else 0
+                    cue_duration = duration * time_fraction
+                    cue_duration = max(cue_duration, 1.0)
+                    cue_duration = min(cue_duration, cue['end'] - start_time)
+                    
+                    result_cues.append({
+                        'start': start_time,
+                        'end': start_time + cue_duration,
+                        'text': current_text
+                    })
+                    start_time += cue_duration
+                    total_chars -= chars_in_cue
+                    duration -= cue_duration
+                    current_text = ""
+                
+                # 硬切分长句
+                sub_lines = self._split_long_subtitle(sentence, max_line_len)
+                # 将硬切分后的行两两组合（因为 max_lines=2）
+                chunked_lines = []
+                for k in range(0, len(sub_lines), max_lines):
+                    chunk = " ".join(sub_lines[k:k+max_lines])
+                    chunked_lines.append(chunk)
+                
+                for chunk in chunked_lines:
+                    chars_in_cue = len(chunk)
+                    time_fraction = chars_in_cue / total_chars if total_chars > 0 else 0
+                    cue_duration = duration * time_fraction
+                    # 这里的 duration 可能会因为 total_chars 估算不准而偏小，需要保底
+                    if cue_duration < 0.5 and duration > 1.0: 
+                         cue_duration = min(2.0, duration)
+
+                    cue_duration = min(cue_duration, cue['end'] - start_time)
+                    
+                    result_cues.append({
+                        'start': start_time,
+                        'end': start_time + cue_duration,
+                        'text': chunk
+                    })
+                    start_time += cue_duration
+                    total_chars -= chars_in_cue
+                    duration -= cue_duration
+                continue
+
             # Check if adding this sentence would exceed the limit
             test_text = (current_text + ' ' + sentence).strip() if current_text else sentence
-            
-            # 切分条件：
-            # 1. 长度超过最大字符数
-            # 2. 当前累积文本已有一定长度，且加上新句子会过长
-            # 3. 强制单句切分（如果配置了更严格的切分）
             
             should_split = False
             if len(test_text) > max_total_chars:
@@ -985,6 +1038,9 @@ class SpeechRecognizer:
                 'text': current_text
             })
         
+        if len(result_cues) > 1:
+             self.logger.debug(f"切分结果: 1 -> {len(result_cues)} 条")
+
         return result_cues if result_cues else [cue]
 
     def _apply_text_processing_to_cues(self, cues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -995,7 +1051,7 @@ class SpeechRecognizer:
         
         Args:
             cues: List of cue dictionaries with 'start', 'end', 'text' keys
-            
+
         Returns:
             Processed list of cues with normalized and split text
         """
@@ -1056,13 +1112,31 @@ class SpeechRecognizer:
             gap = float(c['start']) - float(prev['end'])
             prev_text = (prev.get('text') or '').strip()
             cur_text = (c.get('text') or '').strip()
+            
+            prev_dur = float(prev['end']) - float(prev['start'])
+            cur_dur = float(c['end']) - float(c['start'])
+            combined_dur = float(c['end']) - float(prev['start'])
+
             need_merge = False
+            
+            # Condition 1: Gap is small
             if gap <= merge_gap:
-                need_merge = True
+                # Only merge if the resulting subtitle isn't too long (e.g. < 7s)
+                # OR if one of the segments is very short (fragment) that needs to be attached
+                if combined_dur < 7.0:
+                    need_merge = True
+                elif prev_dur < 1.0 or cur_dur < 1.0:
+                    # Always try to rescue tiny fragments
+                    need_merge = True
+                else:
+                    # Both are substantial and combined is long -> keep separate
+                    need_merge = False
+            
+            # Condition 2: Text is too short (fragment repair), even if gap is slightly larger
             elif len(prev_text) < min_text_len or len(cur_text) < min_text_len:
-                # Merge ultra-short isolated pieces even if gap slightly bigger (<= 2*merge_gap)
                 if gap <= merge_gap * 2:
                     need_merge = True
+            
             if need_merge:
                 # Merge texts with space (avoid duplicate punctuation spacing)
                 new_text = (prev_text + ' ' + cur_text).strip()
@@ -1183,7 +1257,11 @@ class SpeechRecognizer:
             vad_model = self.config.vad_provider or 'silero-vad'
             payload = {
                 'model': vad_model,
-                'audio': audio_array.tolist()
+                'audio': audio_array.tolist(),
+                'threshold': self.config.vad_threshold,
+                'min_speech_duration_ms': self.config.vad_min_speech_ms,
+                'min_silence_duration_ms': self.config.vad_min_silence_ms,
+                'speech_pad_ms': self.config.vad_speech_pad_ms
             }
             
             self.logger.info(f"调用VAD接口: {url} (model={vad_model}, samples={len(audio_array)})")
@@ -1293,6 +1371,22 @@ class SpeechRecognizer:
                 self.logger.warning(f"清理临时目录失败 {temp_dir}: {e}")
         self._temp_dirs.clear()
 
+    def _get_wav_duration(self, wav_path: str) -> float:
+        """Get duration of a WAV file efficiently."""
+        try:
+            with wave.open(wav_path, 'rb') as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    return frames / float(rate)
+        except Exception:
+            pass
+        try:
+            size = os.path.getsize(wav_path)
+            return max(0.0, (size - 44) / 32000.0)
+        except Exception:
+            return 0.0
+
     def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
         """Transcribe a single audio clip with retry logic.
         
@@ -1306,10 +1400,10 @@ class SpeechRecognizer:
         model_name = self.config.model_name or 'whisper-1'
         
         # Get the duration of THIS clip (not the whole video)
-        clip_duration_s = self._probe_media_duration(wav_path)
-        if clip_duration_s is None:
-            self.logger.warning(f"无法获取音频片段时长 ({base_offset_s:.2f}s 起)，使用估计值")
-            clip_duration_s = 30.0  # Fallback estimate
+        clip_duration_s = self._get_wav_duration(wav_path)
+        if clip_duration_s <= 0.1:
+            # Fallback if wav read fails
+            clip_duration_s = self._probe_media_duration(wav_path) or 30.0
         
         for attempt in range(self.config.max_retries):
             try:
@@ -1380,7 +1474,7 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             api_key=whisper_api_key,
             base_url=whisper_base_url,
             model_name=whisper_model,
-            output_format=output_format,
+            # output_format removed, hardcoded to srt internally
             min_lines_enabled=app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True),
             min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
             vad_enabled=bool(app_config.get('VAD_ENABLED', False)),
@@ -1409,7 +1503,7 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             max_subtitle_line_length=int(app_config.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42),
             max_subtitle_lines=int(app_config.get('SUBTITLE_MAX_LINES', 2) or 2),
             normalize_punctuation=bool(app_config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True)),
-            filter_filler_words=bool(app_config.get('SUBTITLE_FILTER_FILLER_WORDS', False)),
+            filter_filler_words=bool(app_config.get('SUBTITLE_FILTER_FILLER_WORDS', True)),
             # Final subtitle post-processing (optional params)
             subtitle_time_offset_s=float(app_config.get('SUBTITLE_TIME_OFFSET_S', 0.0) or 0.0),
             subtitle_min_cue_duration_s=float(app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) or 0.6),
