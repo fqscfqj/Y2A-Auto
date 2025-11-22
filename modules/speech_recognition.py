@@ -889,7 +889,7 @@ class SpeechRecognizer:
         
         return lines
 
-    def _split_cue_by_text_length(self, cue: Dict[str, Any]) -> List[Dict[str
+    def _split_cue_by_text_length(self, cue: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Split a cue into multiple cues if text is too long.
         
         Strategy:
