@@ -1087,7 +1087,7 @@
 
                 <div class="settings-actions-bar">
                     <div class="d-flex justify-content-end gap-2">
-                        <button type="reset" class="btn btn-outline-secondary">重置</button>
+                        <button type="button" id="reset-settings-btn" class="btn btn-outline-secondary">重置</button>
                         <button type="submit" class="btn btn-primary">保存设置</button>
                     </div>
                 </div>
@@ -1147,6 +1147,50 @@ document.addEventListener('DOMContentLoaded', function () {
                 body.classList.add('show');
             }
         }
+    }
+
+    // 处理重置按钮点击
+    const resetBtn = document.getElementById('reset-settings-btn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', function() {
+            // 获取当前激活的 tab
+            const activeTab = document.querySelector('.tab-pane.active');
+            if (!activeTab) {
+                alert('无法确定当前设置页面');
+                return;
+            }
+
+            // 获取该 tab 下的所有输入字段名称
+            const inputs = activeTab.querySelectorAll('input[name], select[name], textarea[name]');
+            const keys = Array.from(inputs).map(input => input.name).filter(name => name);
+
+            if (keys.length === 0) {
+                alert('当前页面没有可重置的设置项');
+                return;
+            }
+
+            if (confirm('确定要将当前页面的设置重置为默认值吗？此操作不可撤销。')) {
+                fetch('{{ url_for("reset_settings") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ keys: keys })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        window.location.reload();
+                    } else {
+                        alert('重置失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('重置请求发生错误');
+                });
+            }
+        });
     }
 });
 </script>

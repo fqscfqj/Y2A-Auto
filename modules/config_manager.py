@@ -223,5 +223,44 @@ def update_config(new_config):
     
     return current_config
 
+def reset_config():
+    """
+    重置配置为默认值
+    
+    Returns:
+        dict: 重置后的配置
+    """
+    config_path = os.path.join(get_app_subdir('config'), 'config.json')
+    
+    # 使用默认配置覆盖当前配置
+    save_config(DEFAULT_CONFIG, config_path)
+    
+    # 重新加载配置
+    return load_config()
+
+def reset_specific_config(keys):
+    """
+    重置指定的配置项为默认值
+    
+    Args:
+        keys (list): 要重置的配置键列表
+        
+    Returns:
+        dict: 更新后的配置
+    """
+    config_path = os.path.join(get_app_subdir('config'), 'config.json')
+    current_config = load_config()
+    updated = False
+    
+    for key in keys:
+        if key in DEFAULT_CONFIG:
+            current_config[key] = DEFAULT_CONFIG[key]
+            updated = True
+            
+    if updated:
+        save_config(current_config, config_path)
+        
+    return current_config
+
 # 初始化时加载配置
-load_config() 
+load_config()

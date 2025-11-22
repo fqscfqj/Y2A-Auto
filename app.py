@@ -16,7 +16,7 @@ from functools import wraps
 from flask_cors import CORS, cross_origin
 from modules.youtube_handler import download_video_data, extract_video_urls_from_playlist
 from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
-from modules.config_manager import load_config, update_config, DEFAULT_CONFIG
+from modules.config_manager import load_config, update_config, reset_config, reset_specific_config, DEFAULT_CONFIG
 from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
@@ -1058,7 +1058,7 @@ def system_health():
         health_status['docker_volumes'] = check_docker_volumes()
     
     # 检查数据库
-    try:
+    try {
         logger.info("开始数据库健康检查...")
         conn = get_db_connection()
         
@@ -1106,14 +1106,15 @@ def system_health():
         
         conn.close()
         logger.info("数据库健康检查完成")
-    except Exception as e:
+    } except Exception as e {
         logger.error(f"数据库健康检查失败: {str(e)}")
         health_status['database'] = {
             'status': 'error',
             'message': f'数据库错误: {str(e)}',
             'details': get_database_debug_info()
         }
-    
+    }
+
     # 检查cookies - 使用更健壮的路径处理
     try:
         logger.info("开始cookies健康检查...")
@@ -1402,586 +1403,29 @@ def settings():
     config = load_config()
     return render_template('settings.html', config=config)
 
-@app.route('/settings/update_cover_mode', methods=['POST'])
+@app.route('/settings/reset', methods=['POST'])
 @login_required
-def update_cover_mode():
-    """更新封面处理模式"""
+def reset_settings():
+    """重置设置"""
     try:
-        data = request.get_json()
-        mode = data.get('mode')
-        task_id = data.get('task_id')
+        data = request.get_json() or {}
+        keys = data.get('keys', [])
         
-        if mode not in ('crop', 'pad'):
-            return jsonify({"success": False, "message": "无效的处理模式"}), 400
-        
-        # 更新全局配置
-        config = load_config()
-        config['COVER_PROCESSING_MODE'] = mode
-        update_config(config)
-        
-        # 如果提供了任务ID，则处理该任务的封面
-        if task_id:
-            task = get_task(task_id)
-            if task and task.get('cover_path_local') and os.path.exists(task['cover_path_local']):
-                # 直接在downloads目录中处理封面
-                process_cover(task['cover_path_local'], mode=mode)
-        
-        return jsonify({"success": True, "message": "封面处理模式已更新"})
-    except Exception as e:
-        logger.error(f"更新封面处理模式失败: {str(e)}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route('/test_download')
-@login_required
-def test_download():
-    """测试YouTube视频下载功能"""
-    url = request.args.get('url')
-    config = load_config()
-    cookies_path = config.get('YOUTUBE_COOKIES_PATH')
-    
-    if not url:
-        return jsonify({"success": False, "error": "缺少url参数"}), 400
-    
-    # 创建唯一任务ID
-    task_id = str(uuid.uuid4())
-    logger.info(f"开始测试下载，URL: {url}, 任务ID: {task_id}")
-    
-    # 调用下载函数
-    success, result = download_video_data(url, task_id, cookies_path)
-    
-    if success:
-        return jsonify({
-            "success": True,
-            "task_id": task_id,
-            "result": {
-                "video_path": os.path.basename(result["video_path"]),
-                "metadata_path": os.path.basename(result["metadata_path"]) if result["metadata_path"] else None,
-                "cover_path": os.path.basename(result["cover_path"]) if result["cover_path"] else None,
-                "subtitles_paths": [os.path.basename(p) for p in result["subtitles_paths"]],
-                "task_dir": result["task_dir"]
-            }
-        })
-    else:
-        return jsonify({"success": False, "error": result}), 500
-
-@app.route('/tasks/add_via_extension', methods=['POST', 'OPTIONS'])
-@cross_origin(origins=["*://www.youtube.com", "*://youtube.com", "https://www.youtube.com", "https://youtube.com"])
-def add_task_via_extension():
-    """
-    接收来自浏览器扩展的任务添加请求，支持播放列表批量添加
-    """
-    config = load_config()
-    if config.get('password_protection_enabled'):
-        if 'logged_in' not in session:
-            return jsonify({
-                "success": False,
-                "message": "需要登录",
-                "action": "login_required"
-            }), 401
-
-    if request.method == 'OPTIONS':
-        return '', 204
-    try:
-        data = request.get_json()
-        if not data or 'youtube_url' not in data:
-            logger.error("请求数据无效或缺少youtube_url")
-            return jsonify({
-                "success": False,
-                "message": "请求格式错误，缺少youtube_url字段"
-            }), 400
-        youtube_url = data['youtube_url']
-        logger.info(f"从浏览器扩展接收到添加任务请求: {youtube_url}")
-        # 判断是否为播放列表URL
-        if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
-            cookies_path = config.get('YOUTUBE_COOKIES_PATH')
-            video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
-            if not video_urls:
-                return jsonify({
-                    "success": False,
-                    "message": "未能提取到播放列表中的视频"
-                }), 400
-            added_count = 0
-            for url in video_urls:
-                task_id = add_task(url)
-                if task_id:
-                    added_count += 1
-            return jsonify({
-                "success": True,
-                "message": f"已批量添加 {added_count} 个视频任务（来自播放列表）",
-                "added_count": added_count
-            })
+        if keys:
+            # 重置指定项
+            reset_specific_config(keys)
+            flash('当前页面的设置已重置为默认值。', 'success')
         else:
-            task_id = add_task(youtube_url)
-            if task_id:
-                config = load_config()
-                if config.get('AUTO_MODE_ENABLED', False):
-                    logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
-                    start_task(task_id, config)
-                    status_message = "任务已添加并开始处理"
-                else:
-                    status_message = "任务已添加到队列"
-                return jsonify({
-                    "success": True,
-                    "message": status_message,
-                    "task_id": task_id
-                })
-            else:
-                return jsonify({
-                    "success": False,
-                    "message": "添加任务失败，请检查服务器日志"
-                }), 500
+            # 如果未指定keys，则不执行任何操作或返回错误
+            # 为了防止误操作全重置，这里要求必须指定keys
+            return jsonify({'status': 'error', 'message': '未指定要重置的配置项'}), 400
+            
+        return jsonify({'status': 'success', 'message': '设置已重置'})
     except Exception as e:
-        logger.error(f"处理扩展请求时发生错误: {str(e)}")
-        return jsonify({
-            "success": False,
-            "message": f"处理请求时发生错误: {str(e)}"
-        }), 500
+        logger.error(f"重置设置失败: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/tasks/retry_failed', methods=['POST'])
-@login_required
-def retry_failed_tasks_route():
-    """重试所有失败的任务"""
-    config = load_config()
-    result = retry_failed_tasks(config)
-
-    total = result.get('total', 0)
-    scheduled = result.get('scheduled', 0)
-    failed_ids = result.get('failed_ids', [])
-
-    if total == 0:
-        flash('当前没有失败的任务需要重试', 'info')
-    else:
-        if scheduled:
-            flash(f'已重新调度 {scheduled} 个失败任务', 'success')
-
-        skipped = total - scheduled
-        if skipped > 0:
-            preview_list = [f"{task_id[:8]}..." for task_id in failed_ids[:5]]
-            preview_ids = ', '.join(preview_list) if preview_list else '未知任务'
-            if len(failed_ids) > len(preview_list):
-                preview_ids += ' 等'
-            flash(f'{skipped} 个任务未能重试：{preview_ids}', 'danger')
-
-    return redirect(url_for('tasks'))
-
-@app.route('/tasks/clear_all', methods=['POST'])
-@login_required
-def clear_all_tasks_route():
-    """清除所有任务"""
-    delete_files = request.form.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
-    
-    success = clear_all_tasks(delete_files)
-    
-    if success:
-        flash('所有任务已清除', 'success')
-    else:
-        flash('清除所有任务失败', 'danger')
-    
-    return redirect(url_for('tasks'))
-
-@app.route('/covers/<task_id>')
-@login_required
-def get_task_cover(task_id):
-    """获取任务封面图片"""
-    try:
-        # 获取任务信息
-        task = get_task(task_id)
-        if not task:
-            logger.warning(f"任务 {task_id} 不存在")
-            return '', 404
-        
-        # 检查封面文件路径
-        cover_path = task.get('cover_path_local')
-        if not cover_path or not os.path.exists(cover_path):
-            logger.warning(f"任务 {task_id} 的封面文件不存在: {cover_path}")
-            return '', 404
-        
-        # 直接从downloads目录提供文件
-        return send_file(cover_path, mimetype='image/jpeg')
-        
-    except Exception as e:
-        logger.error(f"获取任务 {task_id} 封面时出错: {str(e)}")
-        return '', 500
-
-# 配置app
-def configure_app(app, config_data):
-    """
-    配置Flask应用
-    
-    Args:
-        app: Flask应用实例
-        config_data: 配置数据
-    """
-    app.config['OPENAI_API_KEY'] = config_data.get('OPENAI_API_KEY', '')
-    app.config['OPENAI_BASE_URL'] = config_data.get('OPENAI_BASE_URL', '')
-    app.config['OPENAI_MODEL_NAME'] = config_data.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
-    
-    # 不再使用proxies参数，新版OpenAI客户端不支持
-    # 如果需要代理，通过环境变量设置: HTTP_PROXY, HTTPS_PROXY
-
-    app.config['ALIYUN_ACCESS_KEY_ID'] = config_data.get('ALIYUN_ACCESS_KEY_ID', '')
-    app.config['ALIYUN_ACCESS_KEY_SECRET'] = config_data.get('ALIYUN_ACCESS_KEY_SECRET', '')
-    app.config['ALIYUN_CONTENT_MODERATION_REGION'] = config_data.get('ALIYUN_CONTENT_MODERATION_REGION', 'cn-shanghai')
-    
-    app.config['ACFUN_USERNAME'] = config_data.get('ACFUN_USERNAME', '')
-    app.config['ACFUN_PASSWORD'] = config_data.get('ACFUN_PASSWORD', '')
-
-# 使用传统页面刷新方式
-
-# 日志清理功能
-def cleanup_logs(hours=168):
-    """
-    清理指定小时数以前的日志文件
-    
-    Args:
-        hours: 保留最近多少小时的日志
-    
-    Returns:
-        cleanup_stats: 清理统计信息
-    """
-    try:
-        logger.info(f"开始清理{hours}小时前的日志文件")
-        cutoff_date = datetime.now() - timedelta(hours=hours)
-        cutoff_timestamp = cutoff_date.timestamp()
-        
-        files_removed = 0
-        bytes_freed = 0
-        
-        # 遍历日志目录
-        for filename in os.listdir(log_dir):
-            file_path = os.path.join(log_dir, filename)
-            
-            # 只处理文件，不处理目录
-            if os.path.isfile(file_path):
-                # 获取文件修改时间
-                file_mtime = os.path.getmtime(file_path)
-                
-                # 如果文件修改时间早于截止日期，则删除
-                if file_mtime < cutoff_timestamp:
-                    # 获取文件大小
-                    file_size = os.path.getsize(file_path)
-                    
-                    # 删除文件
-                    os.remove(file_path)
-                    
-                    # 更新统计信息
-                    files_removed += 1
-                    bytes_freed += file_size
-                    
-                    logger.info(f"已删除日志文件: {filename}")
-        
-        # 转换字节为可读大小
-        if bytes_freed < 1024:
-            bytes_freed_str = f"{bytes_freed} 字节"
-        elif bytes_freed < 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / 1024:.2f} KB"
-        elif bytes_freed < 1024 * 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024):.2f} MB"
-        else:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024 * 1024):.2f} GB"
-            
-        logger.info(f"日志清理完成，已删除{files_removed}个文件，释放{bytes_freed_str}")
-        
-        return {
-            "success": True,
-            "files_removed": files_removed,
-            "bytes_freed": bytes_freed,
-            "bytes_freed_readable": bytes_freed_str,
-            "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
-        }
-    except Exception as e:
-        logger.error(f"清理日志文件时出错: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-def clear_specific_logs():
-    """
-    立即清空特定的日志文件（清空主要日志，删除任务日志）
-    
-    Returns:
-        clear_stats: 清理统计信息
-    """
-    try:
-        logger.info("开始清空特定日志文件")
-        
-        files_processed = 0
-        bytes_freed = 0
-        processed_files = []
-        
-        # 定义需要清空内容的日志文件（保留文件，只清空内容）
-        clear_files = ['task_manager.log', 'app.log']
-        
-        # 先处理固定名称的日志文件 - 清空内容
-        for filename in clear_files:
-            file_path = os.path.join(log_dir, filename)
-            if os.path.exists(file_path):
-                try:
-                    # 获取文件大小
-                    file_size = os.path.getsize(file_path)
-                    
-                    # 清空文件内容
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write('')
-                    
-                    files_processed += 1
-                    bytes_freed += file_size
-                    processed_files.append(f"{filename} (已清空)")
-                    logger.info(f"已清空日志文件: {filename}")
-                except Exception as e:
-                    logger.error(f"清空文件 {filename} 失败: {str(e)}")
-        
-        # 处理任务日志文件 (格式如: task_xxx.log) - 删除文件
-        task_files_to_delete = []
-        for filename in os.listdir(log_dir):
-            file_path = os.path.join(log_dir, filename)
-            
-            # 检查是否是任务日志文件
-            if (os.path.isfile(file_path) and 
-                filename.startswith('task_') and 
-                filename.endswith('.log') and
-                filename not in clear_files):
-                task_files_to_delete.append((filename, file_path))
-        
-        # 删除任务日志文件
-        for filename, file_path in task_files_to_delete:
-            try:
-                # 获取文件大小
-                file_size = os.path.getsize(file_path)
-                
-                # 删除文件
-                os.remove(file_path)
-                
-                files_processed += 1
-                bytes_freed += file_size
-                processed_files.append(f"{filename} (已删除)")
-                logger.info(f"已删除任务日志文件: {filename}")
-            except Exception as e:
-                logger.error(f"删除文件 {filename} 失败: {str(e)}")
-        
-        # 转换字节为可读大小
-        if bytes_freed < 1024:
-            bytes_freed_str = f"{bytes_freed} 字节"
-        elif bytes_freed < 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / 1024:.2f} KB"
-        elif bytes_freed < 1024 * 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024):.2f} MB"
-        else:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024 * 1024):.2f} GB"
-            
-        logger.info(f"日志清理完成，已处理{files_processed}个文件，释放{bytes_freed_str}")
-        
-        return {
-            "success": True,
-            "files_processed": files_processed,
-            "bytes_freed": bytes_freed,
-            "bytes_freed_readable": bytes_freed_str,
-            "processed_files": processed_files
-        }
-    except Exception as e:
-        logger.error(f"清理日志文件时出错: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-def auto_start_pending_tasks(config):
-    """自动启动所有pending状态的任务"""
-    try:
-        from modules.task_manager import get_all_tasks, start_task, TASK_STATES
-        
-        # 获取所有pending任务
-        all_tasks = get_all_tasks()
-        pending_tasks = [task for task in all_tasks if task['status'] == TASK_STATES['PENDING']]
-        
-        if not pending_tasks:
-            logger.info("没有pending状态的任务需要启动")
-            return
-        
-        logger.info(f"发现 {len(pending_tasks)} 个pending任务，正在启动...")
-        
-        started_count = 0
-        for task in pending_tasks:
-            try:
-                success = start_task(task['id'], config)
-                if success:
-                    started_count += 1
-                    logger.info(f"已启动任务: {task['id'][:8]}... ({task.get('youtube_url', 'Unknown URL')[-30:]})")
-                else:
-                    logger.warning(f"启动任务失败: {task['id'][:8]}...")
-            except Exception as e:
-                logger.error(f"启动任务 {task['id'][:8]}... 时出错: {str(e)}")
-        
-        logger.info(f"自动启动完成，成功启动了 {started_count}/{len(pending_tasks)} 个任务")
-        
-    except Exception as e:
-        logger.error(f"自动启动pending任务时出错: {str(e)}")
-
-# 下载内容清理功能
-def cleanup_downloads(hours=72):
-    """
-    清理指定小时数以前的下载内容
-    
-    Args:
-        hours: 保留最近多少小时的下载内容
-    
-    Returns:
-        cleanup_stats: 清理统计信息
-    """
-    try:
-        logger.info(f"开始清理{hours}小时前的下载内容")
-        cutoff_date = datetime.now() - timedelta(hours=hours)
-        cutoff_timestamp = cutoff_date.timestamp()
-        
-        files_removed = 0
-        dirs_removed = 0
-        bytes_freed = 0
-        downloads_dir = get_app_subdir('downloads')
-        
-        # 遍历下载目录
-        for item_name in os.listdir(downloads_dir):
-            item_path = os.path.join(downloads_dir, item_name)
-            
-            # 检查是否是目录（通常每个任务一个目录）
-            if os.path.isdir(item_path):
-                # 获取目录修改时间
-                dir_mtime = os.path.getmtime(item_path)
-                
-                # 如果目录修改时间早于截止日期，则删除整个目录及其内容
-                if dir_mtime < cutoff_timestamp:
-                    # 计算目录大小
-                    dir_size = 0
-                    file_count = 0
-                    for root, dirs, files in os.walk(item_path):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            try:
-                                dir_size += os.path.getsize(file_path)
-                                file_count += 1
-                            except (OSError, IOError):
-                                pass  # 忽略无法访问的文件
-                    
-                    # 删除目录
-                    shutil.rmtree(item_path)
-                    
-                    # 更新统计信息
-                    dirs_removed += 1
-                    files_removed += file_count
-                    bytes_freed += dir_size
-                    
-                    logger.info(f"已删除下载目录: {item_name} (包含{file_count}个文件)")
-            elif os.path.isfile(item_path):
-                # 处理单个文件
-                file_mtime = os.path.getmtime(item_path)
-                if file_mtime < cutoff_timestamp:
-                    # 获取文件大小
-                    file_size = os.path.getsize(item_path)
-                    
-                    # 删除文件
-                    os.remove(item_path)
-                    
-                    # 更新统计信息
-                    files_removed += 1
-                    bytes_freed += file_size
-                    
-                    logger.info(f"已删除下载文件: {item_name}")
-        
-        # 转换字节为可读大小
-        if bytes_freed < 1024:
-            bytes_freed_str = f"{bytes_freed} 字节"
-        elif bytes_freed < 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / 1024:.2f} KB"
-        elif bytes_freed < 1024 * 1024 * 1024:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024):.2f} MB"
-        else:
-            bytes_freed_str = f"{bytes_freed / (1024 * 1024 * 1024):.2f} GB"
-            
-        logger.info(f"下载内容清理完成，已删除{dirs_removed}个目录、{files_removed}个文件，释放{bytes_freed_str}")
-        
-        return {
-            "success": True,
-            "dirs_removed": dirs_removed,
-            "files_removed": files_removed,
-            "bytes_freed": bytes_freed,
-            "bytes_freed_readable": bytes_freed_str,
-            "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
-        }
-    except Exception as e:
-        logger.error(f"清理下载内容时出错: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-def schedule_log_cleanup(config=None):
-    """根据配置设置日志清理定时任务"""
-    if config is None:
-        config = load_config()
-    
-    if config.get('LOG_CLEANUP_ENABLED', False):
-        hours = int(config.get('LOG_CLEANUP_HOURS', 168))  # 默认保留7天=168小时
-        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
-        
-        # 创建调度器
-        scheduler = BackgroundScheduler()
-        
-        # 添加定时任务，每隔指定小时执行一次
-        scheduler.add_job(
-            cleanup_logs,
-            'interval',
-            hours=interval_hours,
-            kwargs={'hours': hours},
-            id='log_cleanup_job'
-        )
-        
-        # 启动调度器
-        scheduler.start()
-        
-        logger.info(f"已启用日志自动清理，保留{hours}小时内的日志，每{interval_hours}小时清理一次")
-        return scheduler
-    else:
-        logger.info("日志自动清理已禁用")
-        return None
-
-def schedule_download_cleanup(config=None):
-    """根据配置设置下载内容清理定时任务"""
-    try:
-        if config is None:
-            config = load_config()
-        
-        if config.get('DOWNLOAD_CLEANUP_ENABLED', False):
-            hours = int(config.get('DOWNLOAD_CLEANUP_HOURS', 72))  # 默认保留72小时
-            interval_hours = int(config.get('DOWNLOAD_CLEANUP_INTERVAL', 24))
-            
-            # 创建调度器
-            scheduler = BackgroundScheduler()
-            
-            # 添加定时任务，每隔指定小时执行一次
-            scheduler.add_job(
-                cleanup_downloads,
-                'interval',
-                hours=interval_hours,
-                kwargs={'hours': hours},
-                id='download_cleanup_job'
-            )
-            
-            # 启动调度器
-            scheduler.start()
-            
-            logger.info(f"已启用下载内容自动清理，保留{hours}小时内的下载内容，每{interval_hours}小时清理一次")
-            return scheduler
-        else:
-            logger.info("下载内容自动清理已禁用")
-            return None
-    except Exception as e:
-        logger.error(f"设置下载内容清理定时任务时出错: {str(e)}")
-        return None
-
-
-
-
-@app.route('/maintenance/cleanup_logs', methods=['POST'])
+@app.route('/logs/cleanup', methods=['POST'])
 @login_required
 def cleanup_logs_route():
     """手动触发日志清理"""
@@ -2333,7 +1777,7 @@ def sync_cookies():
                 f.write(cookies_content)
             
             # 记录同步信息
-            sync_info = {
+                       sync_info = {
                 'timestamp': data['timestamp'],
                 'sync_time': time.time(),
                 'cookie_count': data['cookieCount'],
