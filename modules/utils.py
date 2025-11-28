@@ -3,11 +3,7 @@
 
 import os
 import sys
-import json
-import shutil
-import logging
-from datetime import datetime
-from PIL import Image, ImageOps
+from PIL import Image
 
 def get_app_root_dir():
     """

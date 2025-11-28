@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import json
 import logging
 import time
 from logging.handlers import RotatingFileHandler

@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import os
 import json
 import logging
 import time
-from logging.handlers import RotatingFileHandler
 
 # 尝试导入阿里云依赖，如果失败则设置标记
 ALIBABA_CLOUD_AVAILABLE = True
@@ -94,8 +92,6 @@ class AlibabaCloudModerator:
             
             self.client = Green20220302Client(config)
             self.logger.info("阿里云内容审核客户端初始化成功")
-            self.logger.info(f"调试信息：创建的客户端对象类型: {type(self.client)}")
-            self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
             
         except Exception as e:
             self.logger.error(f"创建阿里云客户端失败: {str(e)}")
@@ -159,14 +155,6 @@ class AlibabaCloudModerator:
             
             # 发送请求
             start_time = time.time()
-            
-            # 添加调试日志：检查客户端状态
-            self.logger.info(f"调试信息：客户端对象类型: {type(self.client)}")
-            self.logger.info(f"调试信息：客户端对象是否为None: {self.client is None}")
-            if self.client is not None:
-                self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
-                if hasattr(self.client, 'text_moderation_plus_with_options'):
-                    self.logger.info(f"调试信息：text_moderation_plus_with_options方法类型: {type(getattr(self.client, 'text_moderation_plus_with_options'))}")
             
             # 检查客户端是否可用
             if self.client is None:
@@ -298,14 +286,6 @@ class AlibabaCloudModerator:
             
             # 发送请求
             start_time = time.time()
-            
-            # 添加调试日志：检查客户端状态
-            self.logger.info(f"调试信息：客户端对象类型: {type(self.client)}")
-            self.logger.info(f"调试信息：客户端对象是否为None: {self.client is None}")
-            if self.client is not None:
-                self.logger.info(f"调试信息：客户端对象是否有text_moderation_plus_with_options方法: {hasattr(self.client, 'text_moderation_plus_with_options')}")
-                if hasattr(self.client, 'text_moderation_plus_with_options'):
-                    self.logger.info(f"调试信息：text_moderation_plus_with_options方法类型: {type(getattr(self.client, 'text_moderation_plus_with_options'))}")
             
             # 检查客户端是否可用
             if self.client is None:

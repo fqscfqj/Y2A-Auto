@@ -4,7 +4,6 @@
 import os
 import json
 import logging
-import uuid
 import shutil
 import time
 import datetime
@@ -13,11 +12,11 @@ from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
-from flask_cors import CORS, cross_origin
-from modules.youtube_handler import download_video_data, extract_video_urls_from_playlist
-from modules.utils import parse_id_md_to_json, process_cover, get_app_subdir
-from modules.config_manager import load_config, update_config, reset_config, reset_specific_config, DEFAULT_CONFIG
-from modules.task_manager import add_task, start_task, get_task, get_all_tasks, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
+from flask_cors import CORS
+from modules.youtube_handler import extract_video_urls_from_playlist
+from modules.utils import get_app_subdir
+from modules.config_manager import load_config, update_config, reset_specific_config
+from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -278,14 +277,6 @@ def parse_youtube_duration(duration_str):
     seconds = int(match.group(3) or 0)
     
     return hours * 3600 + minutes * 60 + seconds
-
-# 注册模板辅助函数
-app.jinja_env.globals.update(
-    task_status_display=task_status_display,
-    task_status_color=task_status_color,
-    get_partition_name=get_partition_name,
-    parse_json=parse_json
-)
 
 # 注册模板过滤器
 app.jinja_env.filters['parse_youtube_duration'] = parse_youtube_duration

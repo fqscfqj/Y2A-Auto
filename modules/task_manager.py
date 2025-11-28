@@ -4,7 +4,6 @@
 import os
 import json
 import uuid
-import time
 import sqlite3
 import logging
 import shutil
@@ -13,16 +12,13 @@ import gc
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
-from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.jobstores.base import JobLookupError
-from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.executors.pool import ThreadPoolExecutor as APSchedulerThreadPoolExecutor
 from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 import subprocess
-import tempfile
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -754,7 +750,7 @@ class TaskProcessor:
         
         self.scheduler = BackgroundScheduler(
             executors={
-                'default': ThreadPoolExecutor(max_workers=max_concurrent_tasks)
+                'default': APSchedulerThreadPoolExecutor(max_workers=max_concurrent_tasks)
             },
             job_defaults={
                 'coalesce': False,

@@ -2,18 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import os
-import re
 import json
 import time
 import uuid
 import shutil
-import hashlib
 import logging
 import subprocess
-import requests
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
-from datetime import datetime
 from modules.config_manager import load_config
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir

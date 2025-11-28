@@ -7,15 +7,12 @@ import time
 import logging
 import requests
 import ssl
-from base64 import b64decode
 from hashlib import sha1
 from math import ceil
-from mimetypes import guess_type
-from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from typing import Optional, List, Union, Tuple, Any
+from typing import Optional, List, Union, Tuple
 from .utils import get_app_subdir
 
 from modules.utils import process_cover

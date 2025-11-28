@@ -8,7 +8,7 @@ import time
 import logging
 import gc  # 添加垃圾回收模块以优化内存使用
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
