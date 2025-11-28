@@ -702,6 +702,42 @@ def edit_task(task_id):
         config=config
     )
 
+@app.route('/tasks/<task_id>/cover')
+@login_required
+def get_task_cover(task_id):
+    """获取任务封面图片"""
+    task = get_task(task_id)
+    
+    if not task:
+        # 返回默认图片或404
+        return '', 404
+    
+    cover_path = task.get('cover_path_local')
+    
+    if cover_path and os.path.exists(cover_path):
+        # 返回封面图片
+        return send_file(cover_path, mimetype='image/jpeg')
+    
+    # 如果没有封面，尝试在任务目录中查找
+    downloads_dir = get_app_subdir('downloads')
+    task_dir = os.path.join(downloads_dir, task_id)
+    
+    if os.path.exists(task_dir):
+        # 查找常见的封面文件名
+        cover_names = ['cover.jpg', 'cover.png', 'cover.webp', 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp']
+        for name in cover_names:
+            potential_cover = os.path.join(task_dir, name)
+            if os.path.exists(potential_cover):
+                return send_file(potential_cover)
+        
+        # 查找任何图片文件
+        for filename in os.listdir(task_dir):
+            if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                return send_file(os.path.join(task_dir, filename))
+    
+    # 没有找到封面
+    return '', 404
+
 @app.route('/tasks/<task_id>/review')
 @login_required
 def review_task(task_id):
