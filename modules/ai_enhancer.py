@@ -123,7 +123,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             "messages": [
                 {
                     "role": "system",
-                    "content": "JSON翻译器。仅输出{"translation":"..."}，无其他内容。"
+                    "content": 'JSON翻译器。仅输出{"translation":"..."}，无其他内容。'
                 },
                 {"role": "user", "content": prompt}
             ],
@@ -249,7 +249,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             strict_kwargs = {
                 "model": model_name,
                 "messages": [
-                    {"role": "system", "content": "仅输出{"translation":"..."}，中文。"},
+                    {"role": "system", "content": '仅输出{"translation":"..."}，中文。'},
                     {"role": "user", "content": strict_prompt},
                 ],
                 "max_tokens": 2048,
@@ -365,7 +365,7 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "标签生成器。仅输出{"tags":[...]}格式的6个标签。"},
+                {"role": "system", "content": '标签生成器。仅输出{"tags":[...]}格式的6个标签。'},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 300,
@@ -654,7 +654,7 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "视频分区选择器。仅输出{"id":"...","reason":"..."}。"},
+                {"role": "system", "content": '视频分区选择器。仅输出{"id":"...","reason":"..."}。'},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 200,
