@@ -312,8 +312,8 @@ class SpeechRecognizer:
                             if self.config.language:
                                 params['language'] = self.config.language
                             
-                            # Add prompt to reduce hallucinations and non-speech sounds
-                            base_prompt = "Transcribe only spoken words. Ignore non-speech sounds, ASMR triggers, repetition, and background noise."
+                            # Add prompt to reduce hallucinations (优化版：更精简)
+                            base_prompt = "Transcribe speech only. Ignore noise."
                             if self.config.prompt:
                                 params['prompt'] = f"{base_prompt} {self.config.prompt}"
                             else:
@@ -1419,9 +1419,12 @@ class SpeechRecognizer:
                     if self.config.language:
                         params['language'] = self.config.language
                     
-                    # Add prompt if specified (helps reduce hallucinations)
+                    # Add prompt to reduce hallucinations (优化版：更精简的提示)
+                    base_prompt = "Transcribe speech only. Ignore noise."
                     if self.config.prompt:
-                        params['prompt'] = self.config.prompt
+                        params['prompt'] = f"{base_prompt} {self.config.prompt}"
+                    else:
+                        params['prompt'] = base_prompt
                     
                     # Use translation endpoint if translate is enabled
                     if self.config.translate:

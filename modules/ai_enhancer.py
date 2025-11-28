@@ -105,25 +105,17 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             logger.info("已在提示阶段前预清洗推广信息与链接等噪声")
 
         purpose = "标题" if str(content_type).lower() == "title" else "描述"
-        prompt = f"""
-你是一名资深本地化译员，当前任务是将视频{purpose}翻译成{target_language}并返回严格JSON。
+        prompt = f"""翻译视频{purpose}为{target_language}，移除推广信息，返回JSON。
 
-处理规则（必须全部满足）：
-1) 先从原文中移除所有推广/引流信息：包含或暗示的URL/域名、邮箱、社交账号(@/话题#)、商店/打赏/会员/Patreon/粉丝平台、关注/订阅/点赞/分享/评论等CTA、二维码/优惠码/联系方式、平台跳转文案等；保留与视频内容理解直接相关的信息。
-2) 不改变原意：做等价翻译，禁止解释、扩写、改写、总结或加入任何说明。
-3) 风格对齐：保持原文风格与语气；专有名词无固定译名时原文保留；代码/占位符/变量不改动。
-4) 数字/单位/大小写按原文保留，不换算单位或币种。
-5) 输出必须是一行紧凑JSON，键名固定为 translation，且仅此一个键。
-6) 严禁输出Markdown、反引号、额外文本、前后缀、括注、编号、免责声明或解释。
+规则：
+1. 移除：URL/邮箱/社交账号/CTA（关注订阅点赞分享等）/联系方式
+2. 等价翻译：不解释、不扩写、保持原意和风格
+3. 保留：数字/代码/专有名词（无固定译名时）
 
-输入原文（已做基础去噪）：
-<CONTENT>
+原文：
 {cleaned_source_text}
-</CONTENT>
 
-仅以如下JSON返回：
-{{"translation":"<翻译后的{purpose}>"}}
-"""
+返回：{{"translation":"译文"}}"""
 
         start_time = time.time()
         create_kwargs = {
@@ -131,7 +123,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是严格遵循指令的JSON翻译器。始终只输出一行、无多余字符的紧凑JSON对象，且仅包含键 translation。不得输出Markdown或任何说明。"
+                    "content": "JSON翻译器。仅输出{"translation":"..."}，无其他内容。"
                 },
                 {"role": "user", "content": prompt}
             ],
@@ -249,20 +241,15 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         needs_retry = (not translated_text) or (translated_text.strip() == cleaned_source_text.strip())
         if needs_retry:
             logger.info("首次翻译为空或未改变，进行严格模式重试")
-            strict_prompt = f"""
-你是一名只输出严格JSON的翻译器。目标语言必须为简体中文。
+            strict_prompt = f"""翻译为简体中文，移除推广信息，仅返回JSON。
 
-请将下面的{purpose}翻译成简体中文并移除所有推广/引流/链接/邮箱/社交账号等信息，但不要改变与内容理解直接相关的信息。
-仅返回一行JSON：{{"translation":"..."}}，不要输出任何其它文本、标点或Markdown。
+原文：{cleaned_source_text}
 
-<CONTENT>
-{cleaned_source_text}
-</CONTENT>
-"""
+返回：{{"translation":"译文"}}"""
             strict_kwargs = {
                 "model": model_name,
                 "messages": [
-                    {"role": "system", "content": "严格遵循：只输出一行JSON对象，键仅有 translation，语言为简体中文。"},
+                    {"role": "system", "content": "仅输出{"translation":"..."}，中文。"},
                     {"role": "user", "content": strict_prompt},
                 ],
                 "max_tokens": 2048,
@@ -362,24 +349,15 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         client = get_openai_client(openai_config)
         model_name = openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
 
-        # 构建标签生成提示（强制返回对象JSON）
-        prompt = f"""根据以下视频的标题和描述，生成恰好6个适合AcFun平台的标签。
-要求:
-- 必须生成6个标签，不多不少
-- 每个标签长度不超过10个汉字或20个字符
-- 标签应反映视频的核心内容、类型或情感
-- 避免过于宽泛的标签如"搞笑"、"有趣"等
-- 包含1-2个与视频主题相关的基础关键词
+        # 构建标签生成提示（优化版：精简提示词）
+        # 截取描述前200字符以减少token
+        short_desc = description[:200] if len(description) > 200 else description
+        prompt = f"""为视频生成6个AcFun标签（每个≤10汉字）。
 
-视频标题:
-{title}
+标题：{title}
+描述：{short_desc}
 
-视频描述:
-{description}
-
-仅返回如下结构的一行JSON，不要输出其他内容：
-{{"tags": ["标签1", "标签2", "标签3", "标签4", "标签5", "标签6"]}}
-"""
+返回JSON：{{"tags":["标签1","标签2","标签3","标签4","标签5","标签6"]}}"""
         
         start_time = time.time()
 
@@ -387,10 +365,10 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "你是一个内容标签生成工具。你的任务是为视频内容生成恰当的标签，以帮助用户更好地发现和分类内容。"},
+                {"role": "system", "content": "标签生成器。仅输出{"tags":[...]}格式的6个标签。"},
                 {"role": "user", "content": prompt}
             ],
-            "max_tokens": 800,
+            "max_tokens": 300,
         }
         # 尝试启用结构化JSON输出
         try:
@@ -616,23 +594,15 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         # 构建提示内容
         # 在构造 prompt 时防护 description 的切片
         short_desc = (description[:500] + '...') if len(description) > 500 else description
-        prompt = f"""请根据以下视频的标题和描述，从给定的AcFun分区列表中，选择最合适的一个分区。
+        prompt = f"""从分区列表选择最匹配的分区。
 
-视频标题: {title}
+标题：{title}
+描述：{short_desc[:200] if len(short_desc) > 200 else short_desc}
 
-视频描述: {short_desc}
-
-AcFun分区列表:
+分区列表：
 {partitions_text}
 
-要求:
-1. 只能选择上述列表中的一个分区
-2. 分析视频内容与分区的匹配度
-3. 只返回一个分区ID，严格按照json格式返回:
-{{"id": "分区ID", "reason": "简要推荐理由"}}
-
-不要返回任何其他格式或额外内容，必须是json格式。
-"""
+返回JSON：{{"id":"分区ID","reason":"理由"}}"""
         
         # 如果配置指定固定分区ID，优先返回
         fixed_pid = (openai_config or {}).get('FIXED_PARTITION_ID')
@@ -684,10 +654,10 @@ AcFun分区列表:
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "你是一个专业视频分类助手，擅长将视频内容匹配到最合适的分区。请始终以json格式返回结果。"},
+                {"role": "system", "content": "视频分区选择器。仅输出{"id":"...","reason":"..."}。"},
                 {"role": "user", "content": prompt}
             ],
-            "max_tokens": 800,
+            "max_tokens": 200,
         }
         try:
             create_kwargs["response_format"] = {"type": "json_object"}

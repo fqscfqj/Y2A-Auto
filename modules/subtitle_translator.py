@@ -418,59 +418,50 @@ class LLMRequester:
             return texts
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
-        """构建结构化系统提示词"""
+        """构建结构化系统提示词 - 优化版：精简规则，减少token消耗"""
         target_lang_map = {
             "zh": "中文",
-            "en": "英文",
-            "ja": "日文",
-            "ko": "韩文",
+            "en": "English",
+            "ja": "日本語",
+            "ko": "한국어",
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
 
-        return f"""
-你是一名资深字幕本地化译员，工作场景为“搬运视频”。请将提供的字幕文本逐条翻译成{target_lang_name}。
+        return f"""你是字幕翻译器。将每条字幕翻译成{target_lang_name}，返回JSON。
 
-严格规范（必须同时满足）：
-1) 不改变原本意图：不得解释、扩写、改写、总结或二次创作；只做等价翻译。
-2) 不添加多余信息：不得添加序号、列表符号、引号包裹、括注、免责声明、语气词、emoji、前后缀等。
-3) 字幕可读：用目标语言中自然、简洁的口语表达，信息密度不高于原文，适合快速阅读。
-4) 现有标注保留：保留原文已有的场景/音效标注（如“(audience laughing)”），但绝不新增未出现的标注。
-5) 专有名词策略：人名/地名/品牌/型号等如有约定俗成译名则使用；无固定译名时保留原文，不添加括注或解释。
-6) 数字/单位/格式：数字、货币、计量单位与大小写按原样保留；不要换算单位或币种；标点遵循目标语言习惯但不改变语气。
-7) 占位/代码：代码、命令、格式化占位符与变量（如 {{...}}、<...>、%s）保持不变。
-8) 直译粗口：敏感或粗口按目标语言自然等价表达保留，不弱化、不夸张。
-9) 一一对应：每个输入严格对应一个输出，顺序一致，禁止合并或拆分。
-10) 语言一致性：输出必须完全为{target_lang_name}。除不可译的专有名词外，不得整句保留英文原文。
+核心规则：
+1. 等价翻译：不解释、不扩写、不改写，保持原意
+2. 一一对应：输入N条，输出N条，顺序不变
+3. 保留原样：数字/代码/占位符/专有名词（无固定译名时）
+4. 自然表达：用{target_lang_name}口语，适合字幕阅读
+5. 完整翻译：除专有名词外，不保留整句原文
 
-输出格式：必须返回且仅返回如下JSON对象：
-{{
-    "translations": [
-        "句子1的翻译",
-        "句子2的翻译",
-        "句子3的翻译"
-    ]
-}}
-
-注意：严禁输出JSON对象以外的任何字符。严禁给译文添加任何编号或列表标记。"""
+仅返回JSON：
+{{"translations":["译文1","译文2",...]}}"""
 
     def _build_strict_structured_system_prompt(self, target_language: str) -> str:
-        """更严格的系统提示词，用于补救未译条目：强制全中文输出。"""
-        base = self._build_structured_system_prompt(target_language)
-        extra = "\n附加要求：务必确保每条输出完全为目标语言文本，禁止保留整句英文或音译。\n"
-        return base + extra
+        """严格模式提示词：强制完整翻译，用于补救未译条目"""
+        target_lang_map = {
+            "zh": "中文",
+            "en": "English",
+            "ja": "日本語",
+            "ko": "한국어",
+        }
+        target_lang_name = target_lang_map.get(target_language, "中文")
+        
+        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}。
+
+强制要求：
+1. 每条必须完整翻译，禁止保留原文
+2. 一一对应：输入N条输出N条
+3. 仅保留数字和代码占位符
+
+仅返回：{{"translations":["译文1","译文2",...]}}"""
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
-        """构建结构化用户提示词"""
-        # 以JSON形式提供输入，避免模型受列表编号干扰而生成带编号的输出
-        payload = {
-            "texts": texts
-        }
-        return (
-            "请逐条等价翻译下面JSON中texts数组的每个元素，禁止改写、扩写、删减或合并。"
-            "仅返回包含等长translations数组的JSON对象，不要输出任何其他文字。\n\n"
-            + json.dumps(payload, ensure_ascii=False)
-        )
-    
+        """构建结构化用户提示词 - 优化版：系统提示已包含规则，此处仅提供数据"""
+        return json.dumps({"texts": texts}, ensure_ascii=False)
+
     def _parse_structured_translation_result(self, result: str, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
         try:
