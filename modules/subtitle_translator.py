@@ -363,10 +363,21 @@ class LLMRequester:
                     f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒"
                 )
             
+            # 检查响应是否有效
+            if not response.choices or len(response.choices) == 0:
+                with self._log_lock:
+                    self.logger.warning(f"批次 {batch_id}: API返回空的choices列表")
+                return [""] * len(texts)
+            
             message = response.choices[0].message
             # 优先使用最终答案；缺失时回退到 reasoning_content，并屏蔽 <think>
             result = (message.content or getattr(message, 'reasoning_content', None) or '')
             result = strip_reasoning_thoughts(result)
+            
+            # 检查结果是否为空
+            if not result.strip():
+                with self._log_lock:
+                    self.logger.warning(f"批次 {batch_id}: API返回空内容（content和reasoning_content均为空）")
             
             # 解析结构化翻译结果
             return self._parse_structured_translation_result(result, len(texts), batch_id)
@@ -408,6 +419,13 @@ class LLMRequester:
                 max_tokens=4096,
                 response_format={"type": "json_object"}
             )
+            
+            # 检查响应是否有效
+            if not response.choices or len(response.choices) == 0:
+                with self._log_lock:
+                    self.logger.warning(f"严格模式批次 {batch_id}: API返回空的choices列表")
+                return [""] * len(texts)
+            
             message = response.choices[0].message
             result = (message.content or getattr(message, 'reasoning_content', None) or '')
             result = strip_reasoning_thoughts(result)
@@ -465,6 +483,12 @@ class LLMRequester:
     def _parse_structured_translation_result(self, result: str, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
         try:
+            # 检查空响应
+            if not result or not result.strip():
+                with self._log_lock:
+                    self.logger.warning(f"批次 {batch_id}: API返回空响应，将使用空翻译并依赖后续补翻")
+                return [""] * expected_count
+            
             # 解析JSON响应
             json_result = json.loads(result.strip())
             
@@ -492,6 +516,14 @@ class LLMRequester:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")
             
             return final_translations
+        except json.JSONDecodeError as e:
+            with self._log_lock:
+                # 记录更详细的信息以便调试
+                result_preview = result[:200] if result else "(empty)"
+                self.logger.error(f"批次 {batch_id}: JSON解析失败: {e}")
+                self.logger.debug(f"批次 {batch_id}: 原始响应预览: {result_preview}")
+            # 尝试回退解析
+            return self._fallback_parse_translation_result(result, expected_count)
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
