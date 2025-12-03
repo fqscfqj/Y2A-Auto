@@ -19,29 +19,44 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
+      # 硬件编码器选择（取消注释相应行，并启用下方对应的 GPU 配置）
       # - VIDEO_ENCODER=nvenc          # NVIDIA NVENC（同时取消下方 NVIDIA 块注释）
       # - VIDEO_ENCODER=qsv            # Intel QSV（同时取消下方 Intel 块注释）
       # - VIDEO_ENCODER=amf            # AMD AMF（同时取消下方 AMD 块注释）
-      # - LIBVA_DRIVER_NAME=iHD        # Intel: 驱动名称
-      # - LD_LIBRARY_PATH=/opt/amdgpu-pro/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH  # AMD: AMF 运行库
+      # Intel QSV 驱动选择
+      # - LIBVA_DRIVER_NAME=iHD        # Intel: 视驱动决定，可为 iHD / i965
+      # AMD AMF 运行库路径
+      # - LD_LIBRARY_PATH=/opt/amdgpu-pro/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+      # NVIDIA 运行时库路径（通常由 nvidia-container-toolkit 自动注入，无需手动设置）
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    # =========================================================================
     # GPU 配置：按需取消相应块注释
-    # --- NVIDIA / NVENC ---
+    # =========================================================================
+    # --- NVIDIA NVENC ---
+    # 注意：使用 NVENC 需要：
+    # 1. 宿主机安装 nvidia-driver（版本 >= 470 推荐）
+    # 2. 安装 nvidia-container-toolkit（https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html）
+    # 3. 取消下方 deploy 块的注释
     # deploy:
     #   resources:
     #     reservations:
     #       devices:
     #         - driver: nvidia
     #           count: all
-    #           capabilities: [gpu]
-    # runtime: nvidia
+    #           capabilities: [gpu, video]  # 添加 video 能力以支持 NVENC
+    # runtime: nvidia   # Docker < 19.03 或 docker-compose v2 早期版本需要此行
+    #
     # --- Intel QSV / VA-API ---
     # devices:
     #   - /dev/dri:/dev/dri
     # group_add:
     #   - video
     #   - render
+    #
     # --- AMD AMF / VA-API ---
     # devices:
     #   - /dev/dri:/dev/dri
     # volumes:
     #   - /opt/amdgpu-pro/lib/x86_64-linux-gnu:/opt/amdgpu-pro/lib/x86_64-linux-gnu:ro
+    # （若已在宿主机安装 amdgpu-pro，可挂载其运行库；路径按实际情况调整）

@@ -1690,6 +1690,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 except Exception:
                     pass
                 return False
+            
+            def _nvenc_hardware_available() -> bool:
+                """检测 NVENC 硬件是否实际可用（不仅仅是编码器存在）"""
+                try:
+                    # 使用一个最小化的测试来验证 NVENC 是否真正可用
+                    # 生成 1 帧测试视频并尝试用 NVENC 编码
+                    test_cmd = [
+                        ffmpeg_bin, '-hide_banner', '-loglevel', 'error',
+                        '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.04',
+                        '-c:v', 'hevc_nvenc', '-frames:v', '1',
+                        '-f', 'null', '-'
+                    ]
+                    result = subprocess.run(
+                        test_cmd,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30
+                    )
+                    if result.returncode == 0:
+                        task_logger.debug("NVENC 硬件可用性测试通过")
+                        return True
+                    else:
+                        task_logger.debug(f"NVENC 硬件可用性测试失败: {result.stderr[:200] if result.stderr else 'unknown error'}")
+                except Exception as e:
+                    task_logger.debug(f"NVENC 硬件可用性测试异常: {e}")
+                return False
 
             def _ffmpeg_has_filter(filter_name: str) -> bool:
                 try:
@@ -1834,6 +1858,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 def build_nvenc_params():
                     # hevc_nvenc preset:p6 cq 25 rc-lookahead:32；10bit源使用profile:main10并输出10bit像素格式
+                    # 注意：由于使用了视频滤镜(subtitles)，需要在CPU侧处理帧，然后传给NVENC编码
+                    # 因此不使用 -hwaccel cuda，而是直接让NVENC接收CPU解码后的帧
                     is_10bit_src = False
                     try:
                         if input_pix_fmt and ('10' in str(input_pix_fmt) or 'p010' in str(input_pix_fmt)):
@@ -1841,12 +1867,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     except Exception:
                         pass
 
+                    # NVENC 编码器参数
                     vparams = [
                         '-c:v', 'hevc_nvenc',
                         '-preset', 'p6',
                         '-rc', 'vbr',
                         '-cq', '25',
                         '-rc-lookahead', '32',
+                        '-spatial-aq', '1',  # 空间自适应量化，提升画质
                         '-g', str(gop)
                     ]
                     if is_10bit_src:
@@ -1854,6 +1882,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     else:
                         vparams += ['-profile:v', 'main', '-pix_fmt', 'yuv420p']
                     return vparams
+                
+                def build_nvenc_input_params():
+                    """NVENC 输入参数：使用 CUDA 硬件加速解码（可选）"""
+                    # 当使用视频滤镜时，需要将帧从 GPU 下载到 CPU 进行处理
+                    # 然后再上传回 GPU 编码，这可能导致性能下降
+                    # 但对于字幕嵌入场景，这是必需的
+                    return []  # 不使用硬件解码，避免额外的内存传输开销
 
                 def build_qsv_params():
                     # 统一 HEVC QSV，接近 CQ 25；10bit 源输出 main10 + p010le
@@ -1900,9 +1935,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return vparams
 
                 # 首次参数选择（会在不支持时自动降级）
+                # 对于 NVENC，不仅检查编码器是否存在，还要实际测试硬件可用性
                 selected_encoder = 'cpu'
-                if encoder_pref == 'nvenc' and (_ffmpeg_has_encoder('h264_nvenc') or _ffmpeg_has_encoder('hevc_nvenc')):
-                    selected_encoder = 'nvenc'
+                if encoder_pref == 'nvenc':
+                    if _ffmpeg_has_encoder('hevc_nvenc') or _ffmpeg_has_encoder('h264_nvenc'):
+                        task_logger.info("检测到 NVENC 编码器，正在验证硬件可用性...")
+                        if _nvenc_hardware_available():
+                            selected_encoder = 'nvenc'
+                            task_logger.info("NVENC 硬件可用，将使用 GPU 编码")
+                        else:
+                            task_logger.warning("NVENC 编码器存在但硬件不可用（可能是驱动问题或容器未正确挂载 GPU），回退到 CPU")
+                    else:
+                        task_logger.warning("FFmpeg 中未找到 NVENC 编码器")
                 elif encoder_pref == 'qsv' and (_ffmpeg_has_encoder('h264_qsv') or _ffmpeg_has_encoder('hevc_qsv')):
                     selected_encoder = 'qsv'
                 elif encoder_pref == 'amf' and (_ffmpeg_has_encoder('h264_amf') or _ffmpeg_has_encoder('hevc_amf')):
@@ -1915,7 +1959,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 elif selected_encoder == 'amf':
                     vparams = build_amf_params()
                 else:
-                    if encoder_pref in ('nvenc', 'qsv', 'amf'):
+                    if encoder_pref in ('nvenc', 'qsv', 'amf') and selected_encoder == 'cpu':
                         task_logger.warning(f"请求的编码器 {encoder_pref} 在当前环境不可用，自动回退到CPU编码")
                     vparams = build_cpu_params()
 
@@ -2082,15 +2126,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.error(f"错误信息(尾部): {error_output_tail}")
 
                     # 针对硬件编码失败自动降级至CPU重试一次
-                    known_nv_errors = (
-                        'Unknown encoder \"h264_nvenc\"',
-                        'Unknown encoder \"hevc_nvenc\"',
+                    # 扩展错误模式以覆盖更多 NVENC 初始化失败的情况
+                    known_hw_errors = (
+                        'Unknown encoder "h264_nvenc"',
+                        'Unknown encoder "hevc_nvenc"',
+                        "Unknown encoder 'h264_nvenc'",
+                        "Unknown encoder 'hevc_nvenc'",
                         'No NVENC capable devices found',
                         'Device not present',
-                        'No such filter: \"subtitles\"'
+                        'No such filter: "subtitles"',
+                        "No such filter: 'subtitles'",
+                        'Cannot load libnvidia-encode',
+                        'Failed to query maximum',
+                        'Cannot find a CUDA capable',
+                        'CUDA_ERROR_',
+                        'nvcuda.dll',
+                        'libnvcuvid',
+                        'nvenc_load_functions',
+                        'Could not initialize',
+                        'OpenEncodeSession failed',
+                        'out of memory',
+                        'InitializeEncoder failed',
+                        'GPU is not in the list'
                     )
                     should_retry_cpu = False
-                    if any(err in error_output_full for err in known_nv_errors):
+                    error_lower = error_output_full.lower()
+                    if any(err.lower() in error_lower for err in known_hw_errors):
                         should_retry_cpu = True
                     # 如果选择了硬编但返回码非零，也尝试一次CPU
                     if selected_encoder in ('nvenc', 'qsv', 'amf') and process.returncode != 0:
