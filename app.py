@@ -735,6 +735,81 @@ def review_task(task_id):
     """重定向到任务编辑页面"""
     return redirect(url_for('edit_task', task_id=task_id))
 
+@app.route('/tasks/add_via_extension', methods=['POST', 'OPTIONS'])
+@login_required
+def add_task_via_extension():
+    """
+    通过浏览器扩展或API添加任务 (JSON格式)
+    支持Telegram Bot、浏览器扩展等外部服务调用
+    """
+    # 处理CORS预检请求
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # 优先从JSON获取，兼容form表单
+        if request.is_json:
+            data = request.get_json()
+            youtube_url = data.get('youtube_url') if data else None
+        else:
+            youtube_url = request.form.get('youtube_url')
+        
+        if not youtube_url:
+            return jsonify({'success': False, 'message': 'YouTube URL不能为空'}), 400
+        
+        # 判断是否为播放列表URL
+        if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
+            # 提取所有视频URL
+            config = load_config()
+            cookies_path = config.get('YOUTUBE_COOKIES_PATH')
+            video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
+            if not video_urls:
+                return jsonify({'success': False, 'message': '未能提取到播放列表中的视频'}), 400
+            
+            added_count = 0
+            task_ids = []
+            for url in video_urls:
+                task_id = add_task(url)
+                if task_id:
+                    added_count += 1
+                    task_ids.append(task_id)
+                    # 自动模式下启动任务
+                    config = load_config()
+                    if config.get('AUTO_MODE_ENABLED', False):
+                        start_task(task_id, config)
+            
+            return jsonify({
+                'success': True,
+                'message': f'已批量添加 {added_count} 个视频任务（来自播放列表）',
+                'task_ids': task_ids,
+                'count': added_count
+            }), 200
+        else:
+            # 单个视频
+            task_id = add_task(youtube_url)
+            if task_id:
+                config = load_config()
+                if config.get('AUTO_MODE_ENABLED', False):
+                    logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
+                    start_task(task_id, config)
+                    return jsonify({
+                        'success': True,
+                        'message': f'任务已添加并开始处理',
+                        'task_id': task_id
+                    }), 200
+                else:
+                    return jsonify({
+                        'success': True,
+                        'message': '任务已添加',
+                        'task_id': task_id
+                    }), 200
+            else:
+                return jsonify({'success': False, 'message': '添加任务失败'}), 500
+                
+    except Exception as e:
+        logger.error(f"通过扩展添加任务失败: {str(e)}")
+        return jsonify({'success': False, 'message': f'服务器错误: {str(e)}'}), 500
+
 @app.route('/tasks/add', methods=['POST'])
 @login_required
 def add_task_route():
