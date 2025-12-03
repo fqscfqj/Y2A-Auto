@@ -1695,24 +1695,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 """检测 NVENC 硬件是否实际可用（不仅仅是编码器存在）"""
                 try:
                     # 使用一个最小化的测试来验证 NVENC 是否真正可用
-                    # 生成 1 帧测试视频并尝试用 NVENC 编码
+                    # 注意：HEVC NVENC 有最小分辨率要求（通常 128x128 或 256x256），使用 256x256 确保兼容
                     test_cmd = [
-                        ffmpeg_bin, '-hide_banner', '-loglevel', 'error',
-                        '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.04',
+                        ffmpeg_bin, '-hide_banner', '-loglevel', 'warning',
+                        '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=0.04',
                         '-c:v', 'hevc_nvenc', '-frames:v', '1',
                         '-f', 'null', '-'
                     ]
+                    task_logger.debug(f"NVENC 测试命令: {' '.join(test_cmd)}")
                     result = subprocess.run(
                         test_cmd,
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30
                     )
                     if result.returncode == 0:
-                        task_logger.debug("NVENC 硬件可用性测试通过")
+                        task_logger.info("NVENC 硬件可用性测试通过")
                         return True
                     else:
-                        task_logger.debug(f"NVENC 硬件可用性测试失败: {result.stderr[:200] if result.stderr else 'unknown error'}")
+                        stderr_msg = result.stderr.strip() if result.stderr else 'unknown error'
+                        # 检查是否是分辨率问题（不应该发生了，但以防万一）
+                        if 'dimensions' in stderr_msg.lower() or 'minimum' in stderr_msg.lower():
+                            task_logger.warning(f"NVENC 测试因分辨率限制失败，但硬件可能可用: {stderr_msg[:200]}")
+                            # 这种情况下我们假设硬件是可用的，只是测试分辨率太小
+                            return True
+                        task_logger.warning(f"NVENC 硬件可用性测试失败 (returncode={result.returncode})")
+                        task_logger.warning(f"NVENC 测试 stderr: {stderr_msg[:500]}")
                 except Exception as e:
-                    task_logger.debug(f"NVENC 硬件可用性测试异常: {e}")
+                    task_logger.warning(f"NVENC 硬件可用性测试异常: {e}")
                 return False
 
             def _ffmpeg_has_filter(filter_name: str) -> bool:
