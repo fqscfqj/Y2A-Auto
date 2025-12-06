@@ -1,11 +1,12 @@
 services:
   y2a-auto:
-    # image: fqscfqj/y2a-auto:latest #DockerHub
-    image: ghcr.io/fqscfqj/y2a-auto:latest
     container_name: y2a-auto
+    image: ghcr.io/fqscfqj/y2a-auto:latest
     restart: unless-stopped
     ports:
       - "5000:5000"
+    
+    # 挂载目录
     volumes:
       - ./config:/app/config
       - ./db:/app/db
@@ -13,47 +14,42 @@ services:
       - ./logs:/app/logs
       - ./cookies:/app/cookies
       - ./temp:/app/temp
+
+    # 环境变量配置
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
-      # 硬件编码器选择（取消注释相应行，并启用下方对应的 GPU 配置）
-      # - VIDEO_ENCODER=nvenc          # NVIDIA NVENC（同时取消下方 NVIDIA 块注释）
-      # - VIDEO_ENCODER=qsv            # Intel QSV（同时取消下方 Intel 块注释）
-      # - VIDEO_ENCODER=amf            # AMD AMF（同时取消下方 AMD 块注释）
-      # Intel QSV 驱动选择
-      # - LIBVA_DRIVER_NAME=iHD        # Intel: 视驱动决定，可为 iHD / i965
-      # AMD AMF 运行库路径
-      # - LD_LIBRARY_PATH=/opt/amdgpu-pro/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-      # NVIDIA 运行时库路径（通常由 nvidia-container-toolkit 自动注入，无需手动设置）
-      # - NVIDIA_VISIBLE_DEVICES=all
-      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
-    # =========================================================================
-    # GPU 配置：按需取消相应块注释
-    # =========================================================================
-    # --- NVIDIA NVENC ---
-    # 注意：使用 NVENC 需要：
-    # 1. 宿主机安装 nvidia-driver（版本 >= 470 推荐）
-    # 2. 安装 nvidia-container-toolkit（https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html）
-    # 3. 取消下方 deploy 块的注释
+      
+      # --- 硬件加速设置 (可选) ---
+      # 取消注释下方对应的 VIDEO_ENCODER 变量以启用硬件加速
+      # - VIDEO_ENCODER=nvenc          # NVIDIA 显卡
+      # - VIDEO_ENCODER=qsv            # Intel 核显
+      # - VIDEO_ENCODER=amf            # AMD 显卡
+
+      # --- 额外驱动配置 (通常无需修改) ---
+      # - LIBVA_DRIVER_NAME=iHD        # Intel QSV 驱动 (iHD 或 i965)
+      # - NVIDIA_VISIBLE_DEVICES=all   # NVIDIA 设备可见性
+
+    # --- 硬件资源映射 (按需取消注释) ---
+    
+    # 1. NVIDIA 显卡配置
+    #    需要宿主机安装 nvidia-container-toolkit
     # deploy:
     #   resources:
     #     reservations:
     #       devices:
     #         - driver: nvidia
     #           count: all
-    #           capabilities: [gpu, video]  # 添加 video 能力以支持 NVENC
-    # runtime: nvidia   # Docker < 19.03 或 docker-compose v2 早期版本需要此行
-    #
-    # --- Intel QSV / VA-API ---
+    #           capabilities: [gpu]
+
+    # 2. Intel / AMD 显卡配置 (VA-API/QSV)
+    #    将宿主机的渲染设备映射到容器
     # devices:
     #   - /dev/dri:/dev/dri
     # group_add:
     #   - video
     #   - render
-    #
-    # --- AMD AMF / VA-API ---
-    # devices:
-    #   - /dev/dri:/dev/dri
+    
+    # 3. AMD AMF 额外库映射 (如果需要)
     # volumes:
     #   - /opt/amdgpu-pro/lib/x86_64-linux-gnu:/opt/amdgpu-pro/lib/x86_64-linux-gnu:ro
-    # （若已在宿主机安装 amdgpu-pro，可挂载其运行库；路径按实际情况调整）
