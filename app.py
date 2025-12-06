@@ -16,6 +16,7 @@ from flask_cors import CORS
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
+from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
@@ -1540,7 +1541,7 @@ def settings():
     
     # GET请求，显示设置页面
     config = load_config()
-    return render_template('settings.html', config=config)
+    return render_template('settings.html', config=config, whisper_languages=WHISPER_LANGUAGE_LIST)
 
 @app.route('/settings/reset', methods=['POST'])
 @login_required

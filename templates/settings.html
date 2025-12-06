@@ -685,7 +685,13 @@
                                     <div class="col-md-4">
                                         <div class="form-group">
                                             <label for="whisper-language">强制语言(可选):</label>
-                                            <input type="text" id="whisper-language" name="WHISPER_LANGUAGE" value="{{ config.get('WHISPER_LANGUAGE', '') }}" class="form-control" placeholder="如 en/zh/ja，留空自动检测">
+                                            <input type="text" id="whisper-language" name="WHISPER_LANGUAGE" value="{{ config.get('WHISPER_LANGUAGE', '') }}" class="form-control" placeholder="如 en/zh/ja，留空自动检测" list="whisper-language-list">
+                                            <datalist id="whisper-language-list">
+                                                {% for lang in whisper_languages or [] %}
+                                                <option value="{{ lang.code }}">{{ lang.name }} ({{ lang.code }})</option>
+                                                {% endfor %}
+                                            </datalist>
+                                            <p class="help-text">支持的语言已与 Whisper 官方列表同步，留空则自动检测。</p>
                                         </div>
                                     </div>
                                     <div class="col-md-8">
