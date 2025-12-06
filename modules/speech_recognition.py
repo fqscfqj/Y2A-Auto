@@ -119,6 +119,7 @@ class SpeechRecognizer:
         self.logger = _setup_task_logger(self.task_id)
         self.client: Any = None  # OpenAI/Whisper client for transcription
         self._temp_dirs: List[str] = []  # Track temp directories for cleanup
+        self._language_hint: str = ''  # Set after VAD-based language detection
         self._init_client()
 
     def _init_client(self):
@@ -255,6 +256,15 @@ class SpeechRecognizer:
                     
                     if vad_segments:
                         self.logger.info(f"步骤 3/5: VAD 检测到 {len(vad_segments)} 个语音片段，开始转写")
+
+                        # 预先基于首末片段检测语言，仅在前后片段一致时采用
+                        self._language_hint = self._detect_language_from_segments(
+                            audio_wav, vad_segments, total_audio_duration
+                        ) or ''
+                        if self._language_hint:
+                            self.logger.info(f"基于VAD片段检测到语言: {self._language_hint}，将作为Whisper语言参数")
+                        else:
+                            self.logger.info("VAD片段语言检测未达成一致，按自动识别继续")
                         
                         # Step 4: Parallel transcription
                         # For now, process sequentially (parallel can be added with ThreadPoolExecutor)
@@ -1371,6 +1381,62 @@ class SpeechRecognizer:
                 self.logger.warning(f"清理临时目录失败 {temp_dir}: {e}")
         self._temp_dirs.clear()
 
+    def _detect_language_from_segments(self, audio_wav: str, segments: List[Tuple[float, float]], total_duration_s: float) -> str:
+        """Use first & last VAD segments to probe language via Whisper; require agreement."""
+        try:
+            if not segments:
+                return ''
+
+            # Choose first and last segments after sorting
+            segs_sorted = sorted(segments, key=lambda x: x[0])
+            picks = [segs_sorted[0]]
+            if len(segs_sorted) > 1:
+                picks.append(segs_sorted[-1])
+
+            detected = []
+            for idx, (s, e) in enumerate(picks):
+                clip = self._extract_audio_clip(audio_wav, s, e)
+                if not clip:
+                    continue
+                lang = self._whisper_language_detection(clip)
+                if lang:
+                    detected.append(lang)
+                    self.logger.info(f"语言探测({ '首段' if idx == 0 else '末段' }): {lang} [{s:.2f}s - {e:.2f}s]")
+
+            if len(detected) >= 2 and detected[0] == detected[1]:
+                return detected[0]
+            return ''
+        except Exception as e:
+            self.logger.warning(f"VAD片段语言检测失败: {e}")
+            return ''
+
+    def _whisper_language_detection(self, wav_path: str) -> str:
+        """Call Whisper for language-only detection on a small clip."""
+        try:
+            model_name = self.config.model_name or 'whisper-1'
+            with open(wav_path, 'rb') as f:
+                params = {
+                    'model': model_name,
+                    'file': f,
+                    'response_format': 'verbose_json',
+                    'temperature': 0
+                }
+                resp = self.client.audio.transcriptions.create(**params)
+
+            data = self._as_dict(resp) or {}
+            lang = data.get('language') or ''
+            if lang:
+                return str(lang).strip()
+            # Fallback: try segments[0].language if present
+            segments = data.get('segments') or []
+            if segments and isinstance(segments, list):
+                seg_lang = segments[0].get('language') or segments[0].get('lang') or ''
+                return str(seg_lang).strip()
+            return ''
+        except Exception as e:
+            self.logger.warning(f"Whisper语言探测失败: {e}")
+            return ''
+
     def _get_wav_duration(self, wav_path: str) -> float:
         """Get duration of a WAV file efficiently."""
         try:
@@ -1416,8 +1482,9 @@ class SpeechRecognizer:
                     }
                     
                     # Add language if specified
-                    if self.config.language:
-                        params['language'] = self.config.language
+                    language_hint = self._language_hint or self.config.language
+                    if language_hint:
+                        params['language'] = language_hint
                     
                     # Add prompt to reduce hallucinations (优化版：更精简的提示)
                     base_prompt = "Transcribe speech only. Ignore noise."
