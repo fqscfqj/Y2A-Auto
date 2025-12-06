@@ -480,6 +480,18 @@ class LLMRequester:
         """构建结构化用户提示词 - 优化版：系统提示已包含规则，此处仅提供数据"""
         return json.dumps({"texts": texts}, ensure_ascii=False)
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """移除markdown代码块包裹，方便JSON解析。"""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r'^```[a-zA-Z0-9_-]*\s*', '', cleaned, flags=re.DOTALL)
+                cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.DOTALL)
+            return cleaned.strip()
+        except Exception:
+            return text
+
     def _parse_structured_translation_result(self, result: str, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
         try:
@@ -489,8 +501,18 @@ class LLMRequester:
                     self.logger.warning(f"批次 {batch_id}: API返回空响应，将使用空翻译并依赖后续补翻")
                 return [""] * expected_count
             
+            cleaned = self._strip_code_fences(result)
+
+            # 若包含额外文本，仅截取最外层花括号内的JSON
+            json_candidate = cleaned
+            if 'translations' in cleaned and '{' in cleaned:
+                start = cleaned.find('{')
+                end = cleaned.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    json_candidate = cleaned[start:end + 1]
+
             # 解析JSON响应
-            json_result = json.loads(result.strip())
+            json_result = json.loads(json_candidate)
             
             if "translations" not in json_result:
                 with self._log_lock:
@@ -530,28 +552,21 @@ class LLMRequester:
             return [""] * expected_count
     
     def _fallback_parse_translation_result(self, result: str, expected_count: int) -> List[str]:
-        """回退解析方法，用于处理非JSON响应"""
+        """回退解析方法，用于处理非JSON响应。无法解析时返回空串以触发补翻。"""
         try:
-            lines = result.strip().split('\n')
-            translations = []
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                line = re.sub(r'^(\d+\.|\d+、|\(|（)?\d+(\)|）)?\s*[-–—·•]*\s*', '', line)
-                # 去除引号包裹
-                if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
-                    line = line[1:-1].strip()
-                if line:
-                    translations.append(line)
-            
-            # 确保返回的翻译数量正确
-            while len(translations) < expected_count:
-                translations.append("")  # 用空字符串填充
-            
-            return translations[:expected_count]
-            
+            cleaned = self._strip_code_fences(result)
+            match = re.search(r'"translations"\s*:\s*(\[[\s\S]*?\])', cleaned)
+            if match:
+                try:
+                    arr = json.loads(match.group(1))
+                    if isinstance(arr, list):
+                        while len(arr) < expected_count:
+                            arr.append("")
+                        return arr[:expected_count]
+                except Exception:
+                    pass
+            # 无法提取有效译文时，返回空列表让后续补翻处理
+            return [""] * expected_count
         except Exception as e:
             self.logger.error(f"回退解析翻译结果失败: {e}")
             return [""] * expected_count
