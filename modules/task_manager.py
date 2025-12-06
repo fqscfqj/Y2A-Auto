@@ -1483,23 +1483,37 @@ class TaskProcessor:
             return False
     
     def _detect_subtitle_language(self, subtitle_path):
-        """简单的字幕语言检测"""
+        """更稳健的字幕语言检测：按字符占比与数量判定，避免少量混入的误判"""
         try:
-            with open(subtitle_path, 'r', encoding='utf-8') as f:
+            with open(subtitle_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            
-            # 简单的语言检测逻辑
-            if any(ord(char) >= 0x4e00 and ord(char) <= 0x9fff for char in content):
-                return "zh"  # 中文
-            elif any(ord(char) >= 0x3040 and ord(char) <= 0x309f for char in content):
-                return "ja"  # 日语平假名
-            elif any(ord(char) >= 0x30a0 and ord(char) <= 0x30ff for char in content):
-                return "ja"  # 日语片假名
-            elif any(ord(char) >= 0xac00 and ord(char) <= 0xd7af for char in content):
-                return "ko"  # 韩语
-            else:
-                return "en"  # 默认英语
-                
+
+            zh_chars = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+            ja_chars = sum(1 for c in content if ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+            ko_chars = sum(1 for c in content if '\uac00' <= c <= '\ud7af')
+            latin_chars = sum(1 for c in content if c.isascii() and c.isalpha())
+
+            total_letters = zh_chars + ja_chars + ko_chars + latin_chars
+            zh_lines = sum(1 for line in content.splitlines() if any('\u4e00' <= c <= '\u9fff' for c in line))
+
+            def is_dominant(count: int, ratio_threshold: float, min_chars: int) -> bool:
+                if count < min_chars or total_letters == 0:
+                    return False
+                return (count / total_letters) >= ratio_threshold
+
+            # 需要数量和占比同时满足，避免因为少量中文误判
+            if is_dominant(zh_chars, ratio_threshold=0.2, min_chars=30) or zh_lines >= 10:
+                return "zh"
+            if is_dominant(ja_chars, ratio_threshold=0.15, min_chars=20):
+                return "ja"
+            if is_dominant(ko_chars, ratio_threshold=0.15, min_chars=20):
+                return "ko"
+
+            # 英文为默认，要求一定数量以避免空文件
+            if latin_chars >= 30:
+                return "en"
+            return "auto"
+
         except Exception:
             return "auto"
     
