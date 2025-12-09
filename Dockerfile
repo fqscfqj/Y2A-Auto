@@ -69,7 +69,7 @@ COPY --from=builder /root/.local /home/y2a/.local
 # 复制应用代码
 COPY --chown=y2a:y2a . .
 
-# 下载带硬件编码支持的 ffmpeg，并在必要时回退到纯 CPU 版本
+# 下载 ffmpeg
 RUN set -eux \
     && mkdir -p /app/ffmpeg \
     && rm -rf /app/ffmpeg/* \
@@ -102,7 +102,7 @@ RUN set -eux \
     && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe 2>/dev/null || true \
     && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
     && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe \
-    && /app/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi nvenc && echo "✅ NVENC encoders detected" || echo "ℹ️ NVENC not found in current build"
+    && echo "ℹ️ FFmpeg installed for CPU encoding only"
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \

@@ -63,7 +63,7 @@ COPY --from=builder /root/.local /home/y2a/.local
 # 复制应用代码
 COPY --chown=y2a:y2a . .
 
-# 下载带硬件编码支持的 ffmpeg，并允许回退到纯 CPU 版本
+# 下载带硬件编码支持的ffmpeg
 RUN set -eux \
     && mkdir -p /app/ffmpeg \
     && rm -rf /app/ffmpeg/* \

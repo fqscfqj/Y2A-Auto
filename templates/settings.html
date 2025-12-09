@@ -577,13 +577,9 @@
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="video-encoder">视频编码器（用于嵌字转码）:</label>
-                                            <select name="VIDEO_ENCODER" id="video-encoder" class="form-select">
-                                                <option value="cpu" {% if config.get('VIDEO_ENCODER', 'cpu') == 'cpu' %}selected{% endif %}>CPU 软编码</option>
-                                                <option value="nvenc" {% if config.get('VIDEO_ENCODER', 'cpu') == 'nvenc' %}selected{% endif %}>NVIDIA NVENC</option>
-                                                <option value="qsv" {% if config.get('VIDEO_ENCODER', 'cpu') == 'qsv' %}selected{% endif %}>Intel QSV</option>
-                                                <option value="amf" {% if config.get('VIDEO_ENCODER', 'cpu') == 'amf' %}selected{% endif %}>AMD AMF</option>
-                                            </select>
-                                            <p class="help-text">项目内置的 Windows/Linux FFmpeg 均包含上述硬件编码器；请选择与显卡匹配的项，并确保系统/容器已按 README 的“硬件转码”指南挂载对应驱动（如 Windows 装好显卡驱动、Docker 使用 <code>--gpus all</code> 或挂载 /dev/dri）。</p>
+                                            <input type="hidden" name="VIDEO_ENCODER" value="cpu">
+                                            <div class="form-control-plaintext">CPU 软编码</div>
+                                            <p class="help-text">当前版本仅提供 CPU 软编码，已移除所有硬件加速选项。</p>
                                         </div>
                                     </div>
                                     <div class="col-md-6">

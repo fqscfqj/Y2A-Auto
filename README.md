@@ -42,7 +42,7 @@
 - YouTube 监控
   - 频道/趋势抓取（需配置 API Key）
   - 定时任务与历史记录
-- 可选 GPU/硬件加速
+- 视频编码
 - Docker 一键部署，或本地运行
 
 ## 项目结构
@@ -194,15 +194,17 @@ python app.py
 
   "YOUTUBE_API_KEY": "可选：启用 YouTube 监控",
 
-  "VIDEO_ENCODER": "cpu"  // 也可 nvenc/qsv/amf
+  "VIDEO_ENCODER": "cpu"
 }
 ```
+
+当前版本仅支持 CPU 软编码，`VIDEO_ENCODER` 已固定为 `cpu`。
 
 提示：
 
 - 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
 - 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
-- 需要硬件编码时，请先在 README 的“硬件转码指南”章节确认驱动/容器挂载是否已就绪，再在设置页选择 `VIDEO_ENCODER`。
+- 当前版本已移除硬件编码，`VIDEO_ENCODER` 固定为 `cpu`，无需额外 GPU 配置。
 
 ## 使用指南
 
@@ -221,110 +223,25 @@ python app.py
 ## 内置 FFmpeg
 
 - Release 包含 `ffmpeg/` 目录，内置 Windows 版 BtbN 构建与 Linux 静态版二进制及配套许可证。
-- Docker 镜像与本地构建会根据 `FFMPEG_VARIANT`（默认 `btbn`）在线拉取 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) 的 GPU 友好版本；如需最小体积的纯 CPU 版本，可在构建时附加 `--build-arg FFMPEG_VARIANT=static` 回退到 johnvansickle 静态包。
+- Docker 镜像与本地构建会根据 `FFMPEG_VARIANT`（默认 `btbn`）在线拉取 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)。如需最小体积的纯 CPU 版本，可在构建时附加 `--build-arg FFMPEG_VARIANT=static` 回退到 johnvansickle 静态包。
 - 运行时始终优先使用 `ffmpeg/` 目录中的二进制；若需要升级，可直接替换该目录并保留许可证文件。
-- 预编译二进制均启用 NVENC / QSV / AMF / VA-API / libx264 等常用编码器（请以 `ffmpeg -hide_banner -encoders` 输出为准）。GPU 的实际可用性仍取决于宿主机驱动、容器挂载及权限。
+- 预编译二进制启用了常见编码器，但应用逻辑固定使用 CPU 侧的 libx264。
 
-## 嵌字转码参数与硬件加速
+## 嵌字转码参数（CPU）
 
-仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用会根据 `VIDEO_ENCODER` 选择编码器并使用统一参数：
+仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用固定使用 CPU 编码：
 
-- CPU：libx264，CRF 23，preset=slow，profile=high，level=4.2，yuv420p
-- NVIDIA NVENC：hevc_nvenc，preset=p6，cq=25，rc-lookahead=32；若源为 10bit，自动使用 profile=main10 并输出 p010le，否则 profile=main + yuv420p
+- 视频：libx264，CRF 23，preset=slow，profile=high，level=4.2，yuv420p
 - 音频：AAC 320kbps，采样率跟随原视频
 
-提示：NVENC/QSV/AMF 的可用性仍取决于系统驱动、容器所挂设备以及硬件型号；不可用时应用会自动回退到 CPU 并在日志中给出提示。
-
-## 硬件转码指南
-
-应用通过 `VIDEO_ENCODER` 控制所使用的编码器：`cpu` / `nvenc` / `qsv` / `amf`。项目内置的 FFmpeg 已包含这些编码器，额外需要做的是：
-
-1. 宿主机或容器必须能访问相应的 GPU 设备。
-2. 设备驱动/运行时需已正确安装（NVIDIA 驱动 + Container Toolkit、Intel VAAPI/QSV 驱动、AMD Adrenalin/ROCm 等）。
-3. 在设置页选择编码器，或在 `config/config.json` 写入 `"VIDEO_ENCODER": "nvenc"` 等配置。
-
-### Windows / 裸机 Linux
-
-- Windows 版本直接使用 `ffmpeg/ffmpeg.exe`。只要显卡驱动支持 NVENC/QSV/AMF，对应选项即可生效。
-- Linux 裸机运行（非容器）时，同样使用仓库 `ffmpeg/ffmpeg`，需要确保用户对 `/dev/dri`（QSV/VA-API）或 NVIDIA 设备节点有访问权限。
-- 自检命令：
-
-```powershell
-# Windows PowerShell
-.fmpeg\ffmpeg.exe -hide_banner -encoders ^| Select-String nvenc
-```
-
-```bash
-# Linux 裸机/WSL
-./ffmpeg/ffmpeg -hide_banner -encoders | grep -Ei "nvenc|qsv|amf"
-```
-
-若自检命令未输出对应编码器，请更新显卡驱动或将 `ffmpeg/` 替换为拥有目标编码器的版本。
-
-### Docker（Linux）
-
-容器镜像在构建阶段已预装支持 NVENC/QSV/AMF 的 FFmpeg；要让硬件编码生效，需要为容器挂载对应 GPU 设备。所有 GPU 配置示例均已写入 `docker-compose.yml` 与 `docker-compose-build.yml`，按需取消相应注释即可。
-
-#### NVIDIA NVENC
-
-1. 宿主机安装官方 NVIDIA 驱动及 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
-1. 编辑 `docker-compose.yml`（如本地构建同时编辑 `docker-compose-build.yml`），在 `environment` 块取消 `VIDEO_ENCODER=nvenc` 注释，并取消 NVIDIA GPU 栏位（`deploy.resources...` 与 `runtime: nvidia`）注释。
-1. 重新部署：
-
-```bash
-docker compose up -d --build
-```
-
-  只需一次即可，后续运行 `docker compose up -d` 会沿用已有容器。
-
-1. 自检确认容器能看到 NVENC：
-
-```bash
-docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i nvenc
-```
-
-#### Intel QSV / VA-API
-
-1. 启用 Intel iGPU，并安装 VAAPI/QSV 驱动（例如 `intel-media-va-driver-non-free`）。
-1. 编辑 `docker-compose.yml`，取消 `VIDEO_ENCODER=qsv` 与（可选）`LIBVA_DRIVER_NAME=iHD` 的注释，并取消 Intel 块（`/dev/dri` 映射、`group_add`）注释。需要多个用户共享时，可确保宿主机用户属于 `video/render` 组。
-1. 重新部署：
-
-```bash
-docker compose up -d --build
-```
-
-1. 自检：
-
-```bash
-docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i qsv
-```
-
-#### AMD AMF / VAAPI
-
-- AMF 在 Windows 与新版本 amdgpu-pro (24.x+) 上均可使用；Docker 场景需确保宿主机已安装 AMD 官方驱动并可访问 `/dev/dri`。
-- 编辑 `docker-compose.yml`，取消 `VIDEO_ENCODER=amf`、`LD_LIBRARY_PATH=...` 与 AMD 块（挂载 `/dev/dri`、可选运行库 `volumes`）注释。
-- 重新部署：
-
-```bash
-docker compose up -d --build
-```
-
-- 自检：
-
-```bash
-docker compose exec y2a-auto ffmpeg -hide_banner -encoders | grep -i amf
-```
-
-- 若当前驱动不包含 AMF，可退回到 VA-API：自备含 `h264_vaapi/hevc_vaapi` 的 FFmpeg，运行容器时挂载 `/dev/dri`，并在 `config.json` 指向自定义转码脚本。
-
-> 提示：容器内 `ffmpeg -encoders` 是判断编码器是否可用的唯一依据；若输出缺失，请检查驱动或替换 `ffmpeg/` 内容。应用在检测到硬件编码失败时会写入任务日志，并自动回退到 CPU。
+硬件编码（NVENC/QSV/AMF）已移除，无需额外驱动或设备配置。
 
 ### 自定义镜像（可选）
 
-如果你希望完全控制 FFmpeg 版本，仍可以参考以下模式自定义镜像（例如从 `jrottenberg/ffmpeg` 提取 ffmpeg）：
+如果你希望完全控制 FFmpeg 版本，仍可以参考以下模式自定义镜像（示例为纯 CPU 方案）：
 
 ```dockerfile
-FROM jrottenberg/ffmpeg:6.1-nvidia AS ffmpeg
+FROM jrottenberg/ffmpeg:6.1-slim AS ffmpeg
 
 FROM python:3.11-slim
 WORKDIR /app
@@ -336,7 +253,7 @@ COPY . .
 CMD ["python", "app.py"]
 ```
 
-构建完自定义镜像后，仍需按上文步骤为容器挂载 GPU 设备；或者在默认 Dockerfile 构建时追加 `--build-arg FFMPEG_VARIANT=static`，即可获得体积更小的纯 CPU 版本镜像。
+构建完自定义镜像后无需挂载 GPU 设备；也可以在默认 Dockerfile 构建时追加 `--build-arg FFMPEG_VARIANT=static` 获得体积更小的纯 CPU 版本。
 
 ## 常见问题
 
@@ -347,7 +264,7 @@ CMD ["python", "app.py"]
 - 上传到 AcFun 失败
   - 请更新 `cookies/ac_cookies.txt`，并在「人工审核」页确认分区、标题与描述合规。
 - 字幕翻译速度慢
-  - 可在设置中调大并发与批大小（注意 API 限速），或使用硬件编码器加速视频处理。
+  - 可在设置中调大并发与批大小（注意 API 限速）。视频转码采用 CPU 软编码，处理速度取决于 CPU 性能。
 
 ## 贡献与反馈
 

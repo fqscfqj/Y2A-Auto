@@ -72,9 +72,8 @@ DEFAULT_CONFIG = {
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
-    # 视频转码相关
-    "VIDEO_ENCODER": "cpu"  # 选择视频编码器：cpu / nvenc / qsv / amf
-    ,
+    # 视频转码相关（仅支持 CPU 软编码）
+    "VIDEO_ENCODER": "cpu",
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
@@ -152,9 +151,17 @@ def load_config():
                     if key not in config:
                         config[key] = value
                         missing_keys = True
+
+                # 强制视频编码器为 CPU，移除对硬件编码器的支持
+                encoder_value = str(config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
+                encoder_changed = False
+                if encoder_value != 'cpu':
+                    logger.warning(f"检测到不受支持的视频编码器配置 {encoder_value}，已自动回退为 cpu")
+                    config['VIDEO_ENCODER'] = 'cpu'
+                    encoder_changed = True
                 
-                # 如果有新添加的默认键，则保存更新后的配置
-                if missing_keys:
+                # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
+                if missing_keys or encoder_changed:
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
@@ -215,6 +222,11 @@ def update_config(new_config):
             elif key == 'password':
                 if new_config[key]: # Only update password if a new one is provided
                     current_config[key] = new_config[key]
+            elif key == 'VIDEO_ENCODER':
+                # 仅支持 CPU 软编码，其余值全部回退
+                if str(new_config[key]).lower().strip() != 'cpu':
+                    logger.warning("当前仅支持 CPU 软编码，已忽略硬件编码器配置")
+                current_config[key] = 'cpu'
             else:
                 current_config[key] = new_config[key]
 
