@@ -261,10 +261,12 @@ class SpeechRecognizer:
                         self._language_hint = self._detect_language_from_segments(
                             audio_wav, vad_segments, total_audio_duration
                         ) or ''
-                        if self._language_hint:
+                        # Filter out invalid language codes like 'unknown'
+                        if self._language_hint and self._language_hint.lower() != 'unknown':
                             self.logger.info(f"基于VAD片段检测到语言: {self._language_hint}，将作为Whisper语言参数")
                         else:
-                            self.logger.info("VAD片段语言检测未达成一致，按自动识别继续")
+                            self._language_hint = ''  # Clear invalid language hint
+                            self.logger.info("VAD片段语言检测未达成一致或无效，按自动识别继续")
                         
                         # Step 4: Parallel transcription
                         # For now, process sequentially (parallel can be added with ThreadPoolExecutor)
@@ -1481,9 +1483,9 @@ class SpeechRecognizer:
                         'response_format': 'verbose_json'
                     }
                     
-                    # Add language if specified
+                    # Add language if specified (skip invalid values like 'unknown')
                     language_hint = self._language_hint or self.config.language
-                    if language_hint:
+                    if language_hint and language_hint.lower() != 'unknown':
                         params['language'] = language_hint
                     
                     # Add prompt to reduce hallucinations (优化版：更精简的提示)
