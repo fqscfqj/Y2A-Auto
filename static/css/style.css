@@ -187,11 +187,13 @@ body {
 
 .settings-actions-bar {
     position: sticky;
-    bottom: -20px;
+    bottom: 0;
     background: #fff;
     padding-top: 12px;
+    padding-bottom: 12px;
     margin-top: 8px;
     border-top: 1px solid #eee;
+    z-index: 5;
 }
 
 .settings-container .form-group {

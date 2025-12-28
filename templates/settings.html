@@ -19,13 +19,13 @@
     <div class="row settings-layout">
         <div class="col-lg-3 mb-3">
             <div class="settings-nav" id="settings-nav">
-                <div class="settings-nav-folder open" data-folder="workflow">
+                <div class="settings-nav-folder" data-folder="workflow">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
                         <i class="bi bi-diagram-3"></i>
                         <span>流程工作台</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
-                    <div class="settings-folder-body show nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                    <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
                         <a class="nav-link active" id="vtab-general-tab" data-bs-toggle="pill" href="#vtab-general" role="tab" aria-controls="vtab-general" aria-selected="true">
                             <i class="bi bi-sliders"></i> 通用
                         </a>
@@ -41,13 +41,13 @@
                     </div>
                 </div>
 
-                <div class="settings-nav-folder open" data-folder="ai">
+                <div class="settings-nav-folder" data-folder="ai">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
                         <i class="bi bi-cpu-fill"></i>
                         <span>AI 与字幕</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
-                    <div class="settings-folder-body show nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                    <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
                         <a class="nav-link" id="vtab-subtitle-tab" data-bs-toggle="pill" href="#vtab-subtitle" role="tab" aria-controls="vtab-subtitle" aria-selected="false">
                             <i class="bi bi-translate"></i> 字幕翻译
                         </a>
@@ -63,13 +63,13 @@
                     </div>
                 </div>
 
-                <div class="settings-nav-folder open" data-folder="security">
+                <div class="settings-nav-folder" data-folder="security">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
                         <i class="bi bi-shield-lock"></i>
                         <span>安全与合规</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
-                    <div class="settings-folder-body show nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                    <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
                         <a class="nav-link" id="vtab-security-tab" data-bs-toggle="pill" href="#vtab-security" role="tab" aria-controls="vtab-security" aria-selected="false">
                             <i class="bi bi-lock"></i> 账号与安全
                         </a>
@@ -79,13 +79,13 @@
                     </div>
                 </div>
 
-                <div class="settings-nav-folder open" data-folder="monitoring">
+                <div class="settings-nav-folder" data-folder="monitoring">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
                         <i class="bi bi-broadcast"></i>
                         <span>监控与扩展</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
-                    <div class="settings-folder-body show nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                    <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
                         <a class="nav-link" id="vtab-ytmonitor-tab" data-bs-toggle="pill" href="#vtab-ytmonitor" role="tab" aria-controls="vtab-ytmonitor" aria-selected="false">
                             <i class="bi bi-youtube"></i> YouTube监控
                         </a>
@@ -1111,6 +1111,20 @@
 document.addEventListener('DOMContentLoaded', function () {
     const folders = document.querySelectorAll('.settings-nav-folder');
 
+    const closeAllFoldersExcept = function (keepFolder) {
+        folders.forEach(function (folder) {
+            if (keepFolder && folder === keepFolder) {
+                return;
+            }
+            const toggle = folder.querySelector('.settings-folder-toggle');
+            const body = folder.querySelector('.settings-folder-body');
+            if (!toggle || !body) return;
+            toggle.setAttribute('aria-expanded', 'false');
+            folder.classList.remove('open');
+            body.classList.remove('show');
+        });
+    };
+
     folders.forEach(function (folder) {
         const toggle = folder.querySelector('.settings-folder-toggle');
         const body = folder.querySelector('.settings-folder-body');
@@ -1125,25 +1139,68 @@ document.addEventListener('DOMContentLoaded', function () {
             body.classList.toggle('show', expanded);
         };
 
+        // 初始：全部收起（后续会根据 active tab 自动打开对应分组）
+        setState(false);
+
         toggle.addEventListener('click', function () {
             const expanded = toggle.getAttribute('aria-expanded') === 'true';
+            if (!expanded) {
+                closeAllFoldersExcept(folder);
+            }
             setState(!expanded);
         });
     });
 
-    const activeLink = document.querySelector('.settings-folder-body .nav-link.active');
-    if (activeLink) {
-        const folder = activeLink.closest('.settings-nav-folder');
-        if (folder) {
-            const toggle = folder.querySelector('.settings-folder-toggle');
-            const body = folder.querySelector('.settings-folder-body');
-            if (toggle && body) {
-                toggle.setAttribute('aria-expanded', 'true');
-                folder.classList.add('open');
-                body.classList.add('show');
-            }
+    const openFolderForLink = function (linkEl) {
+        if (!linkEl) return;
+        const folder = linkEl.closest('.settings-nav-folder');
+        if (!folder) return;
+        closeAllFoldersExcept(folder);
+        const toggle = folder.querySelector('.settings-folder-toggle');
+        const body = folder.querySelector('.settings-folder-body');
+        if (toggle && body) {
+            toggle.setAttribute('aria-expanded', 'true');
+            folder.classList.add('open');
+            body.classList.add('show');
         }
+    };
+
+    // 支持 URL hash 直达子页面：#vtab-xxx
+    const activateTabFromHash = function () {
+        const hash = window.location.hash;
+        if (!hash || !hash.startsWith('#vtab-')) {
+            return false;
+        }
+        const link = document.querySelector('.settings-folder-body .nav-link[href="' + hash + '"]');
+        if (!link) {
+            return false;
+        }
+        const tab = bootstrap.Tab.getOrCreateInstance(link);
+        tab.show();
+        openFolderForLink(link);
+        return true;
+    };
+
+    const activeLink = document.querySelector('.settings-folder-body .nav-link.active');
+    // 先尝试从 hash 激活；否则打开默认 active
+    if (!activateTabFromHash()) {
+        openFolderForLink(activeLink);
     }
+
+    // tab 切换时同步 hash，并自动展开对应分组
+    document.querySelectorAll('.settings-folder-body .nav-link[data-bs-toggle="pill"]').forEach(function (link) {
+        link.addEventListener('shown.bs.tab', function (event) {
+            const href = event && event.target ? event.target.getAttribute('href') : null;
+            if (href && href.startsWith('#')) {
+                window.location.hash = href;
+            }
+            openFolderForLink(event.target);
+        });
+    });
+
+    window.addEventListener('hashchange', function () {
+        activateTabFromHash();
+    });
 
     // 处理重置按钮点击
     const resetBtn = document.getElementById('reset-settings-btn');

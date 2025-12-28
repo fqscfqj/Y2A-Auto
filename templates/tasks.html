@@ -693,6 +693,69 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     let fallbackMode = false;
     let tasksEventSource = null;
 
+    // 避免后台实时刷新导致 hover 闪烁/点击丢失：用户交互时延迟应用 DOM 更新
+    let pendingTasksContentHtml = null;
+    let pendingTasksApplyTimer = null;
+    let interactionHoldUntil = 0;
+    let pointerIsDown = false;
+
+    function markTasksInteracting(holdMs) {
+        const duration = typeof holdMs === 'number' ? holdMs : 1200;
+        interactionHoldUntil = Math.max(interactionHoldUntil, Date.now() + duration);
+    }
+
+    function isTasksInteracting() {
+        const root = document.querySelector('#tasksContent');
+        if (!root) return false;
+
+        if (pointerIsDown) return true;
+        if (Date.now() < interactionHoldUntil) return true;
+
+        const activeEl = document.activeElement;
+        if (activeEl && root.contains(activeEl)) return true;
+
+        try {
+            if (root.matches(':hover')) return true;
+        } catch (e) {
+            // ignore
+        }
+        return false;
+    }
+
+    function applyTasksContentHtml(html) {
+        const currentContent = document.querySelector('#tasksContent');
+        if (!currentContent) return;
+        if (typeof html !== 'string') return;
+
+        // 内容无变化时避免触发重排/hover 重置
+        if (html === currentContent.innerHTML) {
+            return;
+        }
+
+        currentContent.innerHTML = html;
+        bindTasksEvents();
+        initTooltips();
+        updateTaskDateTimes();
+        updateProgressBars();
+    }
+
+    function scheduleApplyPendingTasksContent() {
+        if (pendingTasksApplyTimer) return;
+        pendingTasksApplyTimer = setTimeout(function tryApply() {
+            pendingTasksApplyTimer = null;
+            if (!pendingTasksContentHtml) return;
+
+            if (isTasksInteracting()) {
+                pendingTasksApplyTimer = setTimeout(tryApply, 500);
+                return;
+            }
+
+            const htmlToApply = pendingTasksContentHtml;
+            pendingTasksContentHtml = null;
+            applyTasksContentHtml(htmlToApply);
+        }, 600);
+    }
+
     function showRefreshIndicator(isVisible) {
         const indicator = document.getElementById('tasksRefreshIndicator');
         if (!indicator) return;
@@ -744,15 +807,19 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         const parser = new DOMParser();
         const newDoc = parser.parseFromString(newContent, 'text/html');
         const newTasksContent = newDoc.querySelector('#tasksContent');
-        const currentContent = document.querySelector('#tasksContent');
 
-        if (newTasksContent && currentContent) {
-            currentContent.innerHTML = newTasksContent.innerHTML;
-            bindTasksEvents();
-            initTooltips();
-            updateTaskDateTimes();
-            updateProgressBars();
+        if (!newTasksContent) {
+            return;
         }
+
+        if (isTasksInteracting()) {
+            // 用户正在悬停/点击/聚焦表格区域时，先缓存更新，等空闲再应用
+            pendingTasksContentHtml = newTasksContent.innerHTML;
+            scheduleApplyPendingTasksContent();
+            return;
+        }
+
+        applyTasksContentHtml(newTasksContent.innerHTML);
     }
 
     function initTasksEventStream() {
@@ -995,6 +1062,20 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        // 监听交互，减少实时刷新带来的 hover 闪烁/误点
+        const tasksRoot = document.querySelector('#tasksContent');
+        if (tasksRoot) {
+            tasksRoot.addEventListener('pointerenter', () => markTasksInteracting(2000), { passive: true });
+            tasksRoot.addEventListener('pointermove', () => markTasksInteracting(1500), { passive: true });
+            tasksRoot.addEventListener('pointerdown', () => markTasksInteracting(4000));
+            tasksRoot.addEventListener('focusin', () => markTasksInteracting(4000));
+            tasksRoot.addEventListener('focusout', () => markTasksInteracting(1200));
+        }
+
+        document.addEventListener('pointerdown', () => { pointerIsDown = true; }, { passive: true });
+        document.addEventListener('pointerup', () => { pointerIsDown = false; }, { passive: true });
+        document.addEventListener('pointercancel', () => { pointerIsDown = false; }, { passive: true });
+
         bindTasksEvents();
         initTooltips();
         updateTaskDateTimes();
