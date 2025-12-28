@@ -31,7 +31,7 @@
 
 - 一条龙自动化
   - yt-dlp 下载视频与封面
-  - 字幕下载、AI 翻译并可嵌入视频
+  - 字幕下载、AI 翻译、自动质检（QC）并可嵌入视频
   - AI 生成标题/描述与标签，推荐分区
   - 内容安全审核（阿里云 Green）
   - 上传至 AcFun（基于 acfun_upload）
@@ -82,6 +82,7 @@ Y2A-Auto/
 │  ├─ content_moderator.py
 │  ├─ speech_recognition.py
 │  ├─ subtitle_translator.py
+│  ├─ subtitle_qc.py              # 字幕质检（可选）
 │  ├─ task_manager.py
 │  ├─ youtube_handler.py
 │  ├─ youtube_monitor.py
@@ -185,22 +186,44 @@ python app.py
   "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt",
   "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt",
 
-  "OPENAI_API_KEY": "可选：用于标题/描述/标签与字幕翻译",
+  "OPENAI_API_KEY": "可选：用于标题/描述/标签、字幕翻译与字幕质检",
   "OPENAI_BASE_URL": "https://api.openai.com/v1",
   "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
 
   "SUBTITLE_TRANSLATION_ENABLED": true,
   "SUBTITLE_TARGET_LANGUAGE": "zh",
 
+  "SUBTITLE_QC_ENABLED": false,
+  "SUBTITLE_QC_THRESHOLD": 0.6,
+  "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,
+
   "YOUTUBE_API_KEY": "可选：启用 YouTube 监控",
 
   "VIDEO_ENCODER": "cpu"
 }
-```
+### 字幕质检（QC）配置
 
-当前版本仅支持 CPU 软编码，`VIDEO_ENCODER` 已固定为 `cpu`。
+若启用字幕质检（`SUBTITLE_QC_ENABLED: true`），系统会在字幕生成/翻译后自动抽样送 LLM 复核：
+
+- `SUBTITLE_QC_THRESHOLD`（0-1）：通过阈值；LLM 评分低于此值则标记字幕异常
+- `SUBTITLE_QC_SAMPLE_MAX_ITEMS`：抽样条目数；多抽可降低误判
+- `SUBTITLE_QC_MAX_CHARS`：送检文本最大字符数；超出将截断以控制 token 消耗
+- `SUBTITLE_QC_MODEL_NAME`：指定 QC 模型（留空则复用字幕翻译模型）
+
+**QC 失败的行为**：
+
+- 不烧录字幕，但保留字幕文件与原视频
+- 继续上传原视频，任务最终标记为"完成"
+- 在任务列表中显示"字幕异常"徽标，便于后续排查
+
+场景示例：无人声视频被 ASR 误识别为大量重复句，或翻译质量极差，QC 可自动检出并跳过烧录，避免成片质量降低。
 
 提示：
+
+- 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
+- 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
+- 当前版本已移除硬件编码，`VIDEO_ENCODER` 固定为 `cpu`，无需额外 GPU 配置。
+- 字幕 QC 需要 OpenAI API Key 与网络连接；若 API 不可用，QC 自动跳过并放行字幕
 
 - 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
 - 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
