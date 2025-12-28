@@ -526,22 +526,13 @@
                                 </div>
 
                                 <div class="row g-3">
-                                    <div class="col-md-4">
-                                        <div class="form-group">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="SUBTITLE_QC_ENABLE_AI" {% if config.get('SUBTITLE_QC_ENABLE_AI', True) %}checked{% endif %}>
-                                                使用AI进行复核
-                                            </label>
-                                            <p class="help-text">关闭后仅使用规则质检（更省费用）</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-4">
+                                    <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="subtitle-qc-threshold">通过阈值(0-1):</label>
                                             <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.6) }}" class="form-control">
                                         </div>
                                     </div>
-                                    <div class="col-md-4">
+                                    <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="subtitle-qc-sample">抽样条目数:</label>
                                             <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">

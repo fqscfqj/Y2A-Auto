@@ -73,7 +73,6 @@ DEFAULT_CONFIG = {
     # 最终字幕质检（可选）
     "SUBTITLE_QC_ENABLED": False,  # 失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
     "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
-    "SUBTITLE_QC_ENABLE_AI": True,  # True=规则+AI；False=仅规则
     "SUBTITLE_QC_MODEL_NAME": "",  # 留空则回退到 SUBTITLE_OPENAI_MODEL_NAME / OPENAI_MODEL_NAME
     "SUBTITLE_QC_THRESHOLD": 0.6,  # 通过阈值（0-1），低于则判定字幕异常
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # 抽样条目数（多抽一点降低误判）

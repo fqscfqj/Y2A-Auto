@@ -228,7 +228,7 @@ def _call_ai_judge(
     sample_text: str,
     metrics: Dict[str, Any],
     config: Dict[str, Any],
-) -> Tuple[Optional[float], Optional[Dict[str, Any]], str]:
+) -> Tuple[Optional[bool], Optional[float], Optional[Dict[str, Any]], str]:
     api_key = (config.get('SUBTITLE_OPENAI_API_KEY') or config.get('OPENAI_API_KEY') or '').strip()
     base_url = (config.get('SUBTITLE_OPENAI_BASE_URL') or config.get('OPENAI_BASE_URL') or '').strip()
 
@@ -239,23 +239,24 @@ def _call_ai_judge(
     )
 
     if not api_key:
-        return None, None, 'missing_openai_api_key'
+        return None, None, None, 'missing_openai_api_key'
 
     client = _build_openai_client(api_key=api_key, base_url=base_url)
 
     system = (
         '你是字幕质检员。目标：判断字幕是否为“正常字幕”。\n'
         '正常字幕应与语音内容相关、语句多样且有信息量，不应是大量重复句、占位符(…/...)、乱序或明显胡话。\n'
-        '请只输出严格 JSON，不要输出额外文本。'
+        '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
+        '{"passed": true, "score": 0.95, "reason": "ok"}'
     )
 
     user = {
         'task': 'subtitle_qc',
-        'rules': '若字幕明显异常请判定 fail。',
+        'rules': '若字幕明显异常请判定 passed=false。',
         'metrics': metrics,
         'subtitle_sample': sample_text,
         'output_schema': {
-            'pass': 'boolean',
+            'passed': 'boolean',
             'score': 'number in [0,1], higher means more normal',
             'reason': 'short string reason'
         }
@@ -273,15 +274,30 @@ def _call_ai_judge(
         content = (resp.choices[0].message.content or '').strip()
         parsed = _extract_json(content)
         if not parsed:
-            return None, None, 'ai_return_not_json'
+            return None, None, None, 'ai_return_not_json'
+
+        passed_val = parsed.get('passed', None)
+        if passed_val is None:
+            passed_val = parsed.get('pass', None)
+        passed_bool: Optional[bool] = None
+        if passed_val is not None:
+            if isinstance(passed_val, bool):
+                passed_bool = passed_val
+            else:
+                s = str(passed_val).strip().lower()
+                if s in {'1', 'true', 'yes', 'y', 'on'}:
+                    passed_bool = True
+                elif s in {'0', 'false', 'no', 'n', 'off'}:
+                    passed_bool = False
+
         score = parsed.get('score', None)
         try:
             score_f = float(score) if score is not None else None
         except Exception:
             score_f = None
-        return score_f, parsed, 'ok'
+        return passed_bool, score_f, parsed, 'ok'
     except Exception as e:
-        return None, None, f'ai_error:{e}'
+        return None, None, None, f'ai_error:{e}'
 
 
 def run_subtitle_qc(
@@ -292,7 +308,6 @@ def run_subtitle_qc(
     """对 SRT 进行最终字幕质检。失败时应跳过烧录字幕，但保留字幕文件并继续上传原视频。"""
     max_items = _to_int(config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80), 80)
     max_chars = _to_int(config.get('SUBTITLE_QC_MAX_CHARS', 9000), 9000)
-    enable_ai = _to_bool(config.get('SUBTITLE_QC_ENABLE_AI', True), True)
 
     threshold_val = threshold
     if threshold_val is None:
@@ -310,41 +325,61 @@ def run_subtitle_qc(
         'checked_at': datetime.utcnow().isoformat() + 'Z',
     }
 
-    ai_score: Optional[float] = None
-    raw_ai: Optional[Dict[str, Any]] = None
-    ai_status = 'skipped'
+    provider = str(config.get('SUBTITLE_QC_PROVIDER', 'openai')).lower().strip()
+    if provider != 'openai':
+        return SubtitleQCResult(
+            passed=True,
+            score=float(rule_score),
+            reason='qc_skipped:provider_disabled',
+            rule_score=rule_score,
+            ai_score=None,
+            raw_ai={'ai_status': 'provider_disabled', **metrics},
+        )
 
-    if enable_ai and str(config.get('SUBTITLE_QC_PROVIDER', 'openai')).lower().strip() == 'openai':
-        sample = _sample_items(items, max_items=max_items, max_chars=max_chars)
-        if sample:
-            ai_score, raw_ai, ai_status = _call_ai_judge(sample, metrics=metrics, config=config)
-        else:
-            ai_status = 'empty_sample'
+    sample = _sample_items(items, max_items=max_items, max_chars=max_chars)
+    if not sample:
+        return SubtitleQCResult(
+            passed=True,
+            score=float(rule_score),
+            reason='qc_skipped:empty_sample',
+            rule_score=rule_score,
+            ai_score=None,
+            raw_ai={'ai_status': 'empty_sample', **metrics},
+        )
 
-    # 综合判定：优先规则硬拦截重复/空洞；AI 分数用于兜底
-    # 规则明显异常时直接 FAIL，避免 AI 误放行
-    hard_fail = (rule_score <= 0.3) or (rule_reason in {'empty_subtitle', 'low_content'})
+    ai_passed, ai_score, raw_ai, ai_status = _call_ai_judge(sample, metrics=metrics, config=config)
+    if ai_status != 'ok':
+        return SubtitleQCResult(
+            passed=True,
+            score=float(rule_score),
+            reason=f'qc_skipped:{ai_status}',
+            rule_score=rule_score,
+            ai_score=None,
+            raw_ai={'ai_status': ai_status, **metrics},
+        )
 
-    combined = rule_score
-    if ai_score is not None:
-        combined = 0.55 * rule_score + 0.45 * ai_score
+    passed: bool
+    if ai_passed is not None:
+        passed = bool(ai_passed)
+    elif ai_score is not None:
+        passed = float(ai_score) >= float(threshold_val)
+    else:
+        # LLM 未提供可判定字段时，为避免误伤主流程，默认放行
+        passed = True
 
-    passed = (combined >= float(threshold_val)) and (not hard_fail)
-
+    final_score = float(ai_score) if ai_score is not None else float(rule_score)
     reason = 'ok'
     if not passed:
-        if hard_fail:
-            reason = f'rule_fail:{rule_reason}'
-        elif ai_score is not None:
-            reason = f'ai_or_combined_fail:{raw_ai.get("reason", "unknown") if raw_ai else "unknown"}'
+        if raw_ai and isinstance(raw_ai, dict):
+            reason = str(raw_ai.get('reason') or 'ai_fail')
         else:
-            reason = f'rule_fail:{rule_reason}'
+            reason = 'ai_fail'
 
     return SubtitleQCResult(
         passed=passed,
-        score=float(combined),
+        score=float(final_score),
         reason=reason,
         rule_score=rule_score,
         ai_score=ai_score,
-        raw_ai=(raw_ai if raw_ai is not None else {'ai_status': ai_status}),
+        raw_ai=(raw_ai if raw_ai is not None else {'ai_status': ai_status, **metrics}),
     )

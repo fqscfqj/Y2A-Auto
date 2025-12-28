@@ -1388,7 +1388,7 @@ def settings():
             # 新增：字幕后处理布尔项
             'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
             # 新增：字幕最终质检（QC）
-            'SUBTITLE_QC_ENABLED', 'SUBTITLE_QC_ENABLE_AI',
+            'SUBTITLE_QC_ENABLED',
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
         ]
