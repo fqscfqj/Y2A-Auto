@@ -517,6 +517,50 @@
                                     <p class="help-text">自动翻译YouTube视频字幕</p>
                                 </div>
 
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
+                                        启用最终字幕质检（QC）
+                                    </label>
+                                    <p class="help-text">翻译/生成字幕后会抽样送检；若判定字幕异常：不烧录字幕，但保留字幕文件并继续上传原视频，同时任务列表标记“字幕异常”。</p>
+                                </div>
+
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_QC_ENABLE_AI" {% if config.get('SUBTITLE_QC_ENABLE_AI', True) %}checked{% endif %}>
+                                                使用AI进行复核
+                                            </label>
+                                            <p class="help-text">关闭后仅使用规则质检（更省费用）</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="subtitle-qc-threshold">通过阈值(0-1):</label>
+                                            <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.6) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="subtitle-qc-sample">抽样条目数:</label>
+                                            <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="subtitle-qc-maxchars">送检最大字符数:</label>
+                                            <input type="number" min="1000" max="30000" step="500" id="subtitle-qc-maxchars" name="SUBTITLE_QC_MAX_CHARS" value="{{ config.get('SUBTITLE_QC_MAX_CHARS', 9000) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="subtitle-qc-model">QC模型名(可选):</label>
+                                            <input type="text" id="subtitle-qc-model" name="SUBTITLE_QC_MODEL_NAME" value="{{ config.get('SUBTITLE_QC_MODEL_NAME', '') }}" class="form-control" placeholder="留空=复用字幕翻译模型">
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="row g-3">
                                     <div class="col-md-6">
                                         <div class="form-group">

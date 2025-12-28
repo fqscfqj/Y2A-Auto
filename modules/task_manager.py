@@ -217,6 +217,10 @@ def init_db():
         subtitle_path_original TEXT,  -- 原始字幕文件路径
         subtitle_path_translated TEXT,  -- 翻译后字幕文件路径
         subtitle_language_detected TEXT,  -- 检测到的字幕语言
+        subtitle_qc_failed INTEGER DEFAULT 0,  -- 字幕质检是否失败（1=失败）
+        subtitle_qc_reason TEXT,  -- 字幕质检失败原因（可选）
+        subtitle_qc_score REAL,  -- 字幕质检评分（可选）
+        subtitle_qc_checked_at TIMESTAMP,  -- 字幕质检时间（可选）
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
@@ -235,6 +239,26 @@ def init_db():
         if 'upload_progress' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN upload_progress TEXT")
             logger.info("数据库升级：添加upload_progress字段")
+            conn.commit()
+
+        if 'subtitle_qc_failed' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_failed INTEGER DEFAULT 0")
+            logger.info("数据库升级：添加subtitle_qc_failed字段")
+            conn.commit()
+
+        if 'subtitle_qc_reason' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_reason TEXT")
+            logger.info("数据库升级：添加subtitle_qc_reason字段")
+            conn.commit()
+
+        if 'subtitle_qc_score' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_score REAL")
+            logger.info("数据库升级：添加subtitle_qc_score字段")
+            conn.commit()
+
+        if 'subtitle_qc_checked_at' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_checked_at TIMESTAMP")
+            logger.info("数据库升级：添加subtitle_qc_checked_at字段")
             conn.commit()
     except Exception as e:
         logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
@@ -1358,6 +1382,18 @@ class TaskProcessor:
                 subtitle_file = zh_candidates[0]
                 subtitle_lang = 'zh'
                 task_logger.info(f"检测到中文字幕，直接烧录，无需翻译: {os.path.basename(subtitle_file)}")
+
+                # 最终字幕质检（可选）：失败则跳过烧录字幕，继续上传原视频，并标记字幕异常
+                if not self._run_subtitle_qc(task_id, subtitle_file, task_logger):
+                    task_logger.warning("字幕质检未通过：跳过字幕烧录，保留字幕文件并继续上传原视频")
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=None,
+                        subtitle_language_detected=subtitle_lang
+                    )
+                    return True
+
                 if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], subtitle_file, task_logger
@@ -1433,6 +1469,18 @@ class TaskProcessor:
                 task_logger.info("字幕翻译完成")
                 # 清除翻译进度显示
                 update_task(task_id, upload_progress=None, silent=True)
+
+                # 最终字幕质检（可选）：失败则跳过烧录字幕，继续上传原视频，并标记字幕异常
+                if not self._run_subtitle_qc(task_id, translated_subtitle_path, task_logger):
+                    task_logger.warning("字幕质检未通过：跳过字幕烧录，保留字幕文件并继续上传原视频")
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=translated_subtitle_path,
+                        subtitle_language_detected=subtitle_lang
+                    )
+                    task_logger.info("字幕翻译处理完成（字幕异常，未烧录）")
+                    return True
                 
                 # 如果配置了将字幕嵌入视频
                 if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
@@ -1481,6 +1529,44 @@ class TaskProcessor:
             # 清除进度显示
             update_task(task_id, upload_progress=None, silent=True)
             return False
+
+    def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
+        """可选的最终字幕质检：失败则仅跳过烧录字幕，不影响后续上传与任务完成。"""
+        try:
+            enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', False)
+            enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() in ['true', '1', 'on']
+            if not enabled:
+                return True
+
+            if not srt_path or not os.path.exists(srt_path):
+                return True
+
+            from modules.subtitle_qc import run_subtitle_qc
+
+            result = run_subtitle_qc(srt_path, self.config)
+            checked_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            update_task(
+                task_id,
+                subtitle_qc_failed=0 if result.passed else 1,
+                subtitle_qc_reason=result.reason,
+                subtitle_qc_score=float(result.score),
+                subtitle_qc_checked_at=checked_at,
+            )
+
+            if result.passed:
+                task_logger.info(f"字幕质检通过: score={result.score:.3f}")
+                return True
+
+            task_logger.warning(f"字幕质检失败: score={result.score:.3f}, reason={result.reason}")
+            return False
+        except Exception as e:
+            # QC 失败不应阻断主流程，默认放行
+            try:
+                task_logger.warning(f"字幕质检执行异常，已默认放行（不影响上传）: {e}")
+            except Exception:
+                pass
+            return True
     
     def _detect_subtitle_language(self, subtitle_path):
         """更稳健的字幕语言检测：按字符占比与数量判定，避免少量混入的误判"""
@@ -2606,6 +2692,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                     # 恢复上传状态
                                     update_task(task_id, status=prev_status2)
                                     if out_path and os.path.exists(out_path):
+                                        # 最终字幕质检（可选）：失败只标记字幕异常，不影响上传
+                                        self._run_subtitle_qc(task_id, out_path, task_logger)
                                         # 简单记录到任务（不做嵌入，以保持最小变更）
                                         detected_lang = self._detect_subtitle_language(out_path)
                                         update_task(

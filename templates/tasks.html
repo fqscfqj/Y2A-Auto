@@ -92,6 +92,9 @@
                                     {% if (task.status in ['uploading','downloading','translating_subtitle','encoding_video','asr_transcribing']) and task.upload_progress %}
                                         <small class="text-muted mt-1">{{ task.upload_progress }}</small>
                                     {% endif %}
+                                    {% if task.subtitle_qc_failed %}
+                                        <span class="badge bg-warning text-dark mt-1" title="{{ task.subtitle_qc_reason or '字幕质检失败' }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td>
@@ -227,6 +230,11 @@
                                 <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} mt-1">
                                     <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
                                 </span>
+                                {% if task.subtitle_qc_failed %}
+                                    <div class="mt-1">
+                                        <span class="badge bg-warning text-dark" title="{{ task.subtitle_qc_reason or '字幕质检失败' }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                                    </div>
+                                {% endif %}
                             </div>
                         </div>
 

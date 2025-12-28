@@ -1387,6 +1387,8 @@ def settings():
             'VAD_ENABLED',
             # 新增：字幕后处理布尔项
             'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
+            # 新增：字幕最终质检（QC）
+            'SUBTITLE_QC_ENABLED', 'SUBTITLE_QC_ENABLE_AI',
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
         ]
@@ -1403,6 +1405,8 @@ def settings():
             'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 'VAD_SILERO_MIN_SPEECH_MS',
             'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
             'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
+            # 新增：字幕QC
+            'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
             # 新增：字幕后处理 - 最小文本长度
             'SUBTITLE_MIN_TEXT_LENGTH',
             # 新增：Whisper 并发与重试
@@ -1445,6 +1449,8 @@ def settings():
             'VAD_SILERO_THRESHOLD',
             # 字幕后处理
             'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
+            # 新增：字幕QC
+            'SUBTITLE_QC_THRESHOLD',
             # Whisper 高级参数：重试延迟、分片窗口/重叠
             'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
             # VAD 约束参数
