@@ -109,7 +109,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             logger.info("已在提示阶段前预清洗推广信息与链接等噪声")
 
         purpose = "标题" if str(content_type).lower() == "title" else "描述"
-        prompt = f"""翻译视频{purpose}为{target_language}，移除推广信息，返回JSON。
+        prompt = f"""翻译视频{purpose}为{target_language}，移除推广信息，以JSON格式返回。
 
 规则：
 1. 移除：URL/邮箱/社交账号/CTA（关注订阅点赞分享等）/联系方式
@@ -119,7 +119,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
 原文：
 {cleaned_source_text}
 
-返回：{{"translation":"译文"}}"""
+请以JSON格式返回：{{"translation":"译文"}}"""
 
         start_time = time.time()
         create_kwargs = {
@@ -127,7 +127,7 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             "messages": [
                 {
                     "role": "system",
-                    "content": 'JSON翻译器。仅输出{"translation":"..."}，无其他内容。'
+                    "content": 'JSON翻译器。仅输出JSON格式：{"translation":"..."}，无其他内容。'
                 },
                 {"role": "user", "content": prompt}
             ],
@@ -245,15 +245,15 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         needs_retry = (not translated_text) or (translated_text.strip() == cleaned_source_text.strip())
         if needs_retry:
             logger.info("首次翻译为空或未改变，进行严格模式重试")
-            strict_prompt = f"""翻译为简体中文，移除推广信息，仅返回JSON。
+            strict_prompt = f"""翻译为简体中文，移除推广信息，仅返回JSON格式。
 
 原文：{cleaned_source_text}
 
-返回：{{"translation":"译文"}}"""
+请以JSON格式返回：{{"translation":"译文"}}"""
             strict_kwargs = {
                 "model": model_name,
                 "messages": [
-                    {"role": "system", "content": '仅输出{"translation":"..."}，中文。'},
+                    {"role": "system", "content": '仅输出JSON格式：{"translation":"..."}，中文。'},
                     {"role": "user", "content": strict_prompt},
                 ],
                 "max_tokens": 2048,
@@ -361,7 +361,7 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
 标题：{title}
 描述：{short_desc}
 
-返回JSON：{{"tags":["标签1","标签2","标签3","标签4","标签5","标签6"]}}"""
+请以JSON格式返回：{{"tags":["标签1","标签2","标签3","标签4","标签5","标签6"]}}"""
         
         start_time = time.time()
 
@@ -369,7 +369,7 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": '标签生成器。仅输出{"tags":[...]}格式的6个标签。'},
+                {"role": "system", "content": '标签生成器。仅输出JSON格式：{"tags":[...]}，共6个标签。'},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 300,
@@ -658,7 +658,7 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         create_kwargs = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": '视频分区选择器。仅输出{"id":"...","reason":"..."}。'},
+                {"role": "system", "content": '视频分区选择器。仅输出JSON格式：{"id":"...","reason":"..."}。'},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 200,
