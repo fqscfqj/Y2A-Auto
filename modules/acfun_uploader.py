@@ -601,7 +601,7 @@ class AcfunUploader:
         return cover_url
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
-                     desc: str = "", fans_only_desc: str = "", tags: Optional[List[str]] = None,
+                     desc: str = "", tags: Optional[List[str]] = None,
                      creation_type: int = 3, original_url: str = "", is_sync_ks: str = "0") -> Tuple[bool, Union[dict, str]]:
         """创建投稿"""
         if tags is None:
@@ -663,7 +663,7 @@ class AcfunUploader:
         # 上传封面
         cover_url = self.upload_cover(cover_path)
         
-        def _submit_create_douga(submit_desc: str, submit_fans_only_desc: str) -> Tuple[bool, Union[dict, str], Optional[int], str]:
+        def _submit_create_douga(submit_desc: str) -> Tuple[bool, Union[dict, str], Optional[int], str]:
             data = {
                 "title": title,
                 "description": submit_desc,
@@ -675,11 +675,6 @@ class AcfunUploader:
                 "isJoinUpCollege": "0",
                 "isSyncKs": str(is_sync_ks)
             }
-
-            # 网页端字段：粉丝动态（fansOnlyDesc）为可选。
-            # 为贴近“只填写简介”的行为：当为空时不提交该字段（而不是提交空字符串）。
-            if submit_fans_only_desc:
-                data["fansOnlyDesc"] = submit_fans_only_desc
 
             if creation_type == 1:  # 转载
                 data["originalLinkUrl"] = original_url
@@ -745,13 +740,12 @@ class AcfunUploader:
             self.log(f"API返回格式异常，缺少result字段: {response.text}")
             return False, f"API返回格式异常: {err_msg}", None, str(err_msg)
 
-        ok, payload_or_err, _, _ = _submit_create_douga(desc, fans_only_desc)
+        ok, payload_or_err, _, _ = _submit_create_douga(desc)
         return ok, payload_or_err
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
-                     original_upload_date=None, task_id=None, cover_mode='crop',
-                     fans_only_desc_override: Optional[str] = None):
+                     original_upload_date=None, task_id=None, cover_mode='crop'):
         """
         上传视频到AcFun
         
@@ -840,10 +834,6 @@ class AcfunUploader:
             else:
                 full_description = _compact_text(description, max_desc)
 
-            # 粉丝动态（fansOnlyDesc）在网页端是可选项。
-            # 默认不填写；如提供 override，则按 override 提交（非空才会在 createDouga 里真正带上字段）。
-            fans_only_desc = fans_only_desc_override if fans_only_desc_override is not None else ""
-            
             # 判断视频创作类型
             creation_type = 1 if original_url else 3  # 1:转载, 3:原创
             
@@ -854,7 +844,6 @@ class AcfunUploader:
                 channel_id=partition_id,
                 cover_path=cover_file_path,
                 desc=full_description,
-                fans_only_desc=fans_only_desc,
                 tags=tags,
                 creation_type=creation_type,
                 original_url=original_url or ""
@@ -864,7 +853,7 @@ class AcfunUploader:
             if not success and isinstance(result, str):
                 if "109015" in result or "简介不能超过" in result:
                     self.log(
-                        f"投稿失败疑似命中长度限制：description_len={len(full_description)}, fansOnlyDesc_len={len(fans_only_desc)}"
+                        f"投稿失败疑似命中长度限制：description_len={len(full_description)}"
                     )
             
             return success, result
