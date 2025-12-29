@@ -312,10 +312,23 @@ class AcfunUploader:
                 "template": "1"
             }
         )
-        result = response.json()
-        task_id = result["taskId"]
-        token = result["token"]
-        part_size = result["uploadConfig"]["partSize"]
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"获取token响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            raise RuntimeError(f"获取上传token失败: JSON解析错误 - {str(e)}")
+        
+        if not isinstance(result, dict):
+            raise RuntimeError(f"获取token API返回格式异常: {response.text}")
+        
+        task_id = result.get("taskId")
+        token = result.get("token")
+        upload_config = result.get("uploadConfig", {})
+        part_size = upload_config.get("partSize") if isinstance(upload_config, dict) else None
+        
+        if not task_id or not token or not part_size:
+            raise RuntimeError(f"获取token失败，缺少必需字段: {response.text}")
+        
         return task_id, token, part_size
     
     def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str) -> bool:
@@ -458,7 +471,13 @@ class AcfunUploader:
             data={"taskId": task_id}
         )
         
-        if response.json()["result"] != 0:
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"上传完成处理响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            return
+        
+        if not isinstance(result, dict) or result.get("result") != 0:
             self.log(f"上传完成处理失败: {response.text}")
     
     def create_video(self, video_key: int, filename: str) -> Optional[int]:
@@ -476,13 +495,27 @@ class AcfunUploader:
             }
         )
         
-        result = response.json()
-        if result["result"] != 0:
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"创建视频API响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            return None
+        
+        if not isinstance(result, dict):
+            self.log(f"创建视频API返回格式异常，响应不是字典类型: {response.text}")
+            return None
+        
+        if result.get("result") != 0:
             self.log(f"创建视频失败: {response.text}")
             return None
         
+        video_id = result.get("videoId")
+        if not video_id:
+            self.log(f"创建视频成功但未获取到videoId: {response.text}")
+            return None
+        
         self.upload_finish(video_key)
-        return result["videoId"]
+        return video_id
     
     def upload_cover(self, image_path: str, mode='crop') -> str:
         """上传封面图片（支持 jpg/png/webp，尽量保留原格式）"""
@@ -524,7 +557,13 @@ class AcfunUploader:
             data={"fileName": token_file_name}
         )
 
-        token = response.json().get("info", {}).get("token")
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"获取七牛token响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            raise RuntimeError(f"获取封面上传token失败: JSON解析错误 - {str(e)}")
+        
+        token = result.get("info", {}).get("token") if isinstance(result, dict) else None
         if not token:
             raise RuntimeError(f"获取封面上传token失败: {response.text}")
 
@@ -541,7 +580,13 @@ class AcfunUploader:
             data={"bizFlag": "web-douga-cover", "token": token}
         )
         
-        cover_url = response.json().get("url")
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"获取封面URL响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            raise RuntimeError(f"获取封面URL失败: JSON解析错误 - {str(e)}")
+        
+        cover_url = result.get("url") if isinstance(result, dict) else None
         if not cover_url:
             raise RuntimeError(f"获取封面URL失败: {response.text}")
 
@@ -633,13 +678,22 @@ class AcfunUploader:
             }
         )
         
-        result = response.json()
-        # 添加容错：检查result字段是否存在
+        try:
+            result = response.json()
+        except (ValueError, TypeError) as e:
+            self.log(f"API响应JSON解析失败: {response.text}, 错误: {str(e)}")
+            return False, f"API响应JSON解析失败: {str(e)}"
+        
+        # 添加容错：检查result变量和result字段是否存在
+        if not isinstance(result, dict):
+            self.log(f"API返回格式异常，响应不是字典类型: {response.text}")
+            return False, f"API返回格式异常: 响应不是字典类型"
+        
         if "result" not in result:
             self.log(f"API返回格式异常，缺少result字段: {response.text}")
             return False, f"API返回格式异常: {result.get('error_msg', result.get('msg', '未知错误'))}"
         
-        if result["result"] == 0 and "dougaId" in result:
+        if result.get("result") == 0 and "dougaId" in result:
             self.log(f"视频投稿成功！AC号：{result['dougaId']}")
             return True, {
                 "ac_number": result['dougaId'],
@@ -648,7 +702,9 @@ class AcfunUploader:
             }
         else:
             self.log(f"视频投稿失败: {response.text}")
-            return False, f"视频投稿失败: {result.get('error_msg', result.get('msg', '未知错误'))}"
+            error_msg = result.get('error_msg', result.get('msg', '未知错误'))
+            result_code = result.get("result", "未知")
+            return False, f"视频投稿失败 (code={result_code}): {error_msg}"
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
