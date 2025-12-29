@@ -1569,6 +1569,11 @@ class TaskProcessor:
             task_logger.error("任务不存在")
             return False
         
+        # 检查是否已经有ASR QC失败的记录，如果失败则跳过所有字幕处理
+        if task.get('subtitle_qc_failed') == 1:
+            task_logger.warning("检测到字幕质检已失败，跳过字幕翻译/烧录流程")
+            return True
+        
         task_logger.info("开始字幕翻译")
         update_task(task_id, status=TASK_STATES['TRANSLATING_SUBTITLE'])
         
@@ -2925,14 +2930,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
                         if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
                             task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
-                            # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
-                            self._translate_subtitle(task_id, task_logger)
-                            # 重新获取最新任务信息和视频路径（可能已嵌入生成了新视频）
-                            task = get_task(task_id)
-                            video_path = task.get('video_path_local', '') if task else video_path
+                            # 检查是否已有QC失败记录
+                            if task.get('subtitle_qc_failed') == 1:
+                                task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
+                            else:
+                                # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
+                                self._translate_subtitle(task_id, task_logger)
+                                # 重新获取最新任务信息和视频路径（可能已嵌入生成了新视频）
+                                task = get_task(task_id)
+                                video_path = task.get('video_path_local', '') if task else video_path
                         else:
                             # 仅ASR：在没有任何字幕文件时生成一个基础字幕文件
-                            if not subtitle_files:
+                            # 但如果已经有QC失败的记录，则不再尝试ASR
+                            if task.get('subtitle_qc_failed') == 1:
+                                task_logger.warning("检测到字幕质检已失败，跳过上传前的ASR处理")
+                            elif not subtitle_files:
                                 task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
                                 try:
                                     from modules.speech_recognition import create_speech_recognizer_from_config
