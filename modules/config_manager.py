@@ -74,9 +74,9 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_ENABLED": False,  # 失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
     "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
     "SUBTITLE_QC_MODEL_NAME": "",  # 留空则回退到 SUBTITLE_OPENAI_MODEL_NAME / OPENAI_MODEL_NAME
-    "SUBTITLE_QC_THRESHOLD": 0.6,  # 通过阈值（0-1），低于则判定字幕异常
-    "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # 抽样条目数（多抽一点降低误判）
-    "SUBTITLE_QC_MAX_CHARS": 9000,  # 送检文本最大字符数（超出将截断以控 token）
+    "SUBTITLE_QC_THRESHOLD": 0.35,  # 通过阈值（0-1），低于则判定字幕异常（宽松标准）
+    "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 100,  # 抽样条目数（多抽一点降低误判）
+    "SUBTITLE_QC_MAX_CHARS": 12000,  # 送检文本最大字符数（超出将截断以控 token）
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数

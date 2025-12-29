@@ -195,28 +195,28 @@ def _rule_check(items: List[Any]) -> Tuple[float, str]:
     score = 1.0
     reason_parts: List[str] = []
 
-    # 强信号：大量重复
-    if (len(normalized) >= 10 and top_ratio >= 0.35) or (len(normalized) >= 5 and top_ratio >= 0.6):
-        score -= 0.6
+    # 放宽判定标准：强信号 - 大量重复
+    if (len(normalized) >= 15 and top_ratio >= 0.5) or (len(normalized) >= 8 and top_ratio >= 0.7):
+        score -= 0.4
         reason_parts.append('high_repetition')
 
-    if unique_ratio < 0.3 and len(normalized) >= 15:
-        score -= 0.3
+    if unique_ratio < 0.2 and len(normalized) >= 20:
+        score -= 0.25
         if 'high_repetition' not in reason_parts:
             reason_parts.append('low_variety')
 
     # 小样本但极低多样性
-    if unique_ratio < 0.4 and len(normalized) >= 6:
-        score -= 0.2
+    if unique_ratio < 0.25 and len(normalized) >= 10:
+        score -= 0.15
         if 'high_repetition' not in reason_parts and 'low_variety' not in reason_parts:
             reason_parts.append('low_variety')
 
-    if low_content_ratio >= 0.4:
-        score -= 0.4
+    if low_content_ratio >= 0.6:
+        score -= 0.3
         reason_parts.append('mostly_low_content')
 
-    if avg_len < 3.0 and len(normalized) >= 10:
-        score -= 0.2
+    if avg_len < 2.0 and len(normalized) >= 15:
+        score -= 0.15
         reason_parts.append('too_short')
 
     score = max(0.0, min(1.0, score))
@@ -244,15 +244,17 @@ def _call_ai_judge(
     client = _build_openai_client(api_key=api_key, base_url=base_url)
 
     system = (
-        '你是字幕质检员。目标：判断字幕是否为“正常字幕”。\n'
-        '正常字幕应与语音内容相关、语句多样且有信息量，不应是大量重复句、占位符(…/...)、乱序或明显胡话。\n'
+        '你是字幕质检员。目标：判断转录字幕是否可用。\n'
+        '采用宽松标准：只要字幕整体有意义、不是明显的系统错误（如全是占位符、90%+重复同一句、完全乱码），就应判定为通过。\n'
+        '语音转录难免有小错误或口语化表达，这些都是正常的，不应判定为失败。\n'
+        '只有在字幕明显无法使用（如大量无意义重复、全是省略号、明显乱序）时才判定 passed=false。\n'
         '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
-        '{"passed": true, "score": 0.95, "reason": "ok"}'
+        '{"passed": true, "score": 0.75, "reason": "ok"}'
     )
 
     user = {
         'task': 'subtitle_qc',
-        'rules': '若字幕明显异常请判定 passed=false。',
+        'rules': '采用宽松标准：仅在字幕明显不可用时判定 passed=false。常见转录误差、口语化、少量重复都是可接受的。',
         'metrics': metrics,
         'subtitle_sample': sample_text,
         'output_schema': {
@@ -306,12 +308,12 @@ def run_subtitle_qc(
     threshold: Optional[float] = None,
 ) -> SubtitleQCResult:
     """对 SRT 进行最终字幕质检。失败时应跳过烧录字幕，但保留字幕文件并继续上传原视频。"""
-    max_items = _to_int(config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80), 80)
-    max_chars = _to_int(config.get('SUBTITLE_QC_MAX_CHARS', 9000), 9000)
+    max_items = _to_int(config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 100), 100)
+    max_chars = _to_int(config.get('SUBTITLE_QC_MAX_CHARS', 12000), 12000)
 
     threshold_val = threshold
     if threshold_val is None:
-        threshold_val = _to_float(config.get('SUBTITLE_QC_THRESHOLD', 0.6), 0.6)
+        threshold_val = _to_float(config.get('SUBTITLE_QC_THRESHOLD', 0.35), 0.35)
 
     items = SubtitleReader.read_srt(srt_path)
 
