@@ -2378,7 +2378,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if any(err.lower() in error_lower for err in known_hw_errors):
                         should_retry_cpu = True
                     # 如果选择了硬编但返回码非零，也尝试一次CPU
-                    if selected_encoder in ('nvenc', 'qsv', 'amf') and process.returncode != 0:
+                    if encoder_pref in ('nvenc', 'qsv', 'amf') and process.returncode != 0:
                         should_retry_cpu = True
 
                     if should_retry_cpu:
@@ -2931,7 +2931,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
                             task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
                             # 检查是否已有QC失败记录
-                            if task.get('subtitle_qc_failed') == 1:
+                            if task and task.get('subtitle_qc_failed') == 1:
                                 task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
                             else:
                                 # 该方法内部：若无字幕→ASR；随后按配置翻译并可选嵌入
@@ -2942,7 +2942,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         else:
                             # 仅ASR：在没有任何字幕文件时生成一个基础字幕文件
                             # 但如果已经有QC失败的记录，则不再尝试ASR
-                            if task.get('subtitle_qc_failed') == 1:
+                            if task and task.get('subtitle_qc_failed') == 1:
                                 task_logger.warning("检测到字幕质检已失败，跳过上传前的ASR处理")
                             elif not subtitle_files:
                                 task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
