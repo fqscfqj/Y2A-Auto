@@ -6,6 +6,7 @@ import json
 import time
 import logging
 import requests
+import re
 import ssl
 from hashlib import sha1
 from math import ceil
@@ -600,8 +601,8 @@ class AcfunUploader:
         return cover_url
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
-                     desc: str = "", tags: Optional[List[str]] = None, creation_type: int = 3,
-                     original_url: str = "") -> Tuple[bool, Union[dict, str]]:
+                     desc: str = "", fans_only_desc: str = "", tags: Optional[List[str]] = None,
+                     creation_type: int = 3, original_url: str = "", is_sync_ks: str = "0") -> Tuple[bool, Union[dict, str]]:
         """创建投稿"""
         if tags is None:
             tags = []
@@ -655,12 +656,16 @@ class AcfunUploader:
         data = {
             "title": title,
             "description": desc,
+            # 网页端字段：粉丝动态（可选，233 字限制）
+            "fansOnlyDesc": fans_only_desc,
             "tagNames": json.dumps(tags),
             "creationType": creation_type,
             "channelId": channel_id,
             "coverUrl": cover_url,
             "videoInfos": json.dumps([{"videoId": video_id, "title": title}]),
-            "isJoinUpCollege": "0"
+            "isJoinUpCollege": "0",
+            # 网页端字段：是否同步快手（默认 0）
+            "isSyncKs": str(is_sync_ks)
         }
         
         if creation_type == 1:  # 转载
@@ -690,8 +695,17 @@ class AcfunUploader:
             return False, f"API返回格式异常: 响应不是字典类型"
         
         if "result" not in result:
+            # 容错：部分失败响应不带顶层 result，而是 errMsg + isError
+            err_msg_obj = result.get("errMsg")
+            if not isinstance(err_msg_obj, dict):
+                err_msg_obj = {}
+            err_code = err_msg_obj.get("result")
+            err_msg = err_msg_obj.get("error_msg") or result.get("error_msg") or result.get("msg")
+            if result.get("isError") or err_msg:
+                self.log(f"视频投稿失败: {response.text}")
+                return False, f"视频投稿失败 (code={err_code or '未知'}): {err_msg or '未知错误'}"
             self.log(f"API返回格式异常，缺少result字段: {response.text}")
-            return False, f"API返回格式异常: {result.get('error_msg', result.get('msg', '未知错误'))}"
+            return False, f"API返回格式异常: {err_msg or '未知错误'}"
         
         if result.get("result") == 0 and "dougaId" in result:
             self.log(f"视频投稿成功！AC号：{result['dougaId']}")
@@ -756,39 +770,49 @@ class AcfunUploader:
                 self.log(f"标签数量超过限制(6个)，将保留前6个: {len(tags)} -> 6")
                 tags = tags[:6]
             
-            # 3. 简介限制为1000字符
-            if original_url or original_uploader or original_upload_date:
+            def _compact_text(text: str, max_len: int) -> str:
+                text = (text or "").strip()
+                if not text or max_len <= 0:
+                    return ""
+                # 将多余空白折叠，降低长度波动（网页“字”口径按字符计）
+                text = re.sub(r"\s+", " ", text)
+                if len(text) <= max_len:
+                    return text
+                if max_len <= 3:
+                    return text[:max_len]
+                return text[: max_len - 3] + "..."
+
+            def _build_repost_description(base_desc: str, max_len: int) -> str:
+                # 转载：仅保留“转载声明 + 精简摘要”，不附带原简介全文
                 copyright_info = "本视频转载自YouTube"
-                
                 if original_upload_date:
                     copyright_info += f"，原始上传时间：{original_upload_date}"
-                
                 if original_uploader:
                     copyright_info += f"，UP主：{original_uploader}"
-                
-                full_description = f"{copyright_info}\n\n---原简介---\n{description}"
-                
-                # 如果超过1000字符，裁剪原始描述部分
-                if len(full_description) > 1000:
-                    self.log(f"完整简介超过限制(1000字符): {len(full_description)} -> 1000")
-                    # 计算版权信息长度
-                    copyright_length = len(f"{copyright_info}\n\n---原简介---\n")
-                    # 计算剩余可用字符数
-                    available_chars = 1000 - copyright_length
-                    if available_chars > 0:
-                        # 裁剪描述
-                        description = description[:available_chars] + "..."
-                        full_description = f"{copyright_info}\n\n---原简介---\n{description}"
-                    else:
-                        # 版权信息已经接近限制，大幅裁剪原始描述
-                        self.log("版权信息占用空间较大，原始描述将被大幅裁剪")
-                        full_description = full_description[:997] + "..."
+
+                # 先裁剪声明本身，避免占满
+                copyright_info = _compact_text(copyright_info, max_len)
+                if not base_desc:
+                    return copyright_info
+
+                sep = "\n\n"
+                available = max_len - len(copyright_info) - len(sep)
+                summary = _compact_text(base_desc, max(0, available))
+                if not summary:
+                    return copyright_info
+                return f"{copyright_info}{sep}{summary}"
+
+            # 3. 网页端限制：简介 1000 字、粉丝动态 233 字
+            max_desc = 1000
+            max_fans_only_desc = 233
+
+            if original_url or original_uploader or original_upload_date:
+                full_description = _build_repost_description(description, max_desc)
             else:
-                # 原创视频，只检查简介长度
-                if len(description) > 1000:
-                    self.log(f"简介超过限制(1000字符)，将被截断: {len(description)} -> 1000")
-                    description = description[:997] + "..."
-                full_description = description
+                full_description = _compact_text(description, max_desc)
+
+            # 粉丝动态默认用“精简摘要”（可为空），严格限制 233 字
+            fans_only_desc = _compact_text(description, max_fans_only_desc)
             
             # 判断视频创作类型
             creation_type = 1 if original_url else 3  # 1:转载, 3:原创
@@ -800,10 +824,18 @@ class AcfunUploader:
                 channel_id=partition_id,
                 cover_path=cover_file_path,
                 desc=full_description,
+                fans_only_desc=fans_only_desc,
                 tags=tags,
                 creation_type=creation_type,
                 original_url=original_url or ""
             )
+
+            # 失败时补充关键字段长度，便于定位是否命中服务端限制
+            if not success and isinstance(result, str):
+                if "109015" in result or "简介不能超过" in result:
+                    self.log(
+                        f"投稿失败疑似命中长度限制：description_len={len(full_description)}, fansOnlyDesc_len={len(fans_only_desc)}"
+                    )
             
             return success, result
         
