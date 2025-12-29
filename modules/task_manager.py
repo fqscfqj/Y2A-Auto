@@ -2167,12 +2167,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 # 针对软编码生成统一参数
                 def build_cpu_params():
-                    # 强制 libx264 crf23 preset:slow profile:high level:4.2
+                    # 强制 libx264 crf23.5 preset:medium profile:high level:4.2
                     return [
                         '-c:v', 'libx264',
                         '-pix_fmt', 'yuv420p',
-                        '-preset', 'slow',
-                        '-crf', '23',
+                        '-preset', 'medium',
+                        '-crf', '23.5',
                         '-profile:v', 'high',
                         '-level', '4.2',
                         '-g', str(gop),
@@ -2187,8 +2187,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 vparams = build_cpu_params()
 
-                # 音频统一转 AAC 320k，采样率跟随原视频
-                aparams = ['-c:a', 'aac', '-b:a', '320k']
+                # 音频统一转 AAC 256k，采样率跟随原视频
+                aparams = ['-c:a', 'aac', '-b:a', '256k']
                 if input_sample_rate:
                     try:
                         aparams += ['-ar', str(int(input_sample_rate))]
