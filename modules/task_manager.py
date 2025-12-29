@@ -1573,6 +1573,7 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['TRANSLATING_SUBTITLE'])
         
         try:
+            asr_generated = False
             # 查找字幕文件（大小写无关）
             task_dir = os.path.join(DOWNLOADS_DIR, task_id)
             subtitle_files = []
@@ -1623,6 +1624,7 @@ class TaskProcessor:
                             update_task(task_id, status=prev_status)
                         if out_path and os.path.exists(out_path):
                             subtitle_files = [out_path]
+                            asr_generated = True
                             task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
                         else:
                             task_logger.warning("语音识别未能生成字幕，跳过字幕流程")
@@ -1633,6 +1635,21 @@ class TaskProcessor:
                 else:
                     task_logger.info("未启用语音识别，跳过字幕流程")
                     return True
+
+            # 仅对“转录/ASR生成”的字幕执行质检：通过才继续翻译/烧录；失败则跳过字幕相关后续
+            if asr_generated:
+                asr_subtitle_path = subtitle_files[0] if subtitle_files else None
+                if asr_subtitle_path and os.path.exists(asr_subtitle_path):
+                    if not self._run_subtitle_qc(task_id, asr_subtitle_path, task_logger):
+                        task_logger.warning("转录字幕质检未通过：跳过字幕翻译/烧录，保留字幕文件并继续上传原视频")
+                        detected_lang = self._detect_subtitle_language(asr_subtitle_path)
+                        update_task(
+                            task_id,
+                            subtitle_path_original=asr_subtitle_path,
+                            subtitle_path_translated=None,
+                            subtitle_language_detected=detected_lang
+                        )
+                        return True
             
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
             detected_list = []
@@ -1648,17 +1665,6 @@ class TaskProcessor:
                 subtitle_file = zh_candidates[0]
                 subtitle_lang = 'zh'
                 task_logger.info(f"检测到中文字幕，直接烧录，无需翻译: {os.path.basename(subtitle_file)}")
-
-                # 最终字幕质检（可选）：失败则跳过烧录字幕，继续上传原视频，并标记字幕异常
-                if not self._run_subtitle_qc(task_id, subtitle_file, task_logger):
-                    task_logger.warning("字幕质检未通过：跳过字幕烧录，保留字幕文件并继续上传原视频")
-                    update_task(
-                        task_id,
-                        subtitle_path_original=subtitle_file,
-                        subtitle_path_translated=None,
-                        subtitle_language_detected=subtitle_lang
-                    )
-                    return True
 
                 if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
                     embedded_video_path = self._embed_subtitle_in_video(
@@ -1735,18 +1741,6 @@ class TaskProcessor:
                 task_logger.info("字幕翻译完成")
                 # 清除翻译进度显示
                 update_task(task_id, upload_progress=None, silent=True)
-
-                # 最终字幕质检（可选）：失败则跳过烧录字幕，继续上传原视频，并标记字幕异常
-                if not self._run_subtitle_qc(task_id, translated_subtitle_path, task_logger):
-                    task_logger.warning("字幕质检未通过：跳过字幕烧录，保留字幕文件并继续上传原视频")
-                    update_task(
-                        task_id,
-                        subtitle_path_original=subtitle_file,
-                        subtitle_path_translated=translated_subtitle_path,
-                        subtitle_language_detected=subtitle_lang
-                    )
-                    task_logger.info("字幕翻译处理完成（字幕异常，未烧录）")
-                    return True
                 
                 # 如果配置了将字幕嵌入视频
                 if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
