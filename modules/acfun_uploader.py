@@ -634,6 +634,11 @@ class AcfunUploader:
         )
         
         result = response.json()
+        # 添加容错：检查result字段是否存在
+        if "result" not in result:
+            self.log(f"API返回格式异常，缺少result字段: {response.text}")
+            return False, f"API返回格式异常: {result.get('error_msg', result.get('msg', '未知错误'))}"
+        
         if result["result"] == 0 and "dougaId" in result:
             self.log(f"视频投稿成功！AC号：{result['dougaId']}")
             return True, {
@@ -643,7 +648,7 @@ class AcfunUploader:
             }
         else:
             self.log(f"视频投稿失败: {response.text}")
-            return False, f"视频投稿失败: {result.get('error_msg', '未知错误')}"
+            return False, f"视频投稿失败: {result.get('error_msg', result.get('msg', '未知错误'))}"
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 

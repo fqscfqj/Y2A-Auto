@@ -467,14 +467,14 @@ class LLMRequester:
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
         
-        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}。
+        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}，返回JSON格式。
 
 强制要求：
 1. 每条必须完整翻译，禁止保留原文
 2. 一一对应：输入N条输出N条
 3. 仅保留数字和代码占位符
 
-仅返回：{{"translations":["译文1","译文2",...]}}"""
+仅返回JSON格式：{{"translations":["译文1","译文2",...]}}"""
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
         """构建结构化用户提示词 - 优化版：系统提示已包含规则，此处仅提供数据"""

@@ -47,11 +47,13 @@ def _pre_clean(text: str) -> str:
         return text
     import re
     cleaned = text
-    # URLs / domains
+    # URLs / domains (更激进的匹配)
     url_patterns = [
         r'https?://[^\s\u4e00-\u9fff]+',
         r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-        r'ftp://[^\s\u4e00-\u9fff]+'
+        r'ftp://[^\s\u4e00-\u9fff]+',
+        r'[a-zA-Z0-9.-]+\.(com|org|net|io|me|tv|cn|co|uk)(?:[/\s]|$)',  # 域名后缀
+        r'\b[a-zA-Z0-9]+\.[a-zA-Z0-9]+/[a-zA-Z0-9_-]+\b',  # path格式如 site.com/user
     ]
     for pat in url_patterns:
         cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
@@ -60,6 +62,16 @@ def _pre_clean(text: str) -> str:
     # social handles/hashtags
     cleaned = re.sub(r'@[A-Za-z0-9_]+', '', cleaned)
     cleaned = re.sub(r'#[A-Za-z0-9_]+', '', cleaned)
+    # 赞助/支持平台关键词
+    sponsor_keywords = [
+        r'patreon\.com/[^\s]*', r'ko-fi\.com/[^\s]*', r'buymeacoffee\.com/[^\s]*',
+        r'support\s+[me\s]*on\s+patreon', r'become\s+a\s+patron', r'join\s+[my\s]*patreon',
+        r'支持[我]*在\s*patreon', r'成为[我的]*patron', r'加入[我的]*patreon',
+        r'get\s+early\s+access', r'exclusive\s+content', r'behind[\s-]the[\s-]scenes',
+        r'提前访问', r'独家内容', r'幕后内容', r'早期访问权限',
+    ]
+    for pat in sponsor_keywords:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
     # Common CTAs
     ctas = [
         r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
@@ -67,10 +79,19 @@ def _pre_clean(text: str) -> str:
         r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
         r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
         r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
-        r'see\s+[full\s]*[version\s]*',
+        r'see\s+[full\s]*[version\s]*', r'link\s+in\s+[the\s]*description', r'find\s+[me\s]*on',
     ]
     for pat in ctas:
         cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    # 移除包含sponsor/patreon等关键词的整行
+    lines = cleaned.split('\n')
+    filtered_lines = []
+    sponsor_line_keywords = ['patreon', 'sponsor', 'patron', 'kofi', 'buymeacoffee', 'early access', 'exclusive']
+    for line in lines:
+        line_lower = line.lower()
+        if not any(kw in line_lower for kw in sponsor_line_keywords):
+            filtered_lines.append(line)
+    cleaned = '\n'.join(filtered_lines)
     # whitespace normalize (keep newlines)
     cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
     cleaned = re.sub(r'[ \t\f\v]+', ' ', cleaned)
