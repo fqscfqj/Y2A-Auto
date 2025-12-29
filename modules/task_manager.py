@@ -78,6 +78,200 @@ TASK_STATES = {
     'FAILED': 'failed'                    # 任务失败
 }
 
+# 任务流水线断点续跑（checkpoint）
+# - 目标：进程异常退出后，重启可从“最后已完成阶段”继续。
+# - 存储：tasks 表新增 pipeline_checkpoint 字段，避免 downloads 目录被清空导致断点丢失。
+PIPELINE_CHECKPOINT_FIELD = 'pipeline_checkpoint'
+
+PIPELINE_STAGE_FETCH_INFO = 'fetch_info'
+PIPELINE_STAGE_TRANSLATE_CONTENT = 'translate_content'
+PIPELINE_STAGE_GENERATE_TAGS = 'generate_tags'
+PIPELINE_STAGE_RECOMMEND_PARTITION = 'recommend_partition'
+PIPELINE_STAGE_MODERATE_CONTENT = 'moderate_content'
+PIPELINE_STAGE_DOWNLOAD_VIDEO = 'download_video'
+PIPELINE_STAGE_TRANSLATE_SUBTITLE = 'translate_subtitle'
+PIPELINE_STAGE_UPLOAD_TO_ACFUN = 'upload_to_acfun'
+
+PIPELINE_STAGE_ORDER = [
+    PIPELINE_STAGE_FETCH_INFO,
+    PIPELINE_STAGE_TRANSLATE_CONTENT,
+    PIPELINE_STAGE_GENERATE_TAGS,
+    PIPELINE_STAGE_RECOMMEND_PARTITION,
+    PIPELINE_STAGE_MODERATE_CONTENT,
+    PIPELINE_STAGE_DOWNLOAD_VIDEO,
+    PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+    PIPELINE_STAGE_UPLOAD_TO_ACFUN,
+]
+
+_RESUME_RECOVERY_DONE = False
+
+
+def _safe_json_loads(value, default):
+    try:
+        if value is None:
+            return default
+        if isinstance(value, (dict, list)):
+            return value
+        s = str(value).strip()
+        if not s:
+            return default
+        return json.loads(s)
+    except Exception:
+        return default
+
+
+def _parse_pipeline_checkpoint(raw_value):
+    data = _safe_json_loads(raw_value, {})
+    if not isinstance(data, dict):
+        data = {}
+    completed = data.get('completed', [])
+    if not isinstance(completed, list):
+        completed = []
+    completed = [str(x) for x in completed if x]
+    # 过滤未知stage，保持向前兼容
+    completed_set = {x for x in completed if x in set(PIPELINE_STAGE_ORDER)}
+    return {
+        'version': int(data.get('version', 1) or 1),
+        'completed': sorted(completed_set, key=lambda s: PIPELINE_STAGE_ORDER.index(s)),
+        'updated_at': data.get('updated_at'),
+    }
+
+
+def _infer_completed_stages_from_task(task):
+    if not task:
+        return set()
+
+    completed = set()
+
+    # 采集信息：有元数据路径/原标题/原始描述，基本可视为完成
+    if task.get('metadata_json_path_local') or task.get('video_title_original') or task.get('description_original'):
+        completed.add(PIPELINE_STAGE_FETCH_INFO)
+
+    # 翻译标题/描述：任一翻译字段存在即可视为完成
+    if task.get('video_title_translated') or task.get('description_translated'):
+        completed.add(PIPELINE_STAGE_TRANSLATE_CONTENT)
+
+    # 标签：字段存在（即使是空数组字符串）也认为已跑过
+    if task.get('tags_generated') is not None:
+        completed.add(PIPELINE_STAGE_GENERATE_TAGS)
+
+    # 分区推荐：有推荐或已选分区
+    if task.get('recommended_partition_id') or task.get('selected_partition_id'):
+        completed.add(PIPELINE_STAGE_RECOMMEND_PARTITION)
+
+    # 审核：已有审核结果或进入人工审核
+    if task.get('moderation_result') or task.get('status') == TASK_STATES['AWAITING_REVIEW']:
+        completed.add(PIPELINE_STAGE_MODERATE_CONTENT)
+
+    # 下载：本地视频路径存在且文件存在（优先），或状态已下载完成
+    video_path = task.get('video_path_local')
+    if task.get('status') == TASK_STATES['DOWNLOADED']:
+        completed.add(PIPELINE_STAGE_DOWNLOAD_VIDEO)
+    elif isinstance(video_path, str) and video_path and os.path.exists(video_path):
+        completed.add(PIPELINE_STAGE_DOWNLOAD_VIDEO)
+
+    # 字幕：任一字幕路径存在且文件存在
+    for key in ('subtitle_path_original', 'subtitle_path_translated'):
+        p = task.get(key)
+        if isinstance(p, str) and p and os.path.exists(p):
+            completed.add(PIPELINE_STAGE_TRANSLATE_SUBTITLE)
+            break
+
+    # 上传：有上传响应或已完成
+    if task.get('acfun_upload_response') or task.get('status') == TASK_STATES['COMPLETED']:
+        completed.add(PIPELINE_STAGE_UPLOAD_TO_ACFUN)
+
+    return completed
+
+
+def _get_completed_stages(task):
+    cp = _parse_pipeline_checkpoint(task.get(PIPELINE_CHECKPOINT_FIELD) if task else None)
+    completed = set(cp.get('completed', []) or [])
+    completed |= _infer_completed_stages_from_task(task)
+    return completed
+
+
+def _persist_pipeline_checkpoint(task_id, completed_stages):
+    stages = [s for s in PIPELINE_STAGE_ORDER if s in set(completed_stages or set())]
+    payload = {
+        'version': 1,
+        'completed': stages,
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    update_task(task_id, silent=True, **{PIPELINE_CHECKPOINT_FIELD: json.dumps(payload, ensure_ascii=False)})
+
+
+def _mark_stage_done(task_id, completed_stages, stage):
+    if stage in completed_stages:
+        return completed_stages
+    completed_stages = set(completed_stages or set())
+    completed_stages.add(stage)
+    _persist_pipeline_checkpoint(task_id, completed_stages)
+    return completed_stages
+
+
+def recover_interrupted_tasks_to_pending():
+    """将进程意外退出后卡在“处理中状态”的任务恢复为 pending，以便重启后自动续跑。"""
+    processing_states = [
+        'fetching_info',
+        'info_fetched',
+        TASK_STATES['TRANSLATING'],
+        TASK_STATES['TAGGING'],
+        TASK_STATES['PARTITIONING'],
+        TASK_STATES['MODERATING'],
+        TASK_STATES['DOWNLOADING'],
+        TASK_STATES['DOWNLOADED'],
+        TASK_STATES['ASR_TRANSCRIBING'],
+        TASK_STATES['TRANSLATING_SUBTITLE'],
+        TASK_STATES['ENCODING_VIDEO'],
+        TASK_STATES['UPLOADING'],
+    ]
+
+    conn = get_db_connection()
+    try:
+        placeholders = ','.join(['?'] * len(processing_states))
+        cursor = conn.execute(
+            f'SELECT id, status, acfun_upload_response FROM tasks WHERE status IN ({placeholders})',
+            tuple(processing_states)
+        )
+        rows = cursor.fetchall() or []
+        if not rows:
+            return 0
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        recovered = 0
+
+        for row in rows:
+            task_id = row['id']
+            status = row['status']
+            has_upload_resp = bool(row['acfun_upload_response'])
+
+            # 若上传响应已存在，直接标记为 completed（避免重复上传）
+            if has_upload_resp:
+                conn.execute(
+                    'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                    (TASK_STATES['COMPLETED'], now_str, task_id)
+                )
+                recovered += 1
+                continue
+
+            # 其他处理中状态：恢复为 pending，由流水线根据checkpoint跳过已完成阶段
+            conn.execute(
+                'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                (TASK_STATES['PENDING'], now_str, task_id)
+            )
+            recovered += 1
+
+        conn.commit()
+        if recovered:
+            logger.info(f"断点续跑：已恢复 {recovered} 个处理中任务为 pending")
+        return recovered
+    except Exception as e:
+        logger.warning(f"断点续跑：恢复处理中任务失败（忽略）：{e}")
+        return 0
+    finally:
+        conn.close()
+
 # WebSocket实时通知功能已移除，改为使用传统页面刷新方式
 
 # 设置日志记录器
@@ -224,6 +418,7 @@ def init_db():
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
+        pipeline_checkpoint TEXT,  -- JSON: 断点续跑已完成阶段
         upload_progress TEXT,  -- 上传进度
         acfun_upload_response TEXT
     )
@@ -259,6 +454,11 @@ def init_db():
         if 'subtitle_qc_checked_at' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_checked_at TIMESTAMP")
             logger.info("数据库升级：添加subtitle_qc_checked_at字段")
+            conn.commit()
+
+        if 'pipeline_checkpoint' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN pipeline_checkpoint TEXT")
+            logger.info("数据库升级：添加pipeline_checkpoint字段")
             conn.commit()
     except Exception as e:
         logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
@@ -784,6 +984,14 @@ class TaskProcessor:
         self.scheduler.start()
         logger.info(f"任务处理器初始化完成 - 最大并发任务: {max_concurrent_tasks}, 最大并发上传: {max_concurrent_uploads}")
 
+        # 断点续跑：仅在进程生命周期内执行一次，避免配置变更重建处理器时干扰运行中任务
+        global _RESUME_RECOVERY_DONE
+        if not _RESUME_RECOVERY_DONE:
+            try:
+                recover_interrupted_tasks_to_pending()
+            finally:
+                _RESUME_RECOVERY_DONE = True
+
         # 定时扫描 pending 任务（默认每30秒，可通过配置 PENDING_SCAN_INTERVAL_SECONDS 覆盖）
         try:
             scan_interval = self.config.get('PENDING_SCAN_INTERVAL_SECONDS', 30)
@@ -916,66 +1124,124 @@ class TaskProcessor:
             task_logger.error(f"获取任务并发配额失败: {_e}")
             return
         try:
+            # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
+            completed_stages = _get_completed_stages(task)
+            # 将推断结果写回checkpoint（幂等），使后续重启更稳定
+            try:
+                _persist_pipeline_checkpoint(task_id, completed_stages)
+            except Exception:
+                pass
+
             # 1. 采集视频信息（只获取元数据和封面，不下载视频文件）
             task_logger.info(f"开始处理任务，当前task对象: {task}")
             if task is None:
                 task_logger.error("任务对象为None，终止任务处理")
                 return
-                
-            self._fetch_video_info(task_id, task['youtube_url'], task_logger)
-            task = get_task(task_id)
-            task_logger.info(f"重新获取任务对象: {task}")
-            if task is None:
-                task_logger.error("重新获取任务对象为None，终止任务处理")
-                return
-                
-            if task['status'] == TASK_STATES['FAILED']:
-                task_logger.error("采集视频信息失败，终止任务处理")
-                return
+
+            if PIPELINE_STAGE_FETCH_INFO in completed_stages:
+                task_logger.info("跳过采集视频信息（checkpoint已完成）")
+            else:
+                self._fetch_video_info(task_id, task['youtube_url'], task_logger)
+                task = get_task(task_id)
+                task_logger.info(f"重新获取任务对象: {task}")
+                if task is None:
+                    task_logger.error("重新获取任务对象为None，终止任务处理")
+                    return
+                if task['status'] == TASK_STATES['FAILED']:
+                    task_logger.error("采集视频信息失败，终止任务处理")
+                    return
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_FETCH_INFO)
+
             # 2. 翻译/标签/分区推荐（如有需要）
             if self.config.get('TRANSLATE_TITLE', True) or self.config.get('TRANSLATE_DESCRIPTION', True):
-                self._translate_content(task_id, task_logger)
+                if PIPELINE_STAGE_TRANSLATE_CONTENT in completed_stages:
+                    task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
+                else:
+                    ok = self._translate_content(task_id, task_logger)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_TRANSLATE_CONTENT)
+
             if self.config.get('GENERATE_TAGS', True):
-                self._generate_tags(task_id, task_logger)
+                if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
+                    task_logger.info("跳过标签生成（checkpoint已完成）")
+                else:
+                    ok = self._generate_tags(task_id, task_logger)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
+
             if self.config.get('RECOMMEND_PARTITION', False):
-                self._recommend_partition(task_id, task_logger)
+                if PIPELINE_STAGE_RECOMMEND_PARTITION in completed_stages:
+                    task_logger.info("跳过分区推荐（checkpoint已完成）")
+                else:
+                    ok = self._recommend_partition(task_id, task_logger)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_RECOMMEND_PARTITION)
+
                 task = get_task(task_id)
-                # 确保 task 不是 None
                 if task is not None:
                     if not task.get('selected_partition_id') and task.get('recommended_partition_id'):
                         update_task(task_id, selected_partition_id=task.get('recommended_partition_id'))
                         task_logger.info(f"自动使用推荐分区: {task.get('recommended_partition_id')}")
                 else:
-                    task_logger.warning("任务对象为 None，跳过分区推荐")
+                    task_logger.warning("任务对象为 None，跳过分区自动选择")
+
             # 3. 内容审核（如启用）
             if self.config.get('CONTENT_MODERATION_ENABLED', False):
-                self._moderate_content(task_id, task_logger)
-                task = get_task(task_id)
-                if task is not None and task['status'] == TASK_STATES['AWAITING_REVIEW']:
-                    task_logger.info("内容需要人工审核，暂停任务处理")
-                    return
+                if PIPELINE_STAGE_MODERATE_CONTENT in completed_stages:
+                    task_logger.info("跳过内容审核（checkpoint已完成）")
+                else:
+                    self._moderate_content(task_id, task_logger)
+                    task = get_task(task_id)
+                    if task is not None and task['status'] == TASK_STATES['AWAITING_REVIEW']:
+                        # 审核不通过，进入人工审核；该阶段也视为已完成
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_MODERATE_CONTENT)
+                        task_logger.info("内容需要人工审核，暂停任务处理")
+                        return
+                    completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_MODERATE_CONTENT)
+
             # 4. 审核通过后才下载视频文件
-            if task is not None:
+            task = get_task(task_id)
+            if task is None:
+                task_logger.error("任务对象为 None，无法下载视频文件")
+                return
+
+            if PIPELINE_STAGE_DOWNLOAD_VIDEO in completed_stages:
+                task_logger.info("跳过下载视频文件（checkpoint已完成）")
+            else:
                 self._download_video_file(task_id, task['youtube_url'], task_logger)
                 task = get_task(task_id)
                 if task is not None and task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("下载视频文件失败，终止任务处理")
                     return
-            else:
-                task_logger.error("任务对象为 None，无法下载视频文件")
-                return
-            
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DOWNLOAD_VIDEO)
+
             # 5. 字幕翻译（如启用）
             if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
-                self._translate_subtitle(task_id, task_logger)
-                task = get_task(task_id)
-                if task is not None and task['status'] == TASK_STATES['FAILED']:
-                    task_logger.error("字幕翻译失败，继续执行后续步骤")
-            
+                if PIPELINE_STAGE_TRANSLATE_SUBTITLE in completed_stages:
+                    task_logger.info("跳过字幕翻译（checkpoint已完成）")
+                else:
+                    ok = self._translate_subtitle(task_id, task_logger)
+                    task = get_task(task_id)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_TRANSLATE_SUBTITLE)
+                    if task is not None and task['status'] == TASK_STATES['FAILED']:
+                        task_logger.error("字幕翻译失败，继续执行后续步骤")
+
             # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
-                self._upload_to_acfun(task_id, task_logger)
-            
+                # 若已有上传响应，避免重复上传
+                task = get_task(task_id)
+                if task and task.get('acfun_upload_response'):
+                    task_logger.info("检测到已有上传响应，跳过上传（避免重复上传）")
+                    completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
+                elif PIPELINE_STAGE_UPLOAD_TO_ACFUN in completed_stages:
+                    task_logger.info("跳过上传（checkpoint已完成）")
+                else:
+                    self._upload_to_acfun(task_id, task_logger)
+                    task = get_task(task_id)
+                    if task and (task.get('acfun_upload_response') or task.get('status') == TASK_STATES['COMPLETED']):
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
+
             # 任务处理完成后，根据是否已上传到AcFun决定状态
             task = get_task(task_id)
             if task is not None:
