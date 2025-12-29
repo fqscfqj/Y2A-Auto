@@ -606,6 +606,17 @@ class AcfunUploader:
         """创建投稿"""
         if tags is None:
             tags = []
+
+        def _compact_text_local(text: str, max_len: int) -> str:
+            text = (text or "").strip()
+            if not text or max_len <= 0:
+                return ""
+            text = re.sub(r"\s+", " ", text)
+            if len(text) <= max_len:
+                return text
+            if max_len <= 3:
+                return text[:max_len]
+            return text[: max_len - 3] + "..."
         
         file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
@@ -652,77 +663,95 @@ class AcfunUploader:
         # 上传封面
         cover_url = self.upload_cover(cover_path)
         
-        # 创建投稿
-        data = {
-            "title": title,
-            "description": desc,
-            # 网页端字段：粉丝动态（可选，233 字限制）
-            "fansOnlyDesc": fans_only_desc,
-            "tagNames": json.dumps(tags),
-            "creationType": creation_type,
-            "channelId": channel_id,
-            "coverUrl": cover_url,
-            "videoInfos": json.dumps([{"videoId": video_id, "title": title}]),
-            "isJoinUpCollege": "0",
-            # 网页端字段：是否同步快手（默认 0）
-            "isSyncKs": str(is_sync_ks)
-        }
-        
-        if creation_type == 1:  # 转载
-            data["originalLinkUrl"] = original_url
-            data["originalDeclare"] = "0"
-        else:  # 原创
-            data["originalDeclare"] = "1"
-        
-        response = self.session.post(
-            self.C_DOUGA_URL,
-            data=data,
-            headers={
-                "origin": "https://member.acfun.cn",
-                "referer": "https://member.acfun.cn/upload-video"
+        def _submit_create_douga(submit_desc: str, submit_fans_only_desc: str) -> Tuple[bool, Union[dict, str], Optional[int], str]:
+            data = {
+                "title": title,
+                "description": submit_desc,
+                "tagNames": json.dumps(tags),
+                "creationType": creation_type,
+                "channelId": channel_id,
+                "coverUrl": cover_url,
+                "videoInfos": json.dumps([{"videoId": video_id, "title": title}]),
+                "isJoinUpCollege": "0",
+                "isSyncKs": str(is_sync_ks)
             }
-        )
-        
-        try:
-            result = response.json()
-        except (ValueError, TypeError) as e:
-            self.log(f"API响应JSON解析失败: {response.text}, 错误: {str(e)}")
-            return False, f"API响应JSON解析失败: {str(e)}"
-        
-        # 添加容错：检查result变量和result字段是否存在
-        if not isinstance(result, dict):
-            self.log(f"API返回格式异常，响应不是字典类型: {response.text}")
-            return False, f"API返回格式异常: 响应不是字典类型"
-        
-        if "result" not in result:
-            # 容错：部分失败响应不带顶层 result，而是 errMsg + isError
+
+            # 网页端字段：粉丝动态（fansOnlyDesc）为可选。
+            # 为贴近“只填写简介”的行为：当为空时不提交该字段（而不是提交空字符串）。
+            if submit_fans_only_desc:
+                data["fansOnlyDesc"] = submit_fans_only_desc
+
+            if creation_type == 1:  # 转载
+                data["originalLinkUrl"] = original_url
+                data["originalDeclare"] = "0"
+            else:  # 原创
+                data["originalDeclare"] = "1"
+
+            response = self.session.post(
+                self.C_DOUGA_URL,
+                data=data,
+                headers={
+                    "origin": "https://member.acfun.cn",
+                    "referer": "https://member.acfun.cn/upload-video"
+                }
+            )
+
+            try:
+                result = response.json()
+            except (ValueError, TypeError) as e:
+                self.log(f"API响应JSON解析失败: {response.text}, 错误: {str(e)}")
+                return False, f"API响应JSON解析失败: {str(e)}", None, ""
+
+            if not isinstance(result, dict):
+                self.log(f"API返回格式异常，响应不是字典类型: {response.text}")
+                return False, "API返回格式异常: 响应不是字典类型", None, ""
+
+            # 成功结构：{result:0, dougaId:...}
+            if result.get("result") == 0 and "dougaId" in result:
+                self.log(f"视频投稿成功！AC号：{result['dougaId']}")
+                return True, {
+                    "ac_number": result["dougaId"],
+                    "title": title,
+                    "cover_url": cover_url
+                }, 0, ""
+
+            # 失败结构A：{result:xxx, error_msg/msg}
+            if "result" in result:
+                result_code = result.get("result")
+                error_msg = result.get("error_msg") or result.get("msg") or "未知错误"
+                self.log(f"视频投稿失败: {response.text}")
+                err_code_int = None
+                try:
+                    err_code_int = int(result_code) if result_code is not None else None
+                except Exception:
+                    err_code_int = None
+                return False, f"视频投稿失败 (code={result_code if result_code is not None else '未知'}): {error_msg}", err_code_int, str(error_msg)
+
+            # 失败结构B：{errMsg:{result:..., error_msg:...}, isError:true}
             err_msg_obj = result.get("errMsg")
             if not isinstance(err_msg_obj, dict):
                 err_msg_obj = {}
             err_code = err_msg_obj.get("result")
-            err_msg = err_msg_obj.get("error_msg") or result.get("error_msg") or result.get("msg")
+            err_msg = err_msg_obj.get("error_msg") or result.get("error_msg") or result.get("msg") or "未知错误"
             if result.get("isError") or err_msg:
                 self.log(f"视频投稿失败: {response.text}")
-                return False, f"视频投稿失败 (code={err_code or '未知'}): {err_msg or '未知错误'}"
+                err_code_int = None
+                try:
+                    err_code_int = int(err_code) if err_code is not None else None
+                except Exception:
+                    err_code_int = None
+                return False, f"视频投稿失败 (code={err_code or '未知'}): {err_msg}", err_code_int, str(err_msg)
+
             self.log(f"API返回格式异常，缺少result字段: {response.text}")
-            return False, f"API返回格式异常: {err_msg or '未知错误'}"
-        
-        if result.get("result") == 0 and "dougaId" in result:
-            self.log(f"视频投稿成功！AC号：{result['dougaId']}")
-            return True, {
-                "ac_number": result['dougaId'],
-                "title": title,
-                "cover_url": cover_url
-            }
-        else:
-            self.log(f"视频投稿失败: {response.text}")
-            error_msg = result.get('error_msg', result.get('msg', '未知错误'))
-            result_code = result.get("result", "未知")
-            return False, f"视频投稿失败 (code={result_code}): {error_msg}"
+            return False, f"API返回格式异常: {err_msg}", None, str(err_msg)
+
+        ok, payload_or_err, _, _ = _submit_create_douga(desc, fans_only_desc)
+        return ok, payload_or_err
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
-                     original_upload_date=None, task_id=None, cover_mode='crop'):
+                     original_upload_date=None, task_id=None, cover_mode='crop',
+                     fans_only_desc_override: Optional[str] = None):
         """
         上传视频到AcFun
         
@@ -811,8 +840,9 @@ class AcfunUploader:
             else:
                 full_description = _compact_text(description, max_desc)
 
-            # 粉丝动态默认用“精简摘要”（可为空），严格限制 233 字
-            fans_only_desc = _compact_text(description, max_fans_only_desc)
+            # 粉丝动态（fansOnlyDesc）在网页端是可选项。
+            # 默认不填写；如提供 override，则按 override 提交（非空才会在 createDouga 里真正带上字段）。
+            fans_only_desc = fans_only_desc_override if fans_only_desc_override is not None else ""
             
             # 判断视频创作类型
             creation_type = 1 if original_url else 3  # 1:转载, 3:原创
