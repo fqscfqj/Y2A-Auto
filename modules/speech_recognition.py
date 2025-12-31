@@ -24,9 +24,9 @@ _FILLER_PATTERNS = [
     re.compile(r'\b(um|uh|er|ah|hmm|like|you know)\b', re.IGNORECASE),
     re.compile(r'[嗯啊呃哦唔]+', re.IGNORECASE),
     re.compile(r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b', re.IGNORECASE),
-    re.compile(r'\*.*?\*', re.IGNORECASE),
-    re.compile(r'\[.*?\]', re.IGNORECASE),
-    re.compile(r'\(.*?\)', re.IGNORECASE),
+    re.compile(r'\*[^*]*\*', re.IGNORECASE),  # Non-greedy: content in asterisks
+    re.compile(r'\[[^\]]*\]', re.IGNORECASE),  # Non-greedy: content in brackets
+    re.compile(r'\([^)]*\)', re.IGNORECASE),  # Non-greedy: content in parentheses
 ]
 _REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
