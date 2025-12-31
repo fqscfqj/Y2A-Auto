@@ -15,6 +15,23 @@ import json
 import requests
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 
+# Pre-compiled regex patterns for performance optimization
+_WHITESPACE_RE = re.compile(r'\s+')
+_BLOCK_SPLIT_RE = re.compile(r'\n\s*\n')
+_VTT_HEADER_RE = re.compile(r'^WEBVTT.*?\n+', re.IGNORECASE | re.DOTALL)
+_PUNCTUATION_SPACE_RE = re.compile(r'([.!?,:;])(?=\S)')
+_FILLER_PATTERNS = [
+    re.compile(r'\b(um|uh|er|ah|hmm|like|you know)\b', re.IGNORECASE),
+    re.compile(r'[嗯啊呃哦唔]+', re.IGNORECASE),
+    re.compile(r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b', re.IGNORECASE),
+    re.compile(r'\*.*?\*', re.IGNORECASE),
+    re.compile(r'\[.*?\]', re.IGNORECASE),
+    re.compile(r'\(.*?\)', re.IGNORECASE),
+]
+_REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
+_SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
+
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
     """Create a task-scoped logger that writes into logs/task_{task_id}.log."""
@@ -487,7 +504,7 @@ class SpeechRecognizer:
                 idx += 1
             text = '\n'.join(lines[idx:]).strip()
 
-        blocks = re.split(r'\n\s*\n', text)
+        blocks = _BLOCK_SPLIT_RE.split(text)
         cues: List[Dict[str, Any]] = []
         for block in blocks:
             block_text = block.strip()
@@ -682,7 +699,7 @@ class SpeechRecognizer:
                 content = f.read()
             if fmt_l == 'srt':
                 # Split blocks by blank lines and count blocks that have a time range
-                blocks = re.split(r"\n\s*\n", content.strip())
+                blocks = _BLOCK_SPLIT_RE.split(content.strip())
                 cnt = 0
                 for b in blocks:
                     if '-->' in b:
@@ -691,9 +708,9 @@ class SpeechRecognizer:
             else:
                 # VTT: ensure header removed then count cue lines with -->
                 # Remove header WEBVTT lines
-                body = re.sub(r'^WEBVTT.*?\n+', '', content, flags=re.IGNORECASE | re.DOTALL)
+                body = _VTT_HEADER_RE.sub('', content)
                 # Split by blank lines; count blocks containing a --> line
-                blocks = re.split(r"\n\s*\n", body.strip())
+                blocks = _BLOCK_SPLIT_RE.split(body.strip())
                 cnt = 0
                 for b in blocks:
                     if '-->' in b:
@@ -826,36 +843,25 @@ class SpeechRecognizer:
             return ""
         
         original_text = text
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
+        # Remove excessive whitespace (using pre-compiled pattern)
+        text = _WHITESPACE_RE.sub(' ', text).strip()
         
         # Normalize punctuation if enabled
         if self.config.normalize_punctuation:
             # Ensure single space after punctuation (only when followed by non-whitespace)
-            text = re.sub(r'([.!?,:;])(?=\S)', r'\1 ', text)
-            text = re.sub(r'\s+', ' ', text).strip()
+            text = _PUNCTUATION_SPACE_RE.sub(r'\1 ', text)
+            text = _WHITESPACE_RE.sub(' ', text).strip()
         
         # Filter filler words if enabled
         if self.config.filter_filler_words:
-            # Common filler words in English and Chinese
-            filler_patterns = [
-                r'\b(um|uh|er|ah|hmm|like|you know)\b',
-                r'[嗯啊呃哦唔]+',
-                # ASMR / Nonsense sounds / Repetitive sounds
-                r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b',
-                r'\*.*?\*',  # Remove content in asterisks like *chewing sounds*
-                r'\[.*?\]',  # Remove content in brackets
-                r'\(.*?\)',  # Remove content in parentheses
-            ]
-            for pattern in filler_patterns:
-                text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            # Common filler words in English and Chinese (using pre-compiled patterns)
+            for pattern in _FILLER_PATTERNS:
+                text = pattern.sub('', text)
             
             # Remove repeated words (e.g., "scan, scan, scan" -> "scan")
-            # Matches a word followed by punctuation/space and the same word, repeated 2+ times
-            # \b(\w+)(?:[,\s]+\1\b)+ -> \1
-            text = re.sub(r'\b(\w+)(?:[,\s]+\1\b)+', r'\1', text, flags=re.IGNORECASE)
+            text = _REPEATED_WORD_RE.sub(r'\1', text)
             
-            text = re.sub(r'\s+', ' ', text).strip()
+            text = _WHITESPACE_RE.sub(' ', text).strip()
         
         if text != original_text and len(original_text) < 100:
              self.logger.debug(f"文本清洗: '{original_text}' -> '{text}'")
@@ -917,10 +923,10 @@ class SpeechRecognizer:
         max_lines = self.config.max_subtitle_lines
         max_total_chars = max_line_len * max_lines
         
-        # Split text into sentences/phrases
+        # Split text into sentences/phrases (using pre-compiled pattern)
         # 增强切分逻辑：支持更多标点，保留分隔符，加入逗号
         # Split by . ! ? ; , and their CJK equivalents
-        sentences = re.split(r'([.!?。！？;；,，]+\s*)', text)
+        sentences = _SENTENCE_SPLIT_RE.split(text)
         # Remove empty strings from split result
         sentences = [s for s in sentences if s.strip()]
         
@@ -932,7 +938,7 @@ class SpeechRecognizer:
         joined_sentences = []
         i = 0
         while i < len(sentences):
-            if i + 1 < len(sentences) and re.match(r'[.!?。！？;；,，]+\s*', sentences[i+1]):
+            if i + 1 < len(sentences) and _SENTENCE_PUNCT_RE.match(sentences[i+1]):
                 joined_sentences.append(sentences[i] + sentences[i+1])
                 i += 2
             else:
@@ -1152,7 +1158,7 @@ class SpeechRecognizer:
             if need_merge:
                 # Merge texts with space (avoid duplicate punctuation spacing)
                 new_text = (prev_text + ' ' + cur_text).strip()
-                prev['text'] = re.sub(r'\s+', ' ', new_text)
+                prev['text'] = _WHITESPACE_RE.sub(' ', new_text)
                 prev['end'] = max(prev['end'], c['end'])
             else:
                 merged.append(c)

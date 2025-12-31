@@ -3,11 +3,89 @@
 
 import os
 import logging
+import re
 import time
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, strip_reasoning_thoughts, safe_str
 
 import openai
+
+# Pre-compiled regex patterns for _pre_clean (performance optimization)
+_URL_PATTERNS = [
+    re.compile(r'https?://[^\s\u4e00-\u9fff]+', re.IGNORECASE),
+    re.compile(r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),
+    re.compile(r'ftp://[^\s\u4e00-\u9fff]+', re.IGNORECASE),
+    re.compile(r'[a-zA-Z0-9.-]+\.(com|org|net|io|me|tv|cn|co|uk)(?:[/\s]|$)', re.IGNORECASE),
+    re.compile(r'\b[a-zA-Z0-9]+\.[a-zA-Z0-9]+/[a-zA-Z0-9_-]+\b', re.IGNORECASE),
+]
+_EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+_SOCIAL_HANDLE_RE = re.compile(r'@[A-Za-z0-9_]+')
+_HASHTAG_RE = re.compile(r'#[A-Za-z0-9_]+')
+_SPONSOR_URL_PATTERNS = [
+    re.compile(r'patreon\.com/[^\s]*', re.IGNORECASE),
+    re.compile(r'ko-fi\.com/[^\s]*', re.IGNORECASE),
+    re.compile(r'buymeacoffee\.com/[^\s]*', re.IGNORECASE),
+]
+_CTA_PATTERNS = [
+    re.compile(r'link\s+in\s+[the\s]*description', re.IGNORECASE),
+    re.compile(r'links?\s+[in\s]*[the\s]*bio', re.IGNORECASE),
+    re.compile(r'check\s+[the\s]*description\s+for', re.IGNORECASE),
+    re.compile(r'visit\s+[our\s]*website\s+at', re.IGNORECASE),
+    re.compile(r'more\s+info\s+at\s+[^\s]+', re.IGNORECASE),
+    re.compile(r'download\s+link[:\s]+[^\s]+', re.IGNORECASE),
+]
+_WHITESPACE_RE = re.compile(r'[ \t\f\v]+')
+_TRAILING_SPACE_RE = re.compile(r'[ \t]+\n')
+_MULTIPLE_NEWLINES_RE = re.compile(r'\n{3,}')
+
+# Pre-compiled patterns for post-translation cleanup in translate_text
+_TRANSLATION_COMMENT_PATTERNS = [
+    re.compile(r'（注：.*?）', re.IGNORECASE),
+    re.compile(r'\(注：.*?\)', re.IGNORECASE),
+    re.compile(r'【注：.*?】', re.IGNORECASE),
+    re.compile(r'（.*?已移除）', re.IGNORECASE),
+    re.compile(r'\(.*?已移除\)', re.IGNORECASE),
+    re.compile(r'（.*?联系方式.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?联系方式.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?社交媒体.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?社交媒体.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?标签.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?标签.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?链接.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?链接.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?推广.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?推广.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?广告.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?广告.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?removed.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?removed.*?\)', re.IGNORECASE),
+    re.compile(r'（.*?filtered.*?）', re.IGNORECASE),
+    re.compile(r'\(.*?filtered.*?\)', re.IGNORECASE),
+]
+_INTERACTION_PATTERNS = [
+    re.compile(r'订阅[我们的]*[频道]*', re.IGNORECASE),
+    re.compile(r'关注[我们]*', re.IGNORECASE),
+    re.compile(r'点赞[这个]*[视频]*', re.IGNORECASE),
+    re.compile(r'分享[给]*[朋友们]*', re.IGNORECASE),
+    re.compile(r'评论[区]*[见]*', re.IGNORECASE),
+    re.compile(r'更多[内容]*请访问', re.IGNORECASE),
+    re.compile(r'详情见[链接]*', re.IGNORECASE),
+    re.compile(r'链接在[描述]*[中]*', re.IGNORECASE),
+    re.compile(r'访问[我们的]*[网站]*', re.IGNORECASE),
+    re.compile(r'查看[完整]*[版本]*', re.IGNORECASE),
+    re.compile(r'下载[链接]*', re.IGNORECASE),
+    re.compile(r'购买[链接]*', re.IGNORECASE),
+    re.compile(r'subscribe\s+to\s+[our\s]*channel', re.IGNORECASE),
+    re.compile(r'follow\s+[us\s]*', re.IGNORECASE),
+    re.compile(r'like\s+[this\s]*video', re.IGNORECASE),
+    re.compile(r'share\s+[with\s]*[friends\s]*', re.IGNORECASE),
+    re.compile(r'check\s+out\s+[our\s]*[website\s]*', re.IGNORECASE),
+    re.compile(r'visit\s+[our\s]*[site\s]*', re.IGNORECASE),
+    re.compile(r'download\s+[link\s]*', re.IGNORECASE),
+    re.compile(r'buy\s+[link\s]*', re.IGNORECASE),
+    re.compile(r'more\s+info\s+at', re.IGNORECASE),
+    re.compile(r'see\s+[full\s]*[version\s]*', re.IGNORECASE),
+]
 
 # --- Helpers: logger/client/cleaner (restored) ---
 def setup_task_logger(task_id):
@@ -42,45 +120,29 @@ def get_openai_client(openai_config):
     return openai.OpenAI(api_key=api_key, **options)
 
 def _pre_clean(text: str) -> str:
-    """在发送给模型前做基础去噪：去URL/邮箱/社交句柄/明显CTA等。"""
+    """在发送给模型前做基础去噪：去URL/邮箱/社交句柄/明显CTA等。Uses pre-compiled regex (optimized)."""
     if not text:
         return text
-    import re
     cleaned = text
     # URLs / domains (更激进的匹配)
-    url_patterns = [
-        r'https?://[^\s\u4e00-\u9fff]+',
-        r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-        r'ftp://[^\s\u4e00-\u9fff]+',
-        r'[a-zA-Z0-9.-]+\.(com|org|net|io|me|tv|cn|co|uk)(?:[/\s]|$)',  # 域名后缀
-        r'\b[a-zA-Z0-9]+\.[a-zA-Z0-9]+/[a-zA-Z0-9_-]+\b',  # path格式如 site.com/user
-    ]
-    for pat in url_patterns:
-        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    for pat in _URL_PATTERNS:
+        cleaned = pat.sub('', cleaned)
     # emails
-    cleaned = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', '', cleaned)
+    cleaned = _EMAIL_RE.sub('', cleaned)
     # social handles/hashtags
-    cleaned = re.sub(r'@[A-Za-z0-9_]+', '', cleaned)
-    cleaned = re.sub(r'#[A-Za-z0-9_]+', '', cleaned)
+    cleaned = _SOCIAL_HANDLE_RE.sub('', cleaned)
+    cleaned = _HASHTAG_RE.sub('', cleaned)
     # 赞助平台网址（只清洗网址，保留描述性文字）
-    sponsor_url_patterns = [
-        r'patreon\.com/[^\s]*', r'ko-fi\.com/[^\s]*', r'buymeacoffee\.com/[^\s]*',
-    ]
-    for pat in sponsor_url_patterns:
-        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    for pat in _SPONSOR_URL_PATTERNS:
+        cleaned = pat.sub('', cleaned)
     # 精确的CTA模式（避免误删正常内容）
-    ctas = [
-        r'link\s+in\s+[the\s]*description', r'links?\s+[in\s]*[the\s]*bio',
-        r'check\s+[the\s]*description\s+for', r'visit\s+[our\s]*website\s+at',
-        r'more\s+info\s+at\s+[^\s]+', r'download\s+link[:\s]+[^\s]+',
-    ]
-    for pat in ctas:
-        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    for pat in _CTA_PATTERNS:
+        cleaned = pat.sub('', cleaned)
     # whitespace normalize (keep newlines)
     cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
-    cleaned = re.sub(r'[ \t\f\v]+', ' ', cleaned)
-    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    cleaned = _WHITESPACE_RE.sub(' ', cleaned)
+    cleaned = _TRAILING_SPACE_RE.sub('\n', cleaned)
+    cleaned = _MULTIPLE_NEWLINES_RE.sub('\n\n', cleaned)
     return cleaned.strip()
 
 def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None, content_type: str = "description"):
@@ -195,50 +257,30 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             if translated_text.startswith(prefix):
                 translated_text = translated_text[len(prefix):].strip()
 
-        # 清理提示性注释
-        for pattern in [
-            r'（注：.*?）', r'\(注：.*?\)', r'【注：.*?】', r'（.*?已移除）', r'\(.*?已移除\)',
-            r'（.*?联系方式.*?）', r'\(.*?联系方式.*?\)', r'（.*?社交媒体.*?）', r'\(.*?社交媒体.*?\)',
-            r'（.*?标签.*?）', r'\(.*?标签.*?\)', r'（.*?链接.*?）', r'\(.*?链接.*?\)',
-            r'（.*?推广.*?）', r'\(.*?推广.*?\)', r'（.*?广告.*?）', r'\(.*?广告.*?\)',
-            r'（.*?removed.*?）', r'\(.*?removed.*?\)', r'（.*?filtered.*?）', r'\(.*?filtered.*?\)'
-        ]:
-            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+        # 清理提示性注释 (using pre-compiled patterns)
+        for pattern in _TRANSLATION_COMMENT_PATTERNS:
+            translated_text = pattern.sub('', translated_text)
 
         logger.info(f"翻译完成，耗时: {response_time:.2f}秒")
         logger.info(f"翻译结果总长度: {len(translated_text)} 字符")
         logger.info(f"翻译结果 (截取前100字符用于显示): {translated_text[:100]}...")
 
-        # 再次防御性清理 URL/邮箱/社交引用
-        url_patterns = [
-            r'https?://[^\s\u4e00-\u9fff]+',
-            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            r'ftp://[^\s\u4e00-\u9fff]+'
-        ]
-        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        social_patterns = [r'@[A-Za-z0-9_]+', r'#[A-Za-z0-9_]+' ]
-        for pattern in url_patterns:
-            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
-        translated_text = re.sub(email_pattern, '', translated_text)
-        for pattern in social_patterns:
-            translated_text = re.sub(pattern, '', translated_text)
+        # 再次防御性清理 URL/邮箱/社交引用 (using pre-compiled patterns)
+        for pattern in _URL_PATTERNS[:3]:  # First 3 URL patterns
+            translated_text = pattern.sub('', translated_text)
+        translated_text = _EMAIL_RE.sub('', translated_text)
+        translated_text = _SOCIAL_HANDLE_RE.sub('', translated_text)
+        translated_text = _HASHTAG_RE.sub('', translated_text)
 
-        # 互动提示词
-        for pattern in [
-            r'订阅[我们的]*[频道]*', r'关注[我们]*', r'点赞[这个]*[视频]*', r'分享[给]*[朋友们]*', r'评论[区]*[见]*',
-            r'更多[内容]*请访问', r'详情见[链接]*', r'链接在[描述]*[中]*', r'访问[我们的]*[网站]*', r'查看[完整]*[版本]*',
-            r'下载[链接]*', r'购买[链接]*', r'subscribe\s+to\s+[our\s]*channel', r'follow\s+[us\s]*',
-            r'like\s+[this\s]*video', r'share\s+[with\s]*[friends\s]*', r'check\s+out\s+[our\s]*[website\s]*',
-            r'visit\s+[our\s]*[site\s]*', r'download\s+[link\s]*', r'buy\s+[link\s]*', r'more\s+info\s+at',
-            r'see\s+[full\s]*[version\s]*',
-        ]:
-            translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+        # 互动提示词 (using pre-compiled patterns)
+        for pattern in _INTERACTION_PATTERNS:
+            translated_text = pattern.sub('', translated_text)
 
-        # 规范空白但保留换行
+        # 规范空白但保留换行 (using pre-compiled patterns)
         translated_text = translated_text.replace('\r\n', '\n').replace('\r', '\n')
-        translated_text = re.sub(r'[ \t\f\v]+', ' ', translated_text)
-        translated_text = re.sub(r'[ \t]+\n', '\n', translated_text)
-        translated_text = re.sub(r'\n{3,}', '\n\n', translated_text)
+        translated_text = _WHITESPACE_RE.sub(' ', translated_text)
+        translated_text = _TRAILING_SPACE_RE.sub('\n', translated_text)
+        translated_text = _MULTIPLE_NEWLINES_RE.sub('\n\n', translated_text)
         translated_text = translated_text.strip()
 
         # 若为空或与清理后的原文一致，则尝试一次严格模式重试（强制中文与JSON）
