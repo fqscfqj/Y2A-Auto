@@ -79,7 +79,7 @@ _INTERACTION_PATTERNS = [
     re.compile(r'follow\s+[us\s]*', re.IGNORECASE),
     re.compile(r'like\s+[this\s]*video', re.IGNORECASE),
     re.compile(r'share\s+[with\s]*[friends\s]*', re.IGNORECASE),
-    re.compile(r'check\s+out\s+[our\s]*[website\s]*', re.IGNORECASE),
+    re.compile(r'check\s+out\s+[our\s]*[websit\s]*', re.IGNORECASE),
     re.compile(r'visit\s+[our\s]*[site\s]*', re.IGNORECASE),
     re.compile(r'download\s+[link\s]*', re.IGNORECASE),
     re.compile(r'buy\s+[link\s]*', re.IGNORECASE),
