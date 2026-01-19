@@ -17,6 +17,9 @@ from .utils import get_app_subdir, strip_reasoning_thoughts
 
 logger = logging.getLogger('subtitle_translator')
 
+# Pre-compiled regex for Chinese character detection (performance optimization)
+_CHINESE_CHAR_RE = re.compile(r'[\u4e00-\u9fff]')
+
 def setup_task_logger(task_id):
     """
     为特定任务设置日志记录器 (与ai_enhancer.py保持一致)
@@ -595,12 +598,9 @@ class SubtitleTranslator:
 
     @staticmethod
     def _contains_chinese(text: str) -> bool:
+        """Check if text contains Chinese characters using pre-compiled regex (optimized)."""
         try:
-            for ch in str(text):
-                code = ord(ch)
-                if 0x4E00 <= code <= 0x9FFF:
-                    return True
-            return False
+            return bool(_CHINESE_CHAR_RE.search(str(text)))
         except Exception:
             return False
 

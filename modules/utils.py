@@ -186,6 +186,10 @@ def process_cover(image_path, output_path=None, mode='crop'):
 # LLM 输出清洗与兼容辅助函数
 # -----------------------------
 
+# Pre-compiled regex patterns for strip_reasoning_thoughts (performance optimization)
+_THINK_TAG_RE = re.compile(r'<\s*think\s*>.*?<\s*/\s*think\s*>', re.IGNORECASE | re.DOTALL)
+_THINK_BLOCK_RE = re.compile(r'```\s*think[^\n]*\n.*?```', re.IGNORECASE | re.DOTALL)
+
 def strip_reasoning_thoughts(text):
     """
     屏蔽/移除思考模型产出的思考内容，仅保留最终答案。
@@ -205,10 +209,10 @@ def strip_reasoning_thoughts(text):
         cleaned = text
 
         # 移除 <think>...</think>（大小写不敏感，跨行匹配）
-        cleaned = re.sub(r'(?is)<\s*think\s*>.*?<\s*/\s*think\s*>', '', cleaned)
+        cleaned = _THINK_TAG_RE.sub('', cleaned)
 
         # 移除 ```think ...``` 样式的思考内容代码块（仅当语言标记包含 think 时）
-        cleaned = re.sub(r'(?is)```\s*think[^\n]*\n.*?```', '', cleaned)
+        cleaned = _THINK_BLOCK_RE.sub('', cleaned)
 
         # 去除多余空白
         cleaned = cleaned.strip()
