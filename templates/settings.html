@@ -143,6 +143,15 @@
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label class="checkbox-label">
+                                                <input type="checkbox" name="YOUTUBE_UPLOADER_AS_FIRST_TAG" {% if config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False) %}checked{% endif %}>
+                                                将YouTube上传者置于首标签
+                                            </label>
+                                            <p class="help-text">开启后会占用1个标签名额（最多6个标签）</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
                                                 <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
                                                 自动推荐分区
                                             </label>

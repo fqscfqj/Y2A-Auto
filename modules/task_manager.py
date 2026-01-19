@@ -3012,6 +3012,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     original_upload_date = metadata.get('upload_date', '')
             except Exception as e:
                 task_logger.error(f"读取视频元数据失败: {str(e)}")
+
+        # 可选：将YouTube上传者名字放到标签第一位（注意标签数量限制）
+        if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
+            from modules.utils import safe_str
+            uploader_tag = safe_str(original_uploader).strip()
+            if uploader_tag:
+                normalized_uploader = uploader_tag.lower()
+                cleaned_tags = []
+                for tag in tags:
+                    tag_value = safe_str(tag).strip()
+                    if not tag_value:
+                        continue
+                    if tag_value.lower() == normalized_uploader:
+                        continue
+                    cleaned_tags.append(tag_value)
+                tags = [uploader_tag] + cleaned_tags
+                if len(tags) > 6:
+                    tags = tags[:6]
+                try:
+                    update_task(task_id, tags_generated=json.dumps(tags, ensure_ascii=False))
+                except Exception:
+                    pass
         
         # AcFun配置
         acfun_username = self.config.get('ACFUN_USERNAME', '')
