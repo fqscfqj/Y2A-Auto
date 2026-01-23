@@ -240,7 +240,7 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
         logger.error(f"格式检查出错: {str(e)}")
         return False, None, str(e)
 
-def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False, progress_callback=None):
+def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False, progress_callback=None, cancel_event=None):
     """
     下载YouTube视频数据
     
@@ -481,7 +481,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         for attempt in range(max_retries):
             try:
                 logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
-                
+
                 if progress_callback and not skip_download:
                     # 使用Popen实时获取进度，设置UTF-8编码
                     logger.info(f"准备执行yt-dlp命令，路径: {yt_dlp_path}")
@@ -517,6 +517,14 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         raise RuntimeError("进程创建成功但stdout为None")
                     
                     for line in process.stdout:
+                        if cancel_event is not None and cancel_event.is_set():
+                            logger.info("检测到任务取消请求，准备终止yt-dlp进程")
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                            raise RuntimeError("任务已取消")
                         output_lines.append(line)
                         line = line.strip()
                         logger.debug(f"yt-dlp输出: {line}")
@@ -561,6 +569,10 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     
                     process.wait()
                     output = ''.join(output_lines)
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        logger.info("yt-dlp执行完成后检测到任务取消请求")
+                        raise RuntimeError("任务已取消")
                     
                     if process.returncode != 0:
                         raise subprocess.CalledProcessError(process.returncode, cmd, output)
@@ -575,11 +587,16 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         encoding='utf-8',
                         errors='replace'  # 遇到无法解码的字符时用?替换
                     )
+                    if cancel_event is not None and cancel_event.is_set():
+                        logger.info("检测到任务取消请求，终止yt-dlp命令执行")
+                        raise RuntimeError("任务已取消")
                     output = process.stdout
                 
                 break  # 成功执行，跳出重试循环
                 
             except subprocess.CalledProcessError as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
                 logger.warning(f"尝试 {attempt + 1} 失败: {str(e)}")
                 # 使用已初始化的 output 优先，其次回退到异常对象中的 stdout/stderr
                 error_output = output or getattr(e, 'stdout', "")
@@ -629,6 +646,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     return False, error_msg
                     
             except subprocess.TimeoutExpired:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
                 logger.warning(f"尝试 {attempt + 1} 超时")
                 if attempt == max_retries - 1:
                     error_msg = "下载超时"
@@ -638,6 +657,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 continue
                 
             except Exception as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
                 logger.warning(f"尝试 {attempt + 1} 出现异常: {str(e)}")
                 if attempt == max_retries - 1:
                     error_msg = f"下载过程中发生错误: {str(e)}"

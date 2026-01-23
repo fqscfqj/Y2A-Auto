@@ -679,7 +679,8 @@ class SubtitleTranslator:
             return False
     
     def translate_file(self, input_path: str, output_path: str,
-                      progress_callback: Optional[Callable[[float, int, int], None]] = None) -> bool:
+                      progress_callback: Optional[Callable[[float, int, int], None]] = None,
+                      cancel_event=None) -> bool:
         """翻译字幕文件，使用多线程并发翻译"""
         try:
             # 检测文件格式并读取
@@ -699,7 +700,7 @@ class SubtitleTranslator:
             self.logger.info(f"读取到 {len(items)} 条字幕")
             
             # 并发翻译
-            return self._translate_concurrent(items, output_path, progress_callback)
+            return self._translate_concurrent(items, output_path, progress_callback, cancel_event)
             
         except Exception as e:
             self.logger.error(f"翻译字幕文件失败: {e}")
@@ -708,7 +709,8 @@ class SubtitleTranslator:
             return False
     
     def _translate_concurrent(self, items: List[SubtitleItem], output_path: str,
-                            progress_callback: Optional[Callable[[float, int, int], None]] = None) -> bool:
+                            progress_callback: Optional[Callable[[float, int, int], None]] = None,
+                            cancel_event=None) -> bool:
         """使用多线程并发翻译"""
         try:
             total_items = len(items)
@@ -774,6 +776,8 @@ class SubtitleTranslator:
                 # 翻译当前批次，带重试机制
                 for retry in range(self.config.max_retries):
                     try:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return False
                         translations = self.llm_requester.translate_batch(
                             batch_texts, 
                             self.config.target_language,
@@ -814,6 +818,9 @@ class SubtitleTranslator:
                 for future in concurrent.futures.as_completed(future_to_batch):
                     batch = future_to_batch[future]
                     try:
+                        if cancel_event is not None and cancel_event.is_set():
+                            self.logger.info("检测到任务取消请求，终止字幕翻译")
+                            return False
                         success = future.result()
                         if success:
                             successful_batches += 1
