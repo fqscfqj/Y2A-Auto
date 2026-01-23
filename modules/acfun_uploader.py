@@ -491,8 +491,6 @@ class AcfunUploader:
         """创建视频"""
         if cancel_event is not None and cancel_event.is_set():
             return None
-        if cancel_event is not None and cancel_event.is_set():
-            return None
         response = self.session.post(
             self.C_VIDEO_URL,
             data={

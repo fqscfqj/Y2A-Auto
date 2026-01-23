@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import time
 import json
 import uuid
 import sqlite3
@@ -1179,7 +1180,7 @@ class TaskProcessor:
             while True:
                 if is_task_cancelled(task_id):
                     raise TaskCancelledError("任务已取消")
-                if task_semaphore.acquire(timeout=1):
+                if task_semaphore.acquire(timeout=0.1):
                     break
             task_logger.info("获得任务并发配额，开始执行任务")
         except TaskCancelledError:
