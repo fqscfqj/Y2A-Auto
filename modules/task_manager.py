@@ -1616,17 +1616,26 @@ class TaskProcessor:
                     if recognizer and task is not None:
                         video_path = task.get('video_path_local')
                         if video_path and os.path.exists(video_path):
-                            # 显示ASR状态
-                            _t = get_task(task_id)
-                            prev_status = _t['status'] if _t else TASK_STATES['TRANSLATING_SUBTITLE']
-                            update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
-                            # 输出字幕路径（强制使用 SRT）
-                            asr_ext = '.srt'
-                            asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
-                            out_path = None
-                            out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
-                            # 恢复到字幕翻译状态
-                            update_task(task_id, status=prev_status)
+                            try:
+                                # 显示ASR状态
+                                _t = get_task(task_id)
+                                prev_status = _t['status'] if _t else TASK_STATES['TRANSLATING_SUBTITLE']
+                                update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
+                                # 输出字幕路径（强制使用 SRT）
+                                asr_ext = '.srt'
+                                asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                                out_path = None
+                                out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
+                                # 恢复到字幕翻译状态
+                                update_task(task_id, status=prev_status)
+                            except Exception as e:
+                                # 捕获语音识别过程中的所有异常
+                                task_logger.error(f"语音识别过程中发生错误: {e}")
+                                import traceback
+                                task_logger.error(f"详细错误信息:\n{traceback.format_exc()}")
+                                # 恢复任务状态
+                                update_task(task_id, status=prev_status if 'prev_status' in locals() else TASK_STATES['TRANSLATING_SUBTITLE'])
+                                out_path = None
                         if out_path and os.path.exists(out_path):
                             subtitle_files = [out_path]
                             asr_generated = True

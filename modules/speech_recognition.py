@@ -247,6 +247,9 @@ class SpeechRecognizer:
                         chunks = self._create_audio_chunks(total_audio_duration)
                         
                         all_vad_segments: List[Tuple[float, float]] = []
+                        vad_consecutive_failures = 0
+                        max_consecutive_failures = 3  # 连续失败3次就放弃VAD
+                        
                         for chunk_start, chunk_end in chunks:
                             # Extract chunk
                             chunk_wav = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
@@ -260,6 +263,13 @@ class SpeechRecognizer:
                                 # Adjust timestamps to global time
                                 adjusted_segments = [(s + chunk_start, e + chunk_start) for s, e in chunk_segments]
                                 all_vad_segments.extend(adjusted_segments)
+                                vad_consecutive_failures = 0  # 重置失败计数
+                            else:
+                                vad_consecutive_failures += 1
+                                self.logger.warning(f"VAD处理chunk失败 ({vad_consecutive_failures}/{max_consecutive_failures})")
+                                if vad_consecutive_failures >= max_consecutive_failures:
+                                    self.logger.error(f"VAD连续失败{max_consecutive_failures}次，停止VAD处理")
+                                    raise RuntimeError(f"VAD服务连续失败{max_consecutive_failures}次，请检查VAD服务是否正常运行")
                         
                         # Merge overlapping segments from different chunks
                         if all_vad_segments:
