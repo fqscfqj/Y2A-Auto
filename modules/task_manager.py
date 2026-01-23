@@ -55,6 +55,7 @@ os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, 'tasks.db')
 LOGS_DIR = get_app_subdir('logs')
 DOWNLOADS_DIR = get_app_subdir('downloads')
+PROCESS_TERMINATE_WAIT_SECONDS = 5
 
 
 class TaskCancelledError(Exception):
@@ -1180,7 +1181,7 @@ class TaskProcessor:
             while True:
                 if is_task_cancelled(task_id):
                     raise TaskCancelledError("任务已取消")
-                if task_semaphore.acquire(timeout=0.1):
+                if task_semaphore.acquire(timeout=0.5):
                     break
             task_logger.info("获得任务并发配额，开始执行任务")
         except TaskCancelledError:
@@ -2412,7 +2413,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if is_task_cancelled(task_id):
                         task_logger.info("检测到任务取消请求，终止FFmpeg转码")
                         process.terminate()
-                        time.sleep(2)
+                        time.sleep(PROCESS_TERMINATE_WAIT_SECONDS)
                         if process.poll() is None:
                             process.kill()
                         raise TaskCancelledError("任务已取消")
@@ -2563,7 +2564,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 if is_task_cancelled(task_id):
                                     task_logger.info("检测到任务取消请求，终止FFmpeg回退转码")
                                     process2.terminate()
-                                    time.sleep(2)
+                                    time.sleep(PROCESS_TERMINATE_WAIT_SECONDS)
                                     if process2.poll() is None:
                                         process2.kill()
                                     raise TaskCancelledError("任务已取消")
