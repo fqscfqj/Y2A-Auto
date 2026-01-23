@@ -127,6 +127,14 @@ class SpeechRecognitionConfig:
     fallback_to_fixed_chunks: bool = True  # Fallback to fixed chunks if VAD fails
 
 
+class VadFailure(RuntimeError):
+    pass
+
+
+class WhisperFailure(RuntimeError):
+    pass
+
+
 class SpeechRecognizer:
     """Abstracted speech recognizer with a Whisper(OpenAI compatible) implementation."""
 
@@ -137,6 +145,8 @@ class SpeechRecognizer:
         self.client: Any = None  # OpenAI/Whisper client for transcription
         self._temp_dirs: List[str] = []  # Track temp directories for cleanup
         self._language_hint: str = ''  # Set after VAD-based language detection
+        self.last_warning_message: str = ''
+        self.last_error_message: str = ''
         self._init_client()
 
     def _init_client(self):
@@ -211,6 +221,8 @@ class SpeechRecognizer:
         Returns the output_path on success, otherwise None.
         """
         try:
+            self.last_warning_message = ''
+            self.last_error_message = ''
             if not self.client:
                 self.logger.error("语音识别客户端未初始化")
                 return None
@@ -236,6 +248,7 @@ class SpeechRecognizer:
             response_format = 'srt'
 
             cues: List[Dict[str, Any]] = []
+            force_fixed_chunks = False
             
             # Step 2 & 3: Chunking + VAD
             if self.config.vad_enabled and self.config.vad_api_url:
@@ -269,7 +282,7 @@ class SpeechRecognizer:
                                 self.logger.warning(f"VAD处理chunk失败 ({vad_consecutive_failures}/{max_consecutive_failures})")
                                 if vad_consecutive_failures >= max_consecutive_failures:
                                     self.logger.error(f"VAD连续失败{max_consecutive_failures}次，停止VAD处理")
-                                    raise RuntimeError(f"VAD服务连续失败{max_consecutive_failures}次，请检查VAD服务是否正常运行")
+                                    raise VadFailure(f"VAD服务连续失败{max_consecutive_failures}次，请检查VAD服务是否正常运行")
                         
                         # Merge overlapping segments from different chunks
                         if all_vad_segments:
@@ -316,12 +329,14 @@ class SpeechRecognizer:
                                     self.logger.warning(f"转写片段失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
                                     if transcribe_consecutive_failures >= max_transcribe_failures:
                                         self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
-                                        raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
+                                        raise WhisperFailure(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                         
                         if not cues:
                             self.logger.warning("VAD 模式下未生成任何字幕，回退到整段识别")
                     else:
                         if self.config.fallback_to_fixed_chunks:
+                            if not self.last_warning_message:
+                                self.last_warning_message = "VAD未返回有效片段，已回退固定长度识别"
                             self.logger.warning("VAD 未返回有效片段，回退到固定窗口切分")
                             # Fallback to fixed chunks
                             chunks = self._create_audio_chunks(total_audio_duration)
@@ -340,21 +355,31 @@ class SpeechRecognizer:
                                         self.logger.warning(f"转写chunk失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
                                         if transcribe_consecutive_failures >= max_transcribe_failures:
                                             self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
-                                            raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
+                                            raise WhisperFailure(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                         else:
                             self.logger.warning("VAD 未返回有效片段，回退到整段识别")
-                except Exception as e:
+                except VadFailure as e:
+                    self.last_warning_message = f"VAD失败，已回退固定长度识别：{e}"
                     self.logger.warning(f"VAD 处理失败: {e}")
-                    if self.config.fallback_to_fixed_chunks:
-                        self.logger.info("回退到整段识别")
+                    force_fixed_chunks = True
+                except WhisperFailure as e:
+                    self.last_error_message = str(e)
+                    raise
+                except Exception as e:
+                    self.last_warning_message = f"VAD异常，已回退固定长度识别：{e}"
+                    self.logger.warning(f"VAD 处理失败: {e}")
+                    force_fixed_chunks = True
 
             if not cues:
                 # Fallback: Whole audio transcription
                 self.logger.info(f"步骤 3/5: 整段音频转写 (模型: {model_name})")
                 
                 # For very long audio, use chunking even without VAD
-                if total_audio_duration > self.config.chunk_window_s * 2:
-                    self.logger.info("音频过长，使用固定窗口分片")
+                if force_fixed_chunks or total_audio_duration > self.config.chunk_window_s * 2:
+                    if force_fixed_chunks and total_audio_duration <= self.config.chunk_window_s * 2:
+                        self.logger.info("VAD失败，使用固定窗口分片")
+                    else:
+                        self.logger.info("音频过长，使用固定窗口分片")
                     chunks = self._create_audio_chunks(total_audio_duration)
                     transcribe_consecutive_failures = 0
                     max_transcribe_failures = 5
@@ -364,7 +389,6 @@ class SpeechRecognizer:
                         if chunk_wav:
                             chunk_cues = self._transcribe_one_clip(chunk_wav, chunk_start, total_audio_duration)
                             if chunk_cues:
-                            if chunk_cues:
                                 cues.extend(chunk_cues)
                                 transcribe_consecutive_failures = 0
                             else:
@@ -372,7 +396,7 @@ class SpeechRecognizer:
                                 self.logger.warning(f"转写chunk失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
                                 if transcribe_consecutive_failures >= max_transcribe_failures:
                                     self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
-                                    raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
+                                    raise WhisperFailure(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                 else:
                     # Single transcription for short audio
                     with open(audio_wav, 'rb') as f:
@@ -395,6 +419,7 @@ class SpeechRecognizer:
                             resp = self.client.audio.transcriptions.create(**params)
                         except Exception as e:
                             self.logger.error(f"语音转写请求失败: {e}")
+                            self.last_error_message = f"Whisper转写请求失败: {e}"
                             return None
 
                     cues = self._convert_response_to_cues(resp, 0.0, total_audio_duration)
@@ -475,7 +500,16 @@ class SpeechRecognizer:
 
             self.logger.info(f"✓ 语音转写完成，字幕已保存: {output_path}")
             return output_path
+        except WhisperFailure as e:
+            if not self.last_error_message:
+                self.last_error_message = str(e)
+            self.logger.error(f"语音转写失败: {e}")
+            import traceback
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            return None
         except Exception as e:
+            if not self.last_error_message:
+                self.last_error_message = f"语音转写失败: {e}"
             self.logger.error(f"语音转写失败: {e}")
             import traceback
             self.logger.error(f"详细错误: {traceback.format_exc()}")

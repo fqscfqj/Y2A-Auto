@@ -1640,7 +1640,21 @@ class TaskProcessor:
                             subtitle_files = [out_path]
                             asr_generated = True
                             task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
+                            if getattr(recognizer, 'last_warning_message', ''):
+                                _t = get_task(task_id)
+                                prev_error = _t.get('error_message') if _t else None
+                                merged_error = (
+                                    f"{prev_error}\n{recognizer.last_warning_message}" if prev_error else recognizer.last_warning_message
+                                )
+                                update_task(task_id, error_message=merged_error)
                         else:
+                            if getattr(recognizer, 'last_error_message', ''):
+                                _t = get_task(task_id)
+                                prev_error = _t.get('error_message') if _t else None
+                                merged_error = (
+                                    f"{prev_error}\n{recognizer.last_error_message}" if prev_error else recognizer.last_error_message
+                                )
+                                update_task(task_id, error_message=merged_error)
                             task_logger.warning("语音识别未能生成字幕，跳过字幕流程")
                             return True
                     else:
