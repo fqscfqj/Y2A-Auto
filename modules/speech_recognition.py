@@ -297,6 +297,9 @@ class SpeechRecognizer:
                         
                         # Step 4: Parallel transcription
                         # For now, process sequentially (parallel can be added with ThreadPoolExecutor)
+                        transcribe_consecutive_failures = 0
+                        max_transcribe_failures = 5  # 连续失败5次就停止
+                        
                         for seg_start_s, seg_end_s in vad_segments:
                             seg_start_s = max(0.0, float(seg_start_s))
                             seg_end_s = max(seg_start_s, float(seg_end_s))
@@ -305,7 +308,15 @@ class SpeechRecognizer:
                             part_wav = self._extract_audio_clip(audio_wav, seg_start_s, seg_end_s)
                             if part_wav:
                                 segment_cues = self._transcribe_one_clip(part_wav, seg_start_s, total_audio_duration)
-                                cues.extend(segment_cues)
+                                if segment_cues:
+                                    cues.extend(segment_cues)
+                                    transcribe_consecutive_failures = 0  # 重置失败计数
+                                else:
+                                    transcribe_consecutive_failures += 1
+                                    self.logger.warning(f"转写片段失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
+                                    if transcribe_consecutive_failures >= max_transcribe_failures:
+                                        self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
+                                        raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                         
                         if not cues:
                             self.logger.warning("VAD 模式下未生成任何字幕，回退到整段识别")
@@ -314,11 +325,22 @@ class SpeechRecognizer:
                             self.logger.warning("VAD 未返回有效片段，回退到固定窗口切分")
                             # Fallback to fixed chunks
                             chunks = self._create_audio_chunks(total_audio_duration)
+                            transcribe_consecutive_failures = 0
+                            max_transcribe_failures = 5
+                            
                             for chunk_start, chunk_end in chunks:
                                 chunk_wav = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
                                 if chunk_wav:
                                     chunk_cues = self._transcribe_one_clip(chunk_wav, chunk_start, total_audio_duration)
-                                    cues.extend(chunk_cues)
+                                    if chunk_cues:
+                                        cues.extend(chunk_cues)
+                                        transcribe_consecutive_failures = 0
+                                    else:
+                                        transcribe_consecutive_failures += 1
+                                        self.logger.warning(f"转写chunk失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
+                                        if transcribe_consecutive_failures >= max_transcribe_failures:
+                                            self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
+                                            raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                         else:
                             self.logger.warning("VAD 未返回有效片段，回退到整段识别")
                 except Exception as e:
@@ -334,11 +356,23 @@ class SpeechRecognizer:
                 if total_audio_duration > self.config.chunk_window_s * 2:
                     self.logger.info("音频过长，使用固定窗口分片")
                     chunks = self._create_audio_chunks(total_audio_duration)
+                    transcribe_consecutive_failures = 0
+                    max_transcribe_failures = 5
+                    
                     for chunk_start, chunk_end in chunks:
                         chunk_wav = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
                         if chunk_wav:
                             chunk_cues = self._transcribe_one_clip(chunk_wav, chunk_start, total_audio_duration)
-                            cues.extend(chunk_cues)
+                            if chunk_cues:
+                            if chunk_cues:
+                                cues.extend(chunk_cues)
+                                transcribe_consecutive_failures = 0
+                            else:
+                                transcribe_consecutive_failures += 1
+                                self.logger.warning(f"转写chunk失败 ({transcribe_consecutive_failures}/{max_transcribe_failures})")
+                                if transcribe_consecutive_failures >= max_transcribe_failures:
+                                    self.logger.error(f"Whisper转写连续失败{max_transcribe_failures}次，停止处理")
+                                    raise RuntimeError(f"Whisper转写连续失败{max_transcribe_failures}次，请检查Whisper服务是否正常运行")
                 else:
                     # Single transcription for short audio
                     with open(audio_wav, 'rb') as f:
