@@ -2413,18 +2413,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if is_task_cancelled(task_id):
                         task_logger.info("检测到任务取消请求，终止FFmpeg转码")
                         process.terminate()
-                        time.sleep(PROCESS_TERMINATE_WAIT_SECONDS)
-                        if process.poll() is None:
-                            process.kill()
+                        try:
+                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            if process.poll() is None:
+                                process.kill()
                         raise TaskCancelledError("任务已取消")
                     # 检查超时
                     current_time = time.time()
                     if current_time - start_time > timeout:
                         task_logger.error(f"FFmpeg处理超时（{timeout//60}分钟），强制终止")
                         process.terminate()
-                        time.sleep(5)
-                        if process.poll() is None:
-                            process.kill()
+                        try:
+                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            if process.poll() is None:
+                                process.kill()
                         break
                     
                     # 检查进程状态
@@ -2564,9 +2568,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 if is_task_cancelled(task_id):
                                     task_logger.info("检测到任务取消请求，终止FFmpeg回退转码")
                                     process2.terminate()
-                                    time.sleep(PROCESS_TERMINATE_WAIT_SECONDS)
-                                    if process2.poll() is None:
-                                        process2.kill()
+                                    try:
+                                        process2.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                                    except subprocess.TimeoutExpired:
+                                        if process2.poll() is None:
+                                            process2.kill()
                                     raise TaskCancelledError("任务已取消")
                                 time.sleep(1)
                             stdout2, stderr2 = process2.communicate(timeout=5)

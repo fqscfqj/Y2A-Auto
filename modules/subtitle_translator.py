@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
 from threading import Lock
+from modules.task_manager import TaskCancelledError
 from .utils import get_app_subdir, strip_reasoning_thoughts
 
 logger = logging.getLogger('subtitle_translator')
@@ -794,6 +795,8 @@ class SubtitleTranslator:
                         
                         return True
                         
+                    except TaskCancelledError:
+                        raise
                     except Exception as e:
                         self.logger.warning(f"批次 {batch_id} 翻译失败 (重试 {retry + 1}/{self.config.max_retries}): {e}")
                         if retry < self.config.max_retries - 1:
@@ -824,6 +827,8 @@ class SubtitleTranslator:
                         success = future.result()
                         if success:
                             successful_batches += 1
+                    except TaskCancelledError:
+                        raise
                     except Exception as e:
                         self.logger.error(f"批次 {batch['batch_id']} 执行异常: {e}")
                 
@@ -842,6 +847,9 @@ class SubtitleTranslator:
             # 输出翻译后的文件
             return self._write_translated_file(items, output_path)
             
+        except TaskCancelledError:
+            self.logger.info("字幕翻译检测到任务取消请求")
+            raise
         except Exception as e:
             self.logger.error(f"并发翻译过程中发生错误: {e}")
             import traceback
