@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import time
 import json
 import uuid
 import sqlite3
@@ -54,6 +55,59 @@ os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, 'tasks.db')
 LOGS_DIR = get_app_subdir('logs')
 DOWNLOADS_DIR = get_app_subdir('downloads')
+PROCESS_TERMINATE_WAIT_SECONDS = 5
+
+
+class TaskCancelledError(Exception):
+    """任务取消异常，用于中断执行流程"""
+
+
+_TASK_CANCEL_FLAGS = {}
+_TASK_CANCEL_LOCK = threading.Lock()
+
+
+def get_task_cancel_event(task_id):
+    """获取任务取消事件（若不存在则创建）"""
+    if not task_id:
+        return None
+    with _TASK_CANCEL_LOCK:
+        event = _TASK_CANCEL_FLAGS.get(task_id)
+        if not event:
+            event = threading.Event()
+            _TASK_CANCEL_FLAGS[task_id] = event
+        return event
+
+
+def request_task_cancel(task_id):
+    """请求取消任务，用于快速终止运行中的任务"""
+    event = get_task_cancel_event(task_id)
+    if event:
+        event.set()
+    return event
+
+
+def is_task_cancelled(task_id):
+    """检查任务是否已被请求取消"""
+    if not task_id:
+        return False
+    with _TASK_CANCEL_LOCK:
+        event = _TASK_CANCEL_FLAGS.get(task_id)
+        return bool(event and event.is_set())
+
+
+def clear_task_cancel(task_id, clear_flag=False):
+    """清理任务取消标记"""
+    if not task_id or not clear_flag:
+        return
+    with _TASK_CANCEL_LOCK:
+        _TASK_CANCEL_FLAGS.pop(task_id, None)
+
+
+def _raise_if_cancelled(task_id, task_logger=None):
+    if is_task_cancelled(task_id):
+        if task_logger:
+            task_logger.info("检测到任务取消请求，终止任务执行")
+        raise TaskCancelledError("任务已取消")
 
 # 确保目录存在
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -705,6 +759,9 @@ def delete_task(task_id, delete_files=True):
         logger.warning(f"任务 {task_id} 不存在，无法删除")
         return False
     
+    # 标记任务取消，尽快中断运行中的任务
+    request_task_cancel(task_id)
+
     # 删除任务文件
     if delete_files:
         delete_task_files(task_id)
@@ -733,9 +790,12 @@ def clear_all_tasks(delete_files=True):
     Returns:
         success: 是否成功
     """
+    # 标记任务取消，尽快中断运行中的任务
+    tasks = get_all_tasks()
+    for task in tasks:
+        request_task_cancel(task['id'])
+
     if delete_files:
-        # 获取所有任务ID
-        tasks = get_all_tasks()
         for task in tasks:
             delete_task_files(task['id'])
     
@@ -1118,12 +1178,21 @@ class TaskProcessor:
         try:
             # 类型断言，告诉 Pylance task_semaphore 不是 None
             assert task_semaphore is not None, "task_semaphore 应该已经初始化"
-            task_semaphore.acquire()
+            while True:
+                if is_task_cancelled(task_id):
+                    raise TaskCancelledError("任务已取消")
+                if task_semaphore.acquire(timeout=0.5):
+                    break
             task_logger.info("获得任务并发配额，开始执行任务")
+        except TaskCancelledError:
+            task_logger.info("任务在等待并发配额时已取消")
+            update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
+            return
         except Exception as _e:
             task_logger.error(f"获取任务并发配额失败: {_e}")
             return
         try:
+            _raise_if_cancelled(task_id, task_logger)
             # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
             completed_stages = _get_completed_stages(task)
             # 将推断结果写回checkpoint（幂等），使后续重启更稳定
@@ -1142,6 +1211,7 @@ class TaskProcessor:
                 task_logger.info("跳过采集视频信息（checkpoint已完成）")
             else:
                 self._fetch_video_info(task_id, task['youtube_url'], task_logger)
+                _raise_if_cancelled(task_id, task_logger)
                 task = get_task(task_id)
                 task_logger.info(f"重新获取任务对象: {task}")
                 if task is None:
@@ -1160,6 +1230,7 @@ class TaskProcessor:
                     ok = self._translate_content(task_id, task_logger)
                     if ok:
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_TRANSLATE_CONTENT)
+                _raise_if_cancelled(task_id, task_logger)
 
             if self.config.get('GENERATE_TAGS', True):
                 if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
@@ -1168,6 +1239,7 @@ class TaskProcessor:
                     ok = self._generate_tags(task_id, task_logger)
                     if ok:
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
+                _raise_if_cancelled(task_id, task_logger)
 
             if self.config.get('RECOMMEND_PARTITION', False):
                 if PIPELINE_STAGE_RECOMMEND_PARTITION in completed_stages:
@@ -1184,6 +1256,7 @@ class TaskProcessor:
                         task_logger.info(f"自动使用推荐分区: {task.get('recommended_partition_id')}")
                 else:
                     task_logger.warning("任务对象为 None，跳过分区自动选择")
+                _raise_if_cancelled(task_id, task_logger)
 
             # 3. 内容审核（如启用）
             if self.config.get('CONTENT_MODERATION_ENABLED', False):
@@ -1198,6 +1271,7 @@ class TaskProcessor:
                         task_logger.info("内容需要人工审核，暂停任务处理")
                         return
                     completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_MODERATE_CONTENT)
+                _raise_if_cancelled(task_id, task_logger)
 
             # 4. 审核通过后才下载视频文件
             task = get_task(task_id)
@@ -1209,6 +1283,7 @@ class TaskProcessor:
                 task_logger.info("跳过下载视频文件（checkpoint已完成）")
             else:
                 self._download_video_file(task_id, task['youtube_url'], task_logger)
+                _raise_if_cancelled(task_id, task_logger)
                 task = get_task(task_id)
                 if task is not None and task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("下载视频文件失败，终止任务处理")
@@ -1226,6 +1301,7 @@ class TaskProcessor:
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_TRANSLATE_SUBTITLE)
                     if task is not None and task['status'] == TASK_STATES['FAILED']:
                         task_logger.error("字幕翻译失败，继续执行后续步骤")
+                _raise_if_cancelled(task_id, task_logger)
 
             # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
@@ -1238,6 +1314,7 @@ class TaskProcessor:
                     task_logger.info("跳过上传（checkpoint已完成）")
                 else:
                     self._upload_to_acfun(task_id, task_logger)
+                    _raise_if_cancelled(task_id, task_logger)
                     task = get_task(task_id)
                     if task and (task.get('acfun_upload_response') or task.get('status') == TASK_STATES['COMPLETED']):
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
@@ -1258,12 +1335,16 @@ class TaskProcessor:
                 task_logger.warning("任务对象为 None，无法确定最终状态")
                 update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
                 task_logger.info("任务处理完成，标记为准备上传")
+        except TaskCancelledError:
+            task_logger.info("任务已取消，停止后续处理")
+            update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
         except Exception as e:
             task_logger.error(f"任务处理过程中发生错误: {str(e)}")
             import traceback
             task_logger.error(traceback.format_exc())
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=str(e))
         finally:
+            clear_task_cancel(task_id, clear_flag=True)
             # 释放并发配额
             try:
                 # 类型断言，告诉 Pylance task_semaphore 不是 None
@@ -1360,6 +1441,8 @@ class TaskProcessor:
         from modules.youtube_handler import download_video_data
         task_logger.info(f"采集视频信息: {youtube_url}")
         update_task(task_id, status='fetching_info')
+
+        _raise_if_cancelled(task_id, task_logger)
         
         # 获取cookies文件路径，优先使用config目录下的文件
         cookies_filename = os.path.basename(self.config.get('YOUTUBE_COOKIES_PATH', 'cookies.txt'))
@@ -1386,8 +1469,18 @@ class TaskProcessor:
                 
         # 只采集信息
         try:
-            success, result = download_video_data(youtube_url, task_id, cookies_path, skip_download=True)
+            cancel_event = get_task_cancel_event(task_id)
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_path,
+                skip_download=True,
+                cancel_event=cancel_event
+            )
         except Exception as e:
+            if is_task_cancelled(task_id):
+                task_logger.info("采集信息过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
             task_logger.error(f"采集视频信息时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息异常: {str(e)}")
             return
@@ -1422,6 +1515,8 @@ class TaskProcessor:
         from modules.youtube_handler import download_video_data
         task_logger.info(f"审核通过，开始下载视频文件: {youtube_url}")
         update_task(task_id, status=TASK_STATES['DOWNLOADING'])
+
+        _raise_if_cancelled(task_id, task_logger)
         
         # 获取cookies文件路径，优先使用config目录下的文件
         cookies_filename = os.path.basename(self.config.get('YOUTUBE_COOKIES_PATH', 'cookies.txt'))
@@ -1472,11 +1567,25 @@ class TaskProcessor:
         
         # 只下载视频文件
         try:
-            success, result = download_video_data(youtube_url, task_id, cookies_path, only_video=True, progress_callback=progress_callback)
+            cancel_event = get_task_cancel_event(task_id)
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_path,
+                only_video=True,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
+            )
         except Exception as e:
+            if is_task_cancelled(task_id):
+                task_logger.info("下载过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
             task_logger.error(f"下载视频文件时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
             return
+        if is_task_cancelled(task_id):
+            task_logger.info("下载完成前检测到任务取消请求")
+            raise TaskCancelledError("任务已取消")
         if success:
             task_logger.info("视频文件下载成功")
             
@@ -1753,16 +1862,20 @@ class TaskProcessor:
             
             # 定义进度回调函数
             def progress_callback(progress, current, total):
+                if is_task_cancelled(task_id):
+                    raise TaskCancelledError("任务已取消")
                 # 不再将每次字幕翻译进度记录为 INFO 到文件，减少日志噪声
                 task_logger.debug(f"字幕翻译进度: {progress:.1f}% ({current}/{total})")
                 # 更新任务进度显示到网页
                 update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
             
             # 执行翻译
+            cancel_event = get_task_cancel_event(task_id)
             success = translator.translate_file(
                 subtitle_file, 
                 translated_subtitle_path,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
             )
             
             if success:
@@ -2051,6 +2164,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             # 设置任务状态为转码视频中
             update_task(task_id, status=TASK_STATES['ENCODING_VIDEO'])
+            _raise_if_cancelled(task_id, task_logger)
             
             # 获取视频时长和流信息用于计算进度与参数
             video_duration = self._get_video_duration(video_path, task_logger)
@@ -2296,14 +2410,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 error_messages = []
                 
                 while True:
+                    if is_task_cancelled(task_id):
+                        task_logger.info("检测到任务取消请求，终止FFmpeg转码")
+                        process.terminate()
+                        try:
+                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            if process.poll() is None:
+                                process.kill()
+                        raise TaskCancelledError("任务已取消")
                     # 检查超时
                     current_time = time.time()
                     if current_time - start_time > timeout:
                         task_logger.error(f"FFmpeg处理超时（{timeout//60}分钟），强制终止")
                         process.terminate()
-                        time.sleep(5)
-                        if process.poll() is None:
-                            process.kill()
+                        try:
+                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            if process.poll() is None:
+                                process.kill()
                         break
                     
                     # 检查进程状态
@@ -2355,7 +2480,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 except subprocess.TimeoutExpired:
                     task_logger.error("进程未能在30秒内正常结束，强制终止")
                     process.kill()
-                
+
                 if process.returncode == 0 and os.path.exists(simple_output):
                     # 成功！复制输出文件回原位置
                     shutil.copy2(simple_output, embedded_video_path)
@@ -2405,6 +2530,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         should_retry_cpu = True
 
                     if should_retry_cpu:
+                        if is_task_cancelled(task_id):
+                            task_logger.info("检测到任务取消请求，跳过FFmpeg回退方案")
+                            raise TaskCancelledError("任务已取消")
                         task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
                         vparams = build_cpu_params()
                         aparams = ['-c:a', 'aac', '-b:a', '320k']
@@ -2435,7 +2563,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             encoding='utf-8',
                             errors='replace'
                         )
-                        stdout2, stderr2 = process2.communicate(timeout=min(timeout, 3600))
+                        try:
+                            while process2.poll() is None:
+                                if is_task_cancelled(task_id):
+                                    task_logger.info("检测到任务取消请求，终止FFmpeg回退转码")
+                                    process2.terminate()
+                                    try:
+                                        process2.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                                    except subprocess.TimeoutExpired:
+                                        if process2.poll() is None:
+                                            process2.kill()
+                                    raise TaskCancelledError("任务已取消")
+                                time.sleep(1)
+                            stdout2, stderr2 = process2.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process2.kill()
+                            stdout2, stderr2 = process2.communicate()
+
                         if process2.returncode == 0 and os.path.exists(simple_output):
                             shutil.copy2(simple_output, embedded_video_path)
                             # 结束日志：成功（CPU回退）
@@ -2938,6 +3082,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if base_name_no_ext.endswith('_with_subtitle'):
                     task_logger.info("检测到已嵌入字幕的视频文件，跳过重复转码步骤")
                 else:
+                    _raise_if_cancelled(task_id, task_logger)
                     # 检查是否已有字幕（大小写无关）
                     subtitle_files = []
                     try:
@@ -2983,6 +3128,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                     asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
                                     asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
                                     out_path = None
+                                    _raise_if_cancelled(task_id, task_logger)
                                     out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                                     # 恢复上传状态
                                     update_task(task_id, status=prev_status2)
@@ -3006,6 +3152,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         task_logger.info("未启用语音识别，跳过上传前的字幕处理")
             else:
                 task_logger.warning("视频文件不存在，无法进行上传前的字幕处理")
+        except TaskCancelledError:
+            task_logger.info("上传前字幕处理检测到任务取消请求")
+            raise
         except Exception as e:
             task_logger.error(f"上传前字幕处理出现异常: {e}")
 
@@ -3114,6 +3263,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 cookie_file=acfun_cookies_path
             )
             
+            cancel_event = get_task_cancel_event(task_id)
             # 上传视频
             success, result = uploader.upload_video(
                 video_file_path=video_path,
@@ -3126,7 +3276,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 original_uploader=original_uploader,
                 original_upload_date=original_upload_date,
                 task_id=task_id,
-                cover_mode=cover_mode
+                cover_mode=cover_mode,
+                cancel_event=cancel_event
             )
             
             if success:

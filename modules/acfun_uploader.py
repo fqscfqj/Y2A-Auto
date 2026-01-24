@@ -332,7 +332,7 @@ class AcfunUploader:
         
         return task_id, token, part_size
     
-    def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str) -> bool:
+    def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str, cancel_event=None) -> bool:
         """上传分块"""
         # 创建专用的上传session
         upload_session = requests.Session()
@@ -360,6 +360,8 @@ class AcfunUploader:
         
         for attempt in range(3):
             try:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False
                 # 添加延迟避免请求过快
                 if attempt > 0:
                     time.sleep(2 ** attempt)  # 指数退避
@@ -410,7 +412,7 @@ class AcfunUploader:
         
         return False
     
-    def complete_upload(self, fragment_count: int, upload_token: str):
+    def complete_upload(self, fragment_count: int, upload_token: str, cancel_event=None):
         """完成上传"""
         # 创建专用的上传session
         upload_session = requests.Session()
@@ -436,6 +438,8 @@ class AcfunUploader:
         
         for attempt in range(3):
             try:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
                 if attempt > 0:
                     time.sleep(2 ** attempt)
                 
@@ -465,8 +469,10 @@ class AcfunUploader:
                 if attempt == 2:
                     self.log("完成上传失败，但文件可能已上传成功")
     
-    def upload_finish(self, task_id: int):
+    def upload_finish(self, task_id: int, cancel_event=None):
         """上传完成处理"""
+        if cancel_event is not None and cancel_event.is_set():
+            return
         response = self.session.post(
             self.FINISH_URL,
             data={"taskId": task_id}
@@ -481,8 +487,10 @@ class AcfunUploader:
         if not isinstance(result, dict) or result.get("result") != 0:
             self.log(f"上传完成处理失败: {response.text}")
     
-    def create_video(self, video_key: int, filename: str) -> Optional[int]:
+    def create_video(self, video_key: int, filename: str, cancel_event=None) -> Optional[int]:
         """创建视频"""
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         response = self.session.post(
             self.C_VIDEO_URL,
             data={
@@ -515,11 +523,13 @@ class AcfunUploader:
             self.log(f"创建视频成功但未获取到videoId: {response.text}")
             return None
         
-        self.upload_finish(video_key)
+        self.upload_finish(video_key, cancel_event=cancel_event)
         return video_id
     
-    def upload_cover(self, image_path: str, mode='crop') -> str:
+    def upload_cover(self, image_path: str, mode='crop', cancel_event=None) -> str:
         """上传封面图片（支持 jpg/png/webp，尽量保留原格式）"""
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("任务已取消")
         self.log(f"处理封面图片: {image_path}")
 
         # 创建临时目录用于处理封面
@@ -572,8 +582,8 @@ class AcfunUploader:
         with open(processed_image, "rb") as f:
             chunk_data = f.read()
 
-        self.upload_chunk(chunk_data, 0, token)
-        self.complete_upload(1, token)
+        self.upload_chunk(chunk_data, 0, token, cancel_event=cancel_event)
+        self.complete_upload(1, token, cancel_event=cancel_event)
 
         # 获取上传后的URL
         response = self.session.post(
@@ -602,7 +612,8 @@ class AcfunUploader:
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
                      desc: str = "", tags: Optional[List[str]] = None,
-                     creation_type: int = 3, original_url: str = "", is_sync_ks: str = "0") -> Tuple[bool, Union[dict, str]]:
+                     creation_type: int = 3, original_url: str = "", is_sync_ks: str = "0",
+                     cancel_event=None) -> Tuple[bool, Union[dict, str]]:
         """创建投稿"""
         if tags is None:
             tags = []
@@ -630,11 +641,13 @@ class AcfunUploader:
         # 上传视频文件
         with open(file_path, "rb") as f:
             for fragment_id in range(fragment_count):
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
                 chunk_data = f.read(part_size)
                 if not chunk_data:
                     break
                 
-                if not self.upload_chunk(chunk_data, fragment_id, token):
+                if not self.upload_chunk(chunk_data, fragment_id, token, cancel_event=cancel_event):
                     self.log(f"分块 {fragment_id + 1} 上传失败")
                     return False, "分块上传失败"
                 
@@ -653,15 +666,19 @@ class AcfunUploader:
 
         
         # 完成上传
-        self.complete_upload(fragment_count, token)
+        if cancel_event is not None and cancel_event.is_set():
+            return False, "任务已取消"
+        self.complete_upload(fragment_count, token, cancel_event=cancel_event)
         
         # 创建视频
-        video_id = self.create_video(int(task_id), file_name)
+        if cancel_event is not None and cancel_event.is_set():
+            return False, "任务已取消"
+        video_id = self.create_video(int(task_id), file_name, cancel_event=cancel_event)
         if not video_id:
             return False, "创建视频失败"
         
         # 上传封面
-        cover_url = self.upload_cover(cover_path)
+        cover_url = self.upload_cover(cover_path, cancel_event=cancel_event)
         
         def _submit_create_douga(submit_desc: str) -> Tuple[bool, Union[dict, str], Optional[int], str]:
             data = {
@@ -682,6 +699,8 @@ class AcfunUploader:
             else:  # 原创
                 data["originalDeclare"] = "1"
 
+            if cancel_event is not None and cancel_event.is_set():
+                return False, "任务已取消", None, ""
             response = self.session.post(
                 self.C_DOUGA_URL,
                 data=data,
@@ -745,7 +764,8 @@ class AcfunUploader:
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
-                     original_upload_date=None, task_id=None, cover_mode='crop'):
+                     original_upload_date=None, task_id=None, cover_mode='crop',
+                     cancel_event=None):
         """
         上传视频到AcFun
         
@@ -774,6 +794,9 @@ class AcfunUploader:
             # 尝试登录
             if not self.login():
                 return False, "AcFun登录失败，请检查用户名密码或Cookie文件"
+
+            if cancel_event is not None and cancel_event.is_set():
+                return False, "任务已取消"
             
             # 检查文件是否存在
             if not os.path.exists(video_file_path):
@@ -846,7 +869,8 @@ class AcfunUploader:
                 desc=full_description,
                 tags=tags,
                 creation_type=creation_type,
-                original_url=original_url or ""
+                original_url=original_url or "",
+                cancel_event=cancel_event
             )
 
             # 失败时补充关键字段长度，便于定位是否命中服务端限制
