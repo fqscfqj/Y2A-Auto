@@ -2737,7 +2737,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             raise TaskCancelledError("任务已取消")
                         task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
                         vparams = build_cpu_params()
-                        aparams = ['-c:a', 'aac', '-b:a', '320k']
+                        aparams = ['-c:a', 'aac', '-b:a', '256k']
                         if input_sample_rate:
                             try:
                                 aparams += ['-ar', str(int(input_sample_rate))]
