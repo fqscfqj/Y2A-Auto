@@ -22,4 +22,36 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
-      - VIDEO_ENCODER=cpu
+      - VIDEO_ENCODER=auto
+
+    # ========================================
+    # GPU 硬件编码加速配置（可选）
+    # 根据您的显卡类型，取消注释对应的配置部分
+    # ========================================
+
+    # --- NVIDIA GPU 配置 ---
+    # 需要安装 nvidia-docker2 或 nvidia-container-toolkit
+    # 安装指南: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, video]
+
+    # --- Intel GPU 配置 (QSV) ---
+    # 需要挂载 /dev/dri 设备
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+
+    # --- AMD GPU 配置 (VAAPI) ---
+    # 需要挂载 /dev/dri 设备
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render

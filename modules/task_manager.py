@@ -2302,27 +2302,199 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
 
+                # --------------------------------------------------
+                # 硬件编码检测与参数生成函数
+                # --------------------------------------------------
+                def _detect_hw_encoder(encoder_name: str) -> bool:
+                    """检测指定的硬件编码器是否可用"""
+                    try:
+                        result = subprocess.run(
+                            [ffmpeg_bin, '-hide_banner', '-encoders'],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10
+                        )
+                        if result.returncode == 0 and encoder_name in result.stdout:
+                            return True
+                    except Exception as e:
+                        task_logger.debug(f"检测编码器 {encoder_name} 时出错: {e}")
+                    return False
+
+                def _detect_nvidia() -> bool:
+                    """检测 NVIDIA NVENC 是否可用"""
+                    return _detect_hw_encoder('h264_nvenc')
+
+                def _detect_intel() -> bool:
+                    """检测 Intel QSV 是否可用"""
+                    return _detect_hw_encoder('h264_qsv')
+
+                def _detect_amd() -> bool:
+                    """检测 AMD AMF/VAAPI 是否可用"""
+                    # 优先检测 AMF (Windows), 其次 VAAPI (Linux)
+                    return _detect_hw_encoder('h264_amf') or _detect_hw_encoder('h264_vaapi')
+
+                def _get_best_encoder() -> str:
+                    """自动检测最佳可用编码器，返回: nvidia/intel/amd/cpu"""
+                    if _detect_nvidia():
+                        task_logger.info("检测到 NVIDIA GPU，使用 NVENC 硬件编码")
+                        return 'nvidia'
+                    if _detect_intel():
+                        task_logger.info("检测到 Intel GPU，使用 QSV 硬件编码")
+                        return 'intel'
+                    if _detect_amd():
+                        task_logger.info("检测到 AMD GPU，使用 AMF/VAAPI 硬件编码")
+                        return 'amd'
+                    task_logger.info("未检测到可用的硬件编码器，使用 CPU 软编码")
+                    return 'cpu'
+
+                # 从配置中获取视频参数
+                video_crf = self.config.get('VIDEO_CRF', 23)
+                try:
+                    video_crf = float(video_crf)
+                except (ValueError, TypeError):
+                    video_crf = 23
+                video_preset = str(self.config.get('VIDEO_PRESET', 'medium')).lower().strip()
+                video_bitrate = str(self.config.get('VIDEO_BITRATE', '')).strip()
+
                 # 针对软编码生成统一参数
                 def build_cpu_params():
-                    # 强制 libx264 crf23.5 preset:medium profile:high level:4.2
-                    return [
+                    params = [
                         '-c:v', 'libx264',
                         '-pix_fmt', 'yuv420p',
-                        '-preset', 'medium',
-                        '-crf', '23.5',
+                        '-preset', video_preset if video_preset else 'medium',
                         '-profile:v', 'high',
                         '-level', '4.2',
                         '-g', str(gop),
                         '-keyint_min', str(gop),
                         '-sc_threshold', '0'
                     ]
+                    # 如果指定了比特率，使用比特率模式；否则使用 CRF
+                    if video_bitrate:
+                        params += ['-b:v', video_bitrate]
+                    else:
+                        params += ['-crf', str(video_crf)]
+                    return params
 
-                # 强制仅使用 CPU 编码，若用户配置了其他值则提示并回退
-                encoder_pref = str(self.config.get('VIDEO_ENCODER', 'cpu')).lower().strip()
-                if encoder_pref != 'cpu':
-                    task_logger.warning(f"当前版本仅支持 CPU 软编码，配置中的 {encoder_pref} 已自动回退为 cpu")
+                def build_nvidia_params():
+                    """生成 NVIDIA NVENC 编码参数"""
+                    # 将 CRF 映射到 NVENC 的 CQ 模式 (0-51)
+                    cq_value = int(video_crf)
+                    # 将 preset 映射到 NVENC preset
+                    nvenc_preset_map = {
+                        'ultrafast': 'p1', 'superfast': 'p2', 'veryfast': 'p3',
+                        'faster': 'p4', 'fast': 'p5', 'medium': 'p5',
+                        'slow': 'p6', 'slower': 'p7', 'veryslow': 'p7'
+                    }
+                    nvenc_preset = nvenc_preset_map.get(video_preset, 'p5')
+                    params = [
+                        '-c:v', 'h264_nvenc',
+                        '-preset', nvenc_preset,
+                        '-profile:v', 'high',
+                        '-level', '4.2',
+                        '-g', str(gop),
+                        '-pix_fmt', 'yuv420p'
+                    ]
+                    if video_bitrate:
+                        params += ['-b:v', video_bitrate]
+                    else:
+                        params += ['-rc', 'vbr', '-cq', str(cq_value)]
+                    return params
 
-                vparams = build_cpu_params()
+                def build_intel_params():
+                    """生成 Intel QSV 编码参数"""
+                    # QSV 使用 global_quality 类似 CRF
+                    qsv_quality = int(video_crf)
+                    # QSV preset: veryfast, faster, fast, medium, slow, slower, veryslow
+                    qsv_preset = video_preset if video_preset in ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] else 'medium'
+                    params = [
+                        '-c:v', 'h264_qsv',
+                        '-preset', qsv_preset,
+                        '-profile:v', 'high',
+                        '-g', str(gop),
+                        '-pix_fmt', 'nv12'  # QSV 常用 nv12
+                    ]
+                    if video_bitrate:
+                        params += ['-b:v', video_bitrate]
+                    else:
+                        params += ['-global_quality', str(qsv_quality), '-look_ahead', '1']
+                    return params
+
+                def build_amd_params():
+                    """生成 AMD AMF/VAAPI 编码参数"""
+                    # 检测使用 AMF 还是 VAAPI
+                    use_amf = _detect_hw_encoder('h264_amf')
+                    
+                    if use_amf:
+                        # AMF (Windows)
+                        # 将 preset 映射到 AMF quality 参数
+                        amf_quality_map = {
+                            'ultrafast': 'speed', 'superfast': 'speed', 'veryfast': 'speed',
+                            'faster': 'speed', 'fast': 'balanced', 'medium': 'balanced',
+                            'slow': 'quality', 'slower': 'quality', 'veryslow': 'quality'
+                        }
+                        amf_quality = amf_quality_map.get(video_preset, 'balanced')
+                        params = [
+                            '-c:v', 'h264_amf',
+                            '-quality', amf_quality,
+                            '-profile:v', 'high',
+                            '-g', str(gop),
+                            '-pix_fmt', 'yuv420p'
+                        ]
+                        if video_bitrate:
+                            params += ['-b:v', video_bitrate]
+                        else:
+                            # AMF 使用 rc 和 qp_* 控制质量
+                            params += ['-rc', 'vbr_latency', '-qp_i', str(int(video_crf)), '-qp_p', str(int(video_crf))]
+                    else:
+                        # VAAPI (Linux) - 不能与 subtitles 滤镜的硬件上传同时使用
+                        # 使用软件解码 + VAAPI 编码，避免复杂的滤镜链
+                        params = [
+                            '-vaapi_device', '/dev/dri/renderD128',
+                            '-c:v', 'h264_vaapi',
+                            '-profile:v', 'high',
+                            '-g', str(gop)
+                        ]
+                        if video_bitrate:
+                            params += ['-b:v', video_bitrate]
+                        else:
+                            params += ['-qp', str(int(video_crf))]
+                    return params
+
+                def is_vaapi_encoder() -> bool:
+                    """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
+                    return actual_encoder == 'amd' and not _detect_hw_encoder('h264_amf')
+
+                # 确定使用的编码器
+                encoder_pref = str(self.config.get('VIDEO_ENCODER', 'auto')).lower().strip()
+                actual_encoder = encoder_pref
+                
+                if encoder_pref == 'auto':
+                    actual_encoder = _get_best_encoder()
+                elif encoder_pref == 'nvidia':
+                    if not _detect_nvidia():
+                        task_logger.warning("配置使用 NVIDIA 编码但未检测到 NVENC，回退到自动检测")
+                        actual_encoder = _get_best_encoder()
+                elif encoder_pref == 'intel':
+                    if not _detect_intel():
+                        task_logger.warning("配置使用 Intel 编码但未检测到 QSV，回退到自动检测")
+                        actual_encoder = _get_best_encoder()
+                elif encoder_pref == 'amd':
+                    if not _detect_amd():
+                        task_logger.warning("配置使用 AMD 编码但未检测到 AMF/VAAPI，回退到自动检测")
+                        actual_encoder = _get_best_encoder()
+
+                # 根据编码器生成参数
+                if actual_encoder == 'nvidia':
+                    vparams = build_nvidia_params()
+                    task_logger.info("使用 NVIDIA NVENC 硬件编码")
+                elif actual_encoder == 'intel':
+                    vparams = build_intel_params()
+                    task_logger.info("使用 Intel QSV 硬件编码")
+                elif actual_encoder == 'amd':
+                    vparams = build_amd_params()
+                    encoder_name = 'AMF' if _detect_hw_encoder('h264_amf') else 'VAAPI'
+                    task_logger.info(f"使用 AMD {encoder_name} 硬件编码")
+                else:
+                    vparams = build_cpu_params()
+                    task_logger.info("使用 CPU 软编码 (libx264)")
 
                 # 音频统一转 AAC 256k，采样率跟随原视频
                 aparams = ['-c:a', 'aac', '-b:a', '256k']
@@ -2332,10 +2504,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     except Exception:
                         pass
 
+                # 构建视频滤镜链
+                # VAAPI 编码器需要特殊处理：在字幕滤镜后添加格式转换和硬件上传
+                if is_vaapi_encoder():
+                    # VAAPI: subtitles -> format=nv12 -> hwupload
+                    final_vf = f"{vf_filter},format=nv12,hwupload"
+                else:
+                    final_vf = vf_filter
+
                 cmd = [
                     ffmpeg_bin, '-y',
                     '-i', 'input.mp4',
-                    '-vf', vf_filter,
+                    '-vf', final_vf,
                     *vparams,
                     *aparams,
                     '-movflags', '+faststart',
@@ -2498,8 +2678,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.error(f"错误信息(尾部): {error_output_tail}")
 
                     # 针对硬件编码失败自动降级至CPU重试一次
-                    # 扩展错误模式以覆盖更多 NVENC 初始化失败的情况
+                    # 扩展错误模式以覆盖 NVENC/QSV/AMF/VAAPI 初始化失败的情况
                     known_hw_errors = (
+                        # NVENC (NVIDIA)
                         'Unknown encoder "h264_nvenc"',
                         'Unknown encoder "hevc_nvenc"',
                         "Unknown encoder 'h264_nvenc'",
@@ -2519,14 +2700,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         'OpenEncodeSession failed',
                         'out of memory',
                         'InitializeEncoder failed',
-                        'GPU is not in the list'
+                        'GPU is not in the list',
+                        # QSV (Intel)
+                        'Unknown encoder "h264_qsv"',
+                        "Unknown encoder 'h264_qsv'",
+                        'MFXInit',
+                        'Unable to find',
+                        'No device',
+                        'iHD_drv_video.so',
+                        'i965_drv_video.so',
+                        # AMF (AMD Windows)
+                        'Unknown encoder "h264_amf"',
+                        "Unknown encoder 'h264_amf'",
+                        'AMF',
+                        'amfrt64.dll',
+                        # VAAPI (AMD/Intel Linux)
+                        'Unknown encoder "h264_vaapi"',
+                        "Unknown encoder 'h264_vaapi'",
+                        'vaInitialize',
+                        'vaDeriveImage',
+                        '/dev/dri/renderD128',
+                        'libva',
+                        'hwupload',
                     )
                     should_retry_cpu = False
                     error_lower = error_output_full.lower()
                     if any(err.lower() in error_lower for err in known_hw_errors):
                         should_retry_cpu = True
                     # 如果选择了硬编但返回码非零，也尝试一次CPU
-                    if encoder_pref in ('nvenc', 'qsv', 'amf') and process.returncode != 0:
+                    if actual_encoder in ('nvidia', 'intel', 'amd') and process.returncode != 0:
                         should_retry_cpu = True
 
                     if should_retry_cpu:

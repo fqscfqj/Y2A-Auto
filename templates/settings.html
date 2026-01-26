@@ -618,14 +618,69 @@
                                             <p class="help-text">使用FFmpeg将翻译后的字幕硬编码到视频中</p>
                                         </div>
                                     </div>
+                                </div>
+
+                                <!-- 视频转码参数设置 -->
+                                <h5 class="mt-4 mb-3"><i class="bi bi-gpu-card"></i> 视频转码参数</h5>
+                                <div class="row g-3">
                                     <div class="col-md-6">
                                         <div class="form-group">
-                                            <label for="video-encoder">视频编码器（用于嵌字转码）:</label>
-                                            <input type="hidden" name="VIDEO_ENCODER" value="cpu">
-                                            <div class="form-control-plaintext">CPU 软编码</div>
-                                            <p class="help-text">当前版本仅提供 CPU 软编码，已移除所有硬件加速选项。</p>
+                                            <label for="video-encoder">视频编码器:</label>
+                                            <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
+                                                <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
+                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU (libx264)</option>
+                                                <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA (NVENC)</option>
+                                                <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel (QSV)</option>
+                                                <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD (AMF/VAAPI)</option>
+                                            </select>
+                                            <p class="help-text">选择"自动检测"将优先使用可用的硬件编码器，无可用硬件时回退到CPU。</p>
                                         </div>
                                     </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="video-preset">编码速度预设:</label>
+                                            <select id="video-preset" name="VIDEO_PRESET" class="form-select">
+                                                <option value="ultrafast" {% if config.get('VIDEO_PRESET') == 'ultrafast' %}selected{% endif %}>ultrafast (最快，质量最低)</option>
+                                                <option value="superfast" {% if config.get('VIDEO_PRESET') == 'superfast' %}selected{% endif %}>superfast</option>
+                                                <option value="veryfast" {% if config.get('VIDEO_PRESET') == 'veryfast' %}selected{% endif %}>veryfast</option>
+                                                <option value="faster" {% if config.get('VIDEO_PRESET') == 'faster' %}selected{% endif %}>faster</option>
+                                                <option value="fast" {% if config.get('VIDEO_PRESET') == 'fast' %}selected{% endif %}>fast</option>
+                                                <option value="medium" {% if config.get('VIDEO_PRESET', 'medium') == 'medium' %}selected{% endif %}>medium (推荐)</option>
+                                                <option value="slow" {% if config.get('VIDEO_PRESET') == 'slow' %}selected{% endif %}>slow</option>
+                                                <option value="slower" {% if config.get('VIDEO_PRESET') == 'slower' %}selected{% endif %}>slower</option>
+                                                <option value="veryslow" {% if config.get('VIDEO_PRESET') == 'veryslow' %}selected{% endif %}>veryslow (最慢，质量最高)</option>
+                                            </select>
+                                            <p class="help-text">速度越慢，相同码率下画质越好。硬件编码时会自动映射到对应的预设。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="video-crf">视频质量 (CRF):</label>
+                                            <input type="number" id="video-crf" name="VIDEO_CRF" value="{{ config.get('VIDEO_CRF', 23) }}" min="0" max="51" step="0.5" class="form-control">
+                                            <p class="help-text">CRF值越小质量越高（推荐18-28），0为无损。硬件编码会自动映射到对应的质量参数。</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="video-bitrate">视频比特率 (可选):</label>
+                                            <input type="text" id="video-bitrate" name="VIDEO_BITRATE" value="{{ config.get('VIDEO_BITRATE', '') }}" class="form-control" placeholder="例如: 8M, 5000k">
+                                            <p class="help-text">指定固定比特率（如"8M"、"5000k"）。设置后CRF失效。留空使用CRF模式。</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info mt-3">
+                                    <i class="bi bi-info-circle"></i> <strong>GPU编码说明：</strong>
+                                    <ul class="mb-0 mt-2">
+                                        <li><strong>Docker用户：</strong>需配置GPU穿透，详见 docker-compose.yml 中的注释说明</li>
+                                        <li><strong>NVIDIA：</strong>需安装 NVIDIA 驱动及 CUDA 支持</li>
+                                        <li><strong>Intel：</strong>需安装 Intel Media SDK 或 oneVPL</li>
+                                        <li><strong>AMD (Windows)：</strong>需安装 AMD 驱动及 AMF 组件</li>
+                                        <li><strong>AMD (Linux)：</strong>使用 VAAPI，需安装 mesa-va-drivers</li>
+                                    </ul>
+                                </div>
+
+                                <div class="row g-3 mt-1">
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="subtitle-api-provider">API提供商:</label>
