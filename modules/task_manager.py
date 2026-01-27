@@ -10,6 +10,7 @@ import logging
 import shutil
 import threading
 import gc
+import shlex
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
@@ -2346,149 +2347,117 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return 'cpu'
 
                 # 从配置中获取视频参数
-                video_crf = self.config.get('VIDEO_CRF', 23)
-                try:
-                    video_crf = float(video_crf)
-                except (ValueError, TypeError):
-                    video_crf = 23
-                # 将 CRF 限制在合法范围 [0, 51]
-                if video_crf < 0:
-                    video_crf = 0
-                elif video_crf > 51:
-                    video_crf = 51
-                video_crf = int(video_crf)  # 统一使用整数 CRF
+                custom_params_enabled = self.config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False)
+                if isinstance(custom_params_enabled, str):
+                    custom_params_enabled = custom_params_enabled.lower() in ['true', '1', 'on']
+                custom_params = str(self.config.get('VIDEO_CUSTOM_PARAMS', '')).strip()
 
-                video_preset = str(self.config.get('VIDEO_PRESET', 'medium')).lower().strip()
-                # 验证 preset 是否在允许列表中
-                valid_presets = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']
-                if video_preset not in valid_presets:
-                    task_logger.warning(f"无效的编码预设 '{video_preset}'，使用默认值 'medium'")
-                    video_preset = 'medium'
+                # 根据分辨率确定推荐比特率
+                # 4K (>=2160p): 25Mbps, 1080p: 12Mbps, 其他按比例
+                def get_recommended_bitrate(height: int) -> tuple[str, str, str]:
+                    """返回 (bitrate, maxrate, bufsize)"""
+                    if height >= 2160:  # 4K
+                        return ('25M', '30M', '60M')
+                    elif height >= 1080:  # 1080p
+                        return ('12M', '15M', '30M')
+                    elif height >= 720:  # 720p
+                        return ('8M', '10M', '20M')
+                    else:  # 低于 720p
+                        return ('5M', '6M', '12M')
 
-                video_bitrate = str(self.config.get('VIDEO_BITRATE', '')).strip()
-                # 验证比特率格式（应为数字+可选的K/M/G后缀）
-                if video_bitrate:
-                    if not re.match(r'^\d+[KMGkmg]?$', video_bitrate):
-                        task_logger.warning(f"无效的比特率格式 '{video_bitrate}'，将使用 CRF 模式")
-                        video_bitrate = ''
+                target_bitrate, max_bitrate, buf_size = get_recommended_bitrate(input_height)
+                task_logger.info(f"视频分辨率: {input_width}x{input_height}, 目标码率: {target_bitrate}")
 
-                # 针对软编码生成统一参数
+                # 针对软编码生成统一参数 (libx264)
                 def build_cpu_params():
-                    params = [
+                    if custom_params_enabled and custom_params:
+                        # 使用自定义参数
+                        return shlex.split(custom_params)
+                    # 默认参数：按推荐设置
+                    return [
                         '-c:v', 'libx264',
-                        '-pix_fmt', 'yuv420p',
-                        '-preset', video_preset if video_preset else 'medium',
+                        '-preset', 'medium',
+                        '-b:v', target_bitrate,
+                        '-maxrate', max_bitrate,
+                        '-bufsize', buf_size,
+                        '-vsync', 'cfr',
                         '-profile:v', 'high',
-                        '-level', '4.2',
-                        '-g', str(gop),
-                        '-keyint_min', str(gop),
-                        '-sc_threshold', '0'
+                        '-bf', '2',
+                        '-g', '60',
+                        '-pix_fmt', 'yuv420p'
                     ]
-                    # 如果指定了比特率，使用比特率模式；否则使用 CRF
-                    if video_bitrate:
-                        params += ['-b:v', video_bitrate]
-                    else:
-                        params += ['-crf', str(video_crf)]
-                    return params
 
                 def build_nvidia_params():
                     """生成 NVIDIA NVENC 编码参数"""
-                    # 将 CRF 映射到 NVENC 的 CQ 模式 (0-51)
-                    cq_value = int(video_crf)
-                    # 将 preset 映射到 NVENC preset
-                    nvenc_preset_map = {
-                        'ultrafast': 'p1', 'superfast': 'p2', 'veryfast': 'p3',
-                        'faster': 'p4', 'fast': 'p5', 'medium': 'p5',
-                        'slow': 'p6', 'slower': 'p7', 'veryslow': 'p7'
-                    }
-                    nvenc_preset = nvenc_preset_map.get(video_preset, 'p5')
-                    params = [
+                    if custom_params_enabled and custom_params:
+                        return shlex.split(custom_params)
+                    return [
                         '-c:v', 'h264_nvenc',
-                        '-preset', nvenc_preset,
+                        '-preset', 'p7',
+                        '-tune', 'hq',
+                        '-rc:v', 'vbr',
+                        '-b:v', target_bitrate,
+                        '-maxrate', max_bitrate,
+                        '-bufsize', buf_size,
+                        '-vsync', 'cfr',
                         '-profile:v', 'high',
-                        '-level', '4.2',
-                        '-g', str(gop),
+                        '-bf', '2',
+                        '-g', '60',
                         '-pix_fmt', 'yuv420p'
                     ]
-                    if video_bitrate:
-                        params += ['-b:v', video_bitrate]
-                    else:
-                        params += ['-rc', 'vbr', '-cq', str(cq_value)]
-                    return params
 
                 def build_intel_params():
                     """生成 Intel QSV 编码参数"""
-                    # QSV 使用 global_quality 类似 CRF
-                    qsv_quality = int(video_crf)
-                    # 映射常见 x264 preset 到 QSV 支持的 preset
-                    qsv_preset_map = {
-                        'ultrafast': 'veryfast',
-                        'superfast': 'veryfast',
-                        'veryfast': 'veryfast',
-                        'faster': 'faster',
-                        'fast': 'fast',
-                        'medium': 'medium',
-                        'slow': 'slow',
-                        'slower': 'slower',
-                        'veryslow': 'veryslow',
-                    }
-                    if video_preset in ['ultrafast', 'superfast']:
-                        task_logger.debug(f"QSV 不支持 '{video_preset}' 预设，已映射到 'veryfast'")
-                    qsv_preset = qsv_preset_map.get(video_preset, 'medium')
-                    params = [
+                    if custom_params_enabled and custom_params:
+                        return shlex.split(custom_params)
+                    return [
                         '-c:v', 'h264_qsv',
-                        '-preset', qsv_preset,
+                        '-preset', 'veryslow',
+                        '-b:v', target_bitrate,
+                        '-maxrate', max_bitrate,
+                        '-bufsize', buf_size,
+                        '-look_ahead', '1',
+                        '-vsync', 'cfr',
                         '-profile:v', 'high',
-                        '-g', str(gop),
-                        '-pix_fmt', 'nv12'  # QSV 常用 nv12
+                        '-bf', '2',
+                        '-g', '60',
+                        '-pix_fmt', 'nv12'
                     ]
-                    if video_bitrate:
-                        params += ['-b:v', video_bitrate]
-                    else:
-                        # 仅使用 global_quality，移除 look_ahead 以提高兼容性
-                        params += ['-global_quality', str(qsv_quality)]
-                    return params
 
                 def build_amd_params():
                     """生成 AMD AMF/VAAPI 编码参数"""
+                    if custom_params_enabled and custom_params:
+                        return shlex.split(custom_params)
                     # 检测使用 AMF 还是 VAAPI
                     use_amf = _detect_hw_encoder('h264_amf')
                     
                     if use_amf:
                         # AMF (Windows)
-                        # 将 preset 映射到 AMF quality 参数
-                        amf_quality_map = {
-                            'ultrafast': 'speed', 'superfast': 'speed', 'veryfast': 'speed',
-                            'faster': 'speed', 'fast': 'balanced', 'medium': 'balanced',
-                            'slow': 'quality', 'slower': 'quality', 'veryslow': 'quality'
-                        }
-                        amf_quality = amf_quality_map.get(video_preset, 'balanced')
-                        params = [
+                        return [
                             '-c:v', 'h264_amf',
-                            '-quality', amf_quality,
+                            '-usage', 'transcoding',
+                            '-quality', 'quality',
+                            '-rc', 'vbr_latency',
+                            '-b:v', target_bitrate,
+                            '-maxrate', max_bitrate,
+                            '-vsync', 'cfr',
                             '-profile:v', 'high',
-                            '-g', str(gop),
+                            '-bf', '2',
+                            '-g', '60',
                             '-pix_fmt', 'yuv420p'
                         ]
-                        if video_bitrate:
-                            params += ['-b:v', video_bitrate]
-                        else:
-                            # AMF 使用 rc 和 qp_* 控制质量
-                            params += ['-rc', 'vbr_latency', '-qp_i', str(int(video_crf)), '-qp_p', str(int(video_crf))]
                     else:
-                        # VAAPI (Linux) - 不能与 subtitles 滤镜的硬件上传同时使用
-                        # 使用软件解码 + VAAPI 编码，避免复杂的滤镜链
-                        params = [
+                        # VAAPI (Linux)
+                        return [
                             '-vaapi_device', '/dev/dri/renderD128',
                             '-c:v', 'h264_vaapi',
+                            '-b:v', target_bitrate,
+                            '-maxrate', max_bitrate,
+                            '-vsync', 'cfr',
                             '-profile:v', 'high',
-                            '-g', str(gop)
+                            '-bf', '2',
+                            '-g', '60'
                         ]
-                        if video_bitrate:
-                            params += ['-b:v', video_bitrate]
-                        else:
-                            params += ['-qp', str(int(video_crf))]
-                    return params
 
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
@@ -2528,8 +2497,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     vparams = build_cpu_params()
                     task_logger.info("使用 CPU 软编码 (libx264)")
 
-                # 音频统一转 AAC 256k，采样率跟随原视频
-                aparams = ['-c:a', 'aac', '-b:a', '256k']
+                # 音频统一转 AAC 320k 双声道，采样率跟随原视频
+                aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
                 if input_sample_rate:
                     try:
                         aparams += ['-ar', str(int(input_sample_rate))]
@@ -2774,7 +2743,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             raise TaskCancelledError("任务已取消")
                         task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
                         vparams = build_cpu_params()
-                        aparams = ['-c:a', 'aac', '-b:a', '256k']
+                        aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
                         if input_sample_rate:
                             try:
                                 aparams += ['-ar', str(int(input_sample_rate))]

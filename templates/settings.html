@@ -658,7 +658,7 @@
                     <div class="tab-pane fade" id="vtab-transcode" role="tabpanel" aria-labelledby="vtab-transcode-tab">
                         <div class="settings-section">
                             <h3><i class="bi bi-gpu-card"></i> 视频转码参数</h3>
-                            <p class="section-lead mb-3">配置编码器、预设与画质，优化转码效率与输出质量。</p>
+                            <p class="section-lead mb-3">选择编码器，系统会根据视频分辨率自动选择最佳码率。</p>
 
                             <div class="row g-3">
                                 <div class="col-md-6">
@@ -676,35 +676,33 @@
                                 </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
-                                        <label for="video-preset">编码速度预设:</label>
-                                        <select id="video-preset" name="VIDEO_PRESET" class="form-select">
-                                            <option value="ultrafast" {% if config.get('VIDEO_PRESET') == 'ultrafast' %}selected{% endif %}>ultrafast (最快，质量最低)</option>
-                                            <option value="superfast" {% if config.get('VIDEO_PRESET') == 'superfast' %}selected{% endif %}>superfast</option>
-                                            <option value="veryfast" {% if config.get('VIDEO_PRESET') == 'veryfast' %}selected{% endif %}>veryfast</option>
-                                            <option value="faster" {% if config.get('VIDEO_PRESET') == 'faster' %}selected{% endif %}>faster</option>
-                                            <option value="fast" {% if config.get('VIDEO_PRESET') == 'fast' %}selected{% endif %}>fast</option>
-                                            <option value="medium" {% if config.get('VIDEO_PRESET', 'medium') == 'medium' %}selected{% endif %}>medium (推荐)</option>
-                                            <option value="slow" {% if config.get('VIDEO_PRESET') == 'slow' %}selected{% endif %}>slow</option>
-                                            <option value="slower" {% if config.get('VIDEO_PRESET') == 'slower' %}selected{% endif %}>slower</option>
-                                            <option value="veryslow" {% if config.get('VIDEO_PRESET') == 'veryslow' %}selected{% endif %}>veryslow (最慢，质量最高)</option>
-                                        </select>
-                                        <p class="help-text">速度越慢，相同码率下画质越好。硬件编码时会自动映射到对应的预设。</p>
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="VIDEO_CUSTOM_PARAMS_ENABLED" id="video-custom-params-enabled" {% if config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False) %}checked{% endif %}>
+                                            启用自定义转码参数
+                                        </label>
+                                        <p class="help-text">启用后可以自定义 FFmpeg 视频编码参数，覆盖默认设置。</p>
                                     </div>
                                 </div>
-                                <div class="col-md-6">
+                            </div>
+
+                            <div class="row g-3 mt-2" id="custom-params-section" style="display: none;">
+                                <div class="col-12">
                                     <div class="form-group">
-                                        <label for="video-crf">视频质量 (CRF):</label>
-                                        <input type="number" id="video-crf" name="VIDEO_CRF" value="{{ config.get('VIDEO_CRF', 23) }}" min="0" max="51" step="1" class="form-control">
-                                        <p class="help-text">CRF值越小质量越高（推荐18-28），0为无损。硬件编码会自动映射到对应的质量参数。</p>
+                                        <label for="video-custom-params">自定义视频编码参数:</label>
+                                        <input type="text" id="video-custom-params" name="VIDEO_CUSTOM_PARAMS" value="{{ config.get('VIDEO_CUSTOM_PARAMS', '') }}" class="form-control" placeholder="例如: -c:v libx264 -preset slow -crf 18">
+                                        <p class="help-text">自定义 FFmpeg 视频编码器参数。仅填写视频编码相关参数，音频参数固定为 AAC 320kbps 双声道。</p>
                                     </div>
                                 </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="video-bitrate">视频比特率 (可选):</label>
-                                        <input type="text" id="video-bitrate" name="VIDEO_BITRATE" value="{{ config.get('VIDEO_BITRATE', '') }}" class="form-control" placeholder="例如: 8M, 5000k">
-                                        <p class="help-text">指定固定比特率（如"8M"、"5000k"）。设置后CRF失效。留空使用CRF模式。</p>
-                                    </div>
-                                </div>
+                            </div>
+
+                            <div class="alert alert-success mt-3">
+                                <i class="bi bi-info-circle"></i> <strong>默认转码参数（按分辨率自动选择）：</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li><strong>4K (2160p)：</strong>25Mbps 目标码率，30Mbps 峰值，60M 缓冲</li>
+                                    <li><strong>1080p：</strong>12Mbps 目标码率，15Mbps 峰值，30M 缓冲</li>
+                                    <li><strong>720p：</strong>8Mbps 目标码率，10Mbps 峰值，20M 缓冲</li>
+                                    <li><strong>音频：</strong>AAC 320kbps 双声道</li>
+                                </ul>
                             </div>
 
                             <div class="alert alert-info mt-3">
@@ -719,6 +717,21 @@
                             </div>
                         </div>
                     </div>
+
+                    <script>
+                    // 控制自定义参数输入框的显示/隐藏
+                    document.addEventListener('DOMContentLoaded', function() {
+                        var checkbox = document.getElementById('video-custom-params-enabled');
+                        var section = document.getElementById('custom-params-section');
+                        if (checkbox && section) {
+                            function toggleSection() {
+                                section.style.display = checkbox.checked ? 'block' : 'none';
+                            }
+                            checkbox.addEventListener('change', toggleSection);
+                            toggleSection();
+                        }
+                    });
+                    </script>
 
                     <!-- 语音识别（无字幕转写）设置 -->
                     <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">

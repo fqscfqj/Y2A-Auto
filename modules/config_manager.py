@@ -83,9 +83,8 @@ DEFAULT_CONFIG = {
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
     # 视频转码相关（支持硬件编码加速）
     "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd - 自动检测或指定编码器
-    "VIDEO_CRF": 23,  # 视频质量参数 (CRF值，越小质量越高，推荐18-28)
-    "VIDEO_PRESET": "medium",  # 编码速度预设 (ultrafast/superfast/veryfast/faster/fast/medium/slow/slower/veryslow)
-    "VIDEO_BITRATE": "",  # 可选：指定视频比特率，如 "8M"、"5000k"，设置后 CRF 失效
+    "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
+    "VIDEO_CUSTOM_PARAMS": "",  # 自定义 FFmpeg 视频编码参数（启用自定义参数时使用）
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）

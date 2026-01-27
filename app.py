@@ -1390,7 +1390,9 @@ def settings():
             # 新增：字幕最终质检（QC）
             'SUBTITLE_QC_ENABLED',
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
+            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
+            # 新增：视频转码自定义参数开关
+            'VIDEO_CUSTOM_PARAMS_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1454,9 +1456,7 @@ def settings():
             # Whisper 高级参数：重试延迟、分片窗口/重叠
             'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
             # VAD 约束参数
-            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT',
-            # 视频转码参数
-            'VIDEO_CRF'
+            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
         ]
         for field in float_fields:
             if field in form_data:
@@ -1470,8 +1470,7 @@ def settings():
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.5,
-                        'VIDEO_CRF': 23.0
+                        'VAD_SILERO_THRESHOLD': 0.5
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
