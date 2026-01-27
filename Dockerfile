@@ -63,12 +63,13 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
         libva2 \
         libva-drm2 \
         vainfo \
-        # Intel QSV 支持（可选，如不需要可移除）
-        intel-media-va-driver-non-free || true \
-        # AMD VAAPI 支持（mesa-va-drivers）
-        mesa-va-drivers || true \
+    && (apt-get install -y --no-install-recommends intel-media-va-driver-non-free 2>/dev/null || echo "ℹ️ Intel VA driver not available") \
+    && (apt-get install -y --no-install-recommends mesa-va-drivers 2>/dev/null || echo "ℹ️ Mesa VA drivers not available") \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
+    && echo "GPU driver packages status:" \
+    && (dpkg -s intel-media-va-driver-non-free >/dev/null 2>&1 && echo "  ✓ Intel VA driver installed" || echo "  ✗ Intel VA driver NOT installed") \
+    && (dpkg -s mesa-va-drivers >/dev/null 2>&1 && echo "  ✓ Mesa VA drivers installed" || echo "  ✗ Mesa VA drivers NOT installed") \
     && useradd --create-home --shell /bin/bash y2a
 
 # 从构建阶段复制Python包

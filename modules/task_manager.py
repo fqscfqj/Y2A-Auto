@@ -2351,8 +2351,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     video_crf = float(video_crf)
                 except (ValueError, TypeError):
                     video_crf = 23
+                # 将 CRF 限制在合法范围 [0, 51]
+                if video_crf < 0:
+                    video_crf = 0
+                elif video_crf > 51:
+                    video_crf = 51
+                video_crf = int(video_crf)  # 统一使用整数 CRF
+
                 video_preset = str(self.config.get('VIDEO_PRESET', 'medium')).lower().strip()
+                # 验证 preset 是否在允许列表中
+                valid_presets = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']
+                if video_preset not in valid_presets:
+                    task_logger.warning(f"无效的编码预设 '{video_preset}'，使用默认值 'medium'")
+                    video_preset = 'medium'
+
                 video_bitrate = str(self.config.get('VIDEO_BITRATE', '')).strip()
+                # 验证比特率格式（应为数字+可选的K/M/G后缀）
+                if video_bitrate:
+                    if not re.match(r'^\d+[KMGkmg]?$', video_bitrate):
+                        task_logger.warning(f"无效的比特率格式 '{video_bitrate}'，将使用 CRF 模式")
+                        video_bitrate = ''
 
                 # 针对软编码生成统一参数
                 def build_cpu_params():
@@ -2402,8 +2420,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     """生成 Intel QSV 编码参数"""
                     # QSV 使用 global_quality 类似 CRF
                     qsv_quality = int(video_crf)
-                    # QSV preset: veryfast, faster, fast, medium, slow, slower, veryslow
-                    qsv_preset = video_preset if video_preset in ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] else 'medium'
+                    # 映射常见 x264 preset 到 QSV 支持的 preset
+                    qsv_preset_map = {
+                        'ultrafast': 'veryfast',
+                        'superfast': 'veryfast',
+                        'veryfast': 'veryfast',
+                        'faster': 'faster',
+                        'fast': 'fast',
+                        'medium': 'medium',
+                        'slow': 'slow',
+                        'slower': 'slower',
+                        'veryslow': 'veryslow',
+                    }
+                    if video_preset in ['ultrafast', 'superfast']:
+                        task_logger.debug(f"QSV 不支持 '{video_preset}' 预设，已映射到 'veryfast'")
+                    qsv_preset = qsv_preset_map.get(video_preset, 'medium')
                     params = [
                         '-c:v', 'h264_qsv',
                         '-preset', qsv_preset,
@@ -2414,7 +2445,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if video_bitrate:
                         params += ['-b:v', video_bitrate]
                     else:
-                        params += ['-global_quality', str(qsv_quality), '-look_ahead', '1']
+                        # 仅使用 global_quality，移除 look_ahead 以提高兼容性
+                        params += ['-global_quality', str(qsv_quality)]
                     return params
 
                 def build_amd_params():
@@ -2709,10 +2741,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         'No device',
                         'iHD_drv_video.so',
                         'i965_drv_video.so',
-                        # AMF (AMD Windows)
+                        # AMF (AMD Windows) - 使用更具体的错误模式
                         'Unknown encoder "h264_amf"',
                         "Unknown encoder 'h264_amf'",
-                        'AMF',
+                        'AMF initialization failed',
+                        'AMFContext',
+                        'AMF failed',
                         'amfrt64.dll',
                         # VAAPI (AMD/Intel Linux)
                         'Unknown encoder "h264_vaapi"',
@@ -2725,10 +2759,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     )
                     should_retry_cpu = False
                     error_lower = error_output_full.lower()
-                    if any(err.lower() in error_lower for err in known_hw_errors):
+                    hw_error_detected = any(err.lower() in error_lower for err in known_hw_errors)
+                    if hw_error_detected:
                         should_retry_cpu = True
-                    # 如果选择了硬编但返回码非零，也尝试一次CPU
+                    # 如果选择了硬编但返回码非零，也尝试一次CPU（但记录原因）
                     if actual_encoder in ('nvidia', 'intel', 'amd') and process.returncode != 0:
+                        if not hw_error_detected:
+                            task_logger.warning(f"硬件编码器 {actual_encoder} 失败（返回码: {process.returncode}），未检测到已知硬件错误，仍尝试 CPU 回退")
                         should_retry_cpu = True
 
                     if should_retry_cpu:
