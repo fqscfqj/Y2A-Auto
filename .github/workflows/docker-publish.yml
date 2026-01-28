@@ -2,7 +2,7 @@ name: Docker Image CI/CD
 
 on:
   push:
-    tags: [ "v*" ]
+    tags: [ "v*.*.*" ]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -23,6 +23,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.meta-dockerhub.outputs.version }}
+      version_with_v: ${{ format('v{0}', steps.meta-dockerhub.outputs.version) }}
     
     steps:
     - name: Checkout repository
@@ -52,26 +55,24 @@ jobs:
       uses: docker/metadata-action@v5
       with:
         images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+        # Require semver tags only; fail fast if tag is not vX.Y.Z.
+        fail-on-empty: true
         tags: |
-          type=ref,event=branch
-          type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
-          type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Extract metadata for GHCR
       id: meta-ghcr
       uses: docker/metadata-action@v5
       with:
         images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+        # Require semver tags only; fail fast if tag is not vX.Y.Z.
+        fail-on-empty: true
         tags: |
-          type=ref,event=branch
-          type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
-          type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image (linux/amd64 only)
       uses: docker/build-push-action@v5
@@ -100,14 +101,21 @@ jobs:
     
     steps:
     - name: Test Docker Hub image
+      env:
+        IMAGE_TAG: ${{ needs.build.outputs.version_with_v }}
       run: |
+        if [ -z "$IMAGE_TAG" ]; then
+          echo "No image tag available from build output."
+          exit 1
+        fi
+
         # 等待镜像可用
         sleep 30
         
         # 测试镜像启动
         docker run --rm -d --name test-y2a-auto-dockerhub \
           -p 5001:5000 \
-          ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG
         
         # 等待应用启动
         sleep 30
@@ -122,11 +130,18 @@ jobs:
         docker stop test-y2a-auto-dockerhub
 
     - name: Test GHCR image
+      env:
+        IMAGE_TAG: ${{ needs.build.outputs.version_with_v }}
       run: |
+        if [ -z "$IMAGE_TAG" ]; then
+          echo "No image tag available from build output."
+          exit 1
+        fi
+
         # 测试 GHCR 镜像启动
         docker run --rm -d --name test-y2a-auto-ghcr \
           -p 5002:5000 \
-          ghcr.io/fqscfqj/y2a-auto:latest
+          ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG
         
         # 等待应用启动
         sleep 30
