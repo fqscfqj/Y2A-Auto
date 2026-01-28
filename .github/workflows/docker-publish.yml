@@ -53,6 +53,7 @@ jobs:
       with:
         images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
         tags: |
+          type=ref,event=tag
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
@@ -66,6 +67,7 @@ jobs:
       with:
         images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
         tags: |
+          type=ref,event=tag
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
