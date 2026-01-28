@@ -52,13 +52,14 @@ jobs:
       uses: docker/metadata-action@v5
       with:
         images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+        # Fallback to a match-based tag for non-semver tags (e.g., v3.3).
         tags: |
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
-          type=ref,event=tag
+          type=match,pattern=^v(\d+\.\d+)$,group=1
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Extract metadata for GHCR
@@ -66,13 +67,14 @@ jobs:
       uses: docker/metadata-action@v5
       with:
         images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+        # Fallback to a match-based tag for non-semver tags (e.g., v3.3).
         tags: |
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
-          type=ref,event=tag
+          type=match,pattern=^v(\d+\.\d+)$,group=1
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image (linux/amd64 only)
