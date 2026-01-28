@@ -3,7 +3,7 @@ name: Build and Release Windows Desktop App
 on:
   push:
     tags:
-      - 'v*'   # 仅在推送tag时自动发布
+      - '*.*.*'   # 仅在推送tag时自动发布
   workflow_dispatch:  # 允许手动触发
 
 jobs:

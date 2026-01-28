@@ -2,7 +2,7 @@ name: Docker Image CI/CD
 
 on:
   push:
-    tags: [ "v*.*.*" ]
+    tags: [ "*.*.*" ]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -25,7 +25,7 @@ jobs:
       packages: write
     outputs:
       version: ${{ steps.meta-dockerhub.outputs.version }}
-      version_with_v: ${{ format('v{0}', steps.meta-dockerhub.outputs.version) }}
+      version_tag: ${{ steps.meta-dockerhub.outputs.version }}
     
     steps:
     - name: Checkout repository
@@ -102,7 +102,7 @@ jobs:
     steps:
     - name: Test Docker Hub image
       env:
-        IMAGE_TAG: ${{ needs.build.outputs.version_with_v }}
+        IMAGE_TAG: ${{ needs.build.outputs.version_tag }}
       run: |
         if [ -z "$IMAGE_TAG" ]; then
           echo "No image tag available from build output."
@@ -131,7 +131,7 @@ jobs:
 
     - name: Test GHCR image
       env:
-        IMAGE_TAG: ${{ needs.build.outputs.version_with_v }}
+        IMAGE_TAG: ${{ needs.build.outputs.version_tag }}
       run: |
         if [ -z "$IMAGE_TAG" ]; then
           echo "No image tag available from build output."
