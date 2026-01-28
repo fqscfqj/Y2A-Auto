@@ -53,12 +53,12 @@ jobs:
       with:
         images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
         tags: |
-          type=ref,event=tag
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
+          type=ref,event=tag
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Extract metadata for GHCR
@@ -67,12 +67,12 @@ jobs:
       with:
         images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
         tags: |
-          type=ref,event=tag
           type=ref,event=branch
           type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
+          type=ref,event=tag
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image (linux/amd64 only)
