@@ -1390,7 +1390,9 @@ def settings():
             # 新增：字幕最终质检（QC）
             'SUBTITLE_QC_ENABLED',
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS'
+            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
+            # 新增：视频转码自定义参数开关
+            'VIDEO_CUSTOM_PARAMS_ENABLED'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:

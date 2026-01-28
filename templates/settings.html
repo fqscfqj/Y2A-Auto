@@ -51,6 +51,9 @@
                         <a class="nav-link" id="vtab-subtitle-tab" data-bs-toggle="pill" href="#vtab-subtitle" role="tab" aria-controls="vtab-subtitle" aria-selected="false">
                             <i class="bi bi-translate"></i> 字幕翻译
                         </a>
+                        <a class="nav-link" id="vtab-transcode-tab" data-bs-toggle="pill" href="#vtab-transcode" role="tab" aria-controls="vtab-transcode" aria-selected="false">
+                            <i class="bi bi-gpu-card"></i> 视频转码
+                        </a>
                         <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
                             <i class="bi bi-mic"></i> 语音识别
                         </a>
@@ -618,14 +621,9 @@
                                             <p class="help-text">使用FFmpeg将翻译后的字幕硬编码到视频中</p>
                                         </div>
                                     </div>
-                                    <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label for="video-encoder">视频编码器（用于嵌字转码）:</label>
-                                            <input type="hidden" name="VIDEO_ENCODER" value="cpu">
-                                            <div class="form-control-plaintext">CPU 软编码</div>
-                                            <p class="help-text">当前版本仅提供 CPU 软编码，已移除所有硬件加速选项。</p>
-                                        </div>
-                                    </div>
+                                </div>
+
+                                <div class="row g-3 mt-1">
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="subtitle-api-provider">API提供商:</label>
@@ -655,6 +653,85 @@
                             </section>
                         </div>
                     </div>
+
+                    <!-- 视频转码设置 -->
+                    <div class="tab-pane fade" id="vtab-transcode" role="tabpanel" aria-labelledby="vtab-transcode-tab">
+                        <div class="settings-section">
+                            <h3><i class="bi bi-gpu-card"></i> 视频转码参数</h3>
+                            <p class="section-lead mb-3">选择编码器，系统会根据视频分辨率自动选择最佳码率。</p>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="video-encoder">视频编码器:</label>
+                                        <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
+                                            <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
+                                            <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU (libx264)</option>
+                                            <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA (NVENC)</option>
+                                            <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel (QSV)</option>
+                                            <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD (AMF/VAAPI)</option>
+                                        </select>
+                                        <p class="help-text">选择"自动检测"将优先使用可用的硬件编码器，无可用硬件时回退到CPU。</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" name="VIDEO_CUSTOM_PARAMS_ENABLED" id="video-custom-params-enabled" {% if config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False) %}checked{% endif %}>
+                                            启用自定义转码参数
+                                        </label>
+                                        <p class="help-text">启用后可以自定义 FFmpeg 视频编码参数，覆盖默认设置。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3 mt-2" id="custom-params-section" style="display: none;">
+                                <div class="col-12">
+                                    <div class="form-group">
+                                        <label for="video-custom-params">自定义视频编码参数:</label>
+                                        <input type="text" id="video-custom-params" name="VIDEO_CUSTOM_PARAMS" value="{{ config.get('VIDEO_CUSTOM_PARAMS', '') }}" class="form-control" placeholder="例如: -c:v libx264 -preset slow -crf 18">
+                                        <p class="help-text">自定义 FFmpeg 视频编码器参数。仅填写视频编码相关参数，音频参数固定为 AAC 320kbps 双声道。</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="alert alert-success mt-3">
+                                <i class="bi bi-info-circle"></i> <strong>默认转码参数（按分辨率自动选择）：</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li><strong>4K (2160p)：</strong>25Mbps 目标码率，30Mbps 峰值，60M 缓冲</li>
+                                    <li><strong>1080p：</strong>12Mbps 目标码率，15Mbps 峰值，30M 缓冲</li>
+                                    <li><strong>720p：</strong>8Mbps 目标码率，10Mbps 峰值，20M 缓冲</li>
+                                    <li><strong>音频：</strong>AAC 320kbps 双声道</li>
+                                </ul>
+                            </div>
+
+                            <div class="alert alert-info mt-3">
+                                <i class="bi bi-info-circle"></i> <strong>GPU编码说明：</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li><strong>Docker用户：</strong>需配置GPU穿透，详见 docker-compose.yml 中的注释说明</li>
+                                    <li><strong>NVIDIA：</strong>需安装 NVIDIA 驱动（支持 NVENC）</li>
+                                    <li><strong>Intel：</strong>需安装 Intel Media SDK 或 oneVPL</li>
+                                    <li><strong>AMD (Windows)：</strong>需安装 AMD 驱动及 AMF 组件</li>
+                                    <li><strong>AMD (Linux)：</strong>使用 VAAPI，需安装 mesa-va-drivers</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <script>
+                    // 控制自定义参数输入框的显示/隐藏
+                    document.addEventListener('DOMContentLoaded', function() {
+                        var checkbox = document.getElementById('video-custom-params-enabled');
+                        var section = document.getElementById('custom-params-section');
+                        if (checkbox && section) {
+                            function toggleSection() {
+                                section.style.display = checkbox.checked ? 'block' : 'none';
+                            }
+                            checkbox.addEventListener('change', toggleSection);
+                            toggleSection();
+                        }
+                    });
+                    </script>
 
                     <!-- 语音识别（无字幕转写）设置 -->
                     <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">

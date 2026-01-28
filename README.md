@@ -199,7 +199,10 @@ python app.py
 
   "YOUTUBE_API_KEY": "可选：启用 YouTube 监控",
 
-  "VIDEO_ENCODER": "cpu"
+  "VIDEO_ENCODER": "auto",
+  "VIDEO_CRF": 23,
+  "VIDEO_PRESET": "medium",
+  "VIDEO_BITRATE": ""
 }
 ### 字幕质检（QC）配置
 
@@ -222,12 +225,7 @@ python app.py
 
 - 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
 - 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
-- 当前版本已移除硬件编码，`VIDEO_ENCODER` 固定为 `cpu`，无需额外 GPU 配置。
 - 字幕 QC 需要 OpenAI API Key 与网络连接；若 API 不可用，QC 自动跳过并放行字幕
-
-- 仅在本机安全环境中保存密钥，切勿把包含密钥的文件提交到仓库。
-- 若需要代理下载 YouTube，可在设置里启用代理并填写地址/账号密码。
-- 当前版本已移除硬件编码，`VIDEO_ENCODER` 固定为 `cpu`，无需额外 GPU 配置。
 
 ## 使用指南
 
@@ -248,16 +246,79 @@ python app.py
 - Release 包含 `ffmpeg/` 目录，内置 Windows 版 BtbN 构建与 Linux 静态版二进制及配套许可证。
 - Docker 镜像与本地构建会根据 `FFMPEG_VARIANT`（默认 `btbn`）在线拉取 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)。如需最小体积的纯 CPU 版本，可在构建时附加 `--build-arg FFMPEG_VARIANT=static` 回退到 johnvansickle 静态包。
 - 运行时始终优先使用 `ffmpeg/` 目录中的二进制；若需要升级，可直接替换该目录并保留许可证文件。
-- 预编译二进制启用了常见编码器，但应用逻辑固定使用 CPU 侧的 libx264。
+- 预编译二进制包含 NVENC/QSV/VAAPI 等硬件编码器支持。
 
-## 嵌字转码参数（CPU）
+## GPU 硬件编码加速
 
-仅当在设置中勾选“将字幕嵌入视频”时，本段所述的转码参数才会生效。应用固定使用 CPU 编码：
+本项目支持 NVIDIA、Intel、AMD 三大厂商的 GPU 硬件编码加速，可显著提升字幕嵌入（烧字）的转码速度。
 
-- 视频：libx264，CRF 23，preset=slow，profile=high，level=4.2，yuv420p
-- 音频：AAC 320kbps，采样率跟随原视频
+### 视频转码参数配置
 
-硬件编码（NVENC/QSV/AMF）已移除，无需额外驱动或设备配置。
+在设置页面的"字幕翻译"区域可配置以下参数：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `VIDEO_ENCODER` | 编码器选择：auto/cpu/nvidia/intel/amd | auto |
+| `VIDEO_CRF` | 视频质量 (0-51，越小质量越高) | 23 |
+| `VIDEO_PRESET` | 编码速度预设 | medium |
+| `VIDEO_BITRATE` | 固定比特率（如"8M"），设置后CRF失效 | 空 |
+
+### Docker 环境 GPU 配置
+
+根据您的显卡类型，编辑 `docker-compose.yml` 并取消对应配置的注释：
+
+#### NVIDIA GPU
+
+需要安装 [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)：
+
+```yaml
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu, video]
+```
+
+#### Intel GPU (QSV)
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+group_add:
+  - video
+  - render
+```
+
+#### AMD GPU (VAAPI)
+
+```yaml
+devices:
+  - /dev/dri:/dev/dri
+group_add:
+  - video
+  - render
+```
+
+### Windows 本地环境
+
+Windows 用户只需确保安装了对应显卡的最新驱动，程序会自动检测并使用可用的硬件编码器：
+
+- **NVIDIA**：安装 GeForce/Studio 驱动即可
+- **Intel**：安装 Intel Graphics 驱动及 Intel Media SDK
+- **AMD**：安装 Radeon Software 驱动
+
+### 编码器说明
+
+| 显卡厂商 | 编码器 | 平台 |
+|----------|--------|------|
+| NVIDIA | h264_nvenc | Windows/Linux |
+| Intel | h264_qsv | Windows/Linux |
+| AMD | h264_amf | Windows |
+| AMD | h264_vaapi | Linux |
+
+如果指定的硬件编码器不可用，系统会自动回退到 CPU 软编码（libx264）。
 
 ### 自定义镜像（可选）
 
