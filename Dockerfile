@@ -111,6 +111,8 @@ RUN set -eux \
     && if [ -x "$payload_dir/bin/ffprobe" ]; then cp "$payload_dir/bin/ffprobe" /app/ffmpeg/bin/ffprobe; \
        elif [ -x "$payload_dir/ffprobe" ]; then cp "$payload_dir/ffprobe" /app/ffmpeg/bin/ffprobe; fi \
     && rm -rf "$tmpdir" \
+    && if [ ! -f /app/ffmpeg/bin/ffmpeg ]; then echo "ERROR: ffmpeg binary not found" >&2 && exit 1; fi \
+    && if [ ! -f /app/ffmpeg/bin/ffprobe ]; then echo "ERROR: ffprobe binary not found" >&2 && exit 1; fi \
     && ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg \
     && ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe \
     && chmod +x /app/ffmpeg/bin/ffmpeg /app/ffmpeg/bin/ffprobe 2>/dev/null || true \
