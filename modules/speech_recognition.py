@@ -1321,7 +1321,7 @@ class SpeechRecognizer:
                     "Silero VAD torch hub 未启用信任（更安全）；如需信任加载请设置 SILERO_VAD_TRUST_REPO=true 并自行评估风险"
                 )
             else:
-                self.logger.warning("Silero VAD torch hub 已启用信任，请确保来源可信以避免执行风险")
+                self.logger.warning("Silero VAD torch hub 已启用信任，可能执行远程代码，请确认来源可信")
             loaded = torch.hub.load(**kwargs)
             if isinstance(loaded, tuple):
                 model = loaded[0]
@@ -1329,6 +1329,9 @@ class SpeechRecognizer:
             else:
                 model = loaded
                 utils = None
+            if not hasattr(model, 'eval'):
+                self.logger.warning("Silero VAD模型缺少预期接口，已跳过加载")
+                return None
             model.eval()
             device = torch.device('cpu')
             model.to(device)
@@ -1353,7 +1356,7 @@ class SpeechRecognizer:
                 self._silero_vad_param_names = None
             return model, utils, device
         except ImportError as e:
-            self.logger.error(f"本地VAD需要torch库，无法加载: {e}")
+            self.logger.error(f"无法导入torch，本地VAD不可用: {e}")
             raise
         except Exception as e:
             self.logger.warning(f"加载Silero VAD模型失败（检查torch hub缓存/网络）: {e}")
@@ -1440,7 +1443,6 @@ class SpeechRecognizer:
             if not param_names:
                 self.logger.warning("Silero VAD参数签名不可用，跳过VAD检测")
                 return None
-                self.logger.debug("Silero VAD 参数签名缺失，已重新解析")
             vad_params = {k: v for k, v in vad_params.items() if k in param_names}
             return_seconds = False
             if 'return_seconds' in param_names:
