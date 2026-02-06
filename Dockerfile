@@ -26,7 +26,7 @@ COPY requirements.txt .
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --user --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+    && pip install --user -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
@@ -107,9 +107,11 @@ RUN set -eux \
     && if [ -z "$payload_dir" ]; then echo "Unable to locate extracted ffmpeg directory" >&2 && exit 1; fi \
     && mkdir -p /app/ffmpeg/bin \
     && if [ -x "$payload_dir/bin/ffmpeg" ]; then cp "$payload_dir/bin/ffmpeg" /app/ffmpeg/bin/ffmpeg; \
-       elif [ -x "$payload_dir/ffmpeg" ]; then cp "$payload_dir/ffmpeg" /app/ffmpeg/bin/ffmpeg; fi \
+       elif [ -x "$payload_dir/ffmpeg" ]; then cp "$payload_dir/ffmpeg" /app/ffmpeg/bin/ffmpeg; \
+       else echo "WARNING: ffmpeg binary not found in expected locations: '$payload_dir/bin/ffmpeg' or '$payload_dir/ffmpeg'" >&2; fi \
     && if [ -x "$payload_dir/bin/ffprobe" ]; then cp "$payload_dir/bin/ffprobe" /app/ffmpeg/bin/ffprobe; \
-       elif [ -x "$payload_dir/ffprobe" ]; then cp "$payload_dir/ffprobe" /app/ffmpeg/bin/ffprobe; fi \
+       elif [ -x "$payload_dir/ffprobe" ]; then cp "$payload_dir/ffprobe" /app/ffmpeg/bin/ffprobe; \
+       else echo "WARNING: ffprobe binary not found in expected locations: '$payload_dir/bin/ffprobe' or '$payload_dir/ffprobe'" >&2; fi \
     && rm -rf "$tmpdir" \
     && if [ ! -f /app/ffmpeg/bin/ffmpeg ]; then echo "ERROR: ffmpeg binary not found" >&2 && exit 1; fi \
     && if [ ! -f /app/ffmpeg/bin/ffprobe ]; then echo "ERROR: ffprobe binary not found" >&2 && exit 1; fi \
