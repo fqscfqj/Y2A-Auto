@@ -1317,13 +1317,16 @@ class SpeechRecognizer:
             if 'trust_repo' in inspect.signature(torch.hub.load).parameters:
                 kwargs['trust_repo'] = trust_repo
             if not trust_repo:
-                self.logger.info("Silero VAD 将使用未信任的 torch hub 加载设置，可通过 SILERO_VAD_TRUST_REPO=true 启用信任")
+                self.logger.info(
+                    "Silero VAD torch hub 未启用信任（更安全）；如需信任加载请设置 SILERO_VAD_TRUST_REPO=true 并自行评估风险"
+                )
             loaded = torch.hub.load(**kwargs)
             if isinstance(loaded, tuple):
                 model = loaded[0]
                 utils = loaded[1] if len(loaded) > 1 else None
             else:
-                model, utils = loaded, None
+                model = loaded
+                utils = None
             model.eval()
             device = torch.device('cpu')
             model.to(device)
@@ -1432,6 +1435,7 @@ class SpeechRecognizer:
 
             param_names = self._silero_vad_param_names
             if not param_names:
+                # Fallback for older torch hub loads without cached signature.
                 param_names = set(inspect.signature(get_speech_timestamps).parameters)
                 self._silero_vad_param_names = param_names
                 self.logger.debug("Silero VAD 参数签名缺失，已重新解析")
