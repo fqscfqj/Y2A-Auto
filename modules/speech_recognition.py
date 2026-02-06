@@ -149,6 +149,8 @@ class SpeechRecognizer:
         self._silero_vad_model = None
         self._silero_vad_utils = None
         self._silero_vad_device = None
+        self._silero_vad_get_speech_timestamps = None
+        self._silero_vad_param_names = None
         self._init_client()
 
     def _init_client(self):
@@ -1313,13 +1315,28 @@ class SpeechRecognizer:
             }
             if 'trust_repo' in inspect.signature(torch.hub.load).parameters:
                 kwargs['trust_repo'] = True
-            model, utils = torch.hub.load(**kwargs)
+            loaded = torch.hub.load(**kwargs)
+            if isinstance(loaded, tuple):
+                model = loaded[0]
+                utils = loaded[1] if len(loaded) > 1 else None
+            else:
+                model, utils = loaded, None
             model.eval()
             device = torch.device('cpu')
             model.to(device)
             self._silero_vad_model = model
             self._silero_vad_utils = utils
             self._silero_vad_device = device
+            get_speech_timestamps = None
+            if isinstance(utils, (list, tuple)) and utils:
+                get_speech_timestamps = utils[0]
+            elif isinstance(utils, dict):
+                get_speech_timestamps = utils.get('get_speech_timestamps')
+            self._silero_vad_get_speech_timestamps = get_speech_timestamps
+            if callable(get_speech_timestamps):
+                self._silero_vad_param_names = set(inspect.signature(get_speech_timestamps).parameters)
+            else:
+                self._silero_vad_param_names = None
             return model, utils, device
         except ImportError as e:
             self.logger.error(f"本地VAD需要torch库，无法加载: {e}")
@@ -1340,17 +1357,17 @@ class SpeechRecognizer:
             if not vad_bundle:
                 return None
             model, vad_utils, vad_device = vad_bundle
-            get_speech_timestamps = None
-            if isinstance(vad_utils, (list, tuple)) and vad_utils:
-                get_speech_timestamps = vad_utils[0]
-            elif isinstance(vad_utils, dict):
-                get_speech_timestamps = vad_utils.get('get_speech_timestamps')
-            else:
+            get_speech_timestamps = self._silero_vad_get_speech_timestamps
+            if get_speech_timestamps is None:
+                utils_type = type(vad_utils).__name__ if vad_utils is not None else 'None'
                 self.logger.warning(
-                    f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {type(vad_utils).__name__}"
+                    f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {utils_type}"
                 )
+                return None
             if not callable(get_speech_timestamps):
-                self.logger.warning("Silero VAD工具加载失败: get_speech_timestamps 不可调用")
+                self.logger.warning(
+                    "Silero VAD工具加载失败: get_speech_timestamps 不可调用"
+                )
                 return None
 
             # 读取 WAV 文件并转换为 float32 数组
@@ -1405,7 +1422,11 @@ class SpeechRecognizer:
             }
 
             import inspect
-            param_names = inspect.signature(get_speech_timestamps).parameters
+            param_names = self._silero_vad_param_names
+            if not param_names:
+                param_names = set(inspect.signature(get_speech_timestamps).parameters)
+                self._silero_vad_param_names = param_names
+                self.logger.debug("Silero VAD 参数签名缺失，已重新解析")
             vad_params = {k: v for k, v in vad_params.items() if k in param_names}
             return_seconds = False
             if 'return_seconds' in param_names:
