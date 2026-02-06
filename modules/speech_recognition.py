@@ -1451,7 +1451,7 @@ class SpeechRecognizer:
 
             self.logger.info(f"本地VAD处理中: {duration_from_wav:.2f}s, samples={len(audio_array)}")
             speech_timestamps = get_speech_timestamps(audio_tensor, model, **vad_params)
-            if not isinstance(speech_timestamps, list) or not speech_timestamps:
+            if not isinstance(speech_timestamps, list):
                 self.logger.debug("VAD未返回有效的语音片段")
                 return None
 

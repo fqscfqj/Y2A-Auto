@@ -204,6 +204,13 @@ python app.py
   "VIDEO_PRESET": "medium",
   "VIDEO_BITRATE": ""
 }
+```
+
+### 本地 VAD 说明
+
+- 本地 VAD 使用 torch hub 加载 silero-vad 模型。
+- 默认不信任远程仓库；若需启用信任加载，请设置环境变量 `SILERO_VAD_TRUST_REPO=true` 并自行评估安全风险。
+
 ### 字幕质检（QC）配置
 
 若启用字幕质检（`SUBTITLE_QC_ENABLED: true`），系统会在字幕生成/翻译后自动抽样送 LLM 复核：
