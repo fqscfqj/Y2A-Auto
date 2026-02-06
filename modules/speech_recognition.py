@@ -1297,9 +1297,11 @@ class SpeechRecognizer:
 
     def _load_silero_vad(self) -> Optional[Tuple[Any, Any, Any]]:
         """Load Silero VAD model and utils once."""
-        if (self._silero_vad_model is not None
-                and self._silero_vad_utils is not None
-                and self._silero_vad_device is not None):
+        if (
+            self._silero_vad_model is not None
+            and self._silero_vad_utils is not None
+            and self._silero_vad_device is not None
+        ):
             return self._silero_vad_model, self._silero_vad_utils, self._silero_vad_device
         try:
             import torch
@@ -1344,9 +1346,11 @@ class SpeechRecognizer:
             elif isinstance(vad_utils, dict):
                 get_speech_timestamps = vad_utils.get('get_speech_timestamps')
             else:
-                self.logger.warning("Silero VAD工具格式异常，无法解析")
+                self.logger.warning(
+                    f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {type(vad_utils).__name__}"
+                )
             if not callable(get_speech_timestamps):
-                self.logger.warning("Silero VAD工具加载失败")
+                self.logger.warning("Silero VAD工具加载失败: get_speech_timestamps 不可调用")
                 return None
 
             # 读取 WAV 文件并转换为 float32 数组
