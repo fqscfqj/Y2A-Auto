@@ -24,10 +24,12 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-builder \
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装Python依赖到本地目录（使用onnxruntime替代torch以减小镜像体积）
+# 安装Python依赖到本地目录
+# 先安装 CPU-only 版本的 torch（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user -r requirements.txt
+    pip install --user torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --user -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version

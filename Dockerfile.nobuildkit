@@ -22,9 +22,11 @@ RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/arc
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装 Python 依赖到本地用户目录（使用onnxruntime替代torch以减小镜像体积，不使用缓存挂载）
+# 安装 Python 依赖到本地用户目录（不使用缓存挂载）
+# 先安装 CPU-only 版本的 torch（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --user --no-cache-dir -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version

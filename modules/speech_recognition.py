@@ -186,7 +186,7 @@ class SpeechRecognizer:
                 self.logger.info("Silero VAD 模型加载成功（本地）")
                 return model, utils
             except ImportError:
-                self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad onnxruntime")
+                self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch")
                 raise
             except Exception as e:
                 self.logger.error(f"加载 Silero VAD 模型失败: {e}")
@@ -1322,6 +1322,7 @@ class SpeechRecognizer:
     def _run_vad_on_audio(self, wav_path: str, total_duration_s: float) -> Optional[List[Tuple[float, float]]]:
         """使用本地 Silero VAD 模型检测语音片段；返回片段列表（单位：秒）。"""
         try:
+            import torch
             import numpy as np
 
             # 加载模型（懒加载 + 类级缓存）
@@ -1348,7 +1349,7 @@ class SpeechRecognizer:
                 self.logger.warning(f"音频长度不足 ({duration_from_wav:.3f}s < {min_duration}s)，跳过VAD")
                 return None
 
-            # 将 PCM 数据转换为 float32 numpy 数组
+            # 将 PCM 数据转换为 float32 torch Tensor
             if sample_width == 2:  # 16-bit PCM
                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 audio_array /= 32768.0
@@ -1359,15 +1360,16 @@ class SpeechRecognizer:
                 self.logger.warning(f"不支持的样本宽度: {sample_width} bytes")
                 return None
 
-            # silero-vad >= 5.1 ONNX 模式直接接受 numpy float32 数组
+            audio_tensor = torch.from_numpy(audio_array)
+
             self.logger.info(
                 f"本地VAD处理: {duration_from_wav:.2f}s, {total_frames}帧, "
                 f"样本范围[{audio_array.min():.3f}, {audio_array.max():.3f}]"
             )
 
-            # 调用本地 Silero VAD（ONNX模式，直接使用numpy数组）
+            # 调用本地 Silero VAD
             speech_timestamps = get_speech_timestamps(
-                audio_array,
+                audio_tensor,
                 model,
                 threshold=self.config.vad_threshold,
                 min_speech_duration_ms=self.config.vad_min_speech_ms,
@@ -1399,7 +1401,7 @@ class SpeechRecognizer:
             constrained_segments = self._apply_vad_constraints(raw_pairs)
             return constrained_segments
         except ImportError:
-            self.logger.error("本地VAD功能需要 silero-vad、onnxruntime 库，请安装: pip install silero-vad onnxruntime")
+            self.logger.error("本地VAD功能需要 silero-vad、torch 库，请安装: pip install silero-vad torch")
             return None
         except Exception as e:
             self.logger.warning(f"本地VAD处理异常: {e}")
