@@ -16,6 +16,4 @@ python-dotenv
 pytz
 google-api-python-client==2.116.0
 websockets
-torch
-torchaudio
 silero-vad>=5.1

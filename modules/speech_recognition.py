@@ -186,7 +186,7 @@ class SpeechRecognizer:
                 self.logger.info("Silero VAD 模型加载成功（本地）")
                 return model, utils
             except ImportError:
-                self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch torchaudio")
+                self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch")
                 raise
             except Exception as e:
                 self.logger.error(f"加载 Silero VAD 模型失败: {e}")
@@ -1401,7 +1401,7 @@ class SpeechRecognizer:
             constrained_segments = self._apply_vad_constraints(raw_pairs)
             return constrained_segments
         except ImportError:
-            self.logger.error("本地VAD功能需要 silero-vad、torch 库，请安装: pip install silero-vad torch torchaudio")
+            self.logger.error("本地VAD功能需要 silero-vad、torch 库，请安装: pip install silero-vad torch")
             return None
         except Exception as e:
             self.logger.warning(f"本地VAD处理异常: {e}")
