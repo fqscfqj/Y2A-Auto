@@ -31,6 +31,8 @@ _FILLER_PATTERNS = [
 _REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
 _SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
+_SUPPORTED_VAD_PROVIDERS = {'silero-vad', 'silero_vad', 'silero'}
+_VAD_UTILS_REPR_MAX = 200
 
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
@@ -1321,7 +1323,7 @@ class SpeechRecognizer:
                     "Silero VAD torch hub 未启用信任（更安全）；如需信任加载请设置 SILERO_VAD_TRUST_REPO=true 并自行评估风险"
                 )
             else:
-                self.logger.warning("Silero VAD torch hub 已启用信任，可能执行远程代码，请确认来源可信")
+                self.logger.warning("Silero VAD torch hub 已启用信任，仅建议在受控环境使用并确认来源可信")
             loaded = torch.hub.load(**kwargs)
             if isinstance(loaded, tuple):
                 model = loaded[0]
@@ -1341,7 +1343,7 @@ class SpeechRecognizer:
             get_speech_timestamps = None
             if isinstance(utils, (list, tuple)) and utils:
                 # Silero hub returns (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks)
-                if callable(utils[0]):
+                if callable(utils[0]) and getattr(utils[0], '__name__', '') == 'get_speech_timestamps':
                     get_speech_timestamps = utils[0]
                 else:
                     for item in utils:
@@ -1367,7 +1369,7 @@ class SpeechRecognizer:
         """使用本地 Silero VAD 模型检测语音片段（单位：秒）。"""
         try:
             provider = (self.config.vad_provider or 'silero-vad').lower()
-            if provider not in ('silero-vad', 'silero_vad', 'silero'):
+            if provider not in _SUPPORTED_VAD_PROVIDERS:
                 self.logger.warning(f"暂不支持的VAD提供商: {self.config.vad_provider}")
                 return None
 
@@ -1380,8 +1382,8 @@ class SpeechRecognizer:
             if get_speech_timestamps is None:
                 utils_type = type(vad_utils).__name__ if vad_utils is not None else 'None'
                 utils_repr = repr(vad_utils)
-                if len(utils_repr) > 200:
-                    utils_repr = f"{utils_repr[:200]}..."
+                if len(utils_repr) > _VAD_UTILS_REPR_MAX:
+                    utils_repr = f"{utils_repr[:_VAD_UTILS_REPR_MAX]}..."
                 self.logger.warning(
                     f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {utils_type}, 内容: {utils_repr}"
                 )
