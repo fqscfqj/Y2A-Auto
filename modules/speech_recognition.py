@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Any
 import re
 import json
+import threading
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 
 # Pre-compiled regex patterns for performance optimization
@@ -138,6 +139,7 @@ class SpeechRecognizer:
     # Class-level cache for the Silero VAD model (shared across instances)
     _silero_vad_model: Any = None
     _silero_vad_utils: Any = None
+    _silero_vad_lock = threading.Lock()
 
     def __init__(self, config: SpeechRecognitionConfig, task_id: Optional[str] = None):
         self.config = config
@@ -168,23 +170,29 @@ class SpeechRecognizer:
             self.logger.error(f"初始化语音识别客户端失败: {e}")
 
     def _load_silero_vad(self):
-        """Lazily load and cache the Silero VAD model (class-level singleton)."""
+        """Lazily load and cache the Silero VAD model (class-level singleton, thread-safe)."""
         if SpeechRecognizer._silero_vad_model is not None and SpeechRecognizer._silero_vad_utils is not None:
             return SpeechRecognizer._silero_vad_model, SpeechRecognizer._silero_vad_utils
-        try:
-            from silero_vad import load_silero_vad, get_speech_timestamps
-            model = load_silero_vad()
-            utils = {'get_speech_timestamps': get_speech_timestamps}
-            SpeechRecognizer._silero_vad_model = model
-            SpeechRecognizer._silero_vad_utils = utils
-            self.logger.info("Silero VAD 模型加载成功（本地）")
-            return model, utils
-        except ImportError:
-            self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch torchaudio")
-            raise
-        except Exception as e:
-            self.logger.error(f"加载 Silero VAD 模型失败: {e}")
-            raise
+        with SpeechRecognizer._silero_vad_lock:
+            # Double-check after acquiring lock
+            if SpeechRecognizer._silero_vad_model is not None and SpeechRecognizer._silero_vad_utils is not None:
+                return SpeechRecognizer._silero_vad_model, SpeechRecognizer._silero_vad_utils
+            try:
+                from silero_vad import load_silero_vad, get_speech_timestamps
+                model = load_silero_vad()
+                utils = {'get_speech_timestamps': get_speech_timestamps}
+                SpeechRecognizer._silero_vad_model = model
+                SpeechRecognizer._silero_vad_utils = utils
+                self.logger.info("Silero VAD 模型加载成功（本地）")
+                return model, utils
+            except ImportError:
+                self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch torchaudio")
+                raise
+            except Exception as e:
+                self.logger.error(f"加载 Silero VAD 模型失败: {e}")
+                raise
+
+    def _extract_audio_wav(self, video_path: str) -> Optional[str]:
         """Extract 16kHz mono WAV from video using ffmpeg. Returns temp file path."""
         try:
             # 优先使用项目内置/配置中的 ffmpeg
