@@ -98,8 +98,6 @@ DEFAULT_CONFIG = {
     # 语音活动检测（VAD）
     "VAD_ENABLED": False,
     "VAD_PROVIDER": "silero-vad",
-    "VAD_API_URL": "http://localhost:8080/vad",
-    "VAD_API_TOKEN": "",
     "VAD_SILERO_THRESHOLD": 0.5,
     "VAD_SILERO_MIN_SPEECH_MS": 250,
     "VAD_SILERO_MIN_SILENCE_MS": 100,

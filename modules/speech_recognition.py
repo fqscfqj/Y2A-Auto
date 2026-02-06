@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Any
 import re
 import json
-import requests
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 
 # Pre-compiled regex patterns for performance optimization
@@ -85,8 +84,6 @@ class SpeechRecognitionConfig:
     # VAD settings
     vad_enabled: bool = False
     vad_provider: str = 'silero-vad'
-    vad_api_url: str = ''
-    vad_api_token: str = ''
     vad_threshold: float = 0.6      # 提高阈值，减少误判
     vad_min_speech_ms: int = 300    # 忽略过短的声音
     vad_min_silence_ms: int = 500   # 增加静音判定时长，避免句子被切断
@@ -138,6 +135,10 @@ class WhisperFailure(RuntimeError):
 class SpeechRecognizer:
     """Abstracted speech recognizer with a Whisper(OpenAI compatible) implementation."""
 
+    # Class-level cache for the Silero VAD model (shared across instances)
+    _silero_vad_model: Any = None
+    _silero_vad_utils: Any = None
+
     def __init__(self, config: SpeechRecognitionConfig, task_id: Optional[str] = None):
         self.config = config
         self.task_id = task_id or 'unknown'
@@ -166,7 +167,24 @@ class SpeechRecognizer:
         except Exception as e:
             self.logger.error(f"初始化语音识别客户端失败: {e}")
 
-    def _extract_audio_wav(self, video_path: str) -> Optional[str]:
+    def _load_silero_vad(self):
+        """Lazily load and cache the Silero VAD model (class-level singleton)."""
+        if SpeechRecognizer._silero_vad_model is not None and SpeechRecognizer._silero_vad_utils is not None:
+            return SpeechRecognizer._silero_vad_model, SpeechRecognizer._silero_vad_utils
+        try:
+            from silero_vad import load_silero_vad, get_speech_timestamps
+            model = load_silero_vad()
+            utils = {'get_speech_timestamps': get_speech_timestamps}
+            SpeechRecognizer._silero_vad_model = model
+            SpeechRecognizer._silero_vad_utils = utils
+            self.logger.info("Silero VAD 模型加载成功（本地）")
+            return model, utils
+        except ImportError:
+            self.logger.error("缺少 silero-vad 依赖，请安装: pip install silero-vad torch torchaudio")
+            raise
+        except Exception as e:
+            self.logger.error(f"加载 Silero VAD 模型失败: {e}")
+            raise
         """Extract 16kHz mono WAV from video using ffmpeg. Returns temp file path."""
         try:
             # 优先使用项目内置/配置中的 ffmpeg
@@ -251,7 +269,7 @@ class SpeechRecognizer:
             force_fixed_chunks = False
             
             # Step 2 & 3: Chunking + VAD
-            if self.config.vad_enabled and self.config.vad_api_url:
+            if self.config.vad_enabled:
                 self.logger.info("步骤 2/5: 应用 VAD (Silero) 进行语音活动检测")
                 try:
                     # For long audio, process in chunks to avoid timeout
@@ -1294,121 +1312,91 @@ class SpeechRecognizer:
             return None
 
     def _run_vad_on_audio(self, wav_path: str, total_duration_s: float) -> Optional[List[Tuple[float, float]]]:
-        """调用外部VAD服务（LocalAI silero-vad）；返回片段列表（单位：秒）。
-        
-        LocalAI VAD 端点需要 JSON 格式的 float32 数组，而不是文件上传。
-        """
-        if not self.config.vad_api_url:
-            self.logger.warning("VAD已启用但未配置API地址，跳过")
-            return None
-        
+        """使用本地 Silero VAD 模型检测语音片段；返回片段列表（单位：秒）。"""
         try:
-            # 读取 WAV 文件并转换为 float32 数组
+            import torch
             import numpy as np
+
+            # 加载模型（懒加载 + 类级缓存）
+            model, utils = self._load_silero_vad()
+            get_speech_timestamps = utils['get_speech_timestamps']
+
+            # 读取 WAV 文件
             with wave.open(wav_path, 'rb') as wf:
                 sample_rate = wf.getframerate()
                 channels = wf.getnchannels()
                 sample_width = wf.getsampwidth()
                 total_frames = wf.getnframes()
-                
+
                 if sample_rate != 16000 or channels != 1:
                     self.logger.warning(f"VAD要求16kHz单声道，当前: {sample_rate}Hz {channels}声道，跳过VAD")
                     return None
-                
-                # 读取音频数据
+
                 audio_bytes = wf.readframes(total_frames)
-            
+
             duration_from_wav = total_frames / float(sample_rate)
-            
-            # VAD服务需要至少一定长度的音频
-            min_duration = 0.5  # 至少0.5秒
+
+            min_duration = 0.5
             if duration_from_wav < min_duration:
                 self.logger.warning(f"音频长度不足 ({duration_from_wav:.3f}s < {min_duration}s)，跳过VAD")
                 return None
-            
-            # 将 PCM 数据转换为 float32 数组（归一化到 [-1, 1]）
+
+            # 将 PCM 数据转换为 float32 torch Tensor
             if sample_width == 2:  # 16-bit PCM
                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
-                audio_array /= 32768.0  # 归一化到 [-1, 1]
+                audio_array /= 32768.0
             elif sample_width == 4:  # 32-bit PCM
                 audio_array = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
                 audio_array /= 2147483648.0
             else:
                 self.logger.warning(f"不支持的样本宽度: {sample_width} bytes")
                 return None
-            
+
+            audio_tensor = torch.from_numpy(audio_array)
+
             self.logger.info(
-                f"准备调用VAD: {duration_from_wav:.2f}s, {total_frames}帧, 样本范围[{audio_array.min():.3f}, {audio_array.max():.3f}]"
+                f"本地VAD处理: {duration_from_wav:.2f}s, {total_frames}帧, "
+                f"样本范围[{audio_array.min():.3f}, {audio_array.max():.3f}]"
             )
-            
-            # 构造 JSON 请求
-            url = self.config.vad_api_url
-            headers = {
-                'Content-Type': 'application/json'
-            }
-            if self.config.vad_api_token:
-                headers['Authorization'] = f"Bearer {self.config.vad_api_token}"
-            
-            # LocalAI VAD 需要 model 和 audio 字段
-            vad_model = self.config.vad_provider or 'silero-vad'
-            payload = {
-                'model': vad_model,
-                'audio': audio_array.tolist(),
-                'threshold': self.config.vad_threshold,
-                'min_speech_duration_ms': self.config.vad_min_speech_ms,
-                'min_silence_duration_ms': self.config.vad_min_silence_ms,
-                'speech_pad_ms': self.config.vad_speech_pad_ms
-            }
-            
-            self.logger.info(f"调用VAD接口: {url} (model={vad_model}, samples={len(audio_array)})")
-            
-            resp = requests.post(url, headers=headers, json=payload, timeout=120)
-            
-            if resp.status_code != 200:
-                self.logger.warning(f"VAD接口响应非200: {resp.status_code} {resp.text[:200]}")
+
+            # 调用本地 Silero VAD
+            speech_timestamps = get_speech_timestamps(
+                audio_tensor,
+                model,
+                threshold=self.config.vad_threshold,
+                min_speech_duration_ms=self.config.vad_min_speech_ms,
+                min_silence_duration_ms=self.config.vad_min_silence_ms,
+                speech_pad_ms=self.config.vad_speech_pad_ms,
+                max_speech_duration_s=self.config.vad_max_speech_s,
+                sampling_rate=sample_rate,
+                return_seconds=True,
+            )
+
+            if not speech_timestamps:
+                self.logger.debug("VAD未检测到语音片段")
                 return None
-            
-            data = resp.json()
-            segs = data.get('segments', [])
-            
-            if not isinstance(segs, list) or not segs:
-                self.logger.debug("VAD返回空片段列表")
-                return None
-            
-            # LocalAI 返回的时间已经是秒为单位
+
             raw_pairs: List[Tuple[float, float]] = []
-            for s in segs:
-                try:
-                    start_s = float(s.get('start', 0))
-                    end_s = float(s.get('end', 0))
-                    if end_s > start_s:
-                        raw_pairs.append((start_s, end_s))
-                except Exception:
-                    continue
-            
+            for seg in speech_timestamps:
+                start_s = float(seg['start'])
+                end_s = float(seg['end'])
+                if end_s > start_s:
+                    raw_pairs.append((start_s, end_s))
+
             if not raw_pairs:
                 self.logger.debug("VAD未返回有效的语音片段")
                 return None
-            
+
             self.logger.info(f"VAD检测到 {len(raw_pairs)} 个原始片段")
-            
-            # LocalAI 返回的时间单位应该已经是秒，但为了兼容性还是检查一下
-            max_end_raw = max(end for _, end in raw_pairs)
-            scale = self._infer_time_scale(max_end_raw, total_duration_s)
-            if scale != 1.0:
-                self.logger.info(f"检测到VAD时间单位需要缩放: x{scale}")
-                pairs_sec = [(a * scale, b * scale) for (a, b) in raw_pairs]
-            else:
-                pairs_sec = raw_pairs
-            
+
             # Apply VAD constraints (merge gaps, filter short segments, split long segments)
-            constrained_segments = self._apply_vad_constraints(pairs_sec)
+            constrained_segments = self._apply_vad_constraints(raw_pairs)
             return constrained_segments
         except ImportError:
-            self.logger.error("VAD功能需要numpy库，请安装: pip install numpy")
+            self.logger.error("本地VAD功能需要 silero-vad、torch 库，请安装: pip install silero-vad torch torchaudio")
             return None
         except Exception as e:
-            self.logger.warning(f"VAD请求异常: {e}")
+            self.logger.warning(f"本地VAD处理异常: {e}")
             import traceback
             self.logger.debug(traceback.format_exc())
             return None
@@ -1635,8 +1623,6 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             min_lines_threshold=int(app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0),
             vad_enabled=bool(app_config.get('VAD_ENABLED', False)),
             vad_provider=(app_config.get('VAD_PROVIDER') or 'silero-vad'),
-            vad_api_url=app_config.get('VAD_API_URL') or '',
-            vad_api_token=app_config.get('VAD_API_TOKEN') or '',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
             vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 250) or 250),
             vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 100) or 100),

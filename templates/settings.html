@@ -891,25 +891,8 @@
                                     <div class="form-group">
                                         <label for="vad-provider">VAD提供商:</label>
                                         <select id="vad-provider" name="VAD_PROVIDER" class="form-select">
-                                            <option value="silero-vad" {% if config.get('VAD_PROVIDER', 'silero-vad') == 'silero-vad' %}selected{% endif %}>Silero VAD</option>
+                                            <option value="silero-vad" {% if config.get('VAD_PROVIDER', 'silero-vad') == 'silero-vad' %}selected{% endif %}>Silero VAD（本地）</option>
                                         </select>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-api-url">API地址:</label>
-                                        <input type="text" id="vad-api-url" name="VAD_API_URL" value="{{ config.get('VAD_API_URL', 'http://localhost:8080/vad') }}" class="form-control" placeholder="http://192.168.x.x:8080/vad">
-                                        <p class="help-text">填写VAD接口地址。</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-api-token">API鉴权Token（可选）:</label>
-                                        <input type="password" id="vad-api-token" name="VAD_API_TOKEN" value="{{ config.get('VAD_API_TOKEN', '') }}" class="form-control" placeholder="sk-xxx">
-                                        <p class="help-text">如未开启鉴权可留空。</p>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
