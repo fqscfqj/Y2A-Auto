@@ -1297,7 +1297,9 @@ class SpeechRecognizer:
 
     def _load_silero_vad(self) -> Optional[Tuple[Any, Any, Any]]:
         """Load Silero VAD model and utils once."""
-        if self._silero_vad_model and self._silero_vad_utils and self._silero_vad_device:
+        if (self._silero_vad_model is not None
+                and self._silero_vad_utils is not None
+                and self._silero_vad_device is not None):
             return self._silero_vad_model, self._silero_vad_utils, self._silero_vad_device
         try:
             import torch
@@ -1317,10 +1319,11 @@ class SpeechRecognizer:
             self._silero_vad_utils = utils
             self._silero_vad_device = device
             return model, utils, device
-        except ImportError:
+        except ImportError as e:
+            self.logger.error(f"本地VAD需要torch库，无法加载: {e}")
             raise
         except Exception as e:
-            self.logger.warning(f"加载Silero VAD模型失败: {e}")
+            self.logger.warning(f"加载Silero VAD模型失败（检查torch hub缓存/网络）: {e}")
             return None
 
     def _run_vad_on_audio(self, wav_path: str, total_duration_s: float) -> Optional[List[Tuple[float, float]]]:
@@ -1334,12 +1337,14 @@ class SpeechRecognizer:
             vad_bundle = self._load_silero_vad()
             if not vad_bundle:
                 return None
-            vad_model, vad_utils, vad_device = vad_bundle
+            model, vad_utils, vad_device = vad_bundle
             get_speech_timestamps = None
             if isinstance(vad_utils, (list, tuple)) and vad_utils:
                 get_speech_timestamps = vad_utils[0]
             elif isinstance(vad_utils, dict):
                 get_speech_timestamps = vad_utils.get('get_speech_timestamps')
+            else:
+                self.logger.warning("Silero VAD工具格式异常，无法解析")
             if not callable(get_speech_timestamps):
                 self.logger.warning("Silero VAD工具加载失败")
                 return None
@@ -1404,7 +1409,7 @@ class SpeechRecognizer:
                 return_seconds = True
 
             self.logger.info(f"本地VAD处理中: {duration_from_wav:.2f}s, samples={len(audio_array)}")
-            speech_timestamps = get_speech_timestamps(audio_tensor, vad_model, **vad_params)
+            speech_timestamps = get_speech_timestamps(audio_tensor, model, **vad_params)
             if not isinstance(speech_timestamps, list) or not speech_timestamps:
                 self.logger.debug("VAD未返回有效的语音片段")
                 return None
