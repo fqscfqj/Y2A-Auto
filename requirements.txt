@@ -5,6 +5,7 @@ Pillow==11.2.1
 openai
 ffmpeg-python
 numpy>=1.24.0
+torch==2.6.0
 alibabacloud_green20220302==2.20.4
 alibabacloud_tea_openapi==0.3.15
 alibabacloud_tea_util==0.3.13
