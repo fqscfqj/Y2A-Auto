@@ -1308,15 +1308,15 @@ class SpeechRecognizer:
             return self._silero_vad_model, self._silero_vad_utils, self._silero_vad_device
         try:
             import torch
-            trust_repo = os.environ.get('SILERO_VAD_TRUST_REPO', '').strip().lower() in ('1', 'true', 'yes')
+            trust_repo_enabled = os.environ.get('SILERO_VAD_TRUST_REPO', '').strip().lower() in ('1', 'true', 'yes')
 
             kwargs = {
                 'repo_or_dir': 'snakers4/silero-vad',
                 'model': 'silero_vad'
             }
             if 'trust_repo' in inspect.signature(torch.hub.load).parameters:
-                kwargs['trust_repo'] = trust_repo
-            if not trust_repo:
+                kwargs['trust_repo'] = trust_repo_enabled
+            if not trust_repo_enabled:
                 self.logger.info(
                     "Silero VAD torch hub 未启用信任（更安全）；如需信任加载请设置 SILERO_VAD_TRUST_REPO=true 并自行评估风险"
                 )
@@ -1340,6 +1340,7 @@ class SpeechRecognizer:
             self._silero_vad_device = device
             get_speech_timestamps = None
             if isinstance(utils, (list, tuple)) and utils:
+                # Silero hub returns (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks)
                 if callable(utils[0]):
                     get_speech_timestamps = utils[0]
                 else:
@@ -1378,8 +1379,11 @@ class SpeechRecognizer:
             get_speech_timestamps = self._silero_vad_get_speech_timestamps
             if get_speech_timestamps is None:
                 utils_type = type(vad_utils).__name__ if vad_utils is not None else 'None'
+                utils_repr = repr(vad_utils)
+                if len(utils_repr) > 200:
+                    utils_repr = f"{utils_repr[:200]}..."
                 self.logger.warning(
-                    f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {utils_type}"
+                    f"Silero VAD工具格式异常，期望 list/tuple/dict，实际收到: {utils_type}, 内容: {utils_repr}"
                 )
                 return None
             if not callable(get_speech_timestamps):
