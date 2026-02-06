@@ -19,9 +19,10 @@ RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/arc
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装 Python 依赖到本地用户目录（不使用缓存挂载）
+# 安装 Python 依赖到本地用户目录（使用CPU-only的torch以减小镜像体积，不使用缓存挂载）
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN pip install --user --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+RUN pip install --user --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --user --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
@@ -89,14 +90,18 @@ RUN set -eux \
     && tar -xf "$tmpdir/ffmpeg.tar.xz" -C "$tmpdir" \
     && payload_dir="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -name 'ffmpeg*' | head -n 1)" \
     && if [ -z "$payload_dir" ]; then echo "Unable to locate extracted ffmpeg directory" >&2 && exit 1; fi \
-    && cp -a "$payload_dir"/. /app/ffmpeg/ \
+    && mkdir -p /app/ffmpeg/bin \
+    && if [ -x "$payload_dir/bin/ffmpeg" ]; then cp "$payload_dir/bin/ffmpeg" /app/ffmpeg/bin/ffmpeg; \
+       elif [ -x "$payload_dir/ffmpeg" ]; then cp "$payload_dir/ffmpeg" /app/ffmpeg/bin/ffmpeg; fi \
+    && if [ -x "$payload_dir/bin/ffprobe" ]; then cp "$payload_dir/bin/ffprobe" /app/ffmpeg/bin/ffprobe; \
+       elif [ -x "$payload_dir/ffprobe" ]; then cp "$payload_dir/ffprobe" /app/ffmpeg/bin/ffprobe; fi \
     && rm -rf "$tmpdir" \
-    && if [ -x /app/ffmpeg/bin/ffmpeg ]; then ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg; fi \
-    && if [ -x /app/ffmpeg/bin/ffprobe ]; then ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe; fi \
-    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe 2>/dev/null || true \
-    && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
-    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe \
-    && /app/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi nvenc && echo "✅ NVENC encoders detected" || echo "ℹ️ NVENC not found in current build"
+    && ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg \
+    && ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe \
+    && chmod +x /app/ffmpeg/bin/ffmpeg /app/ffmpeg/bin/ffprobe 2>/dev/null || true \
+    && ln -sf /app/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg \
+    && ln -sf /app/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe \
+    && /app/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -qi nvenc && echo "✅ NVENC encoders detected" || echo "ℹ️ NVENC not found in current build"
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \

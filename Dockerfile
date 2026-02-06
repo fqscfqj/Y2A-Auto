@@ -22,10 +22,11 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-builder \
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装Python依赖到本地目录
+# 安装Python依赖到本地目录（使用CPU-only的torch以减小镜像体积）
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+    pip install --user torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --user --trusted-host pypi.python.org --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
@@ -104,13 +105,17 @@ RUN set -eux \
     && tar -xf "$tmpdir/ffmpeg.tar.xz" -C "$tmpdir" \
     && payload_dir="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -name 'ffmpeg*' | head -n 1)" \
     && if [ -z "$payload_dir" ]; then echo "Unable to locate extracted ffmpeg directory" >&2 && exit 1; fi \
-    && cp -a "$payload_dir"/. /app/ffmpeg/ \
+    && mkdir -p /app/ffmpeg/bin \
+    && if [ -x "$payload_dir/bin/ffmpeg" ]; then cp "$payload_dir/bin/ffmpeg" /app/ffmpeg/bin/ffmpeg; \
+       elif [ -x "$payload_dir/ffmpeg" ]; then cp "$payload_dir/ffmpeg" /app/ffmpeg/bin/ffmpeg; fi \
+    && if [ -x "$payload_dir/bin/ffprobe" ]; then cp "$payload_dir/bin/ffprobe" /app/ffmpeg/bin/ffprobe; \
+       elif [ -x "$payload_dir/ffprobe" ]; then cp "$payload_dir/ffprobe" /app/ffmpeg/bin/ffprobe; fi \
     && rm -rf "$tmpdir" \
-    && if [ -x /app/ffmpeg/bin/ffmpeg ]; then ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg; fi \
-    && if [ -x /app/ffmpeg/bin/ffprobe ]; then ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe; fi \
-    && chmod +x /app/ffmpeg/ffmpeg /app/ffmpeg/ffprobe 2>/dev/null || true \
-    && ln -sf /app/ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
-    && ln -sf /app/ffmpeg/ffprobe /usr/local/bin/ffprobe \
+    && ln -sf /app/ffmpeg/bin/ffmpeg /app/ffmpeg/ffmpeg \
+    && ln -sf /app/ffmpeg/bin/ffprobe /app/ffmpeg/ffprobe \
+    && chmod +x /app/ffmpeg/bin/ffmpeg /app/ffmpeg/bin/ffprobe 2>/dev/null || true \
+    && ln -sf /app/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg \
+    && ln -sf /app/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe \
     && echo "ℹ️ FFmpeg installed with hardware encoding support (NVENC/QSV/VAAPI)"
 
 # 创建必要的目录并设置权限
