@@ -79,3 +79,4 @@ tests/
 # Development scripts
 start.bat
 start.ps1
+build-tools/

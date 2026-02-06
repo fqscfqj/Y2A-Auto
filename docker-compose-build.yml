@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # args:
+      #   ENABLE_GPU_DRIVERS: "true"  # 启用 Intel/AMD GPU VA-API 驱动
     image: y2a-auto:local
     container_name: y2a-auto
     restart: unless-stopped

@@ -17,3 +17,4 @@ pytz
 google-api-python-client==2.116.0
 websockets
 silero-vad>=5.1
+onnxruntime>=1.16.0
