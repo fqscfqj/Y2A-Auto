@@ -8,6 +8,7 @@ import logging
 import wave
 import time
 import shutil
+import inspect
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Any
 import re
@@ -1307,14 +1308,16 @@ class SpeechRecognizer:
             return self._silero_vad_model, self._silero_vad_utils, self._silero_vad_device
         try:
             import torch
-            import inspect
+            trust_repo = os.environ.get('SILERO_VAD_TRUST_REPO', '').strip().lower() in ('1', 'true', 'yes')
 
             kwargs = {
                 'repo_or_dir': 'snakers4/silero-vad',
                 'model': 'silero_vad'
             }
             if 'trust_repo' in inspect.signature(torch.hub.load).parameters:
-                kwargs['trust_repo'] = True
+                kwargs['trust_repo'] = trust_repo
+            if not trust_repo:
+                self.logger.info("Silero VAD 将使用未信任的 torch hub 加载设置，可通过 SILERO_VAD_TRUST_REPO=true 启用信任")
             loaded = torch.hub.load(**kwargs)
             if isinstance(loaded, tuple):
                 model = loaded[0]
@@ -1329,7 +1332,13 @@ class SpeechRecognizer:
             self._silero_vad_device = device
             get_speech_timestamps = None
             if isinstance(utils, (list, tuple)) and utils:
-                get_speech_timestamps = utils[0]
+                if callable(utils[0]):
+                    get_speech_timestamps = utils[0]
+                else:
+                    for item in utils:
+                        if callable(item) and getattr(item, '__name__', '') == 'get_speech_timestamps':
+                            get_speech_timestamps = item
+                            break
             elif isinstance(utils, dict):
                 get_speech_timestamps = utils.get('get_speech_timestamps')
             self._silero_vad_get_speech_timestamps = get_speech_timestamps
@@ -1421,7 +1430,6 @@ class SpeechRecognizer:
                 'max_speech_duration_s': self.config.vad_max_speech_s,
             }
 
-            import inspect
             param_names = self._silero_vad_param_names
             if not param_names:
                 param_names = set(inspect.signature(get_speech_timestamps).parameters)
