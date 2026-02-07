@@ -150,6 +150,7 @@ class SpeechRecognizer:
         self._language_hint: str = ''  # Set after VAD-based language detection
         self.last_warning_message: str = ''
         self.last_error_message: str = ''
+        self._supports_verbose_json: bool = True  # Track if API supports verbose_json format
         self._init_client()
 
     def _init_client(self):
@@ -427,22 +428,36 @@ class SpeechRecognizer:
                     # Single transcription for short audio
                     with open(audio_wav, 'rb') as f:
                         try:
+                            response_format = 'verbose_json' if self._supports_verbose_json else 'srt'
                             params = {
                                 'model': model_name,
                                 'file': f,
-                                'response_format': 'verbose_json'
+                                'response_format': response_format
                             }
                             if self.config.language:
                                 params['language'] = self.config.language
-                            
+
                             # Add prompt to reduce hallucinations (优化版：更精简)
                             base_prompt = "Transcribe speech only. Ignore noise."
                             if self.config.prompt:
                                 params['prompt'] = f"{base_prompt} {self.config.prompt}"
                             else:
                                 params['prompt'] = base_prompt
-                            
-                            resp = self.client.audio.transcriptions.create(**params)
+
+                            try:
+                                resp = self.client.audio.transcriptions.create(**params)
+                            except Exception as e:
+                                error_str = str(e)
+                                # Check if error is about invalid response_format
+                                if 'invalid response_format' in error_str.lower() or 'response_format' in error_str.lower():
+                                    if self._supports_verbose_json:
+                                        self._supports_verbose_json = False
+                                        self.logger.warning("API 不支持 verbose_json 格式，已切换到 srt 格式")
+                                        # Retry with srt format
+                                        params['response_format'] = 'srt'
+                                        resp = self.client.audio.transcriptions.create(**params)
+                                else:
+                                    raise
                         except Exception as e:
                             self.logger.error(f"语音转写请求失败: {e}")
                             self.last_error_message = f"Whisper转写请求失败: {e}"
@@ -1497,13 +1512,27 @@ class SpeechRecognizer:
         try:
             model_name = self.config.model_name or 'whisper-1'
             with open(wav_path, 'rb') as f:
+                response_format = 'verbose_json' if self._supports_verbose_json else 'json'
                 params = {
                     'model': model_name,
                     'file': f,
-                    'response_format': 'verbose_json',
+                    'response_format': response_format,
                     'temperature': 0
                 }
-                resp = self.client.audio.transcriptions.create(**params)
+                try:
+                    resp = self.client.audio.transcriptions.create(**params)
+                except Exception as e:
+                    error_str = str(e)
+                    # Check if error is about invalid response_format
+                    if 'invalid response_format' in error_str.lower() or 'response_format' in error_str.lower():
+                        if self._supports_verbose_json:
+                            self._supports_verbose_json = False
+                            self.logger.warning("API 不支持 verbose_json 格式，已切换到 json 格式进行语言检测")
+                            # Retry with json format
+                            params['response_format'] = 'json'
+                            resp = self.client.audio.transcriptions.create(**params)
+                    else:
+                        raise
 
             data = self._as_dict(resp) or {}
             lang = data.get('language') or ''
@@ -1537,64 +1566,76 @@ class SpeechRecognizer:
 
     def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
         """Transcribe a single audio clip with retry logic.
-        
+
         Strategy: Use language parameter, prompt, and retry on failure.
-        
+
         Args:
             wav_path: Path to audio file to transcribe
             base_offset_s: Time offset of this clip in the original video (for timestamp adjustment)
             total_duration_s: Total duration of the ENTIRE video (not the clip)
         """
         model_name = self.config.model_name or 'whisper-1'
-        
+
         # Get the duration of THIS clip (not the whole video)
         clip_duration_s = self._get_wav_duration(wav_path)
         if clip_duration_s <= 0.1:
             # Fallback if wav read fails
             clip_duration_s = self._probe_media_duration(wav_path) or 30.0
-        
+
         for attempt in range(self.config.max_retries):
             try:
                 with open(wav_path, 'rb') as f:
                     # Build request parameters
+                    # Try verbose_json first if supported, fallback to srt
+                    response_format = 'verbose_json' if self._supports_verbose_json else 'srt'
+
                     params = {
                         'model': model_name,
                         'file': f,
-                        'response_format': 'verbose_json'
+                        'response_format': response_format
                     }
-                    
+
                     # Add language if specified (skip invalid values like 'unknown')
                     language_hint = self._language_hint or self.config.language
                     if language_hint and language_hint.lower() != 'unknown':
                         params['language'] = language_hint
-                    
+
                     # Add prompt to reduce hallucinations (优化版：更精简的提示)
                     base_prompt = "Transcribe speech only. Ignore noise."
                     if self.config.prompt:
                         params['prompt'] = f"{base_prompt} {self.config.prompt}"
                     else:
                         params['prompt'] = base_prompt
-                    
+
                     # Use translation endpoint if translate is enabled
                     if self.config.translate:
                         resp = self.client.audio.translations.create(**params)
                     else:
                         resp = self.client.audio.transcriptions.create(**params)
-                
+
                 # CRITICAL: Pass clip_duration_s for time scale inference, not total_duration_s
                 cues = self._convert_response_to_cues(resp, base_offset_s, clip_duration_s)
                 if not cues:
                     self.logger.warning(f"分段转写响应为空 ({base_offset_s:.2f}s 起)")
                     return []
-                
+
                 # Clamp timestamps to video bounds (prevent overflow beyond total duration)
                 for cue in cues:
                     cue['start'] = min(cue['start'], total_duration_s)
                     cue['end'] = min(cue['end'], total_duration_s)
-                
+
                 # Apply text normalization and splitting
                 return self._apply_text_processing_to_cues(cues)
             except Exception as e:
+                error_str = str(e)
+                # Check if error is about invalid response_format
+                if 'invalid response_format' in error_str.lower() or 'response_format' in error_str.lower():
+                    if self._supports_verbose_json:
+                        self._supports_verbose_json = False
+                        self.logger.warning("API 不支持 verbose_json 格式，已切换到 srt 格式")
+                        # Retry immediately with srt format
+                        continue
+
                 self.logger.warning(f"分段转写失败 (尝试 {attempt + 1}/{self.config.max_retries}, {base_offset_s:.2f}s): {e}")
                 if attempt < self.config.max_retries - 1:
                     # Exponential backoff
