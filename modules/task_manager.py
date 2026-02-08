@@ -2306,17 +2306,52 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # --------------------------------------------------
                 # 硬件编码检测与参数生成函数
                 # --------------------------------------------------
+                # 缓存硬件编码器检测结果，避免重复测试
+                _hw_encoder_cache = {}
+
                 def _detect_hw_encoder(encoder_name: str) -> bool:
-                    """检测指定的硬件编码器是否可用"""
+                    """通过实际测试编码来检测硬件编码器是否可用（而非仅检查编译列表）"""
+                    if encoder_name in _hw_encoder_cache:
+                        return _hw_encoder_cache[encoder_name]
                     try:
-                        result = subprocess.run(
+                        # 先快速检查编码器是否编译进 ffmpeg
+                        list_result = subprocess.run(
                             [ffmpeg_bin, '-hide_banner', '-encoders'],
                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10
                         )
-                        if result.returncode == 0 and encoder_name in result.stdout:
-                            return True
+                        if list_result.returncode != 0 or encoder_name not in list_result.stdout:
+                            _hw_encoder_cache[encoder_name] = False
+                            return False
+
+                        # 实际测试编码：生成一帧黑色画面并尝试用该编码器编码
+                        # 这能验证硬件是否真正可用（而非仅 ffmpeg 编译时启用了支持）
+                        test_cmd = [
+                            ffmpeg_bin, '-hide_banner', '-loglevel', 'error',
+                            '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                            '-frames:v', '1',
+                            '-c:v', encoder_name
+                        ]
+
+                        # AMF 编码器需要额外的参数
+                        if 'amf' in encoder_name.lower():
+                            test_cmd.extend(['-usage', 'transcoding', '-quality', 'balanced'])
+
+                        test_cmd.extend(['-f', 'null', '-'])
+
+                        test_result = subprocess.run(
+                            test_cmd,
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15
+                        )
+                        available = test_result.returncode == 0
+                        _hw_encoder_cache[encoder_name] = available
+                        if not available:
+                            task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {test_result.stderr[:200] if test_result.stderr else '未知错误'}")
+                        else:
+                            task_logger.debug(f"编码器 {encoder_name} 测试成功，硬件可用")
+                        return available
                     except Exception as e:
                         task_logger.debug(f"检测编码器 {encoder_name} 时出错: {e}")
+                        _hw_encoder_cache[encoder_name] = False
                     return False
 
                 def _detect_nvidia() -> bool:
