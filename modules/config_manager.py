@@ -100,17 +100,17 @@ DEFAULT_CONFIG = {
     "VAD_PROVIDER": "silero-vad",
     "VAD_SILERO_THRESHOLD": 0.5,
     "VAD_SILERO_MIN_SPEECH_MS": 250,
-    "VAD_SILERO_MIN_SILENCE_MS": 100,
+    "VAD_SILERO_MIN_SILENCE_MS": 500,   # Broad: 避免在词语中间切断
     "VAD_SILERO_MAX_SPEECH_S": 120,
-    "VAD_SILERO_SPEECH_PAD_MS": 30,
+    "VAD_SILERO_SPEECH_PAD_MS": 500,    # 动态填充 500ms+，确保完整语义上下文
     "VAD_MAX_SEGMENT_S": 90,
     # 音频分片策略（针对长音频）
     "AUDIO_CHUNK_WINDOW_S": 25.0,  # 固定窗口大小（20-30s推荐）
     "AUDIO_CHUNK_OVERLAP_S": 0.2,  # 重叠时间确保连续性
-    # VAD后处理约束（控制字幕粒度）
-    "VAD_MERGE_GAP_S": 0.25,  # 合并间隙小于此值的片段（0.20-0.25s）
+    # VAD后处理约束（宽松策略 - 搜索窗口，非字幕边界）
+    "VAD_MERGE_GAP_S": 1.0,  # 自动合并间隙 < 1s 的片段，保持语义完整
     "VAD_MIN_SEGMENT_S": 1.0,  # 最短片段时长（0.8-1.2s）
-    "VAD_MAX_SEGMENT_S_FOR_SPLIT": 8.0,  # 超过此时长需二次切分（8-10s）
+    "VAD_MAX_SEGMENT_S_FOR_SPLIT": 29.0,  # Whisper窗口内二次切分阈值
     # 转写参数
     "WHISPER_LANGUAGE": "",  # 强制语言（如 en, zh, ja），空=自动检测
     "WHISPER_PROMPT": "",  # 转写提示（引导生成，减少幻觉）
