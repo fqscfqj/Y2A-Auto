@@ -97,9 +97,9 @@ class SpeechRecognitionConfig:
     chunk_overlap_s: float = 0.2  # Overlap between chunks to ensure continuity
 
     # VAD post-processing constraints (control subtitle granularity)
-    vad_merge_gap_s: float = 1.0  # Merge segments if gap < this value (0.20-0.25s) -> Increased to 1.0s to keep context
+    vad_merge_gap_s: float = 0.15  # Merge segments if gap < this value (减小以避免长句粘连)
     vad_min_segment_s: float = 1.0  # Minimum segment duration (0.8-1.2s)
-    vad_max_segment_s_for_split: float = 29.0  # Max segment before secondary splitting (8-10s) -> Increased to 29s for Whisper window
+    vad_max_segment_s_for_split: float = 8.0  # Max segment before secondary splitting (缩短以避免过长字幕)
 
     # Transcription settings
     language: str = ''  # Force language (e.g., 'en', 'zh', 'ja'), empty = auto-detect
@@ -115,9 +115,10 @@ class SpeechRecognitionConfig:
 
     # Final subtitle post-processing (timing/text granularity)
     subtitle_time_offset_s: float = 0.0  # Shift all cues by this offset in seconds (can be negative)
-    subtitle_min_cue_duration_s: float = 0.6  # Ensure each cue lasts at least this long
-    subtitle_merge_gap_s: float = 0.3  # Merge adjacent cues if gap <= this value
+    subtitle_min_cue_duration_s: float = 1.2  # Ensure each cue lasts at least this long (增加持续时间)
+    subtitle_merge_gap_s: float = 0.15  # Merge adjacent cues if gap <= this value (减小以避免过度合并)
     subtitle_min_text_length: int = 2  # Drop/merge cues with text shorter than this
+    subtitle_end_buffer_s: float = 0.8  # 字幕结束时间缓冲（延长显示时间避免提前消失）
 
     # Retry and fallback settings
     max_retries: int = 3  # Max retries for failed API calls
@@ -1211,9 +1212,10 @@ class SpeechRecognizer:
         Steps:
         1. Sort cues by start time.
         2. Apply global time offset (can be negative) and clamp into [0, total_duration].
-        3. Merge adjacent cues if gap <= subtitle_merge_gap_s OR either text length < subtitle_min_text_length.
-        4. Enforce minimum cue duration; extend or merge with neighbor.
-        5. Drop remaining cues whose text length < subtitle_min_text_length and duration < subtitle_min_cue_duration_s.
+        3. Apply end time buffer to extend subtitle display duration.
+        4. Merge adjacent cues if gap <= subtitle_merge_gap_s AND combined duration is reasonable.
+        5. Enforce minimum cue duration; extend or merge with neighbor.
+        6. Drop remaining cues whose text length < subtitle_min_text_length and duration < subtitle_min_cue_duration_s.
         """
         if not cues:
             return []
@@ -1222,9 +1224,10 @@ class SpeechRecognizer:
             offset = float(self.config.subtitle_time_offset_s)
         except Exception:
             offset = 0.0
-        merge_gap = max(0.0, float(getattr(self.config, 'subtitle_merge_gap_s', 0.3)))
+        merge_gap = max(0.0, float(getattr(self.config, 'subtitle_merge_gap_s', 0.15)))
         min_text_len = max(0, int(getattr(self.config, 'subtitle_min_text_length', 2)))
-        min_dur = max(0.05, float(getattr(self.config, 'subtitle_min_cue_duration_s', 0.6)))
+        min_dur = max(0.05, float(getattr(self.config, 'subtitle_min_cue_duration_s', 1.2)))
+        end_buffer = max(0.0, float(getattr(self.config, 'subtitle_end_buffer_s', 0.8)))
 
         # 1. sort
         cues = sorted(cues, key=lambda c: float(c.get('start', 0.0)))
@@ -1239,7 +1242,18 @@ class SpeechRecognizer:
             except Exception:
                 continue
 
-        # 3. merge adjacent cues
+        # 3. apply end buffer (extend subtitle display to avoid premature disappearing)
+        for i, c in enumerate(cues):
+            try:
+                # Only extend if it doesn't overlap with next subtitle
+                next_start = float(cues[i + 1]['start']) if i + 1 < len(cues) else total_duration_s
+                extended_end = min(float(c['end']) + end_buffer, next_start - 0.05, total_duration_s)
+                if extended_end > c['end']:
+                    c['end'] = extended_end
+            except Exception:
+                continue
+
+        # 4. merge adjacent cues (更严格的合并逻辑)
         merged: List[Dict[str, Any]] = []
         for c in cues:
             if not merged:
@@ -1249,31 +1263,27 @@ class SpeechRecognizer:
             gap = float(c['start']) - float(prev['end'])
             prev_text = (prev.get('text') or '').strip()
             cur_text = (c.get('text') or '').strip()
-            
+
             prev_dur = float(prev['end']) - float(prev['start'])
             cur_dur = float(c['end']) - float(c['start'])
             combined_dur = float(c['end']) - float(prev['start'])
 
             need_merge = False
-            
-            # Condition 1: Gap is small
+
+            # 只在gap非常小且合并后不会太长时才合并
             if gap <= merge_gap:
-                # Only merge if the resulting subtitle isn't too long (e.g. < 7s)
-                # OR if one of the segments is very short (fragment) that needs to be attached
-                if combined_dur < 7.0:
+                # 只有在合并后字幕不会太长时才合并（避免长句粘连）
+                if combined_dur < 5.0:  # 限制合并后不超过5秒
                     need_merge = True
-                elif prev_dur < 1.0 or cur_dur < 1.0:
-                    # Always try to rescue tiny fragments
+                elif prev_dur < 0.8 or cur_dur < 0.8:
+                    # 如果其中一个片段很短，可以合并（修复碎片）
                     need_merge = True
-                else:
-                    # Both are substantial and combined is long -> keep separate
-                    need_merge = False
-            
-            # Condition 2: Text is too short (fragment repair), even if gap is slightly larger
+
+            # 只有在文本非常短时才考虑间隔稍大的合并
             elif len(prev_text) < min_text_len or len(cur_text) < min_text_len:
-                if gap <= merge_gap * 2:
+                if gap <= merge_gap * 1.5 and combined_dur < 4.0:
                     need_merge = True
-            
+
             if need_merge:
                 # Merge texts with space (avoid duplicate punctuation spacing)
                 new_text = (prev_text + ' ' + cur_text).strip()
@@ -1282,7 +1292,7 @@ class SpeechRecognizer:
             else:
                 merged.append(c)
 
-        # 4. enforce minimum duration by extending forward (without overlapping next) or merging
+        # 5. enforce minimum duration by extending forward (without overlapping next) or merging
         finalized: List[Dict[str, Any]] = []
         for i, c in enumerate(merged):
             start = float(c['start'])
@@ -1292,7 +1302,7 @@ class SpeechRecognizer:
             if dur < min_dur:
                 # Try to extend to min_dur without passing next cue start
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
-                target_end = min(start + min_dur, next_start - 0.01 if next_start - start > 0.05 else next_start)
+                target_end = min(start + min_dur, next_start - 0.05 if next_start - start > 0.1 else next_start)
                 if target_end > end:
                     c['end'] = target_end
                 else:
@@ -1303,7 +1313,7 @@ class SpeechRecognizer:
                         continue  # Skip adding current; it's merged forward
             finalized.append(c)
 
-        # 5. drop remaining ultra-short single-character cues
+        # 6. drop remaining ultra-short single-character cues
         cleaned: List[Dict[str, Any]] = []
         for c in finalized:
             text = (c.get('text') or '').strip()
@@ -1682,7 +1692,7 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 25.0) or 25.0),
             chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) or 0.2),
             # VAD post-processing constraints
-            vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.25) or 0.25),
+            vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.15) or 0.15),
             vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 1.0) or 1.0),
             vad_max_segment_s_for_split=float(app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 8.0) or 8.0),
             # Transcription settings
@@ -1697,9 +1707,10 @@ def create_speech_recognizer_from_config(app_config: dict, task_id: Optional[str
             filter_filler_words=bool(app_config.get('SUBTITLE_FILTER_FILLER_WORDS', True)),
             # Final subtitle post-processing (optional params)
             subtitle_time_offset_s=float(app_config.get('SUBTITLE_TIME_OFFSET_S', 0.0) or 0.0),
-            subtitle_min_cue_duration_s=float(app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) or 0.6),
-            subtitle_merge_gap_s=float(app_config.get('SUBTITLE_MERGE_GAP_S', 0.3) or 0.3),
+            subtitle_min_cue_duration_s=float(app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 1.2) or 1.2),
+            subtitle_merge_gap_s=float(app_config.get('SUBTITLE_MERGE_GAP_S', 0.15) or 0.15),
             subtitle_min_text_length=int(app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2),
+            subtitle_end_buffer_s=float(app_config.get('SUBTITLE_END_BUFFER_S', 0.8) or 0.8),
             # Retry and fallback settings
             max_retries=int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3),
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
