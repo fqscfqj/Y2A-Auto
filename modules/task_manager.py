@@ -1726,10 +1726,12 @@ class TaskProcessor:
                     if recognizer and task is not None:
                         video_path = task.get('video_path_local')
                         if video_path and os.path.exists(video_path):
+                            # 确保在任何情况下都有默认的 prev_status，避免未绑定警告
+                            prev_status = TASK_STATES['TRANSLATING_SUBTITLE']
                             try:
                                 # 显示ASR状态
                                 _t = get_task(task_id)
-                                prev_status = _t['status'] if _t else TASK_STATES['TRANSLATING_SUBTITLE']
+                                prev_status = _t['status'] if _t else prev_status
                                 update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
                                 # 输出字幕路径（强制使用 SRT）
                                 asr_ext = '.srt'
