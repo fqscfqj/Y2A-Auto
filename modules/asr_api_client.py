@@ -88,13 +88,19 @@ class AsrApiClient:
     # Public API – single segment
     # ------------------------------------------------------------------
 
-    def transcribe_segment(self, wav_path: str) -> Optional[str]:
+    def transcribe_segment(self, wav_path: str, segment_info: Optional[str] = None) -> Optional[str]:
         """Transcribe a single audio file and return raw SRT text.
+
+        Args:
+            wav_path: Path to the audio file
+            segment_info: Optional description for logging (e.g., "125.20s-130.50s, 5.3s")
 
         Returns:
             Raw SRT string (relative timestamps), or *None* on failure.
         """
         model = self.config.model_name or 'whisper-1'
+        segment_desc = segment_info or wav_path
+
         for attempt in range(self.config.max_retries):
             try:
                 with open(wav_path, 'rb') as f:
@@ -124,26 +130,32 @@ class AsrApiClient:
                     return srt_text
 
                 self.logger.warning(
-                    f"Empty ASR response for {wav_path} (attempt {attempt + 1}/{self.config.max_retries})"
+                    f"Empty ASR response for segment [{segment_desc}] "
+                    f"(attempt {attempt + 1}/{self.config.max_retries})"
                 )
                 if attempt < self.config.max_retries - 1:
                     delay = self.config.retry_delay_s * (2 ** attempt)
-                    self.logger.info(f"Retrying in {delay:.1f}s …")
+                    self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
                     time.sleep(delay)
                 else:
                     self.logger.error(
-                        f"ASR request returned empty response after {self.config.max_retries} attempts"
+                        f"ASR returned empty response for segment [{segment_desc}] "
+                        f"after {self.config.max_retries} attempts"
                     )
             except Exception as exc:
+                error_type = type(exc).__name__
                 self.logger.warning(
-                    f"ASR request failed (attempt {attempt + 1}/{self.config.max_retries}): {exc}"
+                    f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
+                    f"(attempt {attempt + 1}/{self.config.max_retries})"
                 )
                 if attempt < self.config.max_retries - 1:
                     delay = self.config.retry_delay_s * (2 ** attempt)
-                    self.logger.info(f"Retrying in {delay:.1f}s …")
+                    self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
                     time.sleep(delay)
                 else:
-                    self.logger.error(f"ASR request failed after {self.config.max_retries} attempts")
+                    self.logger.error(
+                        f"ASR failed for segment [{segment_desc}] after {self.config.max_retries} attempts"
+                    )
         return None
 
     # ------------------------------------------------------------------
@@ -173,26 +185,40 @@ class AsrApiClient:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {}
             for idx, (offset, wav_path) in enumerate(segments):
-                future = pool.submit(self.transcribe_segment, wav_path)
-                futures[future] = (idx, offset)
+                # Create segment info for better logging
+                try:
+                    import wave
+                    with wave.open(wav_path, 'rb') as wf:
+                        duration = wf.getnframes() / wf.getframerate() if wf.getframerate() > 0 else 0.0
+                    segment_info = f"{offset:.2f}s-{offset+duration:.2f}s, {duration:.2f}s"
+                except Exception:
+                    segment_info = f"{offset:.2f}s"
+
+                future = pool.submit(self.transcribe_segment, wav_path, segment_info)
+                futures[future] = (idx, offset, segment_info)
 
             total_failures = 0
             max_total_failures = max(5, len(segments) // 2)
             for future in as_completed(futures):
-                idx, offset = futures[future]
+                idx, offset, segment_info = futures[future]
                 try:
                     srt_text = future.result()
                     results[idx] = (offset, srt_text)
                     if not srt_text:
                         total_failures += 1
+                        self.logger.warning(
+                            f"Segment {idx+1}/{len(segments)} [{segment_info}] transcription returned empty result"
+                        )
                 except Exception as exc:
-                    self.logger.warning(f"Segment {idx} transcription error: {exc}")
+                    self.logger.warning(
+                        f"Segment {idx+1}/{len(segments)} [{segment_info}] transcription error: {exc}"
+                    )
                     results[idx] = (offset, None)
                     total_failures += 1
 
                 if total_failures >= max_total_failures:
                     self.logger.error(
-                        f"ASR failed on {total_failures}/{len(segments)} segments – aborting"
+                        f"ASR failed on {total_failures}/{len(segments)} segments (threshold: {max_total_failures}) – aborting"
                     )
                     # Cancel remaining futures
                     for pending in futures:
