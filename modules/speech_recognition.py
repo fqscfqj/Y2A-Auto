@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import logging
 import wave
+import audioop
 import time
 import shutil
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ _FILLER_PATTERNS = [
 _REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
 _SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
+_SILENCE_RMS_THRESHOLD = 0.003
 
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
@@ -349,6 +351,8 @@ class SpeechRecognizer:
                             part_wav = self._extract_audio_clip(audio_wav, seg_start_s, seg_end_s)
                             if part_wav:
                                 segment_cues = self._transcribe_one_clip(part_wav, seg_start_s, total_audio_duration)
+                                if segment_cues is None:
+                                    continue
                                 if segment_cues:
                                     cues.extend(segment_cues)
                                     transcribe_consecutive_failures = 0  # 重置失败计数
@@ -375,6 +379,8 @@ class SpeechRecognizer:
                                 chunk_wav = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
                                 if chunk_wav:
                                     chunk_cues = self._transcribe_one_clip(chunk_wav, chunk_start, total_audio_duration)
+                                    if chunk_cues is None:
+                                        continue
                                     if chunk_cues:
                                         cues.extend(chunk_cues)
                                         transcribe_consecutive_failures = 0
@@ -416,6 +422,8 @@ class SpeechRecognizer:
                         chunk_wav = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
                         if chunk_wav:
                             chunk_cues = self._transcribe_one_clip(chunk_wav, chunk_start, total_audio_duration)
+                            if chunk_cues is None:
+                                continue
                             if chunk_cues:
                                 cues.extend(chunk_cues)
                                 transcribe_consecutive_failures = 0
@@ -1574,7 +1582,21 @@ class SpeechRecognizer:
         except Exception:
             return 0.0
 
-    def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> List[Dict[str, Any]]:
+    def _get_audio_rms(self, wav_path: str) -> Optional[float]:
+        """Get normalized RMS energy for a WAV file. Returns None on failure."""
+        try:
+            with wave.open(wav_path, 'rb') as wf:
+                sample_width = wf.getsampwidth()
+                frames = wf.readframes(wf.getnframes())
+            if not frames or sample_width <= 0:
+                return None
+            rms = audioop.rms(frames, sample_width)
+            max_amp = float(1 << (8 * sample_width - 1))
+            return rms / max_amp if max_amp > 0 else None
+        except Exception:
+            return None
+
+    def _transcribe_one_clip(self, wav_path: str, base_offset_s: float, total_duration_s: float) -> Optional[List[Dict[str, Any]]]:
         """Transcribe a single audio clip with retry logic.
 
         Strategy: Use language parameter, prompt, and retry on failure.
@@ -1591,6 +1613,14 @@ class SpeechRecognizer:
         if clip_duration_s <= 0.1:
             # Fallback if wav read fails
             clip_duration_s = self._probe_media_duration(wav_path) or 30.0
+
+        rms_norm = self._get_audio_rms(wav_path)
+        if clip_duration_s < 0.25 or (rms_norm is not None and rms_norm < _SILENCE_RMS_THRESHOLD):
+            self.logger.debug(
+                "分段音频过短或静音，跳过转写 "
+                f"(dur={clip_duration_s:.2f}s, rms={rms_norm if rms_norm is not None else 'n/a'})"
+            )
+            return None
 
         for attempt in range(self.config.max_retries):
             try:
@@ -1626,6 +1656,11 @@ class SpeechRecognizer:
                 # CRITICAL: Pass clip_duration_s for time scale inference, not total_duration_s
                 cues = self._convert_response_to_cues(resp, base_offset_s, clip_duration_s)
                 if not cues:
+                    if rms_norm is None:
+                        rms_norm = self._get_audio_rms(wav_path)
+                    if rms_norm is not None and rms_norm < _SILENCE_RMS_THRESHOLD:
+                        self.logger.debug(f"分段无有效语音，跳过 ({base_offset_s:.2f}s 起)")
+                        return None
                     self.logger.warning(f"分段转写响应为空 ({base_offset_s:.2f}s 起)")
                     return []
 
