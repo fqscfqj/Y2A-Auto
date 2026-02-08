@@ -261,10 +261,10 @@ class SpeechRecognizer:
                             extract_clip_fn=self._extract_audio_clip,
                         )
                         if lang_hint and lang_hint.lower() != 'unknown':
-                            self._asr._language_hint = lang_hint
+                            self._asr.set_language_hint(lang_hint)
                             self.logger.info(f"Detected language: {lang_hint}")
                         else:
-                            self._asr._language_hint = ''
+                            self._asr.set_language_hint('')
 
                         # Step 3 – Concurrent ASR transcription (SRT format)
                         self.logger.info("Step 3/6: ASR transcription (concurrent, SRT format)")

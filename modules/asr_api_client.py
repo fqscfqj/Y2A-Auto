@@ -61,6 +61,14 @@ class AsrApiClient:
         self._init_client()
 
     # ------------------------------------------------------------------
+    # Language hint setter
+    # ------------------------------------------------------------------
+
+    def set_language_hint(self, lang: str):
+        """Set the language hint for subsequent transcription calls."""
+        self._language_hint = lang
+
+    # ------------------------------------------------------------------
     # Client initialisation
     # ------------------------------------------------------------------
 
@@ -181,8 +189,8 @@ class AsrApiClient:
                         f"ASR failed on {max_consecutive} consecutive segments – aborting"
                     )
                     # Cancel remaining futures
-                    for f in futures:
-                        f.cancel()
+                    for pending in futures:
+                        pending.cancel()
                     break
 
         # Return in original order
