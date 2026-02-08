@@ -37,7 +37,6 @@ class VadConfig:
     min_silence_ms: int = 500       # Min silence to split (broad – avoid mid-word cuts)
     max_speech_s: int = 120         # Max continuous speech before forced split
     speech_pad_ms: int = 500        # Dynamic padding before/after speech (500 ms+)
-    max_segment_s: int = 90         # Hard upper bound per segment
 
     # Audio chunking (for processing long files in manageable pieces)
     chunk_window_s: float = 25.0
@@ -104,8 +103,9 @@ class VadProcessor:
             try:
                 if os.path.exists(d):
                     shutil.rmtree(d)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort cleanup: log and continue without raising.
+                self.logger.warning("Failed to remove temporary directory %s: %s", d, exc)
         self._temp_dirs.clear()
 
     # ------------------------------------------------------------------
@@ -368,6 +368,11 @@ class VadProcessor:
                 encoding='utf-8', errors='replace', timeout=120,
             )
             if result.returncode != 0 or not os.path.exists(out_wav):
+                self.logger.warning(
+                    "Audio clip extraction failed (rc=%d, %s–%ss): %s",
+                    result.returncode, f"{start_s:.3f}", f"{end_s:.3f}",
+                    (result.stderr or '')[:200],
+                )
                 return None
 
             with wave.open(out_wav, 'rb') as wf:
@@ -376,5 +381,6 @@ class VadProcessor:
                     return None
 
             return out_wav
-        except Exception:
+        except Exception as exc:
+            self.logger.warning("Audio clip extraction exception (%s–%ss): %s", f"{start_s:.3f}", f"{end_s:.3f}", exc)
             return None

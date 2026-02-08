@@ -16,9 +16,7 @@ Features:
 """
 
 import logging
-import os
 import time
-import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,6 +71,9 @@ class AsrApiClient:
     # ------------------------------------------------------------------
 
     def _init_client(self):
+        if not self.config.api_key:
+            self.logger.error("Missing Whisper/OpenAI API key – ASR client not initialised")
+            return
         try:
             import openai
             opts: Dict[str, Any] = {}
@@ -123,9 +124,16 @@ class AsrApiClient:
                     return srt_text
 
                 self.logger.warning(
-                    f"Empty ASR response for {wav_path} (attempt {attempt + 1})"
+                    f"Empty ASR response for {wav_path} (attempt {attempt + 1}/{self.config.max_retries})"
                 )
-                return None
+                if attempt < self.config.max_retries - 1:
+                    delay = self.config.retry_delay_s * (2 ** attempt)
+                    self.logger.info(f"Retrying in {delay:.1f}s …")
+                    time.sleep(delay)
+                else:
+                    self.logger.error(
+                        f"ASR request returned empty response after {self.config.max_retries} attempts"
+                    )
             except Exception as exc:
                 self.logger.warning(
                     f"ASR request failed (attempt {attempt + 1}/{self.config.max_retries}): {exc}"
@@ -168,25 +176,23 @@ class AsrApiClient:
                 future = pool.submit(self.transcribe_segment, wav_path)
                 futures[future] = (idx, offset)
 
-            consecutive_failures = 0
-            max_consecutive = 5
+            total_failures = 0
+            max_total_failures = max(5, len(segments) // 2)
             for future in as_completed(futures):
                 idx, offset = futures[future]
                 try:
                     srt_text = future.result()
                     results[idx] = (offset, srt_text)
-                    if srt_text:
-                        consecutive_failures = 0
-                    else:
-                        consecutive_failures += 1
+                    if not srt_text:
+                        total_failures += 1
                 except Exception as exc:
                     self.logger.warning(f"Segment {idx} transcription error: {exc}")
                     results[idx] = (offset, None)
-                    consecutive_failures += 1
+                    total_failures += 1
 
-                if consecutive_failures >= max_consecutive:
+                if total_failures >= max_total_failures:
                     self.logger.error(
-                        f"ASR failed on {max_consecutive} consecutive segments – aborting"
+                        f"ASR failed on {total_failures}/{len(segments)} segments – aborting"
                     )
                     # Cancel remaining futures
                     for pending in futures:
@@ -291,8 +297,10 @@ class AsrApiClient:
                 t = d.get('text', '')
                 if isinstance(t, str) and t.strip():
                     return t.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to extract 'text' from response via dict-like access: %r", exc,
+            )
         # Last resort
         try:
             import json

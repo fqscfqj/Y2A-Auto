@@ -90,7 +90,6 @@ class SpeechRecognitionConfig:
     vad_min_silence_ms: int = 500       # Broad: avoid mid-word cuts
     vad_max_speech_s: int = 120
     vad_speech_pad_ms: int = 500        # Dynamic padding 500 ms+
-    vad_max_segment_s: int = 90
 
     # Audio chunking
     chunk_window_s: float = 25.0
@@ -152,6 +151,11 @@ class SpeechRecognizer:
         self.last_error_message: str = ''
         self._temp_dirs: List[str] = []
 
+        # Validate provider
+        if config.provider != 'whisper':
+            self.logger.error(f"Unsupported speech recognition provider: {config.provider}")
+            raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
+
         # Build sub-components -------------------------------------------
         self._vad = VadProcessor(
             VadConfig(
@@ -161,7 +165,6 @@ class SpeechRecognizer:
                 min_silence_ms=config.vad_min_silence_ms,
                 max_speech_s=config.vad_max_speech_s,
                 speech_pad_ms=config.vad_speech_pad_ms,
-                max_segment_s=config.vad_max_segment_s,
                 chunk_window_s=config.chunk_window_s,
                 chunk_overlap_s=config.chunk_overlap_s,
                 merge_gap_s=config.vad_merge_gap_s,
@@ -360,8 +363,10 @@ class SpeechRecognizer:
                 if isinstance(cue_count, int) and cue_count < max(0, self.config.min_lines_threshold):
                     try:
                         os.remove(output_path)
-                    except Exception:
-                        pass
+                    except Exception as cleanup_exc:
+                        self.logger.warning(
+                            f"Failed to remove low-quality subtitle file '{output_path}': {cleanup_exc}"
+                        )
                     self.logger.info(
                         f"Subtitle count ({cue_count}) below threshold "
                         f"({self.config.min_lines_threshold}) – discarded"
@@ -570,8 +575,9 @@ class SpeechRecognizer:
             try:
                 if os.path.exists(d):
                     shutil.rmtree(d)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort cleanup: log and continue without failing the task.
+                self.logger.debug(f"Failed to remove temp dir {d}: {exc}")
         self._temp_dirs.clear()
 
 
@@ -618,7 +624,6 @@ def create_speech_recognizer_from_config(
             vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 500) or 500),
             vad_max_speech_s=int(app_config.get('VAD_SILERO_MAX_SPEECH_S', 120) or 120),
             vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 500) or 500),
-            vad_max_segment_s=int(app_config.get('VAD_MAX_SEGMENT_S', 90) or 90),
             chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 25.0) or 25.0),
             chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) or 0.2),
             vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 1.0) or 1.0),
