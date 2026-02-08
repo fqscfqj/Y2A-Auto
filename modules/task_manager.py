@@ -2387,18 +2387,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     custom_params_enabled = custom_params_enabled.lower() in ['true', '1', 'on']
                 custom_params = str(self.config.get('VIDEO_CUSTOM_PARAMS', '')).strip()
 
-                # 根据分辨率确定推荐比特率
-                # 4K (>=2160p): 25Mbps, 1080p: 12Mbps, 其他按比例
+                # 根据分辨率确定推荐比特率（平衡上传时间和视频质量）
+                # 4K (>=2160p): 16Mbps, 1080p: 8Mbps, 720p: 5Mbps
                 def get_recommended_bitrate(height: int) -> tuple[str, str, str]:
                     """返回 (bitrate, maxrate, bufsize)"""
                     if height >= 2160:  # 4K
-                        return ('25M', '30M', '60M')
+                        return ('16M', '20M', '40M')
                     elif height >= 1080:  # 1080p
-                        return ('12M', '15M', '30M')
-                    elif height >= 720:  # 720p
                         return ('8M', '10M', '20M')
-                    else:  # 低于 720p
+                    elif height >= 720:  # 720p
                         return ('5M', '6M', '12M')
+                    else:  # 低于 720p
+                        return ('3M', '4M', '8M')
 
                 target_bitrate, max_bitrate, buf_size = get_recommended_bitrate(input_height)
                 task_logger.info(f"视频分辨率: {input_width}x{input_height}, 目标码率: {target_bitrate}")
