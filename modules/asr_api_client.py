@@ -182,10 +182,15 @@ class AsrApiClient:
                         )
                         continue  # Try next format
                     else:
-                        # Non-format error, re-raise to trigger retry logic
-                        raise
+                        # Non-format error - log and break format loop to trigger retry
+                        error_type = type(exc).__name__
+                        self.logger.warning(
+                            f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
+                            f"(attempt {attempt + 1}/{self.config.max_retries})"
+                        )
+                        break  # Break format loop to trigger outer retry loop
             
-            # If we tried all formats and none worked due to format errors
+            # If we tried all formats and got format errors
             if format_error:
                 self.logger.error(
                     f"ASR API does not support required formats (verbose_json, srt) for segment [{segment_desc}]. "
@@ -196,22 +201,16 @@ class AsrApiClient:
                     f"Cannot proceed with transcription."
                 )
             
-            # Empty response handling
+            # Empty response or error - retry if attempts remain
             if not srt_text:
-                self.logger.warning(
-                    f"Empty ASR response for segment [{segment_desc}] "
-                    f"(attempt {attempt + 1}/{self.config.max_retries})"
-                )
                 if attempt < self.config.max_retries - 1:
                     delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
                     self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
                     time.sleep(delay)
                 else:
                     self.logger.error(
-                        f"ASR returned empty response for segment [{segment_desc}] "
-                        f"after {self.config.max_retries} attempts"
+                        f"ASR failed for segment [{segment_desc}] after {self.config.max_retries} attempts"
                     )
-                continue
                     
         return None
 
@@ -365,8 +364,7 @@ class AsrApiClient:
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _verbose_json_to_srt(resp) -> Optional[str]:
+    def _verbose_json_to_srt(self, resp) -> Optional[str]:
         """Convert verbose_json response to SRT format.
         
         Args:
@@ -396,7 +394,9 @@ class AsrApiClient:
                 # No segments, try to get text and duration directly
                 text = data.get('text', '')
                 if text and isinstance(text, str):
-                    # Use duration from response if available, otherwise use a default
+                    # Use duration from response if available
+                    # Note: Using 1.0s as fallback when duration is unavailable
+                    # This may not reflect actual audio duration but provides a valid SRT entry
                     duration = data.get('duration', 1.0)
                     if not isinstance(duration, (int, float)) or duration <= 0:
                         duration = 1.0
@@ -432,7 +432,7 @@ class AsrApiClient:
             return None
             
         except Exception as exc:
-            logging.getLogger(__name__).warning(
+            self.logger.warning(
                 f"Failed to convert verbose_json to SRT: {exc}"
             )
             return None
