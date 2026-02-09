@@ -27,11 +27,19 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 def _format_srt_timestamp(seconds: float) -> str:
-    """Format a timestamp in seconds as SRT format (HH:MM:SS,mmm)."""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds % 1) * 1000)
+    """Format a timestamp in seconds as SRT format (HH:MM:SS,mmm).
+    
+    Uses millisecond-based rounding to avoid float precision flooring issues.
+    Consistent with SrtTransformEngine._format_timestamp().
+    """
+    # Use millisecond-based rounding to avoid float precision flooring issues.
+    total_millis = int(round(seconds * 1000))
+    hours = total_millis // 3_600_000
+    remaining = total_millis % 3_600_000
+    minutes = remaining // 60_000
+    remaining %= 60_000
+    secs = remaining // 1000
+    millis = remaining % 1000
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
@@ -124,8 +132,10 @@ class AsrApiClient:
         for attempt in range(self.config.max_retries):
             srt_text = None
             format_error = None
+            last_was_format_error = False
             
             # Try formats in order: verbose_json → srt
+            # If cached format is set, try it first but fall back to full sequence if it fails
             formats_to_try = _SUPPORTED_FORMATS if self._supported_format is None else [self._supported_format]
             
             for fmt in formats_to_try:
@@ -167,6 +177,16 @@ class AsrApiClient:
                     
                     if srt_text:
                         return srt_text
+                    
+                    # No SRT text from cached format - clear cache and retry with all formats
+                    if self._supported_format is not None and len(formats_to_try) == 1:
+                        self.logger.warning(
+                            f"Cached format '{self._supported_format}' returned empty result, "
+                            f"clearing cache and retrying with all formats"
+                        )
+                        self._supported_format = None
+                        formats_to_try = _SUPPORTED_FORMATS
+                        continue  # Retry with all formats
                         
                 except Exception as exc:
                     err_str = str(exc).lower()
@@ -179,12 +199,24 @@ class AsrApiClient:
                     )
                     if is_format_error:
                         format_error = exc
+                        last_was_format_error = True
                         self.logger.warning(
                             f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
                         )
+                        # If cached format failed with format error, clear cache and retry all
+                        if self._supported_format is not None and len(formats_to_try) == 1:
+                            self.logger.warning(
+                                f"Cached format '{self._supported_format}' no longer supported, "
+                                f"clearing cache and retrying with all formats"
+                            )
+                            self._supported_format = None
+                            formats_to_try = _SUPPORTED_FORMATS
+                            format_error = None  # Reset to retry
+                            last_was_format_error = False
                         continue  # Try next format
                     else:
                         # Non-format error - log and break format loop to trigger retry
+                        last_was_format_error = False
                         error_type = type(exc).__name__
                         self.logger.warning(
                             f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
@@ -192,8 +224,8 @@ class AsrApiClient:
                         )
                         break  # Break format loop to trigger outer retry loop
             
-            # If we tried all formats and got format errors
-            if format_error:
+            # Only raise RuntimeError if all formats failed specifically due to format support
+            if format_error and last_was_format_error:
                 self.logger.error(
                     f"ASR API does not support required formats (verbose_json, srt) for segment [{segment_desc}]. "
                     f"Last error: {format_error}"
@@ -408,7 +440,8 @@ class AsrApiClient:
             
             # Build SRT from segments
             srt_lines = []
-            for idx, seg in enumerate(segments, 1):
+            cue_number = 1  # Use separate counter for emitted cues
+            for seg in segments:
                 if not isinstance(seg, dict):
                     continue
                 
@@ -423,10 +456,11 @@ class AsrApiClient:
                 start_ts = _format_srt_timestamp(start)
                 end_ts = _format_srt_timestamp(end)
                 
-                srt_lines.append(f"{idx}")
+                srt_lines.append(f"{cue_number}")
                 srt_lines.append(f"{start_ts} --> {end_ts}")
                 srt_lines.append(text)
                 srt_lines.append("")  # Empty line between entries
+                cue_number += 1  # Increment only for emitted cues
             
             if srt_lines:
                 return '\n'.join(srt_lines)
