@@ -113,6 +113,44 @@ class AsrApiClient:
     # Public API – single segment
     # ------------------------------------------------------------------
 
+    def _try_format(self, wav_path: str, fmt: str, model: str) -> Optional[str]:
+        """Try transcribing with a specific format.
+        
+        Args:
+            wav_path: Path to the audio file
+            fmt: Response format ('verbose_json' or 'srt')
+            model: Model name
+            
+        Returns:
+            SRT text if successful, None otherwise
+        """
+        with open(wav_path, 'rb') as f:
+            params: Dict[str, Any] = {
+                'model': model,
+                'file': f,
+                'response_format': fmt,
+            }
+            lang = self._language_hint or self.config.language
+            if lang and lang.lower() != 'unknown':
+                params['language'] = lang
+
+            base_prompt = "Transcribe speech only. Ignore noise."
+            if self.config.prompt:
+                params['prompt'] = f"{base_prompt} {self.config.prompt}"
+            else:
+                params['prompt'] = base_prompt
+
+            if self.config.translate:
+                resp = self.client.audio.translations.create(**params)
+            else:
+                resp = self.client.audio.transcriptions.create(**params)
+
+        # Extract or convert to SRT
+        if fmt == 'verbose_json':
+            return self._verbose_json_to_srt(resp)
+        else:  # srt
+            return self._extract_text(resp)
+
     def transcribe_segment(self, wav_path: str, segment_info: Optional[str] = None) -> Optional[str]:
         """Transcribe a single audio file and return raw SRT text.
         
@@ -142,42 +180,12 @@ class AsrApiClient:
             
             for fmt in formats_to_try:
                 try:
-                    with open(wav_path, 'rb') as f:
-                        params: Dict[str, Any] = {
-                            'model': model,
-                            'file': f,
-                            'response_format': fmt,
-                        }
-                        lang = self._language_hint or self.config.language
-                        if lang and lang.lower() != 'unknown':
-                            params['language'] = lang
-
-                        base_prompt = "Transcribe speech only. Ignore noise."
-                        if self.config.prompt:
-                            params['prompt'] = f"{base_prompt} {self.config.prompt}"
-                        else:
-                            params['prompt'] = base_prompt
-
-                        if self.config.translate:
-                            resp = self.client.audio.translations.create(**params)
-                        else:
-                            resp = self.client.audio.transcriptions.create(**params)
-
-                    # Extract or convert to SRT
-                    if fmt == 'verbose_json':
-                        srt_text = self._verbose_json_to_srt(resp)
-                        if srt_text:
-                            if self._supported_format is None:
-                                self.logger.info(f"Successfully using verbose_json format")
-                            self._supported_format = 'verbose_json'  # Cache successful format
-                    else:  # srt
-                        srt_text = self._extract_text(resp)
-                        if srt_text:
-                            if self._supported_format is None:
-                                self.logger.info(f"Successfully using srt format")
-                            self._supported_format = 'srt'  # Cache successful format
+                    srt_text = self._try_format(wav_path, fmt, model)
                     
                     if srt_text:
+                        if self._supported_format is None:
+                            self.logger.info(f"Successfully using {fmt} format")
+                        self._supported_format = fmt  # Cache successful format
                         return srt_text
                     
                     # No SRT text from cached format - clear cache and signal to retry
@@ -230,40 +238,11 @@ class AsrApiClient:
                 self.logger.info("Retrying with all formats after cache invalidation")
                 for fmt in _SUPPORTED_FORMATS:
                     try:
-                        with open(wav_path, 'rb') as f:
-                            params: Dict[str, Any] = {
-                                'model': model,
-                                'file': f,
-                                'response_format': fmt,
-                            }
-                            lang = self._language_hint or self.config.language
-                            if lang and lang.lower() != 'unknown':
-                                params['language'] = lang
-
-                            base_prompt = "Transcribe speech only. Ignore noise."
-                            if self.config.prompt:
-                                params['prompt'] = f"{base_prompt} {self.config.prompt}"
-                            else:
-                                params['prompt'] = base_prompt
-
-                            if self.config.translate:
-                                resp = self.client.audio.translations.create(**params)
-                            else:
-                                resp = self.client.audio.transcriptions.create(**params)
-
-                        # Extract or convert to SRT
-                        if fmt == 'verbose_json':
-                            srt_text = self._verbose_json_to_srt(resp)
-                            if srt_text:
-                                self.logger.info(f"Successfully using verbose_json format after cache invalidation")
-                                self._supported_format = 'verbose_json'
-                        else:  # srt
-                            srt_text = self._extract_text(resp)
-                            if srt_text:
-                                self.logger.info(f"Successfully using srt format after cache invalidation")
-                                self._supported_format = 'srt'
+                        srt_text = self._try_format(wav_path, fmt, model)
                         
                         if srt_text:
+                            self.logger.info(f"Successfully using {fmt} format after cache invalidation")
+                            self._supported_format = fmt
                             return srt_text
                             
                     except Exception as exc:
