@@ -429,7 +429,7 @@ class SpeechRecognizer:
         inputs: List[Tuple[float, str]] = []
         for seg_start, seg_end in vad_segments:
             seg_start = max(0.0, float(seg_start))
-            seg_end = max(seg_start, float(seg_end))
+            seg_end = max(seg_start + 0.01, float(seg_end))
             clip = self._extract_audio_clip(audio_wav, seg_start, seg_end)
             if clip:
                 inputs.append((seg_start, clip))
