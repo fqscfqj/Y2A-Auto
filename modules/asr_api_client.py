@@ -133,10 +133,12 @@ class AsrApiClient:
             srt_text = None
             format_error = None
             last_was_format_error = False
+            cache_invalidated = False
             
             # Try formats in order: verbose_json → srt
             # If cached format is set, try it first but fall back to full sequence if it fails
-            formats_to_try = _SUPPORTED_FORMATS if self._supported_format is None else [self._supported_format]
+            using_cached_format = self._supported_format is not None
+            formats_to_try = [self._supported_format] if using_cached_format else _SUPPORTED_FORMATS
             
             for fmt in formats_to_try:
                 try:
@@ -178,15 +180,15 @@ class AsrApiClient:
                     if srt_text:
                         return srt_text
                     
-                    # No SRT text from cached format - clear cache and retry with all formats
-                    if self._supported_format is not None and len(formats_to_try) == 1:
+                    # No SRT text from cached format - clear cache and signal to retry
+                    if using_cached_format and not cache_invalidated:
                         self.logger.warning(
                             f"Cached format '{self._supported_format}' returned empty result, "
-                            f"clearing cache and retrying with all formats"
+                            f"clearing cache"
                         )
                         self._supported_format = None
-                        formats_to_try = _SUPPORTED_FORMATS
-                        continue  # Retry with all formats
+                        cache_invalidated = True
+                        break  # Exit format loop to retry with all formats
                         
                 except Exception as exc:
                     err_str = str(exc).lower()
@@ -203,16 +205,15 @@ class AsrApiClient:
                         self.logger.warning(
                             f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
                         )
-                        # If cached format failed with format error, clear cache and retry all
-                        if self._supported_format is not None and len(formats_to_try) == 1:
+                        # If cached format failed with format error, clear cache and signal to retry
+                        if using_cached_format and not cache_invalidated:
                             self.logger.warning(
                                 f"Cached format '{self._supported_format}' no longer supported, "
-                                f"clearing cache and retrying with all formats"
+                                f"clearing cache"
                             )
                             self._supported_format = None
-                            formats_to_try = _SUPPORTED_FORMATS
-                            format_error = None  # Reset to retry
-                            last_was_format_error = False
+                            cache_invalidated = True
+                            break  # Exit format loop to retry with all formats
                         continue  # Try next format
                     else:
                         # Non-format error - log and break format loop to trigger retry
@@ -223,6 +224,66 @@ class AsrApiClient:
                             f"(attempt {attempt + 1}/{self.config.max_retries})"
                         )
                         break  # Break format loop to trigger outer retry loop
+            
+            # If cache was invalidated, retry with all formats once before giving up
+            if cache_invalidated and not srt_text:
+                self.logger.info("Retrying with all formats after cache invalidation")
+                for fmt in _SUPPORTED_FORMATS:
+                    try:
+                        with open(wav_path, 'rb') as f:
+                            params: Dict[str, Any] = {
+                                'model': model,
+                                'file': f,
+                                'response_format': fmt,
+                            }
+                            lang = self._language_hint or self.config.language
+                            if lang and lang.lower() != 'unknown':
+                                params['language'] = lang
+
+                            base_prompt = "Transcribe speech only. Ignore noise."
+                            if self.config.prompt:
+                                params['prompt'] = f"{base_prompt} {self.config.prompt}"
+                            else:
+                                params['prompt'] = base_prompt
+
+                            if self.config.translate:
+                                resp = self.client.audio.translations.create(**params)
+                            else:
+                                resp = self.client.audio.transcriptions.create(**params)
+
+                        # Extract or convert to SRT
+                        if fmt == 'verbose_json':
+                            srt_text = self._verbose_json_to_srt(resp)
+                            if srt_text:
+                                self.logger.info(f"Successfully using verbose_json format after cache invalidation")
+                                self._supported_format = 'verbose_json'
+                        else:  # srt
+                            srt_text = self._extract_text(resp)
+                            if srt_text:
+                                self.logger.info(f"Successfully using srt format after cache invalidation")
+                                self._supported_format = 'srt'
+                        
+                        if srt_text:
+                            return srt_text
+                            
+                    except Exception as exc:
+                        err_str = str(exc).lower()
+                        is_format_error = (
+                            'response_format' in err_str or
+                            'invalid response format' in err_str or
+                            'unsupported format' in err_str or
+                            ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
+                        )
+                        if is_format_error:
+                            format_error = exc
+                            last_was_format_error = True
+                            self.logger.warning(
+                                f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
+                            )
+                            continue
+                        else:
+                            last_was_format_error = False
+                            break
             
             # Only raise RuntimeError if all formats failed specifically due to format support
             if format_error and last_was_format_error:
