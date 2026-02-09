@@ -241,9 +241,14 @@ class SrtTransformEngine:
         for i in range(len(cues) - 1):
             if cues[i]['end'] > cues[i + 1]['start']:
                 cues[i]['end'] = cues[i + 1]['start']
-            # Ensure minimum gap
+            # Ensure minimum gap without reintroducing overlap
             if cues[i]['end'] <= cues[i]['start']:
-                cues[i]['end'] = cues[i]['start'] + _MIN_VISIBLE_DUR_S
+                room = cues[i + 1]['start'] - cues[i]['start']
+                if room > _MIN_VISIBLE_DUR_S:
+                    cues[i]['end'] = cues[i]['start'] + min(_MIN_VISIBLE_DUR_S, room - _MIN_GAP_S)
+                else:
+                    # Not enough room; leave at next_start and let later stages merge/drop
+                    cues[i]['end'] = cues[i + 1]['start']
 
         # Clamp to total duration if known
         if total_duration_s > 0:
@@ -418,7 +423,6 @@ class SrtTransformEngine:
             start = float(c['start'])
             end = float(c['end'])
             dur = end - start
-            text_len = len((c.get('text') or '').strip())
             if dur < min_dur:
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
                 gap_to_next = next_start - start
