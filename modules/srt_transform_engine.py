@@ -135,7 +135,7 @@ class SrtTransformEngine:
             start_s = self._srt_time_to_seconds(start_str) + base_offset_s
             end_s = self._srt_time_to_seconds(end_str) + base_offset_s
             if end_s <= start_s:
-                end_s = start_s + 0.01
+                end_s = start_s + 0.5
 
             content = '\n'.join(l.strip() for l in content_lines if l.strip())
             if not content:
@@ -143,7 +143,7 @@ class SrtTransformEngine:
 
             cues.append({
                 'start': max(0.0, start_s),
-                'end': max(end_s, start_s + 0.01),
+                'end': max(end_s, start_s + 0.05),
                 'text': content,
             })
         return cues
@@ -238,7 +238,7 @@ class SrtTransformEngine:
                 cues[i]['end'] = cues[i + 1]['start']
             # Ensure minimum gap
             if cues[i]['end'] <= cues[i]['start']:
-                cues[i]['end'] = cues[i]['start'] + 0.01
+                cues[i]['end'] = cues[i]['start'] + 0.05
 
         # Clamp to total duration if known
         if total_duration_s > 0:
@@ -416,21 +416,35 @@ class SrtTransformEngine:
             text_len = len((c.get('text') or '').strip())
             if dur < min_dur:
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
-                target_end = min(start + min_dur, next_start - 0.01 if next_start - start > 0.05 else next_start)
+                gap_to_next = next_start - start
+                if gap_to_next > min_dur + 0.01:
+                    target_end = start + min_dur
+                elif gap_to_next > 0.05:
+                    target_end = next_start - 0.01
+                else:
+                    target_end = next_start
                 if target_end > end:
                     c['end'] = target_end
                 else:
-                    if i + 1 < len(merged) and (text_len < min_text or len((merged[i + 1].get('text') or '').strip()) < min_text):
+                    # Can't extend to minimum duration – merge with adjacent cue
+                    if i + 1 < len(merged):
                         merged[i + 1]['start'] = start
                         merged[i + 1]['text'] = (c['text'].strip() + ' ' + merged[i + 1]['text'].strip()).strip()
                         continue
+                    elif finalized:
+                        finalized[-1]['end'] = max(finalized[-1]['end'], end)
+                        finalized[-1]['text'] = (finalized[-1]['text'].strip() + ' ' + c['text'].strip()).strip()
+                        continue
             finalized.append(c)
 
-        # Drop ultra-short single-character fragments
+        # Drop ultra-short / invisible fragments
         cleaned: List[Dict[str, Any]] = []
         for c in finalized:
             text = (c.get('text') or '').strip()
             dur = float(c['end']) - float(c['start'])
+            if dur < 0.05:
+                self.logger.debug(f"Dropping invisible cue: '{text[:30]}' ({dur:.3f}s)")
+                continue
             if len(text) < min_text and dur < min_dur:
                 self.logger.debug(f"Dropping ultra-short cue: '{text}' ({dur:.2f}s)")
                 continue

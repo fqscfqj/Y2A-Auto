@@ -134,7 +134,7 @@ class AsrApiClient:
                     f"(attempt {attempt + 1}/{self.config.max_retries})"
                 )
                 if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_delay_s * (2 ** attempt)
+                    delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
                     self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
                     time.sleep(delay)
                 else:
@@ -149,7 +149,7 @@ class AsrApiClient:
                     f"(attempt {attempt + 1}/{self.config.max_retries})"
                 )
                 if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_delay_s * (2 ** attempt)
+                    delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
                     self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
                     time.sleep(delay)
                 else:
