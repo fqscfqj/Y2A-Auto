@@ -155,12 +155,14 @@ class AsrApiClient:
                     if fmt == 'verbose_json':
                         srt_text = self._verbose_json_to_srt(resp)
                         if srt_text:
-                            self.logger.info(f"Successfully used verbose_json format for segment [{segment_desc}]")
+                            if self._supported_format is None:
+                                self.logger.info(f"Successfully using verbose_json format")
                             self._supported_format = 'verbose_json'  # Cache successful format
                     else:  # srt
                         srt_text = self._extract_text(resp)
                         if srt_text:
-                            self.logger.info(f"Successfully used srt format for segment [{segment_desc}]")
+                            if self._supported_format is None:
+                                self.logger.info(f"Successfully using srt format")
                             self._supported_format = 'srt'  # Cache successful format
                     
                     if srt_text:
@@ -394,11 +396,10 @@ class AsrApiClient:
                 # No segments, try to get text and duration directly
                 text = data.get('text', '')
                 if text and isinstance(text, str):
-                    # Use duration from response if available
-                    # Note: Using 1.0s as fallback when duration is unavailable
-                    # This may not reflect actual audio duration but provides a valid SRT entry
+                    # Use duration from response if available, fallback to 1.0s
                     duration = data.get('duration', 1.0)
                     if not isinstance(duration, (int, float)) or duration <= 0:
+                        # Fallback: 1.0s may not reflect actual audio duration but provides a valid SRT entry
                         duration = 1.0
                     end_ts = _format_srt_timestamp(duration)
                     # Return simple SRT with single segment
