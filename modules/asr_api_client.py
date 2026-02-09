@@ -39,6 +39,9 @@ def _format_srt_timestamp(seconds: float) -> str:
 # Configuration
 # ---------------------------------------------------------------------------
 
+# Supported response formats in order of preference
+_SUPPORTED_FORMATS = ['verbose_json', 'srt']
+
 @dataclass
 class AsrConfig:
     """Configuration for the ASR API client."""
@@ -123,7 +126,7 @@ class AsrApiClient:
             format_error = None
             
             # Try formats in order: verbose_json → srt
-            formats_to_try = ['verbose_json', 'srt'] if self._supported_format is None else [self._supported_format]
+            formats_to_try = _SUPPORTED_FORMATS if self._supported_format is None else [self._supported_format]
             
             for fmt in formats_to_try:
                 try:
@@ -165,8 +168,14 @@ class AsrApiClient:
                         
                 except Exception as exc:
                     err_str = str(exc).lower()
-                    # Check if it's a format-related error
-                    if 'response_format' in err_str or 'format' in err_str:
+                    # Check if it's a format-related error (more specific patterns)
+                    is_format_error = (
+                        'response_format' in err_str or
+                        'invalid response format' in err_str or
+                        'unsupported format' in err_str or
+                        ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
+                    )
+                    if is_format_error:
                         format_error = exc
                         self.logger.warning(
                             f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
@@ -176,8 +185,8 @@ class AsrApiClient:
                         # Non-format error, re-raise to trigger retry logic
                         raise
             
-            # If we tried all formats and none worked
-            if format_error and not srt_text:
+            # If we tried all formats and none worked due to format errors
+            if format_error:
                 self.logger.error(
                     f"ASR API does not support required formats (verbose_json, srt) for segment [{segment_desc}]. "
                     f"Last error: {format_error}"
@@ -384,11 +393,16 @@ class AsrApiClient:
             # Extract segments
             segments = data.get('segments')
             if not segments or not isinstance(segments, list):
-                # No segments, try to get text directly
+                # No segments, try to get text and duration directly
                 text = data.get('text', '')
                 if text and isinstance(text, str):
+                    # Use duration from response if available, otherwise use a default
+                    duration = data.get('duration', 1.0)
+                    if not isinstance(duration, (int, float)) or duration <= 0:
+                        duration = 1.0
+                    end_ts = _format_srt_timestamp(duration)
                     # Return simple SRT with single segment
-                    return f"1\n00:00:00,000 --> 00:00:01,000\n{text.strip()}\n"
+                    return f"1\n00:00:00,000 --> {end_ts}\n{text.strip()}\n"
                 return None
             
             # Build SRT from segments
