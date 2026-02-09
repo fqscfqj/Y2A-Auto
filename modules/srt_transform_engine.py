@@ -45,6 +45,11 @@ _SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
 # Hallucination: same short phrase repeated 3+ times in succession
 _HALLUCINATION_RE = re.compile(r'(.{2,30}?)(?:\s*\1){2,}', re.IGNORECASE)
 
+# Timing constants (seconds)
+_MIN_GAP_S = 0.01          # Minimum gap between adjacent cues
+_MIN_VISIBLE_DUR_S = 0.05  # Minimum duration for a cue to be visible
+_INVALID_TS_FALLBACK_S = 0.5  # Fallback duration when parsed end <= start
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -135,7 +140,7 @@ class SrtTransformEngine:
             start_s = self._srt_time_to_seconds(start_str) + base_offset_s
             end_s = self._srt_time_to_seconds(end_str) + base_offset_s
             if end_s <= start_s:
-                end_s = start_s + 0.5
+                end_s = start_s + _INVALID_TS_FALLBACK_S
 
             content = '\n'.join(l.strip() for l in content_lines if l.strip())
             if not content:
@@ -143,7 +148,7 @@ class SrtTransformEngine:
 
             cues.append({
                 'start': max(0.0, start_s),
-                'end': max(end_s, start_s + 0.05),
+                'end': max(end_s, start_s + _MIN_VISIBLE_DUR_S),
                 'text': content,
             })
         return cues
@@ -238,7 +243,7 @@ class SrtTransformEngine:
                 cues[i]['end'] = cues[i + 1]['start']
             # Ensure minimum gap
             if cues[i]['end'] <= cues[i]['start']:
-                cues[i]['end'] = cues[i]['start'] + 0.05
+                cues[i]['end'] = cues[i]['start'] + _MIN_VISIBLE_DUR_S
 
         # Clamp to total duration if known
         if total_duration_s > 0:
@@ -373,7 +378,7 @@ class SrtTransformEngine:
                 c['start'] = max(0.0, min(total_duration_s, float(c['start']) + offset))
                 c['end'] = max(0.0, min(total_duration_s, float(c['end']) + offset))
                 if c['end'] <= c['start']:
-                    c['end'] = min(total_duration_s, c['start'] + 0.05)
+                    c['end'] = min(total_duration_s, c['start'] + _MIN_VISIBLE_DUR_S)
             except Exception:
                 continue
 
@@ -417,10 +422,10 @@ class SrtTransformEngine:
             if dur < min_dur:
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
                 gap_to_next = next_start - start
-                if gap_to_next > min_dur + 0.01:
+                if gap_to_next > min_dur + _MIN_GAP_S:
                     target_end = start + min_dur
-                elif gap_to_next > 0.05:
-                    target_end = next_start - 0.01
+                elif gap_to_next > _MIN_VISIBLE_DUR_S:
+                    target_end = next_start - _MIN_GAP_S
                 else:
                     target_end = next_start
                 if target_end > end:
@@ -442,7 +447,7 @@ class SrtTransformEngine:
         for c in finalized:
             text = (c.get('text') or '').strip()
             dur = float(c['end']) - float(c['start'])
-            if dur < 0.05:
+            if dur < _MIN_VISIBLE_DUR_S:
                 self.logger.debug(f"Dropping invisible cue: '{text[:30]}' ({dur:.3f}s)")
                 continue
             if len(text) < min_text and dur < min_dur:

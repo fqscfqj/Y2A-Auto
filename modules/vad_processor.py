@@ -379,8 +379,8 @@ class VadProcessor:
                 actual_dur = wf.getnframes() / wf.getframerate() if wf.getframerate() > 0 else 0.0
                 if actual_dur < 0.1:
                     self.logger.warning(
-                        "Extracted clip too short (%.3fs) for %s–%ss – skipping",
-                        actual_dur, f"{start_s:.3f}", f"{end_s:.3f}",
+                        "Extracted clip too short (%.3fs) for %.3f–%.3fs – skipping",
+                        actual_dur, start_s, end_s,
                     )
                     return None
 
