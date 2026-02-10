@@ -5,14 +5,14 @@
 ASR API Client Module – OpenAI-Compatible Whisper Transcription.
 
 This module handles all communication with OpenAI-compatible speech-to-text
-APIs.  It always requests ``response_format="srt"`` so that the returned
-timestamps are the ASR engine's own precise alignment, **not** the physical
-boundaries of the audio segment.
+APIs. It supports format degradation: verbose_json → srt, stopping if neither
+format is supported by the API.
 
 Features:
-  - Retry with exponential back-off.
-  - Concurrent / parallel segment transcription via ThreadPoolExecutor.
-  - Language detection helper via Whisper.
+  - Format degradation with verbose_json preferred for better compatibility
+  - Retry with exponential back-off
+  - Concurrent / parallel segment transcription via ThreadPoolExecutor
+  - Language detection helper via Whisper
 """
 
 import logging
@@ -21,9 +21,34 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def _format_srt_timestamp(seconds: float) -> str:
+    """Format a timestamp in seconds as SRT format (HH:MM:SS,mmm).
+    
+    Uses millisecond-based rounding to avoid float precision flooring issues.
+    Consistent with SrtTransformEngine._format_timestamp().
+    """
+    # Use millisecond-based rounding to avoid float precision flooring issues.
+    total_millis = int(round(seconds * 1000))
+    hours = total_millis // 3_600_000
+    remaining = total_millis % 3_600_000
+    minutes = remaining // 60_000
+    remaining %= 60_000
+    secs = remaining // 1000
+    millis = remaining % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+# Supported response formats in order of preference
+_SUPPORTED_FORMATS = ['verbose_json', 'srt']
 
 @dataclass
 class AsrConfig:
@@ -46,9 +71,8 @@ class AsrConfig:
 class AsrApiClient:
     """Client for OpenAI-compatible Whisper transcription APIs.
 
-    All transcription calls use ``response_format="srt"`` so that the API
-    returns SRT text with its own precise internal timestamps (relative to
-    the start of the submitted audio clip).
+    Attempts transcription with format degradation: verbose_json → srt.
+    If neither format is supported, transcription stops with an error.
     """
 
     def __init__(self, config: AsrConfig, logger: Optional[logging.Logger] = None):
@@ -56,6 +80,7 @@ class AsrApiClient:
         self.logger = logger or logging.getLogger(__name__)
         self.client: Any = None
         self._language_hint: str = ''
+        self._supported_format: Optional[str] = None  # Cache supported format
         self._init_client()
 
     # ------------------------------------------------------------------
@@ -88,8 +113,49 @@ class AsrApiClient:
     # Public API – single segment
     # ------------------------------------------------------------------
 
+    def _try_format(self, wav_path: str, fmt: str, model: str) -> Optional[str]:
+        """Try transcribing with a specific format.
+        
+        Args:
+            wav_path: Path to the audio file
+            fmt: Response format ('verbose_json' or 'srt')
+            model: Model name
+            
+        Returns:
+            SRT text if successful, None otherwise
+        """
+        with open(wav_path, 'rb') as f:
+            params: Dict[str, Any] = {
+                'model': model,
+                'file': f,
+                'response_format': fmt,
+            }
+            lang = self._language_hint or self.config.language
+            if lang and lang.lower() != 'unknown':
+                params['language'] = lang
+
+            base_prompt = "Transcribe speech only. Ignore noise."
+            if self.config.prompt:
+                params['prompt'] = f"{base_prompt} {self.config.prompt}"
+            else:
+                params['prompt'] = base_prompt
+
+            if self.config.translate:
+                resp = self.client.audio.translations.create(**params)
+            else:
+                resp = self.client.audio.transcriptions.create(**params)
+
+        # Extract or convert to SRT
+        if fmt == 'verbose_json':
+            return self._verbose_json_to_srt(resp)
+        else:  # srt
+            return self._extract_text(resp)
+
     def transcribe_segment(self, wav_path: str, segment_info: Optional[str] = None) -> Optional[str]:
         """Transcribe a single audio file and return raw SRT text.
+        
+        Implements format degradation: verbose_json → srt → error.
+        If the API doesn't support these formats, transcription is stopped.
 
         Args:
             wav_path: Path to the audio file
@@ -102,52 +168,115 @@ class AsrApiClient:
         segment_desc = segment_info or wav_path
 
         for attempt in range(self.config.max_retries):
-            try:
-                with open(wav_path, 'rb') as f:
-                    params: Dict[str, Any] = {
-                        'model': model,
-                        'file': f,
-                        'response_format': 'srt',
-                    }
-                    lang = self._language_hint or self.config.language
-                    if lang and lang.lower() != 'unknown':
-                        params['language'] = lang
-
-                    base_prompt = "Transcribe speech only. Ignore noise."
-                    if self.config.prompt:
-                        params['prompt'] = f"{base_prompt} {self.config.prompt}"
-                    else:
-                        params['prompt'] = base_prompt
-
-                    if self.config.translate:
-                        resp = self.client.audio.translations.create(**params)
-                    else:
-                        resp = self.client.audio.transcriptions.create(**params)
-
-                # Extract text payload
-                srt_text = self._extract_text(resp)
-                if srt_text:
-                    return srt_text
-
-                self.logger.warning(
-                    f"Empty ASR response for segment [{segment_desc}] "
-                    f"(attempt {attempt + 1}/{self.config.max_retries})"
-                )
-                if attempt < self.config.max_retries - 1:
-                    delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
-                    self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
-                    time.sleep(delay)
-                else:
-                    self.logger.error(
-                        f"ASR returned empty response for segment [{segment_desc}] "
-                        f"after {self.config.max_retries} attempts"
+            srt_text = None
+            format_error = None
+            last_was_format_error = False
+            cache_invalidated = False
+            
+            # Try formats in order: verbose_json → srt
+            # If cached format is set, try it first but fall back to full sequence if it fails
+            using_cached_format = self._supported_format is not None
+            formats_to_try = [self._supported_format] if using_cached_format else _SUPPORTED_FORMATS
+            
+            for fmt in formats_to_try:
+                try:
+                    srt_text = self._try_format(wav_path, fmt, model)
+                    
+                    if srt_text:
+                        if self._supported_format is None:
+                            self.logger.info(f"Successfully using {fmt} format")
+                        self._supported_format = fmt  # Cache successful format
+                        return srt_text
+                    
+                    # No SRT text from cached format - clear cache and signal to retry
+                    if using_cached_format and not cache_invalidated:
+                        self.logger.warning(
+                            f"Cached format '{self._supported_format}' returned empty result, "
+                            f"clearing cache"
+                        )
+                        self._supported_format = None
+                        cache_invalidated = True
+                        break  # Exit format loop to retry with all formats
+                        
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    # Check if it's a format-related error (more specific patterns)
+                    is_format_error = (
+                        'response_format' in err_str or
+                        'invalid response format' in err_str or
+                        'unsupported format' in err_str or
+                        ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
                     )
-            except Exception as exc:
-                error_type = type(exc).__name__
-                self.logger.warning(
-                    f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
-                    f"(attempt {attempt + 1}/{self.config.max_retries})"
+                    if is_format_error:
+                        format_error = exc
+                        last_was_format_error = True
+                        self.logger.warning(
+                            f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
+                        )
+                        # If cached format failed with format error, clear cache and signal to retry
+                        if using_cached_format and not cache_invalidated:
+                            self.logger.warning(
+                                f"Cached format '{self._supported_format}' no longer supported, "
+                                f"clearing cache"
+                            )
+                            self._supported_format = None
+                            cache_invalidated = True
+                            break  # Exit format loop to retry with all formats
+                        continue  # Try next format
+                    else:
+                        # Non-format error - log and break format loop to trigger retry
+                        last_was_format_error = False
+                        error_type = type(exc).__name__
+                        self.logger.warning(
+                            f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
+                            f"(attempt {attempt + 1}/{self.config.max_retries})"
+                        )
+                        break  # Break format loop to trigger outer retry loop
+            
+            # If cache was invalidated, retry with all formats once before giving up
+            if cache_invalidated and not srt_text:
+                self.logger.info("Retrying with all formats after cache invalidation")
+                for fmt in _SUPPORTED_FORMATS:
+                    try:
+                        srt_text = self._try_format(wav_path, fmt, model)
+                        
+                        if srt_text:
+                            self.logger.info(f"Successfully using {fmt} format after cache invalidation")
+                            self._supported_format = fmt
+                            return srt_text
+                            
+                    except Exception as exc:
+                        err_str = str(exc).lower()
+                        is_format_error = (
+                            'response_format' in err_str or
+                            'invalid response format' in err_str or
+                            'unsupported format' in err_str or
+                            ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
+                        )
+                        if is_format_error:
+                            format_error = exc
+                            last_was_format_error = True
+                            self.logger.warning(
+                                f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
+                            )
+                            continue
+                        else:
+                            last_was_format_error = False
+                            break
+            
+            # Only raise RuntimeError if all formats failed specifically due to format support
+            if format_error and last_was_format_error:
+                self.logger.error(
+                    f"ASR API does not support required formats (verbose_json, srt) for segment [{segment_desc}]. "
+                    f"Last error: {format_error}"
                 )
+                raise RuntimeError(
+                    f"ASR API incompatible: neither verbose_json nor srt format is supported. "
+                    f"Cannot proceed with transcription."
+                )
+            
+            # Empty response or error - retry if attempts remain
+            if not srt_text:
                 if attempt < self.config.max_retries - 1:
                     delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
                     self.logger.info(f"Retrying segment [{segment_desc}] in {delay:.1f}s")
@@ -156,6 +285,7 @@ class AsrApiClient:
                     self.logger.error(
                         f"ASR failed for segment [{segment_desc}] after {self.config.max_retries} attempts"
                     )
+                    
         return None
 
     # ------------------------------------------------------------------
@@ -307,6 +437,80 @@ class AsrApiClient:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _verbose_json_to_srt(self, resp) -> Optional[str]:
+        """Convert verbose_json response to SRT format.
+        
+        Args:
+            resp: API response in verbose_json format
+            
+        Returns:
+            SRT formatted string, or None if conversion fails
+        """
+        try:
+            # Convert response to dict
+            if isinstance(resp, dict):
+                data = resp
+            elif hasattr(resp, 'model_dump'):
+                data = resp.model_dump()
+            elif hasattr(resp, 'to_dict'):
+                data = resp.to_dict()
+            else:
+                d = getattr(resp, '__dict__', None)
+                if isinstance(d, dict):
+                    data = d
+                else:
+                    return None
+            
+            # Extract segments
+            segments = data.get('segments')
+            if not segments or not isinstance(segments, list):
+                # No segments, try to get text and duration directly
+                text = data.get('text', '')
+                if text and isinstance(text, str):
+                    # Use duration from response if available, fallback to 1.0s
+                    duration = data.get('duration', 1.0)
+                    if not isinstance(duration, (int, float)) or duration <= 0:
+                        # Fallback: 1.0s may not reflect actual audio duration but provides a valid SRT entry
+                        duration = 1.0
+                    end_ts = _format_srt_timestamp(duration)
+                    # Return simple SRT with single segment
+                    return f"1\n00:00:00,000 --> {end_ts}\n{text.strip()}\n"
+                return None
+            
+            # Build SRT from segments
+            srt_lines = []
+            cue_number = 1  # Use separate counter for emitted cues
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                
+                start = seg.get('start', 0.0)
+                end = seg.get('end', 0.0)
+                text = seg.get('text', '').strip()
+                
+                if not text:
+                    continue
+                
+                # Format timestamps as SRT (HH:MM:SS,mmm)
+                start_ts = _format_srt_timestamp(start)
+                end_ts = _format_srt_timestamp(end)
+                
+                srt_lines.append(f"{cue_number}")
+                srt_lines.append(f"{start_ts} --> {end_ts}")
+                srt_lines.append(text)
+                srt_lines.append("")  # Empty line between entries
+                cue_number += 1  # Increment only for emitted cues
+            
+            if srt_lines:
+                return '\n'.join(srt_lines)
+            return None
+            
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed to convert verbose_json to SRT: {exc}"
+            )
+            return None
 
     @staticmethod
     def _extract_text(resp) -> Optional[str]:
