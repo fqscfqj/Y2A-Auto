@@ -63,6 +63,11 @@ body {
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
+/* 隐藏默认的自定义转码参数区域（由 JS 控制显示） */
+#custom-params-section {
+    display: none;
+}
+
 .settings-section h3 {
     margin-top: 0;
     color: #0d6efd;

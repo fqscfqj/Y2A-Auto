@@ -19,24 +19,27 @@
     <div class="row settings-layout">
         <div class="col-lg-3 mb-3">
             <div class="settings-nav" id="settings-nav">
-                <div class="settings-nav-folder" data-folder="workflow">
+                <div class="settings-nav-folder" data-folder="core">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
-                        <i class="bi bi-diagram-3"></i>
-                        <span>流程工作台</span>
+                        <i class="bi bi-gear"></i>
+                        <span>核心流程</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
                     <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
                         <a class="nav-link active" id="vtab-general-tab" data-bs-toggle="pill" href="#vtab-general" role="tab" aria-controls="vtab-general" aria-selected="true">
-                            <i class="bi bi-sliders"></i> 通用
+                            <i class="bi bi-sliders"></i> 自动化流程
+                        </a>
+                        <a class="nav-link" id="vtab-acfun-tab" data-bs-toggle="pill" href="#vtab-acfun" role="tab" aria-controls="vtab-acfun" aria-selected="false">
+                            <i class="bi bi-person-badge"></i> AcFun 账号
                         </a>
                         <a class="nav-link" id="vtab-youtube-tab" data-bs-toggle="pill" href="#vtab-youtube" role="tab" aria-controls="vtab-youtube" aria-selected="false">
                             <i class="bi bi-download"></i> 下载与代理
                         </a>
-                        <a class="nav-link" id="vtab-acfun-tab" data-bs-toggle="pill" href="#vtab-acfun" role="tab" aria-controls="vtab-acfun" aria-selected="false">
-                            <i class="bi bi-person-badge"></i> AcFun账号
+                        <a class="nav-link" id="vtab-ytmonitor-tab" data-bs-toggle="pill" href="#vtab-ytmonitor" role="tab" aria-controls="vtab-ytmonitor" aria-selected="false">
+                            <i class="bi bi-youtube"></i> YouTube 监控
                         </a>
-                        <a class="nav-link" id="vtab-concurrency-tab" data-bs-toggle="pill" href="#vtab-concurrency" role="tab" aria-controls="vtab-concurrency" aria-selected="false">
-                            <i class="bi bi-cpu"></i> 并发与日志
+                        <a class="nav-link" id="vtab-aliyun-tab" data-bs-toggle="pill" href="#vtab-aliyun" role="tab" aria-controls="vtab-aliyun" aria-selected="false">
+                            <i class="bi bi-shield-check"></i> 内容审核
                         </a>
                     </div>
                 </div>
@@ -44,53 +47,40 @@
                 <div class="settings-nav-folder" data-folder="ai">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
                         <i class="bi bi-cpu-fill"></i>
-                        <span>AI 与字幕</span>
+                        <span>AI 服务</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
                     <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                        <a class="nav-link" id="vtab-openai-tab" data-bs-toggle="pill" href="#vtab-openai" role="tab" aria-controls="vtab-openai" aria-selected="false">
+                            <i class="bi bi-robot"></i> OpenAI 配置
+                        </a>
                         <a class="nav-link" id="vtab-subtitle-tab" data-bs-toggle="pill" href="#vtab-subtitle" role="tab" aria-controls="vtab-subtitle" aria-selected="false">
                             <i class="bi bi-translate"></i> 字幕翻译
+                        </a>
+                        <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
+                            <i class="bi bi-mic"></i> Whisper API
+                        </a>
+                        <a class="nav-link" id="vtab-fireredasr-tab" data-bs-toggle="pill" href="#vtab-fireredasr" role="tab" aria-controls="vtab-fireredasr" aria-selected="false">
+                            <i class="bi bi-fire"></i> FireRedASR2S
                         </a>
                         <a class="nav-link" id="vtab-transcode-tab" data-bs-toggle="pill" href="#vtab-transcode" role="tab" aria-controls="vtab-transcode" aria-selected="false">
                             <i class="bi bi-gpu-card"></i> 视频转码
                         </a>
-                        <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
-                            <i class="bi bi-mic"></i> 语音识别
-                        </a>
-                        <a class="nav-link" id="vtab-vad-tab" data-bs-toggle="pill" href="#vtab-vad" role="tab" aria-controls="vtab-vad" aria-selected="false">
-                            <i class="bi bi-soundwave"></i> VAD检测
-                        </a>
-                        <a class="nav-link" id="vtab-openai-tab" data-bs-toggle="pill" href="#vtab-openai" role="tab" aria-controls="vtab-openai" aria-selected="false">
-                            <i class="bi bi-robot"></i> OpenAI
-                        </a>
                     </div>
                 </div>
 
-                <div class="settings-nav-folder" data-folder="security">
+                <div class="settings-nav-folder" data-folder="system">
                     <button type="button" class="settings-folder-toggle" aria-expanded="true">
-                        <i class="bi bi-shield-lock"></i>
-                        <span>安全与合规</span>
+                        <i class="bi bi-hdd"></i>
+                        <span>系统管理</span>
                         <i class="bi bi-chevron-up ms-auto folder-caret"></i>
                     </button>
                     <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
+                        <a class="nav-link" id="vtab-concurrency-tab" data-bs-toggle="pill" href="#vtab-concurrency" role="tab" aria-controls="vtab-concurrency" aria-selected="false">
+                            <i class="bi bi-cpu"></i> 并发与日志
+                        </a>
                         <a class="nav-link" id="vtab-security-tab" data-bs-toggle="pill" href="#vtab-security" role="tab" aria-controls="vtab-security" aria-selected="false">
-                            <i class="bi bi-lock"></i> 账号与安全
-                        </a>
-                        <a class="nav-link" id="vtab-aliyun-tab" data-bs-toggle="pill" href="#vtab-aliyun" role="tab" aria-controls="vtab-aliyun" aria-selected="false">
-                            <i class="bi bi-shield-check"></i> 内容安全
-                        </a>
-                    </div>
-                </div>
-
-                <div class="settings-nav-folder" data-folder="monitoring">
-                    <button type="button" class="settings-folder-toggle" aria-expanded="true">
-                        <i class="bi bi-broadcast"></i>
-                        <span>监控与扩展</span>
-                        <i class="bi bi-chevron-up ms-auto folder-caret"></i>
-                    </button>
-                    <div class="settings-folder-body nav flex-column nav-pills" role="tablist" aria-orientation="vertical">
-                        <a class="nav-link" id="vtab-ytmonitor-tab" data-bs-toggle="pill" href="#vtab-ytmonitor" role="tab" aria-controls="vtab-ytmonitor" aria-selected="false">
-                            <i class="bi bi-youtube"></i> YouTube监控
+                            <i class="bi bi-lock"></i> 账号安全
                         </a>
                     </div>
                 </div>
@@ -100,7 +90,7 @@
         <div class="col-lg-9">
             <form method="post" enctype="multipart/form-data">
                 <div class="tab-content" id="settings-tabContent">
-                    <!-- 通用设置 -->
+                    <!-- 自动化流程设置 -->
                     <div class="tab-pane fade show active" id="vtab-general" role="tabpanel" aria-labelledby="vtab-general-tab">
                         <div class="settings-stack">
 
@@ -119,7 +109,7 @@
                                     <p class="help-text">自动完成从下载到投稿的全流程，无需人工干预</p>
                                 </div>
                                 <div class="row g-3">
-                                    <div class="col-md-6">
+                                    <div class="col-md-4">
                                         <div class="form-group">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" name="TRANSLATE_TITLE" {% if config.TRANSLATE_TITLE %}checked{% endif %}>
@@ -127,7 +117,7 @@
                                             </label>
                                         </div>
                                     </div>
-                                    <div class="col-md-6">
+                                    <div class="col-md-4">
                                         <div class="form-group">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" name="TRANSLATE_DESCRIPTION" {% if config.TRANSLATE_DESCRIPTION %}checked{% endif %}>
@@ -135,7 +125,7 @@
                                             </label>
                                         </div>
                                     </div>
-                                    <div class="col-md-6">
+                                    <div class="col-md-4">
                                         <div class="form-group">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" name="GENERATE_TAGS" {% if config.GENERATE_TAGS %}checked{% endif %}>
@@ -143,15 +133,17 @@
                                             </label>
                                         </div>
                                     </div>
-                                    <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="YOUTUBE_UPLOADER_AS_FIRST_TAG" {% if config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False) %}checked{% endif %}>
-                                                将YouTube上传者置于首标签
-                                            </label>
-                                            <p class="help-text">开启后会占用1个标签名额（最多6个标签）</p>
-                                        </div>
+                                </div>
+                            </section>
+
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">投稿配置</h3>
+                                        <p class="section-lead mb-0">封面处理、分区推荐与内容审核策略。</p>
                                     </div>
+                                </div>
+                                <div class="row g-3">
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label class="checkbox-label">
@@ -160,24 +152,15 @@
                                             </label>
                                         </div>
                                     </div>
-                                </div>
-                            </section>
-
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">投稿质量与安全</h3>
-                                        <p class="section-lead mb-0">在质量与效率之间找到平衡，自动审核与封面策略一站式配置。</p>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
+                                                启用内容审核
+                                            </label>
+                                            <p class="help-text">使用阿里云内容安全服务审核标题、描述和封面</p>
+                                        </div>
                                     </div>
-                                </div>
-                                <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
-                                        启用内容审核
-                                    </label>
-                                    <p class="help-text">使用阿里云内容安全服务自动审核标题、描述和封面</p>
-                                </div>
-                                <div class="row g-3">
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="cover-mode">封面处理模式:</label>
@@ -185,41 +168,46 @@
                                                 <option value="crop" {% if config.COVER_PROCESSING_MODE == 'crop' %}selected{% endif %}>裁剪模式 (保持清晰度)</option>
                                                 <option value="pad" {% if config.COVER_PROCESSING_MODE == 'pad' %}selected{% endif %}>填充模式 (保持完整性)</option>
                                             </select>
-                                            <p class="help-text">裁剪模式可能会裁掉封面边缘内容，填充模式会添加黑边</p>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label for="fixed-partition-id">固定分区ID（可选）:</label>
-                                            <input type="text" id="fixed-partition-id" name="FIXED_PARTITION_ID" value="{{ config.get('FIXED_PARTITION_ID', '') }}" class="form-control" placeholder="如：123；留空则自动推荐">
-                                            <p class="help-text">设置后将直接使用该分区ID，跳过自动推荐。</p>
+                                            <input type="text" id="fixed-partition-id" name="FIXED_PARTITION_ID" value="{{ config.get('FIXED_PARTITION_ID', '') }}" class="form-control" placeholder="留空则自动推荐">
                                         </div>
                                     </div>
                                 </div>
-                            </section>
 
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">工具与依赖</h3>
-                                        <p class="section-lead mb-0">项目已内置 Windows/Linux 双平台 FFmpeg，可按需覆盖或自定义。</p>
-                                    </div>
-                                </div>
-                                <div class="row g-3 align-items-start">
-                                    <div class="col-md-6">
-                                        <div class="form-group mb-0">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
-                                                Windows 缺失时允许联网补全 FFmpeg
-                                            </label>
-                                            <p class="help-text">默认使用仓库附带的 ffmpeg/ 目录，仅在 Windows 且文件缺失时才会尝试联网补齐。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label for="ffmpeg-location">FFmpeg 自定义路径（可选）:</label>
-                                            <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="如：C:/tools/ffmpeg/bin/ffmpeg.exe 或留空">
-                                            <p class="help-text">留空则默认使用项目根目录 ffmpeg/ 下的内置二进制。</p>
+                                <!-- 高级选项折叠区 -->
+                                <div class="mt-3">
+                                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedGeneralOptions">
+                                        <i class="bi bi-chevron-down"></i> 高级选项
+                                    </button>
+                                    <div class="collapse mt-3" id="advancedGeneralOptions">
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="YOUTUBE_UPLOADER_AS_FIRST_TAG" {% if config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False) %}checked{% endif %}>
+                                                        将YouTube上传者置于首标签
+                                                    </label>
+                                                    <p class="help-text">占用1个标签名额（最多6个）</p>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
+                                                        Windows 缺失时自动下载 FFmpeg
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="form-group">
+                                                    <label for="ffmpeg-location">FFmpeg 自定义路径（可选）:</label>
+                                                    <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="留空使用内置 FFmpeg">
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -685,7 +673,7 @@
                                 </div>
                             </div>
 
-                            <div class="row g-3 mt-2" id="custom-params-section" style="display: none;">
+                            <div class="row g-3 mt-2" id="custom-params-section">
                                 <div class="col-12">
                                     <div class="form-group">
                                         <label for="video-custom-params">自定义视频编码参数:</label>
@@ -733,60 +721,146 @@
                     });
                     </script>
 
+                    <!-- FireRedASR2S 设置 -->
+                    <div class="tab-pane fade" id="vtab-fireredasr" role="tabpanel" aria-labelledby="vtab-fireredasr-tab">
+                        <div class="settings-section">
+                            <h3><i class="bi bi-fire text-danger"></i> FireRedASR2S 语音识别</h3>
+                            <p class="section-lead">高性能本地语音识别服务，支持实时转写与多语言识别</p>
+
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>关于 FireRedASR2S</strong>
+                                <p class="mb-0 mt-2">FireRedASR2S 是一个高性能的语音识别 Docker 服务，提供 OpenAI Whisper 兼容的 API 接口。</p>
+                                <p class="mb-0">项目地址：<a href="https://github.com/fqscfqj/FireRedASR2S-DockerApi" target="_blank" rel="noopener">https://github.com/fqscfqj/FireRedASR2S-DockerApi</a></p>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="FIREREDASR_ENABLED" {% if config.get('FIREREDASR_ENABLED', False) %}checked{% endif %}>
+                                    启用 FireRedASR2S 语音识别
+                                </label>
+                                <p class="help-text">启用后将优先使用 FireRedASR2S 进行语音识别，而非 Whisper API</p>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-8">
+                                    <div class="form-group">
+                                        <label for="fireredasr-base-url">FireRedASR2S API 地址:</label>
+                                        <input type="text" id="fireredasr-base-url" name="FIREREDASR_BASE_URL" value="{{ config.get('FIREREDASR_BASE_URL', 'http://localhost:8000') }}" class="form-control" placeholder="http://localhost:8000">
+                                        <p class="help-text">FireRedASR2S 服务的 API 地址</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-group">
+                                        <label for="fireredasr-timeout">请求超时(秒):</label>
+                                        <input type="number" id="fireredasr-timeout" name="FIREREDASR_TIMEOUT" value="{{ config.get('FIREREDASR_TIMEOUT', 300) }}" min="30" class="form-control">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="fireredasr-model">模型名称:</label>
+                                        <input type="text" id="fireredasr-model" name="FIREREDASR_MODEL" value="{{ config.get('FIREREDASR_MODEL', 'large-v3') }}" class="form-control" placeholder="large-v3">
+                                        <p class="help-text">支持的模型：tiny, base, small, medium, large, large-v2, large-v3</p>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="fireredasr-language">语言代码（可选）:</label>
+                                        <input type="text" id="fireredasr-language" name="FIREREDASR_LANGUAGE" value="{{ config.get('FIREREDASR_LANGUAGE', '') }}" class="form-control" placeholder="留空自动检测">
+                                        <p class="help-text">如：en, zh, ja, ko 等</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 高级选项 -->
+                            <div class="mt-3">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedFireRedAsrOptions">
+                                    <i class="bi bi-chevron-down"></i> 高级选项
+                                </button>
+                                <div class="collapse mt-3" id="advancedFireRedAsrOptions">
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <div class="form-group">
+                                                <label for="fireredasr-api-key">API Key（可选）:</label>
+                                                <input type="password" id="fireredasr-api-key" name="FIREREDASR_API_KEY" value="{{ config.get('FIREREDASR_API_KEY', '') }}" class="form-control" placeholder="如果服务需要认证">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="form-group">
+                                                <label for="fireredasr-max-retries">最大重试次数:</label>
+                                                <input type="number" id="fireredasr-max-retries" name="FIREREDASR_MAX_RETRIES" value="{{ config.get('FIREREDASR_MAX_RETRIES', 3) }}" min="1" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-12">
+                                            <div class="form-group">
+                                                <label for="fireredasr-prompt">提示词（可选）:</label>
+                                                <input type="text" id="fireredasr-prompt" name="FIREREDASR_PROMPT" value="{{ config.get('FIREREDASR_PROMPT', '') }}" class="form-control" placeholder="引导模型识别特定内容">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label class="checkbox-label">
+                                                    <input type="checkbox" name="FIREREDASR_WORD_TIMESTAMPS" {% if config.get('FIREREDASR_WORD_TIMESTAMPS', False) %}checked{% endif %}>
+                                                    启用词级时间戳
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="fireredasr-temperature">Temperature:</label>
+                                                <input type="number" step="0.1" min="0" max="1" id="fireredasr-temperature" name="FIREREDASR_TEMPERATURE" value="{{ config.get('FIREREDASR_TEMPERATURE', 0.0) }}" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="fireredasr-beam-size">Beam Size:</label>
+                                                <input type="number" min="1" id="fireredasr-beam-size" name="FIREREDASR_BEAM_SIZE" value="{{ config.get('FIREREDASR_BEAM_SIZE', 5) }}" class="form-control">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="alert alert-warning mt-3">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <strong>使用说明</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>需要先部署 FireRedASR2S Docker 服务</li>
+                                    <li>确保服务地址可访问，默认端口为 8000</li>
+                                    <li>启用后将替代 Whisper API 进行语音识别</li>
+                                    <li>建议使用 large-v3 模型以获得最佳识别效果</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 语音识别（无字幕转写）设置 -->
                     <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">
                         <div class="settings-section">
-                            <h3>语音识别（无字幕转写）</h3>
+                            <h3>语音识别（Whisper）</h3>
 
                             <div class="form-group">
                                 <label class="checkbox-label">
                                     <input type="checkbox" name="SPEECH_RECOGNITION_ENABLED" {% if config.get('SPEECH_RECOGNITION_ENABLED', False) %}checked{% endif %}>
-                                    启用语音识别生成字幕（Whisper API）
+                                    启用语音识别生成字幕
                                 </label>
-                                <p class="help-text">当yt-dlp未能获取到字幕时，使用Whisper将音频自动转写为SRT字幕，再配合字幕翻译功能形成完整链路。</p>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="asr-provider">识别提供商:</label>
-                                        <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
-                                            <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI兼容）</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED" {% if config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True) %}checked{% endif %}>
-                                            少于最小字幕条目数则视为无字幕
-                                        </label>
-                                        <p class="help-text">用于过滤误识别或噪声结果。默认开启。</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="asr-min-lines">最小字幕条目数:</label>
-                                        <input type="number" id="asr-min-lines" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES" value="{{ config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) }}" min="0" max="1000" class="form-control">
-                                        <p class="help-text">当ASR生成的字幕条目数小于该值时，将当作“没有字幕”处理（不会进入翻译/烧录）。</p>
-                                    </div>
-                                </div>
+                                <p class="help-text">当视频无字幕时，使用 Whisper 将音频转写为字幕</p>
                             </div>
 
                             <div class="row g-3">
                                 <div class="col-md-6">
                                     <div class="form-group">
                                         <label for="whisper-api-key">Whisper API Key（可选）:</label>
-                                        <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用上方 OpenAI Key">
+                                        <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用 OpenAI Key">
                                     </div>
                                 </div>
                                 <div class="col-md-6">
                                     <div class="form-group">
-                                        <label for="whisper-model">Whisper模型名:</label>
-                                        <input type="text" id="whisper-model" name="WHISPER_MODEL_NAME" value="{{ config.get('WHISPER_MODEL_NAME', 'whisper-1') }}" class="form-control" placeholder="如 whisper-1 / gpt-4o-transcribe">
+                                        <label for="whisper-model">Whisper 模型:</label>
+                                        <input type="text" id="whisper-model" name="WHISPER_MODEL_NAME" value="{{ config.get('WHISPER_MODEL_NAME', 'whisper-1') }}" class="form-control" placeholder="whisper-1">
                                     </div>
                                 </div>
                                 <div class="col-12">
@@ -796,181 +870,110 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="settings-section mt-3">
-                                <h3>Whisper 高级参数</h3>
-                                <div class="row g-3">
-                                    <div class="col-md-4">
-                                        <div class="form-group">
-                                            <label for="whisper-language">强制语言(可选):</label>
-                                            <input type="text" id="whisper-language" name="WHISPER_LANGUAGE" value="{{ config.get('WHISPER_LANGUAGE', '') }}" class="form-control" placeholder="如 en/zh/ja，留空自动检测" list="whisper-language-list">
-                                            <datalist id="whisper-language-list">
-                                                {% for lang in whisper_languages or [] %}
-                                                <option value="{{ lang.code }}">{{ lang.name }} ({{ lang.code }})</option>
-                                                {% endfor %}
-                                            </datalist>
-                                            <p class="help-text">支持的语言已与 Whisper 官方列表同步，留空则自动检测。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-8">
-                                        <div class="form-group">
-                                            <label for="whisper-prompt">提示词(可选):</label>
-                                            <input type="text" id="whisper-prompt" name="WHISPER_PROMPT" value="{{ config.get('WHISPER_PROMPT', '') }}" class="form-control" placeholder="引导模型避免幻觉，如：Technical interview">
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="row g-3">
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="WHISPER_TRANSLATE" {% if config.get('WHISPER_TRANSLATE', False) %}checked{% endif %}> 翻译为英文
-                                            </label>
-                                            <p class="help-text">开启后输出英文而非原语言。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="whisper-max-workers">并发处理数:</label>
-                                            <input type="number" min="1" step="1" id="whisper-max-workers" name="WHISPER_MAX_WORKERS" value="{{ config.get('WHISPER_MAX_WORKERS', 3) }}" class="form-control">
-                                            <p class="help-text">预留，当前顺序处理。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="whisper-max-retries">最大重试次数:</label>
-                                            <input type="number" min="1" step="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="whisper-retry-delay">初始重试延迟(秒):</label>
-                                            <input type="number" min="0" step="0.1" id="whisper-retry-delay" name="WHISPER_RETRY_DELAY_S" value="{{ config.get('WHISPER_RETRY_DELAY_S', 2.0) }}" class="form-control">
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="row g-3">
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="audio-chunk-window">分片窗口时长(秒):</label>
-                                            <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 25.0) }}" class="form-control">
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="audio-chunk-overlap">分片重叠(秒):</label>
-                                            <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) }}" class="form-control">
-                                        </div>
-                                    </div>
-                                    <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="WHISPER_FALLBACK_TO_FIXED_CHUNKS" {% if config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True) %}checked{% endif %}> VAD失败时回退到固定窗口
-                                            </label>
-                                            <p class="help-text">当语音活动检测接口异常或无片段时仍尝试完整转写。</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <!-- VAD 设置 -->
-                    <div class="tab-pane fade" id="vtab-vad" role="tabpanel" aria-labelledby="vtab-vad-tab">
-                        <div class="settings-section">
-                            <h3>语音活动检测（VAD）</h3>
-
-                            <div class="form-group">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" name="VAD_ENABLED" {% if config.get('VAD_ENABLED', False) %}checked{% endif %}>
-                                    启用VAD语音段检测
-                                </label>
-                                <p class="help-text">在调用Whisper前先检测语音段，过滤长静音可有效降低“幻觉”内容。</p>
-                            </div>
-
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-provider">VAD提供商:</label>
-                                        <select id="vad-provider" name="VAD_PROVIDER" class="form-select">
-                                            <option value="silero-vad" {% if config.get('VAD_PROVIDER', 'silero-vad') == 'silero-vad' %}selected{% endif %}>Silero VAD（本地）</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-threshold">语音触发阈值:</label>
-                                        <input type="number" step="0.01" min="0" max="1" id="vad-threshold" name="VAD_SILERO_THRESHOLD" value="{{ config.get('VAD_SILERO_THRESHOLD', 0.5) }}" class="form-control">
-                                        <p class="help-text">范围0-1，数值越大越严格，默认0.5。</p>
-                                    </div>
+                            <!-- VAD 设置 -->
+                            <div class="mt-4">
+                                <h4>语音活动检测（VAD）</h4>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" name="VAD_ENABLED" {% if config.get('VAD_ENABLED', False) %}checked{% endif %}>
+                                        启用 VAD 语音段检测
+                                    </label>
+                                    <p class="help-text">过滤静音片段，降低 Whisper 幻觉内容</p>
                                 </div>
                             </div>
 
-                            <div class="row g-3">
-                                <div class="col-md-4">
-                                    <div class="form-group">
-                                        <label for="vad-min-speech">最短语音时长(ms):</label>
-                                        <input type="number" id="vad-min-speech" name="VAD_SILERO_MIN_SPEECH_MS" value="{{ config.get('VAD_SILERO_MIN_SPEECH_MS', 250) }}" min="0" class="form-control">
-                                        <p class="help-text">短于该时长的片段会被忽略。</p>
+                            <!-- 高级选项折叠区 -->
+                            <div class="mt-3">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedAsrOptions">
+                                    <i class="bi bi-chevron-down"></i> 高级选项
+                                </button>
+                                <div class="collapse mt-3" id="advancedAsrOptions">
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <div class="form-group">
+                                                <label class="checkbox-label">
+                                                    <input type="checkbox" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED" {% if config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True) %}checked{% endif %}>
+                                                    过滤少于最小条目数的字幕
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="form-group">
+                                                <label for="asr-min-lines">最小字幕条目数:</label>
+                                                <input type="number" id="asr-min-lines" name="SPEECH_RECOGNITION_MIN_SUBTITLE_LINES" value="{{ config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) }}" min="0" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="whisper-language">强制语言:</label>
+                                                <input type="text" id="whisper-language" name="WHISPER_LANGUAGE" value="{{ config.get('WHISPER_LANGUAGE', '') }}" class="form-control" placeholder="留空自动检测" list="whisper-language-list">
+                                                <datalist id="whisper-language-list">
+                                                    {% for lang in whisper_languages or [] %}
+                                                    <option value="{{ lang.code }}">{{ lang.name }}</option>
+                                                    {% endfor %}
+                                                </datalist>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-8">
+                                            <div class="form-group">
+                                                <label for="whisper-prompt">提示词:</label>
+                                                <input type="text" id="whisper-prompt" name="WHISPER_PROMPT" value="{{ config.get('WHISPER_PROMPT', '') }}" class="form-control" placeholder="引导模型避免幻觉">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="form-group">
+                                                <label class="checkbox-label">
+                                                    <input type="checkbox" name="WHISPER_TRANSLATE" {% if config.get('WHISPER_TRANSLATE', False) %}checked{% endif %}> 翻译为英文
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="form-group">
+                                                <label for="whisper-max-retries">最大重试:</label>
+                                                <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="form-group">
+                                                <label for="audio-chunk-window">分片窗口(秒):</label>
+                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 25.0) }}" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="form-group">
+                                                <label for="audio-chunk-overlap">分片重叠(秒):</label>
+                                                <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) }}" class="form-control">
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="form-group">
-                                        <label for="vad-min-silence">最短静音时长(ms):</label>
-                                        <input type="number" id="vad-min-silence" name="VAD_SILERO_MIN_SILENCE_MS" value="{{ config.get('VAD_SILERO_MIN_SILENCE_MS', 100) }}" min="0" class="form-control">
-                                        <p class="help-text">用于欠采样环境的降噪策略。</p>
-                                    </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="form-group">
-                                        <label for="vad-pad-ms">语音两侧留白(ms):</label>
-                                        <input type="number" id="vad-pad-ms" name="VAD_SILERO_SPEECH_PAD_MS" value="{{ config.get('VAD_SILERO_SPEECH_PAD_MS', 30) }}" min="0" class="form-control">
-                                        <p class="help-text">适当留白可避免截断单词。</p>
-                                    </div>
-                                </div>
-                            </div>
 
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-max-speech">单段最长语音(s):</label>
-                                        <input type="number" id="vad-max-speech" name="VAD_SILERO_MAX_SPEECH_S" value="{{ config.get('VAD_SILERO_MAX_SPEECH_S', 120) }}" min="1" class="form-control">
-                                        <p class="help-text">过长片段将被自动截断。</p>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="vad-max-segment">Whisper分段上限(s):</label>
-                                        <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 90) }}" min="10" class="form-control">
-                                        <p class="help-text">用于拼接VAD片段时的最大长度，超过会再次拆分。</p>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="settings-section mt-3">
-                                <h3>VAD 后处理约束</h3>
-                                <div class="row g-3">
-                                    <div class="col-md-4">
-                                        <div class="form-group">
-                                            <label for="vad-merge-gap">合并间隙阈值(秒):</label>
-                                            <input type="number" step="0.05" min="0" id="vad-merge-gap" name="VAD_MERGE_GAP_S" value="{{ config.get('VAD_MERGE_GAP_S', 0.25) }}" class="form-control">
-                                            <p class="help-text">间隙小于该值的相邻段会合并。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <div class="form-group">
-                                            <label for="vad-min-segment">最短片段时长(秒):</label>
-                                            <input type="number" step="0.1" min="0" id="vad-min-segment" name="VAD_MIN_SEGMENT_S" value="{{ config.get('VAD_MIN_SEGMENT_S', 1.0) }}" class="form-control">
-                                            <p class="help-text">短于该值的片段将尝试与前后合并。</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <div class="form-group">
-                                            <label for="vad-max-split">二次切分上限(秒):</label>
-                                            <input type="number" step="0.5" min="1" id="vad-max-split" name="VAD_MAX_SEGMENT_S_FOR_SPLIT" value="{{ config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 8.0) }}" class="form-control">
-                                            <p class="help-text">超过该时长的长段会按规则再次拆分。</p>
+                                    <!-- VAD 高级参数 -->
+                                    <div class="mt-3">
+                                        <h5>VAD 参数</h5>
+                                        <div class="row g-3">
+                                            <div class="col-md-4">
+                                                <div class="form-group">
+                                                    <label for="vad-threshold">语音阈值:</label>
+                                                    <input type="number" step="0.01" min="0" max="1" id="vad-threshold" name="VAD_SILERO_THRESHOLD" value="{{ config.get('VAD_SILERO_THRESHOLD', 0.5) }}" class="form-control">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <div class="form-group">
+                                                    <label for="vad-min-speech">最短语音(ms):</label>
+                                                    <input type="number" id="vad-min-speech" name="VAD_SILERO_MIN_SPEECH_MS" value="{{ config.get('VAD_SILERO_MIN_SPEECH_MS', 250) }}" min="0" class="form-control">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <div class="form-group">
+                                                    <label for="vad-max-segment">最大片段(秒):</label>
+                                                    <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 90) }}" min="10" class="form-control">
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                            
                         </div>
                     </div>
 
