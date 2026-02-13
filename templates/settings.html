@@ -430,69 +430,75 @@
                                         <p class="section-lead mb-0">统一时间轴、控制粒度，减少碎片字幕，提升观感。</p>
                                     </div>
                                 </div>
-                                <div class="row g-3">
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="subtitle-time-offset">全局时间偏移(秒):</label>
-                                            <input type="number" step="0.1" id="subtitle-time-offset" name="SUBTITLE_TIME_OFFSET_S" value="{{ config.get('SUBTITLE_TIME_OFFSET_S', 0.0) }}" class="form-control">
-                                            <p class="help-text">可为负数：整体提前或延后字幕（如 -0.5 提前半秒）</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="subtitle-min-cue-dur">最短字幕时长(秒):</label>
-                                            <input type="number" step="0.1" min="0" id="subtitle-min-cue-dur" name="SUBTITLE_MIN_CUE_DURATION_S" value="{{ config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) }}" class="form-control">
-                                            <p class="help-text">短于该时长的字幕将尝试延长或与相邻合并</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="subtitle-merge-gap">合并间隙(秒):</label>
-                                            <input type="number" step="0.05" min="0" id="subtitle-merge-gap" name="SUBTITLE_MERGE_GAP_S" value="{{ config.get('SUBTITLE_MERGE_GAP_S', 0.3) }}" class="form-control">
-                                            <p class="help-text">相邻字幕间隙 ≤ 该值时自动合并</p>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <div class="form-group">
-                                            <label for="subtitle-min-text-len">最小文本长度(字符):</label>
-                                            <input type="number" min="0" step="1" id="subtitle-min-text-len" name="SUBTITLE_MIN_TEXT_LENGTH" value="{{ config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) }}" class="form-control">
-                                            <p class="help-text">长度低于该值的字幕会尝试合并或被丢弃</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="row g-3">
+                                <div class="row g-2">
                                     <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label for="subtitle-max-line-length">每行最大字符数:</label>
-                                            <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control">
-                                            <p class="help-text">超过会按标点/空格自动拆分</p>
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_TIME_OFFSET_ENABLED" id="subtitle-time-offset-enabled" {% if config.get('SUBTITLE_TIME_OFFSET_ENABLED', False) %}checked{% endif %}>
+                                                时间偏移
+                                            </label>
                                         </div>
+                                        <input type="number" step="0.1" id="subtitle-time-offset" name="SUBTITLE_TIME_OFFSET_S" value="{{ config.get('SUBTITLE_TIME_OFFSET_S', 0.0) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                     </div>
                                     <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label for="subtitle-max-lines">单条字幕最大行数:</label>
-                                            <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control">
-                                            <p class="help-text">控制单条字幕的垂直高度，常用 2 行</p>
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_MIN_CUE_DURATION_ENABLED" id="subtitle-min-cue-dur-enabled" {% if config.get('SUBTITLE_MIN_CUE_DURATION_ENABLED', False) %}checked{% endif %}>
+                                                最短时长
+                                            </label>
                                         </div>
+                                        <input type="number" step="0.1" min="0" id="subtitle-min-cue-dur" name="SUBTITLE_MIN_CUE_DURATION_S" value="{{ config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                     </div>
-                                </div>
-                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_MERGE_GAP_ENABLED" id="subtitle-merge-gap-enabled" {% if config.get('SUBTITLE_MERGE_GAP_ENABLED', False) %}checked{% endif %}>
+                                                合并间隙
+                                            </label>
+                                        </div>
+                                        <input type="number" step="0.05" min="0" id="subtitle-merge-gap" name="SUBTITLE_MERGE_GAP_S" value="{{ config.get('SUBTITLE_MERGE_GAP_S', 0.3) }}" class="form-control form-control-sm" disabled placeholder="秒">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_MIN_TEXT_LENGTH_ENABLED" id="subtitle-min-text-len-enabled" {% if config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False) %}checked{% endif %}>
+                                                最小文本长度
+                                            </label>
+                                        </div>
+                                        <input type="number" min="0" step="1" id="subtitle-min-text-len" name="SUBTITLE_MIN_TEXT_LENGTH" value="{{ config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) }}" class="form-control form-control-sm" disabled placeholder="字符">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" id="subtitle-max-line-length-enabled" {% if config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False) %}checked{% endif %}>
+                                                每行最大字符数
+                                            </label>
+                                        </div>
+                                        <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control form-control-sm" disabled placeholder="字符">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group mb-2">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="SUBTITLE_MAX_LINES_ENABLED" id="subtitle-max-lines-enabled" {% if config.get('SUBTITLE_MAX_LINES_ENABLED', False) %}checked{% endif %}>
+                                                最大行数
+                                            </label>
+                                        </div>
+                                        <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control form-control-sm" disabled placeholder="行">
+                                    </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label class="checkbox-label">
-                                                <input type="checkbox" name="SUBTITLE_NORMALIZE_PUNCTUATION" {% if config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True) %}checked{% endif %}>
+                                                <input type="checkbox" name="SUBTITLE_NORMALIZE_PUNCTUATION" {% if config.get('SUBTITLE_NORMALIZE_PUNCTUATION', False) %}checked{% endif %}>
                                                 标准化标点与空白
                                             </label>
-                                            <p class="help-text">保证标点后统一空格，清理多余空白字符</p>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" name="SUBTITLE_FILTER_FILLER_WORDS" {% if config.get('SUBTITLE_FILTER_FILLER_WORDS', False) %}checked{% endif %}>
-                                                过滤填充词(um/uh/嗯/啊)
+                                                过滤填充词
                                             </label>
-                                            <p class="help-text">去除语气词可减少噪声，对口语内容效果明显</p>
                                         </div>
                                     </div>
                                 </div>
@@ -735,6 +741,28 @@
                             asrProvider.addEventListener('change', toggleAsrProvider);
                             toggleAsrProvider();
                         }
+
+                        // 字幕后处理选项开关控制
+                        const subtitlePostProcessingToggles = [
+                            { checkbox: 'subtitle-time-offset-enabled', input: 'subtitle-time-offset' },
+                            { checkbox: 'subtitle-min-cue-dur-enabled', input: 'subtitle-min-cue-dur' },
+                            { checkbox: 'subtitle-merge-gap-enabled', input: 'subtitle-merge-gap' },
+                            { checkbox: 'subtitle-min-text-len-enabled', input: 'subtitle-min-text-len' },
+                            { checkbox: 'subtitle-max-line-length-enabled', input: 'subtitle-max-line-length' },
+                            { checkbox: 'subtitle-max-lines-enabled', input: 'subtitle-max-lines' }
+                        ];
+
+                        subtitlePostProcessingToggles.forEach(function(toggle) {
+                            var checkbox = document.getElementById(toggle.checkbox);
+                            var input = document.getElementById(toggle.input);
+                            if (checkbox && input) {
+                                function updateInputState() {
+                                    input.disabled = !checkbox.checked;
+                                }
+                                checkbox.addEventListener('change', updateInputState);
+                                updateInputState();
+                            }
+                        });
                     });
                     </script>
 
