@@ -787,9 +787,9 @@
 
                                 <div class="form-group">
                                     <label for="asr-provider">语音识别服务:</label>
-                                    <select id="asr-provider" name="ASR_PROVIDER" class="form-select">
-                                        <option value="whisper" {% if config.get('ASR_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper API</option>
-                                        <option value="fireredasr" {% if config.get('ASR_PROVIDER', 'whisper') == 'fireredasr' %}selected{% endif %}>FireRedASR2S</option>
+                                    <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
+                                        <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper API</option>
+                                        <option value="fireredasr" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'fireredasr' %}selected{% endif %}>FireRedASR2S</option>
                                     </select>
                                     <p class="help-text">选择用于语音识别的服务提供商</p>
                                 </div>
