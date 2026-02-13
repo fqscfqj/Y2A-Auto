@@ -730,7 +730,7 @@
                             <div class="form-group">
                                 <label class="checkbox-label">
                                     <input type="checkbox" name="FIREREDASR_ENABLED" {% if config.get('FIREREDASR_ENABLED', False) %}checked{% endif %}>
-                                    启用 FireRedASR2S 语音识别
+                                    <i class="bi bi-fire text-danger me-1" aria-hidden="true"></i> 启用 FireRedASR2S 语音识别
                                 </label>
                                 <p class="help-text">启用后将优先使用 FireRedASR2S 进行语音识别，而非 Whisper API</p>
                             </div>
