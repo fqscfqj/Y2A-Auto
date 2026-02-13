@@ -107,17 +107,25 @@ class SpeechRecognitionConfig:
     translate: bool = False
     max_workers: int = 3                # Concurrent segment uploads
 
-    # Text post-processing
+    # Text post-processing (only for Whisper)
     max_subtitle_line_length: int = 42
     max_subtitle_lines: int = 2
     normalize_punctuation: bool = True
     filter_filler_words: bool = True
 
-    # Final cue post-processing
+    # Final cue post-processing (only for Whisper)
     subtitle_time_offset_s: float = 0.0
     subtitle_min_cue_duration_s: float = 0.6
     subtitle_merge_gap_s: float = 0.3
     subtitle_min_text_length: int = 2
+
+    # Post-processing enable flags (only for Whisper)
+    subtitle_time_offset_enabled: bool = False
+    subtitle_min_cue_duration_enabled: bool = False
+    subtitle_merge_gap_enabled: bool = False
+    subtitle_min_text_length_enabled: bool = False
+    subtitle_max_line_length_enabled: bool = False
+    subtitle_max_lines_enabled: bool = False
 
     # Retry / fallback
     max_retries: int = 3
@@ -193,14 +201,14 @@ class SpeechRecognizer:
         )
         self._srt = SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=config.max_subtitle_line_length,
-                max_lines=config.max_subtitle_lines,
-                normalize_punctuation=config.normalize_punctuation,
-                filter_filler_words=config.filter_filler_words,
-                time_offset_s=config.subtitle_time_offset_s,
-                min_cue_duration_s=config.subtitle_min_cue_duration_s,
-                merge_gap_s=config.subtitle_merge_gap_s,
-                min_text_length=config.subtitle_min_text_length,
+                max_line_length=config.max_subtitle_line_length if config.provider == 'whisper' and config.subtitle_max_line_length_enabled else 42,
+                max_lines=config.max_subtitle_lines if config.provider == 'whisper' and config.subtitle_max_lines_enabled else 2,
+                normalize_punctuation=config.normalize_punctuation if config.provider == 'whisper' else False,
+                filter_filler_words=config.filter_filler_words if config.provider == 'whisper' else False,
+                time_offset_s=config.subtitle_time_offset_s if config.provider == 'whisper' and config.subtitle_time_offset_enabled else 0.0,
+                min_cue_duration_s=config.subtitle_min_cue_duration_s if config.provider == 'whisper' and config.subtitle_min_cue_duration_enabled else 0.6,
+                merge_gap_s=config.subtitle_merge_gap_s if config.provider == 'whisper' and config.subtitle_merge_gap_enabled else 0.3,
+                min_text_length=config.subtitle_min_text_length if config.provider == 'whisper' and config.subtitle_min_text_length_enabled else 2,
             ),
             logger=self.logger,
         )
@@ -693,6 +701,25 @@ def create_speech_recognizer_from_config(
             ),
             subtitle_min_text_length=int(
                 app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2
+            ),
+            # Post-processing enable flags (only for Whisper)
+            subtitle_time_offset_enabled=bool(
+                app_config.get('SUBTITLE_TIME_OFFSET_ENABLED', False)
+            ),
+            subtitle_min_cue_duration_enabled=bool(
+                app_config.get('SUBTITLE_MIN_CUE_DURATION_ENABLED', False)
+            ),
+            subtitle_merge_gap_enabled=bool(
+                app_config.get('SUBTITLE_MERGE_GAP_ENABLED', False)
+            ),
+            subtitle_min_text_length_enabled=bool(
+                app_config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False)
+            ),
+            subtitle_max_line_length_enabled=bool(
+                app_config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False)
+            ),
+            subtitle_max_lines_enabled=bool(
+                app_config.get('SUBTITLE_MAX_LINES_ENABLED', False)
             ),
             max_retries=asr_max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),

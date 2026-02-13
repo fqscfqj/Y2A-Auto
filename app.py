@@ -1389,6 +1389,10 @@ def settings():
             'VAD_ENABLED',
             # 新增：字幕后处理布尔项
             'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
+            # 新增：字幕后处理启用开关
+            'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
+            'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
+            'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
             # 新增：字幕最终质检（QC）
             'SUBTITLE_QC_ENABLED',
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
