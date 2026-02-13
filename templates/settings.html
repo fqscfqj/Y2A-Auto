@@ -727,13 +727,6 @@
                             <h3><i class="bi bi-fire text-danger"></i> FireRedASR2S 语音识别</h3>
                             <p class="section-lead">高性能本地语音识别服务，支持实时转写与多语言识别</p>
 
-                            <div class="alert alert-info">
-                                <i class="bi bi-info-circle"></i>
-                                <strong>关于 FireRedASR2S</strong>
-                                <p class="mb-0 mt-2">FireRedASR2S 提供完整语音流水线接口，本页面按官方推荐的 <code>/v1/process_all</code> 方式调用。</p>
-                                <p class="mb-0">项目地址：<a href="https://github.com/fqscfqj/FireRedASR2S-DockerApi" target="_blank" rel="noopener">https://github.com/fqscfqj/FireRedASR2S-DockerApi</a></p>
-                            </div>
-
                             <div class="form-group">
                                 <label class="checkbox-label">
                                     <input type="checkbox" name="FIREREDASR_ENABLED" {% if config.get('FIREREDASR_ENABLED', False) %}checked{% endif %}>
@@ -758,45 +751,29 @@
                                 </div>
                             </div>
 
-                            <div class="alert alert-secondary mt-3">
-                                <strong>调用方式（固定）</strong>
-                                <p class="mb-2 mt-2">POST <code>{FIREREDASR_BASE_URL}/v1/process_all?force_refresh=false</code></p>
-                                <p class="mb-0">Header: <code>X-API-Key: &lt;你的 Key&gt;</code>（如果服务开启了鉴权）</p>
-                            </div>
-
-                            <!-- 高级选项 -->
-                            <div class="mt-3">
-                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedFireRedAsrOptions">
-                                    <i class="bi bi-chevron-down"></i> 高级选项
-                                </button>
-                                <div class="collapse mt-3" id="advancedFireRedAsrOptions">
-                                    <div class="row g-3">
-                                        <div class="col-md-6">
-                                            <div class="form-group">
-                                                <label for="fireredasr-api-key">API Key（可选）:</label>
-                                                <input type="password" id="fireredasr-api-key" name="FIREREDASR_API_KEY" value="{{ config.get('FIREREDASR_API_KEY', '') }}" class="form-control" placeholder="如果服务需要认证">
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="form-group">
-                                                <label for="fireredasr-max-retries">最大重试次数:</label>
-                                                <input type="number" id="fireredasr-max-retries" name="FIREREDASR_MAX_RETRIES" value="{{ config.get('FIREREDASR_MAX_RETRIES', 3) }}" min="1" class="form-control">
-                                            </div>
-                                        </div>
-                                        <div class="col-md-12">
-                                            <div class="form-group">
-                                                <p class="help-text mb-0">当前仅支持 API Key、超时、重试次数等与服务调用相关的参数。</p>
-                                            </div>
-                                        </div>
-                                        <div class="col-12">
-                                            <div class="alert alert-light border mb-0">
-                                                <small class="text-muted">
-                                                    当前按 <code>/v1/process_all</code> 方式调用，不传模型名、语言、提示词、temperature、beam size 等参数。
-                                                </small>
-                                            </div>
-                                        </div>
+                            <div class="row g-3 mt-2">
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="fireredasr-api-key">API Key（可选）:</label>
+                                        <input type="password" id="fireredasr-api-key" name="FIREREDASR_API_KEY" value="{{ config.get('FIREREDASR_API_KEY', '') }}" class="form-control" placeholder="如果服务需要鉴权">
+                                        <p class="help-text mb-0">留空表示不使用鉴权</p>
                                     </div>
                                 </div>
+                                <div class="col-md-6">
+                                    <div class="form-group">
+                                        <label for="fireredasr-max-retries">最大重试次数:</label>
+                                        <input type="number" id="fireredasr-max-retries" name="FIREREDASR_MAX_RETRIES" value="{{ config.get('FIREREDASR_MAX_RETRIES', 3) }}" min="1" class="form-control">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="alert alert-secondary mt-3">
+                                <p class="mb-1"><strong>调用端点：</strong><code>{FIREREDASR_BASE_URL}/v1/process_all?force_refresh=false</code></p>
+                                <p class="mb-0"><small class="text-muted">请求头（如需）：<code>X-API-Key: &lt;你的 Key&gt;</code></small></p>
+                            </div>
+
+                            <div class="alert alert-light mt-2">
+                                <small class="text-muted">当前按 <code>/v1/process_all</code> 方式调用，模型、语言、prompt 等由服务端处理。</small>
                             </div>
 
                             <div class="alert alert-warning mt-3">
