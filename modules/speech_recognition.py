@@ -602,13 +602,12 @@ def create_speech_recognizer_from_config(
             return str(value).strip().lower() in ('true', '1', 'on', 'yes')
 
         speech_enabled = _to_bool(app_config.get('SPEECH_RECOGNITION_ENABLED', False))
-        firered_enabled = _to_bool(app_config.get('FIREREDASR_ENABLED', False))
 
-        if not speech_enabled and not firered_enabled:
+        if not speech_enabled:
             return None
 
         provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
-        use_fireredasr = firered_enabled
+        use_fireredasr = provider == 'fireredasr'
 
         if use_fireredasr:
             asr_provider = 'fireredasr2s'
