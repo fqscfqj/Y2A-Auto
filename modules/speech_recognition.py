@@ -154,7 +154,7 @@ class SpeechRecognizer:
         self._temp_dirs: List[str] = []
 
         # Validate provider
-        if config.provider != 'whisper':
+        if config.provider not in ('whisper', 'fireredasr'):
             self.logger.error(f"Unsupported speech recognition provider: {config.provider}")
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
 
