@@ -61,7 +61,7 @@
                             <i class="bi bi-mic"></i> Whisper API
                         </a>
                         <a class="nav-link" id="vtab-fireredasr-tab" data-bs-toggle="pill" href="#vtab-fireredasr" role="tab" aria-controls="vtab-fireredasr" aria-selected="false">
-                            <i class="bi bi-fire"></i> FireRedASR2S
+                            <i class="bi bi-mic me-1"></i> FireRedASR2S
                         </a>
                         <a class="nav-link" id="vtab-transcode-tab" data-bs-toggle="pill" href="#vtab-transcode" role="tab" aria-controls="vtab-transcode" aria-selected="false">
                             <i class="bi bi-gpu-card"></i> 视频转码
@@ -724,13 +724,13 @@
                     <!-- FireRedASR2S 设置 -->
                     <div class="tab-pane fade" id="vtab-fireredasr" role="tabpanel" aria-labelledby="vtab-fireredasr-tab">
                         <div class="settings-section">
-                            <h3><i class="bi bi-fire text-danger"></i> FireRedASR2S 语音识别</h3>
+                            <h3><i class="bi bi-mic me-2"></i> FireRedASR2S 语音识别</h3>
                             <p class="section-lead">高性能本地语音识别服务，支持实时转写与多语言识别</p>
 
                             <div class="form-group">
                                 <label class="checkbox-label">
                                     <input type="checkbox" name="FIREREDASR_ENABLED" {% if config.get('FIREREDASR_ENABLED', False) %}checked{% endif %}>
-                                    <i class="bi bi-fire text-danger me-1" aria-hidden="true"></i> 启用 FireRedASR2S 语音识别
+                                    <i class="bi bi-mic me-1"></i> 启用 FireRedASR2S 语音识别
                                 </label>
                                 <p class="help-text">启用后将优先使用 FireRedASR2S 进行语音识别，而非 Whisper API</p>
                             </div>
