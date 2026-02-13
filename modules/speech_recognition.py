@@ -604,9 +604,10 @@ def create_speech_recognizer_from_config(
             asr_provider = 'fireredasr2s'
             asr_base_url = app_config.get('FIREREDASR_BASE_URL') or ''
             asr_api_key = app_config.get('FIREREDASR_API_KEY') or ''
-            asr_model = app_config.get('FIREREDASR_MODEL') or 'large-v3'
-            asr_language = app_config.get('FIREREDASR_LANGUAGE') or ''
-            asr_prompt = app_config.get('FIREREDASR_PROMPT') or ''
+            # FireRed `/v1/process_all` mode does not consume model/language/prompt params.
+            asr_model = ''
+            asr_language = ''
+            asr_prompt = ''
             asr_max_retries = int(
                 app_config.get('FIREREDASR_MAX_RETRIES', 3) or 3
             )

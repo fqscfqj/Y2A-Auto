@@ -764,23 +764,6 @@
                                 <p class="mb-0">Header: <code>X-API-Key: &lt;你的 Key&gt;</code>（如果服务开启了鉴权）</p>
                             </div>
 
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="fireredasr-model">模型名称:</label>
-                                        <input type="text" id="fireredasr-model" name="FIREREDASR_MODEL" value="{{ config.get('FIREREDASR_MODEL', 'large-v3') }}" class="form-control" placeholder="large-v3">
-                                        <p class="help-text">支持的模型：tiny, base, small, medium, large, large-v2, large-v3</p>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="fireredasr-language">语言代码（可选）:</label>
-                                        <input type="text" id="fireredasr-language" name="FIREREDASR_LANGUAGE" value="{{ config.get('FIREREDASR_LANGUAGE', '') }}" class="form-control" placeholder="留空自动检测">
-                                        <p class="help-text">如：en, zh, ja, ko 等</p>
-                                    </div>
-                                </div>
-                            </div>
-
                             <!-- 高级选项 -->
                             <div class="mt-3">
                                 <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedFireRedAsrOptions">
@@ -802,34 +785,13 @@
                                         </div>
                                         <div class="col-md-12">
                                             <div class="form-group">
-                                                <label for="fireredasr-prompt">提示词（可选）:</label>
-                                                <input type="text" id="fireredasr-prompt" name="FIREREDASR_PROMPT" value="{{ config.get('FIREREDASR_PROMPT', '') }}" class="form-control" placeholder="引导模型识别特定内容">
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label class="checkbox-label">
-                                                    <input type="checkbox" name="FIREREDASR_WORD_TIMESTAMPS" {% if config.get('FIREREDASR_WORD_TIMESTAMPS', False) %}checked{% endif %}>
-                                                    启用词级时间戳
-                                                </label>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label for="fireredasr-temperature">Temperature:</label>
-                                                <input type="number" step="0.1" min="0" max="1" id="fireredasr-temperature" name="FIREREDASR_TEMPERATURE" value="{{ config.get('FIREREDASR_TEMPERATURE', 0.0) }}" class="form-control">
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-group">
-                                                <label for="fireredasr-beam-size">Beam Size:</label>
-                                                <input type="number" min="1" id="fireredasr-beam-size" name="FIREREDASR_BEAM_SIZE" value="{{ config.get('FIREREDASR_BEAM_SIZE', 5) }}" class="form-control">
+                                                <p class="help-text mb-0">当前仅支持 API Key、超时、重试次数等与服务调用相关的参数。</p>
                                             </div>
                                         </div>
                                         <div class="col-12">
                                             <div class="alert alert-light border mb-0">
                                                 <small class="text-muted">
-                                                    当前按 <code>/v1/process_all</code> 方式调用。模型/语言/提示词/词级时间戳/temperature/beam_size 不作为请求参数发送，仅保留历史兼容配置。
+                                                    当前按 <code>/v1/process_all</code> 方式调用，不传模型名、语言、提示词、temperature、beam size 等参数。
                                                 </small>
                                             </div>
                                         </div>
@@ -844,7 +806,6 @@
                                     <li>需要先部署 FireRedASR2S Docker 服务</li>
                                     <li>确保服务地址可访问，默认端口为 8000</li>
                                     <li>启用后将替代 Whisper API 进行语音识别</li>
-                                    <li>建议使用 large-v3 模型以获得最佳识别效果</li>
                                 </ul>
                             </div>
                         </div>

@@ -101,13 +101,6 @@ DEFAULT_CONFIG = {
     "FIREREDASR_API_KEY": "",
     "FIREREDASR_TIMEOUT": 300,
     "FIREREDASR_MAX_RETRIES": 3,
-    # 历史保留字段（当前 process_all 模式不使用）
-    "FIREREDASR_MODEL": "large-v3",
-    "FIREREDASR_LANGUAGE": "",
-    "FIREREDASR_PROMPT": "",
-    "FIREREDASR_WORD_TIMESTAMPS": False,
-    "FIREREDASR_TEMPERATURE": 0.0,
-    "FIREREDASR_BEAM_SIZE": 5,
     # 语音活动检测（VAD）
     "VAD_ENABLED": False,
     "VAD_PROVIDER": "silero-vad",
