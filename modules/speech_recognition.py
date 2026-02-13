@@ -594,11 +594,21 @@ def create_speech_recognizer_from_config(
 ) -> Optional[SpeechRecognizer]:
     """Build a ``SpeechRecognizer`` from the application config dict."""
     try:
-        if not app_config.get('SPEECH_RECOGNITION_ENABLED', False):
+        def _to_bool(value) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            return str(value).strip().lower() in ('true', '1', 'on', 'yes')
+
+        speech_enabled = _to_bool(app_config.get('SPEECH_RECOGNITION_ENABLED', False))
+        firered_enabled = _to_bool(app_config.get('FIREREDASR_ENABLED', False))
+
+        if not speech_enabled and not firered_enabled:
             return None
 
         provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
-        use_fireredasr = bool(app_config.get('FIREREDASR_ENABLED', False))
+        use_fireredasr = firered_enabled
 
         if use_fireredasr:
             asr_provider = 'fireredasr2s'

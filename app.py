@@ -1529,6 +1529,8 @@ def settings():
             need_ffmpeg = False
             if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
                 need_ffmpeg = True
+            if str(updated_config.get('FIREREDASR_ENABLED', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
             if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
                 need_ffmpeg = True
             if need_ffmpeg:

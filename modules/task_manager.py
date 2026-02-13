@@ -175,6 +175,20 @@ def _safe_json_loads(value, default):
         return default
 
 
+def _as_bool(value):
+    """将配置值稳健转换为布尔值（兼容 bool/int/str）。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in ('true', '1', 'on', 'yes')
+
+
+def _is_asr_enabled(config: dict) -> bool:
+    """ASR总开关：兼容传统ASR开关与FireRedASR2S开关。"""
+    return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False)) or _as_bool(config.get('FIREREDASR_ENABLED', False))
+
+
 def _parse_pipeline_checkpoint(raw_value):
     data = _safe_json_loads(raw_value, {})
     if not isinstance(data, dict):
@@ -1715,7 +1729,7 @@ class TaskProcessor:
             if not subtitle_files:
                 task_logger.info("未找到字幕文件，尝试语音识别生成字幕（如已启用）")
                 # 若启用了语音识别，使用Whisper兼容API从视频生成字幕
-                if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                if _is_asr_enabled(self.config):
                     out_path = None
                     try:
                         from modules.speech_recognition import create_speech_recognizer_from_config
@@ -3340,7 +3354,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     except Exception:
                         pass
 
-                    if self.config.get('SPEECH_RECOGNITION_ENABLED', False):
+                    if _is_asr_enabled(self.config):
                         if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
                             task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
                             # 检查是否已有QC失败记录
