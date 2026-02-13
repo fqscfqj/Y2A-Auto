@@ -730,7 +730,7 @@
                             <div class="alert alert-info">
                                 <i class="bi bi-info-circle"></i>
                                 <strong>关于 FireRedASR2S</strong>
-                                <p class="mb-0 mt-2">FireRedASR2S 是一个高性能的语音识别 Docker 服务，提供 OpenAI Whisper 兼容的 API 接口。</p>
+                                <p class="mb-0 mt-2">FireRedASR2S 提供完整语音流水线接口，本页面按官方推荐的 <code>/v1/process_all</code> 方式调用。</p>
                                 <p class="mb-0">项目地址：<a href="https://github.com/fqscfqj/FireRedASR2S-DockerApi" target="_blank" rel="noopener">https://github.com/fqscfqj/FireRedASR2S-DockerApi</a></p>
                             </div>
 
@@ -745,9 +745,9 @@
                             <div class="row g-3">
                                 <div class="col-md-8">
                                     <div class="form-group">
-                                        <label for="fireredasr-base-url">FireRedASR2S API 地址:</label>
+                                        <label for="fireredasr-base-url">FireRedASR2S 基础地址（不含 /v1/process_all）:</label>
                                         <input type="text" id="fireredasr-base-url" name="FIREREDASR_BASE_URL" value="{{ config.get('FIREREDASR_BASE_URL', 'http://localhost:8000') }}" class="form-control" placeholder="http://localhost:8000">
-                                        <p class="help-text">FireRedASR2S 服务的 API 地址</p>
+                                        <p class="help-text">系统会自动拼接 <code>/v1/process_all?force_refresh=false</code></p>
                                     </div>
                                 </div>
                                 <div class="col-md-4">
@@ -756,6 +756,12 @@
                                         <input type="number" id="fireredasr-timeout" name="FIREREDASR_TIMEOUT" value="{{ config.get('FIREREDASR_TIMEOUT', 300) }}" min="30" class="form-control">
                                     </div>
                                 </div>
+                            </div>
+
+                            <div class="alert alert-secondary mt-3">
+                                <strong>调用方式（固定）</strong>
+                                <p class="mb-2 mt-2">POST <code>{FIREREDASR_BASE_URL}/v1/process_all?force_refresh=false</code></p>
+                                <p class="mb-0">Header: <code>X-API-Key: &lt;你的 Key&gt;</code>（如果服务开启了鉴权）</p>
                             </div>
 
                             <div class="row g-3">
@@ -818,6 +824,13 @@
                                             <div class="form-group">
                                                 <label for="fireredasr-beam-size">Beam Size:</label>
                                                 <input type="number" min="1" id="fireredasr-beam-size" name="FIREREDASR_BEAM_SIZE" value="{{ config.get('FIREREDASR_BEAM_SIZE', 5) }}" class="form-control">
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="alert alert-light border mb-0">
+                                                <small class="text-muted">
+                                                    当前按 <code>/v1/process_all</code> 方式调用。模型/语言/提示词/词级时间戳/temperature/beam_size 不作为请求参数发送，仅保留历史兼容配置。
+                                                </small>
                                             </div>
                                         </div>
                                     </div>

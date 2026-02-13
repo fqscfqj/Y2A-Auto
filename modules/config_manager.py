@@ -95,6 +95,19 @@ DEFAULT_CONFIG = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
+    # FireRedASR2S（/v1/process_all）配置
+    "FIREREDASR_ENABLED": False,
+    "FIREREDASR_BASE_URL": "http://localhost:8000",
+    "FIREREDASR_API_KEY": "",
+    "FIREREDASR_TIMEOUT": 300,
+    "FIREREDASR_MAX_RETRIES": 3,
+    # 历史保留字段（当前 process_all 模式不使用）
+    "FIREREDASR_MODEL": "large-v3",
+    "FIREREDASR_LANGUAGE": "",
+    "FIREREDASR_PROMPT": "",
+    "FIREREDASR_WORD_TIMESTAMPS": False,
+    "FIREREDASR_TEMPERATURE": 0.0,
+    "FIREREDASR_BEAM_SIZE": 5,
     # 语音活动检测（VAD）
     "VAD_ENABLED": False,
     "VAD_PROVIDER": "silero-vad",

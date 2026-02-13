@@ -1392,7 +1392,9 @@ def settings():
             # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
             # 新增：视频转码自定义参数开关
-            'VIDEO_CUSTOM_PARAMS_ENABLED'
+            'VIDEO_CUSTOM_PARAMS_ENABLED',
+            # FireRedASR2S
+            'FIREREDASR_ENABLED', 'FIREREDASR_WORD_TIMESTAMPS'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:
@@ -1412,7 +1414,9 @@ def settings():
             # 新增：字幕后处理 - 最小文本长度
             'SUBTITLE_MIN_TEXT_LENGTH',
             # 新增：Whisper 并发与重试
-            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
+            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
+            # FireRedASR2S
+            'FIREREDASR_TIMEOUT', 'FIREREDASR_MAX_RETRIES', 'FIREREDASR_BEAM_SIZE'
         ]
         for field in numeric_fields:
             if field in form_data:
@@ -1441,7 +1445,10 @@ def settings():
                         'VAD_SILERO_MIN_SILENCE_MS': 100,
                         'VAD_SILERO_MAX_SPEECH_S': 120,
                         'VAD_SILERO_SPEECH_PAD_MS': 30,
-                        'VAD_MAX_SEGMENT_S': 90
+                        'VAD_MAX_SEGMENT_S': 90,
+                        'FIREREDASR_TIMEOUT': 300,
+                        'FIREREDASR_MAX_RETRIES': 3,
+                        'FIREREDASR_BEAM_SIZE': 5
                     }
                     form_data[field] = str(defaults.get(field, 1))  # 转换为str以满足类型要求
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
@@ -1456,7 +1463,9 @@ def settings():
             # Whisper 高级参数：重试延迟、分片窗口/重叠
             'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
             # VAD 约束参数
-            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
+            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT',
+            # FireRedASR2S
+            'FIREREDASR_TEMPERATURE'
         ]
         for field in float_fields:
             if field in form_data:
@@ -1470,7 +1479,8 @@ def settings():
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.5
+                        'VAD_SILERO_THRESHOLD': 0.5,
+                        'FIREREDASR_TEMPERATURE': 0.0
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")

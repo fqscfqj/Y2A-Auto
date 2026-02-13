@@ -71,6 +71,7 @@ def _setup_task_logger(task_id: str) -> logging.Logger:
 @dataclass
 class SpeechRecognitionConfig:
     provider: str = 'whisper'
+    api_provider: str = 'whisper'
     api_key: str = ''
     base_url: str = ''
     model_name: str = 'whisper-1'
@@ -122,6 +123,7 @@ class SpeechRecognitionConfig:
     max_retries: int = 3
     retry_delay_s: float = 2.0
     fallback_to_fixed_chunks: bool = True
+    request_timeout_s: float = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +177,7 @@ class SpeechRecognizer:
         )
         self._asr = AsrApiClient(
             AsrConfig(
+                provider=config.api_provider,
                 api_key=config.api_key,
                 base_url=config.base_url,
                 model_name=config.model_name,
@@ -184,6 +187,7 @@ class SpeechRecognizer:
                 max_retries=config.max_retries,
                 retry_delay_s=config.retry_delay_s,
                 max_workers=config.max_workers,
+                request_timeout_s=config.request_timeout_s,
             ),
             logger=self.logger,
         )
@@ -594,22 +598,43 @@ def create_speech_recognizer_from_config(
             return None
 
         provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
+        use_fireredasr = bool(app_config.get('FIREREDASR_ENABLED', False))
 
-        whisper_base_url = (
-            app_config.get('WHISPER_BASE_URL')
-            or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-        )
-        whisper_api_key = (
-            app_config.get('WHISPER_API_KEY')
-            or app_config.get('OPENAI_API_KEY', '')
-        )
-        whisper_model = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
+        if use_fireredasr:
+            asr_provider = 'fireredasr2s'
+            asr_base_url = app_config.get('FIREREDASR_BASE_URL') or ''
+            asr_api_key = app_config.get('FIREREDASR_API_KEY') or ''
+            asr_model = app_config.get('FIREREDASR_MODEL') or 'large-v3'
+            asr_language = app_config.get('FIREREDASR_LANGUAGE') or ''
+            asr_prompt = app_config.get('FIREREDASR_PROMPT') or ''
+            asr_max_retries = int(
+                app_config.get('FIREREDASR_MAX_RETRIES', 3) or 3
+            )
+            asr_timeout_s = float(
+                app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0
+            )
+        else:
+            asr_provider = 'whisper'
+            asr_base_url = (
+                app_config.get('WHISPER_BASE_URL')
+                or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+            )
+            asr_api_key = (
+                app_config.get('WHISPER_API_KEY')
+                or app_config.get('OPENAI_API_KEY', '')
+            )
+            asr_model = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
+            asr_language = app_config.get('WHISPER_LANGUAGE') or ''
+            asr_prompt = app_config.get('WHISPER_PROMPT') or ''
+            asr_max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
+            asr_timeout_s = 300.0
 
         config = SpeechRecognitionConfig(
             provider=provider,
-            api_key=whisper_api_key,
-            base_url=whisper_base_url,
-            model_name=whisper_model,
+            api_provider=asr_provider,
+            api_key=asr_api_key,
+            base_url=asr_base_url,
+            model_name=asr_model,
             min_lines_enabled=app_config.get(
                 'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True,
             ),
@@ -632,9 +657,9 @@ def create_speech_recognizer_from_config(
                 app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 29.0) or 29.0
             ),
             # Transcription
-            language=app_config.get('WHISPER_LANGUAGE') or '',
-            prompt=app_config.get('WHISPER_PROMPT') or '',
-            translate=bool(app_config.get('WHISPER_TRANSLATE', False)),
+            language=asr_language,
+            prompt=asr_prompt,
+            translate=bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr else False,
             max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
             # Text processing
             max_subtitle_line_length=int(
@@ -659,11 +684,12 @@ def create_speech_recognizer_from_config(
             subtitle_min_text_length=int(
                 app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2
             ),
-            max_retries=int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3),
+            max_retries=asr_max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
             fallback_to_fixed_chunks=bool(
                 app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True)
             ),
+            request_timeout_s=asr_timeout_s,
         )
         return SpeechRecognizer(config, task_id)
     except Exception:

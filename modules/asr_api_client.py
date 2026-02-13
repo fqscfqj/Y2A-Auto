@@ -16,10 +16,14 @@ Features:
 """
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+import requests
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +57,7 @@ _SUPPORTED_FORMATS = ['verbose_json', 'srt']
 @dataclass
 class AsrConfig:
     """Configuration for the ASR API client."""
+    provider: str = 'whisper'
     api_key: str = ''
     base_url: str = ''
     model_name: str = 'whisper-1'
@@ -62,6 +67,7 @@ class AsrConfig:
     max_retries: int = 3
     retry_delay_s: float = 2.0
     max_workers: int = 3     # Concurrent segment uploads
+    request_timeout_s: float = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -97,9 +103,20 @@ class AsrApiClient:
 
     def _init_client(self):
         if not self.config.api_key:
-            self.logger.error("Missing Whisper/OpenAI API key – ASR client not initialised")
-            return
+            # FireRed API key can be optional depending on server settings.
+            if self.config.provider != 'fireredasr2s':
+                self.logger.error("Missing Whisper/OpenAI API key - ASR client not initialised")
+                return
         try:
+            if self.config.provider == 'fireredasr2s':
+                if not self.config.base_url:
+                    self.logger.error("Missing FireRedASR2S base URL - ASR client not initialised")
+                    return
+                # FireRed uses direct HTTP calls instead of OpenAI SDK.
+                self.client = True
+                self.logger.info("FireRedASR2S client initialised successfully")
+                return
+
             import openai
             opts: Dict[str, Any] = {}
             if self.config.base_url:
@@ -164,6 +181,9 @@ class AsrApiClient:
         Returns:
             Raw SRT string (relative timestamps), or *None* on failure.
         """
+        if self.config.provider == 'fireredasr2s':
+            return self._transcribe_segment_firered(wav_path, segment_info)
+
         model = self.config.model_name or 'whisper-1'
         segment_desc = segment_info or wav_path
 
@@ -288,6 +308,58 @@ class AsrApiClient:
                     
         return None
 
+    def _transcribe_segment_firered(
+        self,
+        wav_path: str,
+        segment_info: Optional[str] = None,
+    ) -> Optional[str]:
+        """Transcribe one segment via FireRed `/v1/process_all`."""
+        segment_desc = segment_info or wav_path
+        endpoint_url = self._build_firered_process_all_url(self.config.base_url)
+        if not endpoint_url:
+            self.logger.error("FireRedASR2S base URL is empty")
+            return None
+
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers['X-API-Key'] = self.config.api_key
+
+        for attempt in range(self.config.max_retries):
+            try:
+                with open(wav_path, 'rb') as f:
+                    files = {
+                        'file': (os.path.basename(wav_path), f, 'audio/wav')
+                    }
+                    resp = requests.post(
+                        endpoint_url,
+                        headers=headers,
+                        files=files,
+                        timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+                    )
+
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+
+                payload = resp.json()
+                srt_text = self._firered_response_to_srt(payload)
+                if srt_text:
+                    return srt_text
+                raise RuntimeError("FireRed response has no usable subtitle content")
+            except Exception as exc:
+                if attempt < self.config.max_retries - 1:
+                    delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
+                    self.logger.warning(
+                        f"FireRed request failed for segment [{segment_desc}]: {exc} "
+                        f"(attempt {attempt + 1}/{self.config.max_retries}), retrying in {delay:.1f}s"
+                    )
+                    time.sleep(delay)
+                else:
+                    self.logger.error(
+                        f"FireRed request failed for segment [{segment_desc}] after "
+                        f"{self.config.max_retries} attempts: {exc}"
+                    )
+        return None
+
     # ------------------------------------------------------------------
     # Public API – concurrent multi-segment
     # ------------------------------------------------------------------
@@ -370,6 +442,9 @@ class AsrApiClient:
 
     def detect_language(self, wav_path: str) -> str:
         """Probe language of a short audio clip via Whisper."""
+        if self.config.provider == 'fireredasr2s':
+            # FireRed `/v1/process_all` already runs LID internally.
+            return ''
         try:
             model = self.config.model_name or 'whisper-1'
             with open(wav_path, 'rb') as f:
@@ -511,6 +586,94 @@ class AsrApiClient:
                 f"Failed to convert verbose_json to SRT: {exc}"
             )
             return None
+
+    @staticmethod
+    def _build_firered_process_all_url(base_url: str) -> str:
+        raw = (base_url or '').strip()
+        if not raw:
+            return ''
+
+        if '://' not in raw:
+            raw = f"http://{raw}"
+
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return ''
+
+        path = parsed.path or ''
+        query = parse_qs(parsed.query, keep_blank_values=True)
+
+        if path.endswith('/v1/process_all'):
+            normalized_path = path
+        else:
+            normalized_path = f"{path.rstrip('/')}/v1/process_all"
+            normalized_path = normalized_path.replace('//', '/')
+
+        if 'force_refresh' not in query:
+            query['force_refresh'] = ['false']
+
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            normalized_path,
+            parsed.params,
+            urlencode(query, doseq=True),
+            parsed.fragment,
+        ))
+
+    def _firered_response_to_srt(self, payload: Dict[str, Any]) -> Optional[str]:
+        """Convert FireRed `/v1/process_all` response JSON to SRT."""
+        if not isinstance(payload, dict):
+            return None
+
+        sentences = payload.get('sentences') or []
+        srt_lines: List[str] = []
+        cue_number = 1
+
+        if isinstance(sentences, list):
+            for sent in sentences:
+                if not isinstance(sent, dict):
+                    continue
+                text = str(sent.get('text') or '').strip()
+                if not text:
+                    continue
+
+                start_ms = sent.get('start_ms', 0)
+                end_ms = sent.get('end_ms', start_ms)
+                try:
+                    start_s = max(0.0, float(start_ms) / 1000.0)
+                except (ValueError, TypeError):
+                    start_s = 0.0
+                try:
+                    end_s = max(start_s, float(end_ms) / 1000.0)
+                except (ValueError, TypeError):
+                    end_s = start_s
+                if end_s <= start_s:
+                    end_s = start_s + 0.6
+
+                srt_lines.append(f"{cue_number}")
+                srt_lines.append(
+                    f"{_format_srt_timestamp(start_s)} --> {_format_srt_timestamp(end_s)}"
+                )
+                srt_lines.append(text)
+                srt_lines.append("")
+                cue_number += 1
+
+        if srt_lines:
+            return '\n'.join(srt_lines)
+
+        # Fallback: single cue from top-level text/duration.
+        text = str(payload.get('text') or '').strip()
+        if not text:
+            return None
+        try:
+            dur_s = float(payload.get('dur_s') or 1.0)
+        except (ValueError, TypeError):
+            dur_s = 1.0
+        if dur_s <= 0:
+            dur_s = 1.0
+        end_ts = _format_srt_timestamp(dur_s)
+        return f"1\n00:00:00,000 --> {end_ts}\n{text}\n"
 
     @staticmethod
     def _extract_text(resp) -> Optional[str]:
