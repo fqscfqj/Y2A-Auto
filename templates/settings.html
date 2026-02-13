@@ -568,7 +568,7 @@
                     <div class="tab-pane fade" id="vtab-transcode" role="tabpanel" aria-labelledby="vtab-transcode-tab">
                         <div class="settings-section">
                             <h3><i class="bi bi-gpu-card"></i> 视频转码参数</h3>
-                            <p class="section-lead mb-3">选择编码器，系统会根据视频分辨率自动选择最佳码率。</p>
+                            <p class="section-lead mb-3">选择编码器，系统会根据视频分辨率自动选择固定质量参数（CRF/CQ）。</p>
 
                             <div class="row g-3">
                                 <div class="col-md-6">
@@ -606,11 +606,13 @@
                             </div>
 
                             <div class="alert alert-success mt-3">
-                                <i class="bi bi-info-circle"></i> <strong>默认转码参数（按分辨率自动选择）：</strong>
+                                <i class="bi bi-info-circle"></i> <strong>默认转码参数（按分辨率自动选择固定质量）：</strong>
                                 <ul class="mb-0 mt-2">
-                                    <li><strong>4K (2160p)：</strong>25Mbps 目标码率，30Mbps 峰值，60M 缓冲</li>
-                                    <li><strong>1080p：</strong>12Mbps 目标码率，15Mbps 峰值，30M 缓冲</li>
-                                    <li><strong>720p：</strong>8Mbps 目标码率，10Mbps 峰值，20M 缓冲</li>
+                                    <li><strong>4K (2160p+)：</strong>22.5</li>
+                                    <li><strong>2K (1440p)：</strong>23.0</li>
+                                    <li><strong>1080p：</strong>23.5（基准）</li>
+                                    <li><strong>720p：</strong>24.5</li>
+                                    <li><strong>&lt;720p：</strong>25.5</li>
                                     <li><strong>音频：</strong>AAC 320kbps 双声道</li>
                                 </ul>
                             </div>

@@ -2403,34 +2403,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     custom_params_enabled = custom_params_enabled.lower() in ['true', '1', 'on']
                 custom_params = str(self.config.get('VIDEO_CUSTOM_PARAMS', '')).strip()
 
-                # 根据分辨率确定推荐比特率（平衡上传时间和视频质量）
-                # 4K (>=2160p): 16Mbps, 1080p: 8Mbps, 720p: 5Mbps
-                def get_recommended_bitrate(height: int) -> tuple[str, str, str]:
-                    """返回 (bitrate, maxrate, bufsize)"""
+                # 根据分辨率确定推荐固定质量值（CRF/CQ，越小质量越高）
+                # 基准：1080p 使用 CRF 23.5
+                def get_recommended_quality(height: int) -> float:
+                    """返回推荐固定质量值（CRF/CQ）"""
                     if height >= 2160:  # 4K
-                        return ('16M', '20M', '40M')
+                        return 22.5
+                    elif height >= 1440:  # 2K
+                        return 23.0
                     elif height >= 1080:  # 1080p
-                        return ('8M', '10M', '20M')
+                        return 23.5
                     elif height >= 720:  # 720p
-                        return ('5M', '6M', '12M')
+                        return 24.5
                     else:  # 低于 720p
-                        return ('3M', '4M', '8M')
+                        return 25.5
 
-                target_bitrate, max_bitrate, buf_size = get_recommended_bitrate(input_height)
-                task_logger.info(f"视频分辨率: {input_width}x{input_height}, 目标码率: {target_bitrate}")
+                target_quality = get_recommended_quality(input_height)
+                target_quality_str = f"{target_quality:.1f}"
+                task_logger.info(
+                    f"视频分辨率: {input_width}x{input_height}, 固定质量参数: {target_quality_str}"
+                )
 
                 # 针对软编码生成统一参数 (libx264)
                 def build_cpu_params():
                     if custom_params_enabled and custom_params:
                         # 使用自定义参数
                         return shlex.split(custom_params)
-                    # 默认参数：按推荐设置
+                    # 默认参数：按固定质量（CRF）设置
                     return [
                         '-c:v', 'libx264',
                         '-preset', 'medium',
-                        '-b:v', target_bitrate,
-                        '-maxrate', max_bitrate,
-                        '-bufsize', buf_size,
+                        '-crf', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
@@ -2447,9 +2450,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-preset', 'p7',
                         '-tune', 'hq',
                         '-rc:v', 'vbr',
-                        '-b:v', target_bitrate,
-                        '-maxrate', max_bitrate,
-                        '-bufsize', buf_size,
+                        '-cq:v', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
@@ -2464,9 +2465,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return [
                         '-c:v', 'h264_qsv',
                         '-preset', 'veryslow',
-                        '-b:v', target_bitrate,
-                        '-maxrate', max_bitrate,
-                        '-bufsize', buf_size,
+                        '-global_quality', target_quality_str,
                         '-look_ahead', '1',
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
@@ -2488,9 +2487,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             '-c:v', 'h264_amf',
                             '-usage', 'transcoding',
                             '-quality', 'quality',
-                            '-rc', 'vbr_latency',
-                            '-b:v', target_bitrate,
-                            '-maxrate', max_bitrate,
+                            '-rc', 'cqp',
+                            '-qp_i', target_quality_str,
+                            '-qp_p', target_quality_str,
+                            '-qp_b', target_quality_str,
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',
@@ -2502,8 +2502,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         return [
                             '-vaapi_device', '/dev/dri/renderD128',
                             '-c:v', 'h264_vaapi',
-                            '-b:v', target_bitrate,
-                            '-maxrate', max_bitrate,
+                            '-qp', target_quality_str,
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',

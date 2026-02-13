@@ -200,9 +200,8 @@ python app.py
   "YOUTUBE_API_KEY": "可选：启用 YouTube 监控",
 
   "VIDEO_ENCODER": "auto",
-  "VIDEO_CRF": 23,
-  "VIDEO_PRESET": "medium",
-  "VIDEO_BITRATE": ""
+  "VIDEO_CUSTOM_PARAMS_ENABLED": false,
+  "VIDEO_CUSTOM_PARAMS": ""
 }
 ### 字幕质检（QC）配置
 
@@ -254,14 +253,21 @@ python app.py
 
 ### 视频转码参数配置
 
-在设置页面的"字幕翻译"区域可配置以下参数：
+在设置页面的"视频转码参数"区域可配置以下参数：
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `VIDEO_ENCODER` | 编码器选择：auto/cpu/nvidia/intel/amd | auto |
-| `VIDEO_CRF` | 视频质量 (0-51，越小质量越高) | 23 |
-| `VIDEO_PRESET` | 编码速度预设 | medium |
-| `VIDEO_BITRATE` | 固定比特率（如"8M"），设置后CRF失效 | 空 |
+| `VIDEO_CUSTOM_PARAMS_ENABLED` | 是否启用自定义 FFmpeg 视频参数（覆盖默认策略） | false |
+| `VIDEO_CUSTOM_PARAMS` | 自定义视频编码参数字符串 | 空 |
+
+默认情况下系统使用固定质量模式（CRF/CQ），并按分辨率自动设置质量值：
+
+- 4K (2160p+): `22.5`
+- 2K (1440p): `23.0`
+- 1080p: `23.5`（基准）
+- 720p: `24.5`
+- <720p: `25.5`
 
 ### Docker 环境 GPU 配置
 
