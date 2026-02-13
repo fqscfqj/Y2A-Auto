@@ -540,7 +540,7 @@ def tasks_event_stream():
             yield 'data: {"type":"welcome"}\n\n'
             while True:
                 try:
-                    event = listener.get(timeout=25)
+                    event = listener.get(timeout=10)  # 减少心跳间隔到 10 秒
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except Empty:
                     yield 'data: {"type":"heartbeat"}\n\n'
@@ -552,6 +552,8 @@ def tasks_event_stream():
     response = Response(stream_with_context(generate()), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Transfer-Encoding'] = 'chunked'
     return response
 
 @app.route('/manual_review')

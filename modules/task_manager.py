@@ -381,7 +381,7 @@ logger = setup_logger('task_manager')
 # 实时任务事件订阅管理
 _TASK_EVENT_SUBSCRIBERS = set()
 _TASK_EVENT_LOCK = threading.Lock()
-_TASK_EVENT_QUEUE_SIZE = 32
+_TASK_EVENT_QUEUE_SIZE = 128  # 增加队列容量，防止事件丢失
 
 
 def register_task_updates_listener():

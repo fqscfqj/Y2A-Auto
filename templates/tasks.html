@@ -692,9 +692,9 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         }
     }
 
-    const REFRESH_INTERVAL_ACTIVE = 4000;
-    const REFRESH_INTERVAL_IDLE = 15000;
-    const REFRESH_INTERVAL_EMPTY = 30000;
+    const REFRESH_INTERVAL_ACTIVE = 2000;  // 活跃任务时 2 秒刷新一次
+    const REFRESH_INTERVAL_IDLE = 8000;    // 空闲时 8 秒刷新一次
+    const REFRESH_INTERVAL_EMPTY = 15000;  // 无任务时 15 秒刷新一次
 
     let refreshTimer = null;
     let refreshInProgress = false;
@@ -708,7 +708,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     let pointerIsDown = false;
 
     function markTasksInteracting(holdMs) {
-        const duration = typeof holdMs === 'number' ? holdMs : 1200;
+        const duration = typeof holdMs === 'number' ? holdMs : 800;  // 减少默认持续时间
         interactionHoldUntil = Math.max(interactionHoldUntil, Date.now() + duration);
     }
 
@@ -754,14 +754,14 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             if (!pendingTasksContentHtml) return;
 
             if (isTasksInteracting()) {
-                pendingTasksApplyTimer = setTimeout(tryApply, 500);
+                pendingTasksApplyTimer = setTimeout(tryApply, 300);  // 减少等待间隔
                 return;
             }
 
             const htmlToApply = pendingTasksContentHtml;
             pendingTasksContentHtml = null;
             applyTasksContentHtml(htmlToApply);
-        }, 600);
+        }, 300);  // 减少初始延迟
     }
 
     function showRefreshIndicator(isVisible) {
@@ -830,6 +830,10 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         applyTasksContentHtml(newTasksContent.innerHTML);
     }
 
+    let eventSourceReconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    const RECONNECT_DELAY_BASE = 1000;
+
     function initTasksEventStream() {
         const container = document.querySelector('.tasks-container[data-tasks-stream]');
         if (!container || typeof window.EventSource === 'undefined') {
@@ -846,6 +850,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         tasksEventSource = new EventSource(streamUrl, { withCredentials: true });
 
         tasksEventSource.onopen = function() {
+            eventSourceReconnectAttempts = 0;
             const wasFallback = disableFallbackPolling();
             if (wasFallback) {
                 refreshTasksData(true);
@@ -859,7 +864,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
             try {
                 const payload = JSON.parse(event.data);
-                if (payload.type === 'heartbeat') {
+                if (payload.type === 'heartbeat' || payload.type === 'welcome') {
                     return;
                 }
                 refreshTasksData(true);
@@ -869,6 +874,19 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         };
 
         tasksEventSource.onerror = function() {
+            if (tasksEventSource.readyState === EventSource.CLOSED) {
+                eventSourceReconnectAttempts++;
+                if (eventSourceReconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                    const delay = RECONNECT_DELAY_BASE * Math.pow(1.5, eventSourceReconnectAttempts - 1);
+                    setTimeout(() => {
+                        if (!fallbackMode) {
+                            initTasksEventStream();
+                        }
+                    }, delay);
+                } else {
+                    enableFallbackPolling(REFRESH_INTERVAL_ACTIVE);
+                }
+            }
             enableFallbackPolling(REFRESH_INTERVAL_IDLE);
         };
 
@@ -1073,11 +1091,11 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         // 监听交互，减少实时刷新带来的 hover 闪烁/误点
         const tasksRoot = document.querySelector('#tasksContent');
         if (tasksRoot) {
-            tasksRoot.addEventListener('pointerenter', () => markTasksInteracting(2000), { passive: true });
-            tasksRoot.addEventListener('pointermove', () => markTasksInteracting(1500), { passive: true });
-            tasksRoot.addEventListener('pointerdown', () => markTasksInteracting(4000));
-            tasksRoot.addEventListener('focusin', () => markTasksInteracting(4000));
-            tasksRoot.addEventListener('focusout', () => markTasksInteracting(1200));
+            tasksRoot.addEventListener('pointerenter', () => markTasksInteracting(1000), { passive: true });
+            tasksRoot.addEventListener('pointermove', () => markTasksInteracting(800), { passive: true });
+            tasksRoot.addEventListener('pointerdown', () => markTasksInteracting(2000));
+            tasksRoot.addEventListener('focusin', () => markTasksInteracting(2000));
+            tasksRoot.addEventListener('focusout', () => markTasksInteracting(600));
         }
 
         document.addEventListener('pointerdown', () => { pointerIsDown = true; }, { passive: true });
