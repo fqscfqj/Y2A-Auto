@@ -2021,6 +2021,121 @@ class TaskProcessor:
         except Exception:
             return "auto"
     
+    _KNOWN_HW_ENCODER_ERROR_PATTERNS = (
+        # NVENC (NVIDIA)
+        'Unknown encoder "h264_nvenc"',
+        'Unknown encoder "hevc_nvenc"',
+        "Unknown encoder 'h264_nvenc'",
+        "Unknown encoder 'hevc_nvenc'",
+        'No NVENC capable devices found',
+        'Device not present',
+        'No such filter: "subtitles"',
+        "No such filter: 'subtitles'",
+        'Cannot load libnvidia-encode',
+        'Failed to query maximum',
+        'Cannot find a CUDA capable',
+        'CUDA_ERROR_',
+        'nvcuda.dll',
+        'libnvcuvid',
+        'nvenc_load_functions',
+        'Could not initialize',
+        'OpenEncodeSession failed',
+        'out of memory',
+        'InitializeEncoder failed',
+        'GPU is not in the list',
+        # QSV (Intel)
+        'Unknown encoder "h264_qsv"',
+        "Unknown encoder 'h264_qsv'",
+        'MFXInit',
+        'Unable to find',
+        'No device',
+        'iHD_drv_video.so',
+        'i965_drv_video.so',
+        # AMF (AMD Windows)
+        'Unknown encoder "h264_amf"',
+        "Unknown encoder 'h264_amf'",
+        'AMF initialization failed',
+        'AMFContext',
+        'AMF failed',
+        'amfrt64.dll',
+        # VAAPI (AMD/Intel Linux)
+        'Unknown encoder "h264_vaapi"',
+        "Unknown encoder 'h264_vaapi'",
+        'vaInitialize',
+        'vaDeriveImage',
+        '/dev/dri/renderD128',
+        'libva',
+        'hwupload',
+    )
+
+    def _parse_custom_video_params(self, task_logger):
+        """解析自定义视频参数，解析失败时回退默认策略。"""
+        enabled = _as_bool(self.config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False))
+        custom_params = str(self.config.get('VIDEO_CUSTOM_PARAMS', '')).strip()
+        if not enabled or not custom_params:
+            return None
+        try:
+            params = shlex.split(custom_params)
+            if not params:
+                return None
+            return params
+        except ValueError as e:
+            task_logger.warning(f"自定义视频参数解析失败，回退默认编码参数: {e}")
+            return None
+
+    @staticmethod
+    def _build_audio_transcode_params(input_sample_rate):
+        """统一音频转码参数，优先沿用原视频采样率。"""
+        aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
+        if input_sample_rate:
+            try:
+                aparams += ['-ar', str(int(input_sample_rate))]
+            except Exception:
+                pass
+        return aparams
+
+    @staticmethod
+    def _estimate_embed_timeout(video_duration):
+        """根据视频时长估算 FFmpeg 超时时间（秒）。"""
+        if video_duration:
+            estimated_time = video_duration * 3 if video_duration < 1800 else video_duration * 2
+            return int(max(1800, min(estimated_time, 10800)))
+        return 3600
+
+    @staticmethod
+    def _build_embed_ffmpeg_cmd(ffmpeg_bin, input_video, vf_filter, vparams, aparams, output_video):
+        """构建统一的 FFmpeg 转码命令。"""
+        return [
+            ffmpeg_bin, '-y',
+            '-i', input_video,
+            '-vf', vf_filter,
+            *vparams,
+            *aparams,
+            '-movflags', '+faststart',
+            '-progress', 'pipe:1',
+            output_video
+        ]
+
+    @classmethod
+    def _is_known_hw_encoder_error(cls, error_output):
+        """判断是否命中已知硬编/滤镜错误，触发 CPU 回退。"""
+        if not error_output:
+            return False
+        error_lower = error_output.lower()
+        return any(err.lower() in error_lower for err in cls._KNOWN_HW_ENCODER_ERROR_PATTERNS)
+
+    @staticmethod
+    def _finalize_embedded_video_output(temp_output_path, final_output_path):
+        """优先原子替换输出文件，失败时回退复制。"""
+        try:
+            os.replace(temp_output_path, final_output_path)
+        except OSError:
+            shutil.copy2(temp_output_path, final_output_path)
+            try:
+                os.remove(temp_output_path)
+            except Exception:
+                pass
+
     def _convert_vtt_to_srt(self, vtt_path, task_logger):
         """将VTT字幕文件转换为SRT格式（FFmpeg对SRT支持更好）"""
         try:
@@ -2209,9 +2324,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     pass
                 return False
 
-            # 使用简化路径方式（已测试成功）
-            temp_dir = tempfile.mkdtemp()
-            simple_video = os.path.join(temp_dir, "input.mp4")
+            # 先规范字幕格式，再创建临时目录
             subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
 
             # FFmpeg 的 subtitles 过滤器不支持直接渲染 VTT，因此先转换为 SRT
@@ -2229,16 +2342,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if subtitle_ext not in ('.srt', '.ass', '.ssa', '.vtt'):
                 task_logger.warning(f"未知字幕扩展名 {subtitle_ext}，默认按srt处理")
                 subtitle_ext = '.srt'
+            temp_dir = tempfile.mkdtemp(prefix='subtitle_embed_')
+            simple_video = os.path.abspath(video_path)
             simple_subtitle_name = f"sub{subtitle_ext}"
             simple_subtitle = os.path.join(temp_dir, simple_subtitle_name)
-            simple_output = os.path.join(temp_dir, "output.mp4")
+            simple_output = os.path.join(video_dir, f".{video_name}_with_subtitle.tmp.mp4")
             # 字体目录（在临时目录内放置一份，避免Windows路径转义问题）
             temp_fonts_dir = os.path.join(temp_dir, "fonts")
             os.makedirs(temp_fonts_dir, exist_ok=True)
             
             try:
-                # 复制文件到临时目录
-                shutil.copy2(video_path, simple_video)
+                # 准备临时字幕文件
+                try:
+                    if os.path.exists(simple_output):
+                        os.remove(simple_output)
+                except Exception as e:
+                    task_logger.warning(f"清理旧临时输出文件失败: {e}")
                 shutil.copy2(subtitle_path, simple_subtitle)
                 
                 # 将默认字体复制到临时字体目录，确保libass可用
@@ -2412,11 +2531,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.info("未检测到可用的硬件编码器，使用 CPU 软编码")
                     return 'cpu'
 
-                # 从配置中获取视频参数
-                custom_params_enabled = self.config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False)
-                if isinstance(custom_params_enabled, str):
-                    custom_params_enabled = custom_params_enabled.lower() in ['true', '1', 'on']
-                custom_params = str(self.config.get('VIDEO_CUSTOM_PARAMS', '')).strip()
+                # 从配置中获取（可选）自定义视频参数
+                custom_video_params = self._parse_custom_video_params(task_logger)
 
                 # 根据分辨率确定推荐固定质量值（CRF/CQ，越小质量越高）
                 # 基准：1080p 使用 CRF 23.5
@@ -2441,9 +2557,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 # 针对软编码生成统一参数 (libx264)
                 def build_cpu_params():
-                    if custom_params_enabled and custom_params:
-                        # 使用自定义参数
-                        return shlex.split(custom_params)
+                    if custom_video_params:
+                        return list(custom_video_params)
                     # 默认参数：按固定质量（CRF）设置
                     return [
                         '-c:v', 'libx264',
@@ -2452,14 +2567,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
-                        '-g', '60',
+                        '-g', str(gop),
                         '-pix_fmt', 'yuv420p'
                     ]
 
                 def build_nvidia_params():
                     """生成 NVIDIA NVENC 编码参数"""
-                    if custom_params_enabled and custom_params:
-                        return shlex.split(custom_params)
+                    if custom_video_params:
+                        return list(custom_video_params)
                     return [
                         '-c:v', 'h264_nvenc',
                         '-preset', 'p7',
@@ -2469,14 +2584,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
-                        '-g', '60',
+                        '-g', str(gop),
                         '-pix_fmt', 'yuv420p'
                     ]
 
                 def build_intel_params():
                     """生成 Intel QSV 编码参数"""
-                    if custom_params_enabled and custom_params:
-                        return shlex.split(custom_params)
+                    if custom_video_params:
+                        return list(custom_video_params)
                     return [
                         '-c:v', 'h264_qsv',
                         '-preset', 'veryslow',
@@ -2485,14 +2600,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
-                        '-g', '60',
+                        '-g', str(gop),
                         '-pix_fmt', 'nv12'
                     ]
 
                 def build_amd_params():
                     """生成 AMD AMF/VAAPI 编码参数"""
-                    if custom_params_enabled and custom_params:
-                        return shlex.split(custom_params)
+                    if custom_video_params:
+                        return list(custom_video_params)
                     # 检测使用 AMF 还是 VAAPI
                     use_amf = _detect_hw_encoder('h264_amf')
                     
@@ -2509,7 +2624,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',
-                            '-g', '60',
+                            '-g', str(gop),
                             '-pix_fmt', 'yuv420p'
                         ]
                     else:
@@ -2521,7 +2636,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',
-                            '-g', '60'
+                            '-g', str(gop)
                         ]
 
                 def is_vaapi_encoder() -> bool:
@@ -2563,12 +2678,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.info("使用 CPU 软编码 (libx264)")
 
                 # 音频统一转 AAC 320k 双声道，采样率跟随原视频
-                aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
-                if input_sample_rate:
-                    try:
-                        aparams += ['-ar', str(int(input_sample_rate))]
-                    except Exception:
-                        pass
+                aparams = self._build_audio_transcode_params(input_sample_rate)
 
                 # 构建视频滤镜链
                 # VAAPI 编码器需要特殊处理：在字幕滤镜后添加格式转换和硬件上传
@@ -2578,27 +2688,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 else:
                     final_vf = vf_filter
 
-                cmd = [
-                    ffmpeg_bin, '-y',
-                    '-i', 'input.mp4',
-                    '-vf', final_vf,
-                    *vparams,
-                    *aparams,
-                    '-movflags', '+faststart',
-                    '-progress', 'pipe:1',
-                    'output.mp4'
-                ]
+                cmd = self._build_embed_ffmpeg_cmd(
+                    ffmpeg_bin=ffmpeg_bin,
+                    input_video=simple_video,
+                    vf_filter=final_vf,
+                    vparams=vparams,
+                    aparams=aparams,
+                    output_video=simple_output,
+                )
                 
                 task_logger.debug(f"FFmpeg命令: {' '.join(cmd)}")
                 task_logger.debug(f"临时目录: {temp_dir}")
                 
-                # 设置超时时间（根据视频时长计算，最少30分钟，最多3小时）
-                if video_duration:
-                    # 估算处理时间：实际时长的2-5倍，取决于视频长度
-                    estimated_time = video_duration * 3 if video_duration < 1800 else video_duration * 2
-                    timeout = max(1800, min(estimated_time, 10800))  # 最少30分钟，最多3小时
-                else:
-                    timeout = 3600  # 默认1小时
+                # 设置超时时间（根据视频时长估算）
+                timeout = self._estimate_embed_timeout(video_duration)
                 
                 task_logger.debug(f"设置处理超时时间: {timeout//60} 分钟")
                 
@@ -2695,9 +2798,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 
                                 if video_duration and current_time > last_time:
                                     progress = min((current_time / video_duration) * 100, 100)
-                                    # 仅更新网页进度，不在日志中记录进度
-                                    progress_msg = f"转码进度: {progress:.1f}%"
-                                    
                                     # 更新任务进度显示
                                     update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
                                     last_time = current_time
@@ -2728,8 +2828,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     process.kill()
 
                 if process.returncode == 0 and os.path.exists(simple_output):
-                    # 成功！复制输出文件回原位置
-                    shutil.copy2(simple_output, embedded_video_path)
+                    # 成功：优先原子替换，避免重复复制大文件
+                    self._finalize_embedded_video_output(simple_output, embedded_video_path)
                     # 结束日志：成功
                     task_logger.info(f"字幕嵌入完成: {embedded_video_path}")
                     
@@ -2743,57 +2843,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     task_logger.error(f"字幕嵌入失败 (返回码: {process.returncode})")
                     task_logger.error(f"错误信息(尾部): {error_output_tail}")
 
-                    # 针对硬件编码失败自动降级至CPU重试一次
-                    # 扩展错误模式以覆盖 NVENC/QSV/AMF/VAAPI 初始化失败的情况
-                    known_hw_errors = (
-                        # NVENC (NVIDIA)
-                        'Unknown encoder "h264_nvenc"',
-                        'Unknown encoder "hevc_nvenc"',
-                        "Unknown encoder 'h264_nvenc'",
-                        "Unknown encoder 'hevc_nvenc'",
-                        'No NVENC capable devices found',
-                        'Device not present',
-                        'No such filter: "subtitles"',
-                        "No such filter: 'subtitles'",
-                        'Cannot load libnvidia-encode',
-                        'Failed to query maximum',
-                        'Cannot find a CUDA capable',
-                        'CUDA_ERROR_',
-                        'nvcuda.dll',
-                        'libnvcuvid',
-                        'nvenc_load_functions',
-                        'Could not initialize',
-                        'OpenEncodeSession failed',
-                        'out of memory',
-                        'InitializeEncoder failed',
-                        'GPU is not in the list',
-                        # QSV (Intel)
-                        'Unknown encoder "h264_qsv"',
-                        "Unknown encoder 'h264_qsv'",
-                        'MFXInit',
-                        'Unable to find',
-                        'No device',
-                        'iHD_drv_video.so',
-                        'i965_drv_video.so',
-                        # AMF (AMD Windows) - 使用更具体的错误模式
-                        'Unknown encoder "h264_amf"',
-                        "Unknown encoder 'h264_amf'",
-                        'AMF initialization failed',
-                        'AMFContext',
-                        'AMF failed',
-                        'amfrt64.dll',
-                        # VAAPI (AMD/Intel Linux)
-                        'Unknown encoder "h264_vaapi"',
-                        "Unknown encoder 'h264_vaapi'",
-                        'vaInitialize',
-                        'vaDeriveImage',
-                        '/dev/dri/renderD128',
-                        'libva',
-                        'hwupload',
-                    )
+                    # 针对硬件编码失败自动降级至 CPU 重试一次
                     should_retry_cpu = False
-                    error_lower = error_output_full.lower()
-                    hw_error_detected = any(err.lower() in error_lower for err in known_hw_errors)
+                    hw_error_detected = self._is_known_hw_encoder_error(error_output_full)
                     if hw_error_detected:
                         should_retry_cpu = True
                     # 如果选择了硬编但返回码非零，也尝试一次CPU（但记录原因）
@@ -2808,22 +2860,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             raise TaskCancelledError("任务已取消")
                         task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
                         vparams = build_cpu_params()
-                        aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
-                        if input_sample_rate:
-                            try:
-                                aparams += ['-ar', str(int(input_sample_rate))]
-                            except Exception:
-                                pass
-                        cmd_retry = [
-                            ffmpeg_bin, '-y',
-                            '-i', 'input.mp4',
-                            '-vf', vf_filter,
-                            *vparams,
-                            *aparams,
-                            '-movflags', '+faststart',
-                            '-progress', 'pipe:1',
-                            'output.mp4'
-                        ]
+                        cmd_retry = self._build_embed_ffmpeg_cmd(
+                            ffmpeg_bin=ffmpeg_bin,
+                            input_video=simple_video,
+                            vf_filter=vf_filter,
+                            vparams=vparams,
+                            aparams=aparams,
+                            output_video=simple_output,
+                        )
                         task_logger.debug(f"回退FFmpeg命令: {' '.join(cmd_retry)}")
 
                         # 重新执行（缩短超时以避免长时间卡住）
@@ -2854,7 +2898,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             stdout2, stderr2 = process2.communicate()
 
                         if process2.returncode == 0 and os.path.exists(simple_output):
-                            shutil.copy2(simple_output, embedded_video_path)
+                            self._finalize_embedded_video_output(simple_output, embedded_video_path)
                             # 结束日志：成功（CPU回退）
                             task_logger.info(f"字幕嵌入完成: {embedded_video_path}（CPU回退）")
                             update_task(task_id, upload_progress=None, status=previous_status, silent=True)
@@ -2868,6 +2912,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return None
             
             finally:
+                # 清理残留临时输出
+                try:
+                    if simple_output and os.path.exists(simple_output):
+                        os.remove(simple_output)
+                except Exception as e:
+                    task_logger.warning(f"清理临时输出文件失败: {e}")
+
                 # 清理临时目录
                 try:
                     shutil.rmtree(temp_dir)
