@@ -2330,14 +2330,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     if encoder_name in _hw_encoder_cache:
                         return _hw_encoder_cache[encoder_name]
                     try:
-                        # 先快速检查编码器是否编译进 ffmpeg
-                        list_result = subprocess.run(
-                            [ffmpeg_bin, '-hide_banner', '-encoders'],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10
-                        )
-                        if list_result.returncode != 0 or encoder_name not in list_result.stdout:
-                            _hw_encoder_cache[encoder_name] = False
-                            return False
+                        # 先做一次快速枚举（兼容不同 ffmpeg 版本将输出写到 stdout/stderr 的差异）
+                        # 注意：枚举失败/未匹配不直接判定不可用，仍以“实际编码测试”结果为准，避免误判。
+                        encoder_list_available = False
+                        try:
+                            list_result = subprocess.run(
+                                [ffmpeg_bin, '-hide_banner', '-encoders'],
+                                capture_output=True,
+                                text=True,
+                                encoding='utf-8',
+                                errors='replace',
+                                timeout=10
+                            )
+                            encoder_text = f"{list_result.stdout or ''}\n{list_result.stderr or ''}"
+                            encoder_list_available = (
+                                list_result.returncode == 0 and encoder_name in encoder_text
+                            )
+                        except Exception:
+                            # 枚举失败不影响后续实际测试
+                            pass
 
                         # 实际测试编码：生成一帧黑色画面并尝试用该编码器编码
                         # 这能验证硬件是否真正可用（而非仅 ffmpeg 编译时启用了支持）
@@ -2361,7 +2372,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         available = test_result.returncode == 0
                         _hw_encoder_cache[encoder_name] = available
                         if not available:
-                            task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {test_result.stderr[:200] if test_result.stderr else '未知错误'}")
+                            err_msg = (test_result.stderr or test_result.stdout or '未知错误').strip()
+                            if not encoder_list_available:
+                                task_logger.debug(f"编码器 {encoder_name} 未在 ffmpeg -encoders 列表中匹配到，且实测失败: {err_msg[:240]}")
+                            else:
+                                task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {err_msg[:240]}")
                         else:
                             task_logger.debug(f"编码器 {encoder_name} 测试成功，硬件可用")
                         return available

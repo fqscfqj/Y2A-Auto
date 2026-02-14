@@ -32,8 +32,17 @@ services:
     # ========================================
 
     # --- NVIDIA GPU 配置 ---
-    # 需要安装 nvidia-docker2 或 nvidia-container-toolkit
+    # 需要安装 nvidia-container-toolkit
     # 安装指南: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # 普通 `docker compose` 推荐使用 gpus + NVIDIA_* 环境变量；
+    # `deploy.resources...` 仅在 Swarm (`docker stack deploy`) 下生效。
+    # gpus: all
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    # runtime: nvidia
+    #
+    # Swarm 示例：
     # deploy:
     #   resources:
     #     reservations:

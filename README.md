@@ -278,14 +278,15 @@ python app.py
 需要安装 [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)：
 
 ```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu, video]
+gpus: all
+environment:
+  - NVIDIA_VISIBLE_DEVICES=all
+  - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+runtime: nvidia
 ```
+
+> 说明：`deploy.resources.reservations.devices` 仅在 Docker Swarm（`docker stack deploy`）下生效；
+> 普通 `docker compose up` 请使用上面的 `gpus` 写法。
 
 #### Intel GPU (QSV)
 
@@ -354,7 +355,11 @@ CMD ["python", "app.py"]
 - 上传到 AcFun 失败
   - 请更新 `cookies/ac_cookies.txt`，并在「人工审核」页确认分区、标题与描述合规。
 - 字幕翻译速度慢
-  - 可在设置中调大并发与批大小（注意 API 限速）。视频转码采用 CPU 软编码，处理速度取决于 CPU 性能。
+  - 可在设置中调大并发与批大小（注意 API 限速）。
+- Docker 里没有走 NVENC（日志提示“未检测到 NVENC，回退 CPU”）
+  - 先确认 compose 中已启用 `gpus: all` 与 `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`
+  - 主机需安装 `nvidia-container-toolkit`，重启 Docker 后再执行 `docker compose up -d --force-recreate`
+  - 容器内可用 `ffmpeg -hide_banner -encoders | grep nvenc` 与 `nvidia-smi` 进行检查
 
 ## 贡献与反馈
 
