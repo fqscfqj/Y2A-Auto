@@ -2,6 +2,8 @@
 
 # Y2A-Auto
 
+<img src="static/img/favicon.png" width="96" alt="Y2A-Auto Logo" />
+
 将 YouTube 视频自动搬运到 AcFun 的一体化工具。
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
@@ -26,6 +28,30 @@
   <br/>
   <sub>自部署版本：<a href="https://github.com/fqscfqj/Y2A-Auto-tgbot">Y2A-Auto-tgbot</a></sub>
 </p>
+
+## 项目展示
+
+<p align="center">
+  <img src="static/img/readme/dashboard-real.png" alt="Dashboard Screenshot" width="92%" />
+</p>
+
+<p align="center">
+  <img src="static/img/readme/monitor-real.png" alt="Monitor Screenshot" width="45%" />
+  <img src="static/img/readme/settings-real.png" alt="Settings Screenshot" width="45%" />
+</p>
+
+<div align="center">
+  <sub>以上为真实页面截图（本地环境采集于 2026-02-16）。</sub>
+</div>
+
+## 核心亮点
+
+| 能力模块 | 说明 |
+| --- | --- |
+| 全流程自动化 | 从下载、字幕、AI 元信息到上传一条龙处理 |
+| 审核可控 | 支持人工审核、强制上传与内容安全检测 |
+| 灵活部署 | Docker / 本地双模式，支持 CPU 与多种 GPU 编码 |
+| 监控拉取 | 支持 YouTube 频道/关键词定时抓取 |
 
 ## 功能概览
 
