@@ -18,6 +18,33 @@ body {
     font-size: 1.4rem;
 }
 
+.navbar .nav-link .nav-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-right: 0.15rem;
+    border-radius: 0.32rem;
+    font-size: 0.82rem;
+    background: rgba(255, 255, 255, 0.12);
+    transition: all 0.2s ease;
+}
+
+.navbar .nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.98rem;
+    font-weight: 500;
+}
+
+.navbar .nav-link:hover .nav-icon,
+.navbar .nav-link.active .nav-icon {
+    background: rgba(255, 255, 255, 0.2);
+    transform: none;
+}
+
 /* 卡片样式增强 */
 .card {
     box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
@@ -34,6 +61,53 @@ body {
     border-radius: 0.5rem;
     padding: 1rem 1rem;
     margin-bottom: 1rem;
+}
+
+.home-kpi-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.9rem;
+    font-size: 1.3rem;
+    color: #fff;
+}
+
+.home-kpi-icon.success {
+    background: linear-gradient(135deg, #198754, #34b87a);
+}
+
+.home-kpi-icon.danger {
+    background: linear-gradient(135deg, #dc3545, #ef6a74);
+}
+
+.home-kpi-icon.primary {
+    background: linear-gradient(135deg, #0d6efd, #4b9bff);
+}
+
+.home-kpi-icon.info {
+    background: linear-gradient(135deg, #0dcaf0, #5fe2ff);
+}
+
+.queue-stat-card .card-body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.queue-stat-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 0.7rem;
+    background-color: #eef4ff;
+    color: #0d6efd;
+    font-size: 1.1rem;
+    flex-shrink: 0;
 }
 
 .feature-icon {
@@ -103,6 +177,11 @@ body {
     cursor: pointer;
 }
 
+.settings-folder-icon {
+    width: 1.3rem;
+    text-align: center;
+}
+
 .settings-folder-toggle:focus-visible {
     outline: 2px solid #0d6efd;
     outline-offset: 2px;
@@ -142,6 +221,12 @@ body {
 
 .settings-layout .settings-nav .nav-link i {
     font-size: 1rem;
+}
+
+.settings-layout .settings-nav .nav-link .settings-item-icon {
+    width: 1.2rem;
+    text-align: center;
+    opacity: 0.9;
 }
 
 .settings-page-header {
@@ -328,6 +413,15 @@ body {
     /* 移动端卡片标题与徽章不重叠，文本更紧凑 */
     .task-card .task-title { font-size: 1rem; line-height: 1.35; }
     .task-card .badge { font-size: .75rem; }
+    .navbar .nav-link {
+        font-size: 0.95rem;
+        gap: 0.25rem;
+    }
+    .navbar .nav-link .nav-icon {
+        width: 1.15rem;
+        height: 1.15rem;
+        font-size: 0.78rem;
+    }
 }
 
 /* 任务卡片操作区域两列网格（移动端） */

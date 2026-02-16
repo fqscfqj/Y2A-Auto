@@ -28,27 +28,27 @@
                     <ul class="navbar-nav">
                         <li class="nav-item">
                             <a class="nav-link {% if request.path == url_for('index') %}active{% endif %}" href="{{ url_for('index') }}">
-                                <i class="bi bi-house-door"></i> 首页
+                                <i class="bi bi-house-heart nav-icon"></i> 首页
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if request.path == url_for('tasks') %}active{% endif %}" href="{{ url_for('tasks') }}">
-                                <i class="bi bi-list-task"></i> 任务列表
+                                <i class="bi bi-clipboard-data nav-icon"></i> 任务列表
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if request.path == url_for('manual_review') %}active{% endif %}" href="{{ url_for('manual_review') }}">
-                                <i class="bi bi-check-square"></i> 人工审核
+                                <i class="bi bi-patch-check nav-icon"></i> 人工审核
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if request.path.startswith('/youtube_monitor') %}active{% endif %}" href="{{ url_for('youtube_monitor_index') }}">
-                                <i class="bi bi-youtube"></i> YouTube监控
+                                <i class="bi bi-broadcast-pin nav-icon"></i> YouTube监控
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if request.path == url_for('settings') %}active{% endif %}" href="{{ url_for('settings') }}">
-                                <i class="bi bi-gear"></i> 设置
+                                <i class="bi bi-sliders2 nav-icon"></i> 设置
                             </a>
                         </li>
                     </ul>

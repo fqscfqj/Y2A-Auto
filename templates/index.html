@@ -10,10 +10,10 @@
             <div class="text-muted small">今日概览 · 实时掌握任务与转发情况</div>
         </div>
         <div class="d-flex flex-wrap gap-2">
-            <a href="{{ url_for('tasks') }}" class="btn btn-primary"><i class="bi bi-list-task me-1"></i> 任务列表</a>
-            <a href="{{ url_for('manual_review') }}" class="btn btn-warning"><i class="bi bi-eye me-1"></i> 待审核</a>
-            <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-outline-danger"><i class="bi bi-youtube me-1"></i> 监控</a>
-            <a href="#" data-bs-toggle="modal" data-bs-target="#quickStartModal" class="btn btn-outline-secondary"><i class="bi bi-question-circle me-1"></i> 快速入门</a>
+            <a href="{{ url_for('tasks') }}" class="btn btn-primary"><i class="bi bi-collection-play me-1"></i> 任务列表</a>
+            <a href="{{ url_for('manual_review') }}" class="btn btn-warning"><i class="bi bi-patch-check me-1"></i> 待审核</a>
+            <a href="{{ url_for('youtube_monitor_index') }}" class="btn btn-outline-danger"><i class="bi bi-broadcast-pin me-1"></i> 监控</a>
+            <a href="#" data-bs-toggle="modal" data-bs-target="#quickStartModal" class="btn btn-outline-secondary"><i class="bi bi-ui-checks-grid me-1"></i> 快速入门</a>
         </div>
     </div>
 </div>
@@ -28,7 +28,7 @@
                         <div class="text-muted small">今日完成</div>
                         <div class="fs-3 fw-bold text-success">{{ stats.completed_today }}</div>
                     </div>
-                    <i class="bi bi-check-circle text-success fs-2"></i>
+                    <span class="home-kpi-icon success"><i class="bi bi-patch-check-fill"></i></span>
                 </div>
             </div>
         </div>
@@ -41,7 +41,7 @@
                         <div class="text-muted small">今日失败</div>
                         <div class="fs-3 fw-bold text-danger">{{ stats.failed_today }}</div>
                     </div>
-                    <i class="bi bi-x-circle text-danger fs-2"></i>
+                    <span class="home-kpi-icon danger"><i class="bi bi-shield-x"></i></span>
                 </div>
             </div>
         </div>
@@ -54,7 +54,7 @@
                         <div class="text-muted small">今日新增</div>
                         <div class="fs-3 fw-bold">{{ stats.created_today }}</div>
                     </div>
-                    <i class="bi bi-plus-circle fs-2 text-primary"></i>
+                    <span class="home-kpi-icon primary"><i class="bi bi-node-plus"></i></span>
                 </div>
             </div>
         </div>
@@ -67,7 +67,7 @@
                         <div class="text-muted small">进行中</div>
                         <div class="fs-3 fw-bold">{{ stats.in_progress }}</div>
                     </div>
-                    <i class="bi bi-activity fs-2 text-info"></i>
+                    <span class="home-kpi-icon info"><i class="bi bi-lightning-charge"></i></span>
                 </div>
             </div>
         </div>
@@ -77,34 +77,46 @@
 <!-- Queues -->
 <div class="row g-3 mt-1">
     <div class="col-6 col-md-3">
-        <div class="card h-100">
+        <div class="card h-100 queue-stat-card">
             <div class="card-body">
-                <div class="text-muted small">待审核</div>
-                <div class="fs-4 fw-bold text-warning">{{ stats.awaiting_review }}</div>
+                <div>
+                    <div class="text-muted small">待审核</div>
+                    <div class="fs-4 fw-bold text-warning">{{ stats.awaiting_review }}</div>
+                </div>
+                <span class="queue-stat-icon"><i class="bi bi-hourglass-split"></i></span>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100">
+        <div class="card h-100 queue-stat-card">
             <div class="card-body">
-                <div class="text-muted small">等待处理</div>
-                <div class="fs-4 fw-bold">{{ stats.pending_total }}</div>
+                <div>
+                    <div class="text-muted small">等待处理</div>
+                    <div class="fs-4 fw-bold">{{ stats.pending_total }}</div>
+                </div>
+                <span class="queue-stat-icon"><i class="bi bi-list-ul"></i></span>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100">
+        <div class="card h-100 queue-stat-card">
             <div class="card-body">
-                <div class="text-muted small">准备上传</div>
-                <div class="fs-4 fw-bold">{{ stats.ready_total }}</div>
+                <div>
+                    <div class="text-muted small">准备上传</div>
+                    <div class="fs-4 fw-bold">{{ stats.ready_total }}</div>
+                </div>
+                <span class="queue-stat-icon"><i class="bi bi-cloud-arrow-up"></i></span>
             </div>
         </div>
     </div>
     <div class="col-6 col-md-3">
-        <div class="card h-100">
+        <div class="card h-100 queue-stat-card">
             <div class="card-body">
-                <div class="text-muted small">失败总数</div>
-                <div class="fs-4 fw-bold text-danger">{{ stats.failed_total }}</div>
+                <div>
+                    <div class="text-muted small">失败总数</div>
+                    <div class="fs-4 fw-bold text-danger">{{ stats.failed_total }}</div>
+                </div>
+                <span class="queue-stat-icon"><i class="bi bi-bug"></i></span>
             </div>
         </div>
     </div>
@@ -114,7 +126,7 @@
 <div class="card mt-3">
     <div class="card-header bg-light">
         <div class="d-flex align-items-center justify-content-between">
-            <h5 class="mb-0"><i class="bi bi-clock-history me-1"></i> 最近动态</h5>
+            <h5 class="mb-0"><i class="bi bi-broadcast-pin me-1"></i> 最近动态</h5>
             <a class="btn btn-sm btn-outline-primary" href="{{ url_for('tasks') }}"><i class="bi bi-arrow-right"></i> 前往任务</a>
         </div>
     </div>
