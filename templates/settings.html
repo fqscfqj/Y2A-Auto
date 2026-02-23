@@ -958,9 +958,8 @@
                                             <label for="voxtral-model">Voxtral 模型:</label>
                                             {% set current_voxtral_model = config.get('VOXTRAL_MODEL_NAME', 'voxtral-mini-latest') %}
                                             <select id="voxtral-model" name="VOXTRAL_MODEL_NAME" class="form-select">
-                                                <option value="voxtral-small-latest" {% if current_voxtral_model == 'voxtral-small-latest' %}selected{% endif %}>voxtral-small-latest</option>
                                                 <option value="voxtral-mini-latest" {% if current_voxtral_model == 'voxtral-mini-latest' %}selected{% endif %}>voxtral-mini-latest（推荐）</option>
-                                                {% if current_voxtral_model not in ['voxtral-small-latest', 'voxtral-mini-latest'] %}
+                                                {% if current_voxtral_model not in ['voxtral-mini-latest'] %}
                                                 <option value="{{ current_voxtral_model }}" selected>{{ current_voxtral_model }}（自定义）</option>
                                                 {% endif %}
                                             </select>

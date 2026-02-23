@@ -156,6 +156,20 @@ DEFAULT_CONFIG = {
 CONFIG_FILE = "config.json"
 config = {}
 
+
+def _normalize_voxtral_model_name(model_name):
+    """Normalize deprecated Voxtral aliases to supported defaults."""
+    model = str(model_name or '').strip()
+    if not model:
+        return DEFAULT_CONFIG["VOXTRAL_MODEL_NAME"]
+    if model == "voxtral-small-latest":
+        logger.warning(
+            "Detected deprecated VOXTRAL_MODEL_NAME 'voxtral-small-latest'; "
+            "auto-migrating to 'voxtral-mini-latest'"
+        )
+        return "voxtral-mini-latest"
+    return model
+
 def load_config():
     """
     加载配置文件，如果不存在则创建默认配置
@@ -192,7 +206,13 @@ def load_config():
                     encoder_changed = True
                 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
-                if missing_keys or encoder_changed:
+                voxtral_model_before = config.get('VOXTRAL_MODEL_NAME')
+                config['VOXTRAL_MODEL_NAME'] = _normalize_voxtral_model_name(
+                    voxtral_model_before
+                )
+                voxtral_model_changed = config['VOXTRAL_MODEL_NAME'] != voxtral_model_before
+
+                if missing_keys or encoder_changed or voxtral_model_changed:
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
@@ -262,6 +282,8 @@ def update_config(new_config):
                 else:
                     logger.warning(f"无效的视频编码器配置 {encoder_value}，已回退为 auto")
                     current_config[key] = 'auto'
+            elif key == 'VOXTRAL_MODEL_NAME':
+                current_config[key] = _normalize_voxtral_model_name(new_config[key])
             else:
                 current_config[key] = new_config[key]
 
