@@ -2047,8 +2047,12 @@ class TaskProcessor:
         'Unknown encoder "h264_qsv"',
         "Unknown encoder 'h264_qsv'",
         'MFXInit',
+        'Error initializing an internal MFX session',
+        'Error creating a MFX session',
+        'Error initializing the MFX video session',
         'Unable to find',
         'No device',
+        'Device creation failed',
         'iHD_drv_video.so',
         'i965_drv_video.so',
         # AMF (AMD Windows)
@@ -2061,11 +2065,17 @@ class TaskProcessor:
         # VAAPI (AMD/Intel Linux)
         'Unknown encoder "h264_vaapi"',
         "Unknown encoder 'h264_vaapi'",
+        'Error creating a VAAPI device',
+        'Failed to create VAAPI device',
+        'Failed to initialise VAAPI connection',
+        'No VA display found for device',
         'vaInitialize',
         'vaDeriveImage',
         '/dev/dri/renderD128',
         'libva',
         'hwupload',
+        'A hardware device reference is required to upload frames to.',
+        'Failed to configure output pad on Parsed_hwupload',
     )
 
     def _parse_custom_video_params(self, task_logger):
@@ -2443,6 +2453,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # --------------------------------------------------
                 # 缓存硬件编码器检测结果，避免重复测试
                 _hw_encoder_cache = {}
+                amd_backend_cache = None
 
                 def _detect_hw_encoder(encoder_name: str) -> bool:
                     """通过实际测试编码来检测硬件编码器是否可用（而非仅检查编译列表）"""
@@ -2469,18 +2480,58 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             # 枚举失败不影响后续实际测试
                             pass
 
-                        # 实际测试编码：生成一帧黑色画面并尝试用该编码器编码
+                        # 实际测试编码：按硬件后端定制探测命令，避免通用命令误判
                         # 这能验证硬件是否真正可用（而非仅 ffmpeg 编译时启用了支持）
-                        test_cmd = [
-                            ffmpeg_bin, '-hide_banner', '-loglevel', 'error',
-                            '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                            '-frames:v', '1',
-                            '-c:v', encoder_name
-                        ]
+                        encoder_name_lower = encoder_name.lower().strip()
+                        test_cmd = [ffmpeg_bin, '-hide_banner', '-loglevel', 'error']
 
-                        # AMF 编码器需要额外的参数
-                        if 'amf' in encoder_name.lower():
-                            test_cmd.extend(['-usage', 'transcoding', '-quality', 'balanced'])
+                        if encoder_name_lower == 'h264_vaapi':
+                            # VAAPI 需要显式设备和 hwupload 流程
+                            test_cmd.extend([
+                                '-vaapi_device', '/dev/dri/renderD128',
+                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                                '-vf', 'format=nv12,hwupload',
+                                '-frames:v', '1',
+                                '-c:v', 'h264_vaapi',
+                                '-qp', '23',
+                            ])
+                        elif encoder_name_lower == 'h264_qsv':
+                            # QSV 使用更稳妥的参数组合，降低探测误判
+                            test_cmd.extend([
+                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                                '-frames:v', '1',
+                                '-c:v', 'h264_qsv',
+                                '-global_quality', '23',
+                                '-look_ahead', '0',
+                                '-pix_fmt', 'nv12',
+                            ])
+                        elif 'amf' in encoder_name_lower:
+                            test_cmd.extend([
+                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                                '-frames:v', '1',
+                                '-c:v', encoder_name,
+                                '-usage', 'transcoding',
+                                '-quality', 'balanced',
+                                '-rc', 'cqp',
+                                '-qp_i', '23',
+                                '-qp_p', '23',
+                                '-qp_b', '23',
+                            ])
+                        elif 'nvenc' in encoder_name_lower:
+                            test_cmd.extend([
+                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                                '-frames:v', '1',
+                                '-c:v', encoder_name,
+                                '-preset', 'p4',
+                                '-rc:v', 'vbr',
+                                '-cq:v', '23',
+                            ])
+                        else:
+                            test_cmd.extend([
+                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+                                '-frames:v', '1',
+                                '-c:v', encoder_name,
+                            ])
 
                         test_cmd.extend(['-f', 'null', '-'])
 
@@ -2496,6 +2547,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 task_logger.debug(f"编码器 {encoder_name} 未在 ffmpeg -encoders 列表中匹配到，且实测失败: {err_msg[:240]}")
                             else:
                                 task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {err_msg[:240]}")
+                            task_logger.debug(f"编码器 {encoder_name} 探测命令: {' '.join(test_cmd)}")
                         else:
                             task_logger.debug(f"编码器 {encoder_name} 测试成功，硬件可用")
                         return available
@@ -2503,6 +2555,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         task_logger.debug(f"检测编码器 {encoder_name} 时出错: {e}")
                         _hw_encoder_cache[encoder_name] = False
                     return False
+
+                def _detect_amd_backend() -> str:
+                    """检测 AMD 可用后端，返回 amf/vaapi/none。"""
+                    nonlocal amd_backend_cache
+                    if amd_backend_cache is not None:
+                        return amd_backend_cache
+                    if _detect_hw_encoder('h264_amf'):
+                        amd_backend_cache = 'amf'
+                    elif _detect_hw_encoder('h264_vaapi'):
+                        amd_backend_cache = 'vaapi'
+                    else:
+                        amd_backend_cache = 'none'
+                    return amd_backend_cache
 
                 def _detect_nvidia() -> bool:
                     """检测 NVIDIA NVENC 是否可用"""
@@ -2514,8 +2579,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 def _detect_amd() -> bool:
                     """检测 AMD AMF/VAAPI 是否可用"""
-                    # 优先检测 AMF (Windows), 其次 VAAPI (Linux)
-                    return _detect_hw_encoder('h264_amf') or _detect_hw_encoder('h264_vaapi')
+                    return _detect_amd_backend() != 'none'
 
                 def _get_best_encoder() -> str:
                     """自动检测最佳可用编码器，返回: nvidia/intel/amd/cpu"""
@@ -2551,8 +2615,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 target_quality = get_recommended_quality(input_height)
                 target_quality_str = f"{target_quality:.1f}"
+                target_quality_int = max(0, min(51, int(round(target_quality))))
                 task_logger.info(
-                    f"视频分辨率: {input_width}x{input_height}, 固定质量参数: {target_quality_str}"
+                    f"视频分辨率: {input_width}x{input_height}, 固定质量参数: float={target_quality_str}, int={target_quality_int}"
                 )
 
                 # 针对软编码生成统一参数 (libx264)
@@ -2595,8 +2660,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     return [
                         '-c:v', 'h264_qsv',
                         '-preset', 'veryslow',
-                        '-global_quality', target_quality_str,
-                        '-look_ahead', '1',
+                        '-global_quality', str(target_quality_int),
+                        '-look_ahead', '0',
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
                         '-bf', '2',
@@ -2608,19 +2673,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     """生成 AMD AMF/VAAPI 编码参数"""
                     if custom_video_params:
                         return list(custom_video_params)
-                    # 检测使用 AMF 还是 VAAPI
-                    use_amf = _detect_hw_encoder('h264_amf')
+                    amd_backend = _detect_amd_backend()
                     
-                    if use_amf:
+                    if amd_backend == 'amf':
                         # AMF (Windows)
                         return [
                             '-c:v', 'h264_amf',
                             '-usage', 'transcoding',
                             '-quality', 'quality',
                             '-rc', 'cqp',
-                            '-qp_i', target_quality_str,
-                            '-qp_p', target_quality_str,
-                            '-qp_b', target_quality_str,
+                            '-qp_i', str(target_quality_int),
+                            '-qp_p', str(target_quality_int),
+                            '-qp_b', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',
@@ -2632,7 +2696,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         return [
                             '-vaapi_device', '/dev/dri/renderD128',
                             '-c:v', 'h264_vaapi',
-                            '-qp', target_quality_str,
+                            '-qp', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'high',
                             '-bf', '2',
@@ -2641,7 +2705,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
-                    return actual_encoder == 'amd' and not _detect_hw_encoder('h264_amf')
+                    return actual_encoder == 'amd' and _detect_amd_backend() == 'vaapi'
 
                 # 确定使用的编码器
                 encoder_pref = str(self.config.get('VIDEO_ENCODER', 'auto')).lower().strip()
@@ -2670,9 +2734,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     vparams = build_intel_params()
                     task_logger.info("使用 Intel QSV 硬件编码")
                 elif actual_encoder == 'amd':
-                    vparams = build_amd_params()
-                    encoder_name = 'AMF' if _detect_hw_encoder('h264_amf') else 'VAAPI'
-                    task_logger.info(f"使用 AMD {encoder_name} 硬件编码")
+                    amd_backend = _detect_amd_backend()
+                    if amd_backend == 'none':
+                        task_logger.warning("AMD 编码已选中，但未检测到可用 AMF/VAAPI 后端，回退到 CPU 软编码")
+                        actual_encoder = 'cpu'
+                        vparams = build_cpu_params()
+                    else:
+                        vparams = build_amd_params()
+                        encoder_name = 'AMF' if amd_backend == 'amf' else 'VAAPI'
+                        task_logger.info(f"使用 AMD {encoder_name} 硬件编码（backend={amd_backend}）")
                 else:
                     vparams = build_cpu_params()
                     task_logger.info("使用 CPU 软编码 (libx264)")
