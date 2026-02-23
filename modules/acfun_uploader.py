@@ -50,6 +50,46 @@ def setup_task_logger(task_id):
     
     return logger
 
+def compact_text(text: str, max_len: int) -> str:
+    text = (text or "").strip()
+    if not text or max_len <= 0:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return text[: max_len - 3] + "..."
+
+def build_upload_description(
+    base_desc: str,
+    original_url: str = "",
+    original_uploader: str = "",
+    original_upload_date: str = "",
+    append_repost_notice: bool = True,
+    max_len: int = 1000
+) -> str:
+    """
+    构建最终投稿简介：
+    - 转载且 append_repost_notice=True: 转载声明 + 摘要
+    - 其他情况: 仅正文摘要
+    """
+    is_repost = bool(original_url or original_uploader or original_upload_date)
+    if not is_repost or not append_repost_notice:
+        return compact_text(base_desc, max_len)
+
+    repost_notice = "本视频转载自YouTube"
+    if original_upload_date:
+        repost_notice += f"，原始上传时间：{original_upload_date}"
+    if original_uploader:
+        repost_notice += f"，UP主：{original_uploader}"
+    repost_notice = compact_text(repost_notice, max_len)
+
+    summary = compact_text(base_desc, max(0, max_len - len(repost_notice) - 2))
+    if not summary:
+        return repost_notice
+    return f"{repost_notice}\n\n{summary}"
+
 
 class AcfunUploader:
     """AcFun视频上传模块 - 现代化版本，支持Cookie登录"""
@@ -764,7 +804,8 @@ class AcfunUploader:
     
     def upload_video(self, video_file_path, cover_file_path, title, description, tags, 
                      partition_id, original_url=None, original_uploader=None, 
-                     original_upload_date=None, task_id=None, cover_mode='crop',
+                     original_upload_date=None, upload_append_repost_notice=True,
+                     task_id=None, cover_mode='crop',
                      cancel_event=None):
         """
         上传视频到AcFun
@@ -779,6 +820,7 @@ class AcfunUploader:
             original_url (str, optional): 原始视频URL
             original_uploader (str, optional): 原始上传者
             original_upload_date (str, optional): 原始上传日期
+            upload_append_repost_notice (bool, optional): 转载时是否追加固定声明
             task_id (str, optional): 任务ID
             cover_mode (str): 封面处理模式，'crop'表示裁剪，'pad'表示添加黑边
             
@@ -815,47 +857,19 @@ class AcfunUploader:
             if len(tags) > 6:
                 self.log(f"标签数量超过限制(6个)，将保留前6个: {len(tags)} -> 6")
                 tags = tags[:6]
-            
-            def _compact_text(text: str, max_len: int) -> str:
-                text = (text or "").strip()
-                if not text or max_len <= 0:
-                    return ""
-                # 将多余空白折叠，降低长度波动（网页“字”口径按字符计）
-                text = re.sub(r"\s+", " ", text)
-                if len(text) <= max_len:
-                    return text
-                if max_len <= 3:
-                    return text[:max_len]
-                return text[: max_len - 3] + "..."
-
-            def _build_repost_description(base_desc: str, max_len: int) -> str:
-                # 转载：仅保留“转载声明 + 精简摘要”，不附带原简介全文
-                copyright_info = "本视频转载自YouTube"
-                if original_upload_date:
-                    copyright_info += f"，原始上传时间：{original_upload_date}"
-                if original_uploader:
-                    copyright_info += f"，UP主：{original_uploader}"
-
-                # 先裁剪声明本身，避免占满
-                copyright_info = _compact_text(copyright_info, max_len)
-                if not base_desc:
-                    return copyright_info
-
-                sep = "\n\n"
-                available = max_len - len(copyright_info) - len(sep)
-                summary = _compact_text(base_desc, max(0, available))
-                if not summary:
-                    return copyright_info
-                return f"{copyright_info}{sep}{summary}"
 
             # 3. 网页端限制：简介 1000 字、粉丝动态 233 字
             max_desc = 1000
             max_fans_only_desc = 233
 
-            if original_url or original_uploader or original_upload_date:
-                full_description = _build_repost_description(description, max_desc)
-            else:
-                full_description = _compact_text(description, max_desc)
+            full_description = build_upload_description(
+                base_desc=description,
+                original_url=original_url or "",
+                original_uploader=original_uploader or "",
+                original_upload_date=original_upload_date or "",
+                append_repost_notice=bool(upload_append_repost_notice),
+                max_len=max_desc
+            )
 
             # 判断视频创作类型
             creation_type = 1 if original_url else 3  # 1:转载, 3:原创

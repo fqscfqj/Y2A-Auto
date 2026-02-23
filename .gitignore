@@ -60,6 +60,9 @@ desktop.ini
 test_*.py
 *_test.py
 tests/
+!tests/
+!tests/test_ai_enhancer_cleaning.py
+!tests/test_acfun_description_policy.py
 
 # Documentation build
 docs/_build/

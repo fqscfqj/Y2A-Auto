@@ -199,6 +199,15 @@
                                                     </label>
                                                 </div>
                                             </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="UPLOAD_APPEND_REPOST_NOTICE" {% if config.get('UPLOAD_APPEND_REPOST_NOTICE', True) %}checked{% endif %}>
+                                                        转载时追加固定声明
+                                                    </label>
+                                                    <p class="help-text">关闭后不再自动追加“本视频转载自YouTube...”文案</p>
+                                                </div>
+                                            </div>
                                             <div class="col-12">
                                                 <div class="form-group">
                                                     <label for="ffmpeg-location">FFmpeg 自定义路径（可选）:</label>

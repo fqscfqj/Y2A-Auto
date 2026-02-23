@@ -3599,6 +3599,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 original_url=original_url,
                 original_uploader=original_uploader,
                 original_upload_date=original_upload_date,
+                upload_append_repost_notice=bool(self.config.get('UPLOAD_APPEND_REPOST_NOTICE', True)),
                 task_id=task_id,
                 cover_mode=cover_mode,
                 cancel_event=cancel_event

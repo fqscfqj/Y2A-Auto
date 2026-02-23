@@ -5,6 +5,8 @@ import os
 import logging
 import re
 import time
+import json
+from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, strip_reasoning_thoughts, safe_str
 
@@ -37,6 +39,41 @@ _CTA_PATTERNS = [
 _WHITESPACE_RE = re.compile(r'[ \t\f\v]+')
 _TRAILING_SPACE_RE = re.compile(r'[ \t]+\n')
 _MULTIPLE_NEWLINES_RE = re.compile(r'\n{3,}')
+_LIST_LINE_RE = re.compile(r'^\s*(?:[-*•►]|\d+[.)])\s+', re.IGNORECASE | re.MULTILINE)
+_NON_TEXT_RE = re.compile(r'[^\w\u4e00-\u9fff]+', re.IGNORECASE)
+
+_PROMO_LINE_PATTERNS = [
+    re.compile(r'^\s*video playlists?\s*:?', re.IGNORECASE),
+    re.compile(r'^\s*all playlists?\s*:?', re.IGNORECASE),
+    re.compile(r'^\s*website\s*:?', re.IGNORECASE),
+    re.compile(r'^\s*official\s+site\s*:?', re.IGNORECASE),
+    re.compile(r'^\s*(listen|watch)\s+to\s+', re.IGNORECASE),
+    re.compile(r'^\s*(patreon|spotify|itunes|apple music|cdbaby)\b', re.IGNORECASE),
+    re.compile(r'^\s*(follow|subscribe|like|share|download|buy)\b', re.IGNORECASE),
+    re.compile(r'^\s*(播放列表|更多内容|关注|订阅|点赞|分享|评论区|下载链接|购买链接|联系方式)\s*[:：]?', re.IGNORECASE),
+]
+_PROMO_BLOCK_PATTERNS = [
+    re.compile(r'\bvideo\s*playlists?\b', re.IGNORECASE),
+    re.compile(r'\ball\s*playlists?\b', re.IGNORECASE),
+    re.compile(r'\blisten\s+to\b.*\boutside\b', re.IGNORECASE),
+    re.compile(r'\b(link\s+in|links?\s+in|follow|subscribe|visit|website|patreon|download|buy)\b', re.IGNORECASE),
+    re.compile(r'(播放列表|站外|关注|订阅|点赞|分享|联系方式|社交媒体|外部平台)', re.IGNORECASE),
+]
+_EXTERNAL_PLATFORM_PATTERNS = [
+    re.compile(
+        r'\b('
+        r'youtube|spotify|itunes|apple\s*music|patreon|cdbaby|soundcloud|bandcamp|'
+        r'twitter|instagram|facebook|tiktok|discord|telegram|ko-?fi|buymeacoffee'
+        r')\b',
+        re.IGNORECASE
+    ),
+    re.compile(r'(油管|推特|脸书|外部平台|社交平台|官网|官方网站|个人网站|独立站)', re.IGNORECASE),
+]
+_PROMO_SIGNAL_PATTERNS = [
+    re.compile(r'►'),
+    re.compile(r'\b(playlists?|follow|subscribe|link\s+in|website|patreon|download|buy)\b', re.IGNORECASE),
+    re.compile(r'(播放列表|关注|订阅|点赞|分享|链接在|站外|外部平台|联系方式)', re.IGNORECASE),
+]
 
 # Pre-compiled patterns for post-translation cleanup in translate_text
 _TRANSLATION_COMMENT_PATTERNS = [
@@ -119,36 +156,307 @@ def get_openai_client(openai_config):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
     return openai.OpenAI(api_key=api_key, **options)
 
-def _pre_clean(text: str) -> str:
-    """在发送给模型前做基础去噪：去URL/邮箱/社交句柄/明显CTA等。Uses pre-compiled regex (optimized)."""
+def _normalize_whitespace(text: str) -> str:
+    if not text:
+        return ''
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = _WHITESPACE_RE.sub(' ', text)
+    text = _TRAILING_SPACE_RE.sub('\n', text)
+    text = _MULTIPLE_NEWLINES_RE.sub('\n\n', text)
+    return text.strip()
+
+def _strip_external_platforms(text: str) -> str:
+    if not text:
+        return ''
+    cleaned = text
+    for pat in _EXTERNAL_PLATFORM_PATTERNS:
+        cleaned = pat.sub('', cleaned)
+    return cleaned
+
+def _split_blocks(text: str) -> list:
+    if not text:
+        return []
+    return [b.strip() for b in re.split(r'\n\s*\n+', text) if b and b.strip()]
+
+def _cleanup_list_prefix(line: str) -> str:
+    return _LIST_LINE_RE.sub('', line or '').strip()
+
+def _looks_like_promo_line(line: str) -> bool:
+    if not line:
+        return False
+    compact = line.strip()
+    if not compact:
+        return False
+    if '►' in compact:
+        return True
+    if _URL_PATTERNS[0].search(compact) or _URL_PATTERNS[1].search(compact):
+        return True
+    for pat in _PROMO_LINE_PATTERNS:
+        if pat.search(compact):
+            return True
+    for pat in _CTA_PATTERNS:
+        if pat.search(compact):
+            return True
+    return False
+
+def _looks_like_promo_block(block: str) -> bool:
+    if not block:
+        return False
+    for pat in _PROMO_BLOCK_PATTERNS:
+        if pat.search(block):
+            return True
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    if len(lines) >= 2:
+        promo_like = sum(1 for ln in lines if _looks_like_promo_line(ln))
+        if promo_like >= max(2, len(lines) // 2):
+            return True
+    return False
+
+def _compress_description_blocks(text: str, max_blocks: int = 2) -> str:
+    blocks = []
+    for block in _split_blocks(text):
+        if _looks_like_promo_block(block):
+            continue
+        clean_lines = []
+        for line in block.splitlines():
+            normalized = _cleanup_list_prefix(_normalize_whitespace(line))
+            if not normalized:
+                continue
+            if _looks_like_promo_line(normalized):
+                continue
+            clean_lines.append(normalized)
+        if clean_lines:
+            # 将块内列表折叠成自然段
+            blocks.append(' '.join(clean_lines))
+    if not blocks:
+        lines = []
+        for line in _normalize_whitespace(text).split('\n'):
+            normalized = _cleanup_list_prefix(line)
+            if normalized and not _looks_like_promo_line(normalized):
+                lines.append(normalized)
+        if lines:
+            blocks = [' '.join(lines)]
+    return '\n\n'.join(blocks[:max_blocks]).strip()
+
+def _pre_clean(text: str, content_type: str = "description") -> str:
+    """在发送给模型前做确定性去噪：移除导流信息，并将描述压缩成自然段。"""
     if not text:
         return text
+
+    ct_lower = str(content_type).lower().strip()
     cleaned = text
-    # URLs / domains (更激进的匹配)
+
     for pat in _URL_PATTERNS:
         cleaned = pat.sub('', cleaned)
-    # emails
     cleaned = _EMAIL_RE.sub('', cleaned)
-    # social handles/hashtags
     cleaned = _SOCIAL_HANDLE_RE.sub('', cleaned)
     cleaned = _HASHTAG_RE.sub('', cleaned)
-    # 赞助平台网址（只清洗网址，保留描述性文字）
     for pat in _SPONSOR_URL_PATTERNS:
         cleaned = pat.sub('', cleaned)
-    # 精确的CTA模式（避免误删正常内容）
     for pat in _CTA_PATTERNS:
         cleaned = pat.sub('', cleaned)
-    # whitespace normalize (keep newlines)
-    cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
-    cleaned = _WHITESPACE_RE.sub(' ', cleaned)
-    cleaned = _TRAILING_SPACE_RE.sub('\n', cleaned)
-    cleaned = _MULTIPLE_NEWLINES_RE.sub('\n\n', cleaned)
-    return cleaned.strip()
+    cleaned = _strip_external_platforms(cleaned)
+    cleaned = _normalize_whitespace(cleaned)
+
+    if ct_lower == 'title':
+        # 标题不需要多段结构，压缩为单行
+        title = _cleanup_list_prefix(cleaned.replace('\n', ' '))
+        title = _normalize_whitespace(title).replace('\n', ' ')
+        return title.strip()
+
+    return _compress_description_blocks(cleaned, max_blocks=2)
+
+def _build_prompt(cleaned_source_text: str, target_language: str, content_type: str = "description", strict: bool = False) -> str:
+    ct_lower = str(content_type).lower().strip()
+    if ct_lower == "title":
+        base_rules = [
+            "输出中文自然口语标题，信息优先，不要标题党。",
+            "保留核心含义，但避免机械直译和原词序复刻。",
+            "严禁补充原文没有的新事实。",
+            "移除广告、导流、站外平台和互动引导。",
+            "仅输出单行标题。"
+        ]
+    else:
+        base_rules = [
+            "输出1-2段完整中文简介，风格像站内UP主直接发布。",
+            "只能重组原文已有事实，严禁补充新事实。",
+            "移除URL/邮箱/@/#/播放列表/站外平台/赞助/联系方式/关注订阅点赞分享等导流信息。",
+            "不要清单格式、不要箭头、不要“以下是译文/已移除”等提示语。",
+            "保留必要数字与专有名词。"
+        ]
+
+    if strict:
+        base_rules.append("若输出与原文高度相似或仍含导流痕迹，必须重写后再输出。")
+
+    rules = '\n'.join(f"{idx + 1}. {rule}" for idx, rule in enumerate(base_rules))
+    purpose = "标题" if ct_lower == "title" else "简介"
+    return (
+        f"任务：将以下视频{purpose}处理为{target_language}。\n\n"
+        f"要求：\n{rules}\n\n"
+        f"原文：\n{cleaned_source_text}\n\n"
+        f"仅返回JSON：{{\"translation\":\"...\"}}"
+    )
+
+def _extract_json_payload(raw: str):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                return None
+    return None
+
+def _extract_translation_from_message(message) -> str:
+    parsed = getattr(message, 'parsed', None)
+    if isinstance(parsed, dict):
+        v = parsed.get('translation')
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    content_value = getattr(message, 'content', None)
+    if isinstance(content_value, list):
+        raw = ''.join(seg.get('text', '') for seg in content_value if isinstance(seg, dict))
+    else:
+        raw = content_value or getattr(message, 'reasoning_content', None) or ''
+
+    raw = strip_reasoning_thoughts(raw).strip()
+    if raw.startswith('```'):
+        raw = re.sub(r'^```[a-zA-Z0-9]*\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+    payload = _extract_json_payload(raw)
+    if isinstance(payload, dict) and isinstance(payload.get('translation'), str):
+        return payload.get('translation', '').strip()
+    return raw.strip()
+
+def _post_clean(text: str, content_type: str = "description") -> str:
+    if not text:
+        return ''
+
+    ct_lower = str(content_type).lower().strip()
+    cleaned = text
+
+    for prefix in ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+
+    for pattern in _TRANSLATION_COMMENT_PATTERNS:
+        cleaned = pattern.sub('', cleaned)
+    for pattern in _URL_PATTERNS:
+        cleaned = pattern.sub('', cleaned)
+    cleaned = _EMAIL_RE.sub('', cleaned)
+    cleaned = _SOCIAL_HANDLE_RE.sub('', cleaned)
+    cleaned = _HASHTAG_RE.sub('', cleaned)
+    for pattern in _INTERACTION_PATTERNS:
+        cleaned = pattern.sub('', cleaned)
+    cleaned = _strip_external_platforms(cleaned)
+    cleaned = _normalize_whitespace(cleaned)
+
+    if ct_lower == 'title':
+        cleaned = _cleanup_list_prefix(cleaned.replace('\n', ' '))
+        cleaned = _normalize_whitespace(cleaned).replace('\n', ' ')
+        return cleaned.strip()
+
+    cleaned = _compress_description_blocks(cleaned, max_blocks=2)
+    return _normalize_whitespace(cleaned)
+
+def _normalize_for_similarity(text: str) -> str:
+    if not text:
+        return ''
+    normalized = _NON_TEXT_RE.sub('', text.lower())
+    return normalized.strip()
+
+def _contains_promo_signal(text: str) -> bool:
+    if not text:
+        return False
+    if _EMAIL_RE.search(text) or _SOCIAL_HANDLE_RE.search(text) or _HASHTAG_RE.search(text):
+        return True
+    for pat in _URL_PATTERNS[:3]:
+        if pat.search(text):
+            return True
+    for pat in _PROMO_SIGNAL_PATTERNS:
+        if pat.search(text):
+            return True
+    for pat in _EXTERNAL_PLATFORM_PATTERNS:
+        if pat.search(text):
+            return True
+    return False
+
+def _is_natural_description(text: str) -> bool:
+    blocks = _split_blocks(text)
+    if not blocks or len(blocks) > 2:
+        return False
+    if _LIST_LINE_RE.search(text):
+        return False
+    if '►' in text:
+        return False
+    if any(len(block.strip()) < 6 for block in blocks):
+        return False
+    return True
+
+def _validate_output(source_clean: str, output_text: str, content_type: str = "description"):
+    reasons = []
+    ct_lower = str(content_type).lower().strip()
+    out = (output_text or '').strip()
+    src = (source_clean or '').strip()
+
+    if not out:
+        reasons.append('empty_output')
+    if _contains_promo_signal(out):
+        reasons.append('contains_promo_signal')
+
+    src_norm = _normalize_for_similarity(src)
+    out_norm = _normalize_for_similarity(out)
+    if src_norm and out_norm:
+        if len(src_norm) >= 12 and len(out_norm) >= 8:
+            ratio = SequenceMatcher(None, src_norm, out_norm).ratio()
+            if ratio >= 0.90:
+                reasons.append(f'too_similar:{ratio:.2f}')
+        elif src_norm == out_norm and len(src_norm) >= 6:
+            reasons.append('identical_to_source')
+
+    if ct_lower != 'title' and out and not _is_natural_description(out):
+        reasons.append('description_not_natural')
+
+    return len(reasons) == 0, reasons
+
+def _apply_output_limits(text: str, content_type: str = "description", logger=None) -> str:
+    limited = text or ''
+    ct_lower = str(content_type).lower().strip()
+    if ct_lower == 'title' and len(limited) > 50:
+        if logger:
+            logger.info(f"标题超过AcFun限制(50字符)，将被截断: {len(limited)} -> 50")
+        limited = limited[:50]
+    if ct_lower != 'title' and len(limited) > 1000:
+        if logger:
+            logger.info(f"描述超过AcFun限制(1000字符)，将被截断: {len(limited)} -> 1000")
+        limited = limited[:997] + "..."
+    return limited
+
+def _request_translation(client, model_name: str, prompt: str, max_tokens: int = 4096):
+    create_kwargs = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": '内容改写器。只输出JSON：{"translation":"..."}，不要其他内容。'},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+    }
+    try:
+        create_kwargs["response_format"] = {"type": "json_object"}
+    except Exception:
+        pass
+    response = client.chat.completions.create(**create_kwargs)
+    return _extract_translation_from_message(response.choices[0].message)
 
 def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None, content_type: str = "description"):
     """
-    使用OpenAI翻译文本（移除温度，强制结构化JSON输出）。
-    返回清洗后的翻译文本，失败返回None。
+    使用OpenAI对标题/简介进行“清洗 + 原生化改写”。
+    返回最终文本，失败返回None。
     """
     if not text or not text.strip():
         return text
@@ -163,199 +471,68 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
         return None
 
     try:
+        ct_lower = str(content_type).lower().strip()
         client = get_openai_client(openai_config)
         model_name = openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
 
-        cleaned_source_text = _pre_clean(text)
+        cleaned_source_text = _pre_clean(text, content_type=ct_lower)
         if cleaned_source_text != text:
-            logger.info("已在提示阶段前预清洗推广信息与链接等噪声")
-
-        purpose = "标题" if str(content_type).lower() == "title" else "描述"
-        prompt = f"""翻译视频{purpose}为{target_language}，移除推广信息，以JSON格式返回。
-
-规则：
-1. 移除：URL/邮箱/社交账号/CTA（关注订阅点赞分享等）/联系方式
-2. 等价翻译：不解释、不扩写、保持原意和风格
-3. 保留：数字/代码/专有名词（无固定译名时）
-
-原文：
-{cleaned_source_text}
-
-请以JSON格式返回：{{"translation":"译文"}}"""
+            logger.info("已在提示阶段前执行结构化预清洗（去导流/站外信息/列表化噪声）")
+        if not cleaned_source_text:
+            cleaned_source_text = _normalize_whitespace(text)[:1000]
 
         start_time = time.time()
-        create_kwargs = {
-            "model": model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": 'JSON翻译器。仅输出JSON格式：{"translation":"..."}，无其他内容。'
-                },
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": 4096,
-        }
-        try:
-            create_kwargs["response_format"] = {"type": "json_object"}
-        except Exception:
-            pass
+        prompt = _build_prompt(
+            cleaned_source_text=cleaned_source_text,
+            target_language=target_language,
+            content_type=ct_lower,
+            strict=False
+        )
+        translated_text = _request_translation(
+            client=client,
+            model_name=model_name,
+            prompt=prompt,
+            max_tokens=4096 if ct_lower != 'title' else 1024
+        )
+        translated_text = _post_clean(translated_text, content_type=ct_lower)
+        translated_text = _apply_output_limits(translated_text, content_type=ct_lower, logger=logger)
 
-        response = client.chat.completions.create(**create_kwargs)
-        response_time = time.time() - start_time
-
-        message = response.choices[0].message
-        # 优先尝试结构化 parsed（部分SDK/服务商在json_object下提供parsed）
-        raw = ''
-        translation_from_parsed = None
-        try:
-            parsed = getattr(message, 'parsed', None)
-            if isinstance(parsed, dict) and 'translation' in parsed:
-                translation_from_parsed = parsed.get('translation')
-        except Exception:
-            pass
-        # 提取文本内容（兼容部分供应商将 content 组织为 list[{type,text}]）
-        if not translation_from_parsed:
-            mc = getattr(message, 'content', None)
-            if isinstance(mc, list):
-                try:
-                    raw = ''.join([seg.get('text', '') for seg in mc if isinstance(seg, dict)])
-                except Exception:
-                    raw = ''
+        ok, reasons = _validate_output(cleaned_source_text, translated_text, content_type=ct_lower)
+        if not ok:
+            logger.info(f"首次输出未通过质量门槛，触发严格重试: {reasons}")
+            strict_prompt = _build_prompt(
+                cleaned_source_text=cleaned_source_text,
+                target_language=target_language,
+                content_type=ct_lower,
+                strict=True
+            )
+            retried_text = _request_translation(
+                client=client,
+                model_name=model_name,
+                prompt=strict_prompt,
+                max_tokens=3072 if ct_lower != 'title' else 1024
+            )
+            retried_text = _post_clean(retried_text, content_type=ct_lower)
+            retried_text = _apply_output_limits(retried_text, content_type=ct_lower, logger=logger)
+            retry_ok, retry_reasons = _validate_output(cleaned_source_text, retried_text, content_type=ct_lower)
+            if retry_ok:
+                translated_text = retried_text
             else:
-                raw = (mc or getattr(message, 'reasoning_content', None) or '')
-        raw = strip_reasoning_thoughts(raw).strip()
+                logger.warning(f"严格重试仍未完全通过质量门槛: {retry_reasons}")
+                if retried_text.strip():
+                    translated_text = retried_text
 
-        # 去除可能的Markdown围栏
-        if raw.startswith('```'):
-            try:
-                import re as _re
-                raw = _re.sub(r'^```[a-zA-Z0-9]*\s*', '', raw)
-                raw = _re.sub(r'\s*```$', '', raw)
-            except Exception:
-                raw = raw.strip('`')
+        if not translated_text:
+            translated_text = _apply_output_limits(
+                _post_clean(cleaned_source_text, content_type=ct_lower),
+                content_type=ct_lower,
+                logger=logger
+            )
 
-        import json as _json
-        import re
-        translation_value = translation_from_parsed
-        if translation_value is None:
-            try:
-                data = _json.loads(raw)
-                translation_value = data.get('translation') if isinstance(data, dict) else None
-            except Exception:
-                m = re.search(r'\{.*\}', raw, re.DOTALL)
-                if m:
-                    try:
-                        data = _json.loads(m.group(0))
-                        translation_value = data.get('translation') if isinstance(data, dict) else None
-                    except Exception:
-                        pass
-
-        translated_text = (translation_value if isinstance(translation_value, str) else (raw or '')).strip()
-
-        # 移除常见前缀
-        for prefix in ["翻译：", "译文：", "这是翻译：", "以下是译文：", "以下是我的翻译："]:
-            if translated_text.startswith(prefix):
-                translated_text = translated_text[len(prefix):].strip()
-
-        # 清理提示性注释 (using pre-compiled patterns)
-        for pattern in _TRANSLATION_COMMENT_PATTERNS:
-            translated_text = pattern.sub('', translated_text)
-
-        logger.info(f"翻译完成，耗时: {response_time:.2f}秒")
+        elapsed = time.time() - start_time
+        logger.info(f"翻译完成，耗时: {elapsed:.2f}秒")
         logger.info(f"翻译结果总长度: {len(translated_text)} 字符")
         logger.info(f"翻译结果 (截取前100字符用于显示): {translated_text[:100]}...")
-
-        # 再次防御性清理 URL/邮箱/社交引用 (using pre-compiled patterns)
-        for pattern in _URL_PATTERNS[:3]:  # First 3 URL patterns
-            translated_text = pattern.sub('', translated_text)
-        translated_text = _EMAIL_RE.sub('', translated_text)
-        translated_text = _SOCIAL_HANDLE_RE.sub('', translated_text)
-        translated_text = _HASHTAG_RE.sub('', translated_text)
-
-        # 互动提示词 (using pre-compiled patterns)
-        for pattern in _INTERACTION_PATTERNS:
-            translated_text = pattern.sub('', translated_text)
-
-        # 规范空白但保留换行 (using pre-compiled patterns)
-        translated_text = translated_text.replace('\r\n', '\n').replace('\r', '\n')
-        translated_text = _WHITESPACE_RE.sub(' ', translated_text)
-        translated_text = _TRAILING_SPACE_RE.sub('\n', translated_text)
-        translated_text = _MULTIPLE_NEWLINES_RE.sub('\n\n', translated_text)
-        translated_text = translated_text.strip()
-
-        # 若为空或与清理后的原文一致，则尝试一次严格模式重试（强制中文与JSON）
-        needs_retry = (not translated_text) or (translated_text.strip() == cleaned_source_text.strip())
-        if needs_retry:
-            logger.info("首次翻译为空或未改变，进行严格模式重试")
-            strict_prompt = f"""翻译为简体中文，移除推广信息，仅返回JSON格式。
-
-原文：{cleaned_source_text}
-
-请以JSON格式返回：{{"translation":"译文"}}"""
-            strict_kwargs = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": '仅输出JSON格式：{"translation":"..."}，中文。'},
-                    {"role": "user", "content": strict_prompt},
-                ],
-                "max_tokens": 2048,
-            }
-            try:
-                strict_kwargs["response_format"] = {"type": "json_object"}
-            except Exception:
-                pass
-            try:
-                resp2 = client.chat.completions.create(**strict_kwargs)
-                msg2 = resp2.choices[0].message
-                parsed2 = getattr(msg2, 'parsed', None)
-                trans2 = None
-                if isinstance(parsed2, dict) and 'translation' in parsed2:
-                    trans2 = parsed2.get('translation')
-                if not trans2:
-                    mc2 = getattr(msg2, 'content', None)
-                    if isinstance(mc2, list):
-                        try:
-                            raw2 = ''.join([seg.get('text', '') for seg in mc2 if isinstance(seg, dict)])
-                        except Exception:
-                            raw2 = ''
-                    else:
-                        raw2 = (mc2 or getattr(msg2, 'reasoning_content', None) or '')
-                    raw2 = strip_reasoning_thoughts(raw2).strip()
-                    import json as _json
-                    import re as _re
-                    try:
-                        data2 = _json.loads(raw2)
-                        if isinstance(data2, dict):
-                            trans2 = data2.get('translation')
-                    except Exception:
-                        m2 = _re.search(r'\{.*\}', raw2, _re.DOTALL)
-                        if m2:
-                            try:
-                                data2 = _json.loads(m2.group(0))
-                                if isinstance(data2, dict):
-                                    trans2 = data2.get('translation')
-                            except Exception:
-                                pass
-                if isinstance(trans2, str) and trans2.strip():
-                    translated_text = trans2.strip()
-            except Exception as _e2:
-                logger.warning(f"严格模式重试失败: {_e2}")
-
-        # 若仍为空，则回退为已清理的原文，避免返回空串
-        if not translated_text:
-            translated_text = cleaned_source_text
-
-        # 平台长度限制
-        ct_lower = str(content_type).lower()
-        if ct_lower == 'title':
-            if len(translated_text) > 50:
-                logger.info(f"标题超过AcFun限制(50字符)，将被截断: {len(translated_text)} -> 50")
-                translated_text = translated_text[:50]
-        else:
-            if len(translated_text) > 1000:
-                logger.info(f"描述超过AcFun限制(1000字符)，将被截断: {len(translated_text)} -> 1000")
-                translated_text = translated_text[:997] + "..."
-
         return translated_text
 
     except Exception as e:
