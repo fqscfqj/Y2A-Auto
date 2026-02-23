@@ -105,6 +105,9 @@ class SpeechRecognitionConfig:
     language: str = ''
     prompt: str = ''
     translate: bool = False
+    voxtral_timestamp_granularities: str = 'segment'
+    voxtral_diarize: bool = False
+    voxtral_context_bias: str = ''
     max_workers: int = 3                # Concurrent segment uploads
 
     # Text post-processing (only for Whisper)
@@ -162,7 +165,7 @@ class SpeechRecognizer:
         self._temp_dirs: List[str] = []
 
         # Validate provider
-        if config.provider not in ('whisper', 'fireredasr'):
+        if config.provider not in ('whisper', 'fireredasr', 'voxtral'):
             self.logger.error(f"Unsupported speech recognition provider: {config.provider}")
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
 
@@ -192,6 +195,9 @@ class SpeechRecognizer:
                 language=config.language,
                 prompt=config.prompt,
                 translate=config.translate,
+                timestamp_granularities=config.voxtral_timestamp_granularities,
+                diarize=config.voxtral_diarize,
+                context_bias=config.voxtral_context_bias,
                 max_retries=config.max_retries,
                 retry_delay_s=config.retry_delay_s,
                 max_workers=config.max_workers,
@@ -616,6 +622,11 @@ def create_speech_recognizer_from_config(
 
         provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
         use_fireredasr = provider == 'fireredasr'
+        use_voxtral = provider == 'voxtral'
+
+        voxtral_timestamp_granularities = 'segment'
+        voxtral_diarize = False
+        voxtral_context_bias = ''
 
         if use_fireredasr:
             asr_provider = 'fireredasr2s'
@@ -631,6 +642,23 @@ def create_speech_recognizer_from_config(
             asr_timeout_s = float(
                 app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0
             )
+        elif use_voxtral:
+            asr_provider = 'voxtral'
+            asr_base_url = (
+                app_config.get('VOXTRAL_BASE_URL')
+                or 'https://api.mistral.ai/v1'
+            )
+            asr_api_key = app_config.get('VOXTRAL_API_KEY') or ''
+            asr_model = app_config.get('VOXTRAL_MODEL_NAME') or 'voxtral-mini-latest'
+            asr_language = app_config.get('VOXTRAL_LANGUAGE') or ''
+            asr_prompt = ''
+            asr_max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
+            asr_timeout_s = 300.0
+            voxtral_timestamp_granularities = (
+                app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment'
+            )
+            voxtral_diarize = _to_bool(app_config.get('VOXTRAL_DIARIZE', False))
+            voxtral_context_bias = app_config.get('VOXTRAL_CONTEXT_BIAS') or ''
         else:
             asr_provider = 'whisper'
             asr_base_url = (
@@ -660,7 +688,7 @@ def create_speech_recognizer_from_config(
                 app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0
             ),
             # VAD
-            vad_enabled=bool(app_config.get('VAD_ENABLED', False)),
+            vad_enabled=bool(app_config.get('VAD_ENABLED', False)) if not use_voxtral else False,
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
             vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 250) or 250),
@@ -677,7 +705,10 @@ def create_speech_recognizer_from_config(
             # Transcription
             language=asr_language,
             prompt=asr_prompt,
-            translate=bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr else False,
+            translate=bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr and not use_voxtral else False,
+            voxtral_timestamp_granularities=voxtral_timestamp_granularities,
+            voxtral_diarize=voxtral_diarize,
+            voxtral_context_bias=voxtral_context_bias,
             max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
             # Text processing
             max_subtitle_line_length=int(

@@ -647,16 +647,23 @@
                         var asrProvider = document.getElementById('asr-provider');
                         var whisperConfig = document.getElementById('whisper-config');
                         var fireredasrConfig = document.getElementById('fireredasr-config');
+                        var voxtralConfig = document.getElementById('voxtral-config');
 
-                        if (asrProvider && whisperConfig && fireredasrConfig) {
+                        if (asrProvider && whisperConfig && fireredasrConfig && voxtralConfig) {
                             function toggleAsrProvider() {
                                 var provider = asrProvider.value;
                                 if (provider === 'whisper') {
                                     whisperConfig.style.display = 'block';
                                     fireredasrConfig.style.display = 'none';
+                                    voxtralConfig.style.display = 'none';
                                 } else if (provider === 'fireredasr') {
                                     whisperConfig.style.display = 'none';
                                     fireredasrConfig.style.display = 'block';
+                                    voxtralConfig.style.display = 'none';
+                                } else if (provider === 'voxtral') {
+                                    whisperConfig.style.display = 'none';
+                                    fireredasrConfig.style.display = 'none';
+                                    voxtralConfig.style.display = 'block';
                                 }
                             }
                             asrProvider.addEventListener('change', toggleAsrProvider);
@@ -709,8 +716,9 @@
                                 <div class="form-group">
                                     <label for="asr-provider">语音识别服务:</label>
                                     <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
-                                        <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper API</option>
+                                        <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI 兼容）</option>
                                         <option value="fireredasr" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'fireredasr' %}selected{% endif %}>FireRedASR2S</option>
+                                        <option value="voxtral" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'voxtral' %}selected{% endif %}>Voxtral（Mistral）</option>
                                     </select>
                                     <p class="help-text">选择用于语音识别的服务提供商</p>
                                 </div>
@@ -926,6 +934,83 @@
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                            </section>
+
+                            <!-- Voxtral 配置 -->
+                            <section class="settings-section" id="voxtral-config">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1"><i class="bi bi-soundwave me-1"></i> Voxtral 配置</h3>
+                                        <p class="section-lead mb-0">Mistral /v1/audio/transcriptions 接口参数</p>
+                                    </div>
+                                </div>
+
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="voxtral-api-key">Voxtral API 密钥:</label>
+                                            <input type="password" id="voxtral-api-key" name="VOXTRAL_API_KEY" value="{{ config.get('VOXTRAL_API_KEY', '') }}" class="form-control" placeholder="Mistral API Key">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="voxtral-model">Voxtral 模型:</label>
+                                            {% set current_voxtral_model = config.get('VOXTRAL_MODEL_NAME', 'voxtral-mini-latest') %}
+                                            <select id="voxtral-model" name="VOXTRAL_MODEL_NAME" class="form-select">
+                                                <option value="voxtral-small-latest" {% if current_voxtral_model == 'voxtral-small-latest' %}selected{% endif %}>voxtral-small-latest</option>
+                                                <option value="voxtral-mini-latest" {% if current_voxtral_model == 'voxtral-mini-latest' %}selected{% endif %}>voxtral-mini-latest（推荐）</option>
+                                                {% if current_voxtral_model not in ['voxtral-small-latest', 'voxtral-mini-latest'] %}
+                                                <option value="{{ current_voxtral_model }}" selected>{{ current_voxtral_model }}（自定义）</option>
+                                                {% endif %}
+                                            </select>
+                                            <p class="help-text mb-0">可选择官方别名或固定版本；固定版本有助于结果稳定复现</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <div class="form-group">
+                                            <label for="voxtral-base-url">Voxtral 基础地址:</label>
+                                            <input type="text" id="voxtral-base-url" name="VOXTRAL_BASE_URL" value="{{ config.get('VOXTRAL_BASE_URL', 'https://api.mistral.ai/v1') }}" class="form-control" placeholder="https://api.mistral.ai/v1">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="voxtral-timestamp-granularities">时间戳粒度:</label>
+                                            <input type="text" id="voxtral-timestamp-granularities" name="VOXTRAL_TIMESTAMP_GRANULARITIES" value="{{ config.get('VOXTRAL_TIMESTAMP_GRANULARITIES', 'segment') }}" class="form-control" placeholder="segment or segment,word">
+                                            <p class="help-text mb-0">可选值：segment、word（多个值用逗号分隔）</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="voxtral-language">指定语言（可选）:</label>
+                                            <input type="text" id="voxtral-language" name="VOXTRAL_LANGUAGE" value="{{ config.get('VOXTRAL_LANGUAGE', '') }}" class="form-control" placeholder="留空则自动检测">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-12">
+                                        <div class="form-group">
+                                            <label for="voxtral-context-bias">上下文偏置（可选）:</label>
+                                            <textarea id="voxtral-context-bias" name="VOXTRAL_CONTEXT_BIAS" rows="2" class="form-control" placeholder="phrase1, phrase2, technical term">{{ config.get('VOXTRAL_CONTEXT_BIAS', '') }}</textarea>
+                                            <p class="help-text mb-0">最多 100 个词/短语，可用逗号或换行分隔</p>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-12">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="VOXTRAL_DIARIZE" {% if config.get('VOXTRAL_DIARIZE', False) %}checked{% endif %}>
+                                                启用说话人分离
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info mt-3">
+                                    <i class="bi bi-info-circle"></i>
+                                    <strong>说明</strong>
+                                    <ul class="mb-0 mt-2">
+                                        <li>实际调用接口：<code>{VOXTRAL_BASE_URL}/audio/transcriptions</code>（会自动规范化）</li>
+                                        <li><code>timestamp_granularities</code> 与 <code>language</code> 互斥；系统优先时间戳并忽略 language</li>
+                                        <li>Voxtral 路径不启用 VAD 与字幕后处理调参项</li>
+                                    </ul>
                                 </div>
                             </section>
 

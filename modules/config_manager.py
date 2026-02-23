@@ -95,6 +95,14 @@ DEFAULT_CONFIG = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
+    # Voxtral（Mistral /v1/audio/transcriptions）配置
+    "VOXTRAL_API_KEY": "",
+    "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",
+    "VOXTRAL_MODEL_NAME": "voxtral-mini-latest",
+    "VOXTRAL_TIMESTAMP_GRANULARITIES": "segment",
+    "VOXTRAL_DIARIZE": False,
+    "VOXTRAL_CONTEXT_BIAS": "",
+    "VOXTRAL_LANGUAGE": "",
     # FireRedASR2S（/v1/process_all）配置
     "FIREREDASR_ENABLED": False,
     "FIREREDASR_BASE_URL": "http://localhost:8000",

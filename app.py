@@ -1400,7 +1400,9 @@ def settings():
             # 新增：视频转码自定义参数开关
             'VIDEO_CUSTOM_PARAMS_ENABLED',
             # FireRedASR2S
-            'FIREREDASR_ENABLED'
+            'FIREREDASR_ENABLED',
+            # Voxtral
+            'VOXTRAL_DIARIZE'
         ]
         for checkbox in checkboxes:
             if checkbox not in form_data:

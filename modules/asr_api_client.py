@@ -64,6 +64,9 @@ class AsrConfig:
     language: str = ''       # Force language (e.g. 'en', 'zh', 'ja'); empty = auto
     prompt: str = ''         # Custom prompt to guide transcription
     translate: bool = False  # Translate to English
+    timestamp_granularities: str = 'segment'
+    diarize: bool = False
+    context_bias: str = ''
     max_retries: int = 3
     retry_delay_s: float = 2.0
     max_workers: int = 3     # Concurrent segment uploads
@@ -105,7 +108,7 @@ class AsrApiClient:
         if not self.config.api_key:
             # FireRed API key can be optional depending on server settings.
             if self.config.provider != 'fireredasr2s':
-                self.logger.error("Missing Whisper/OpenAI API key - ASR client not initialised")
+                self.logger.error("Missing ASR API key - ASR client not initialised")
                 return
         try:
             if self.config.provider == 'fireredasr2s':
@@ -115,6 +118,14 @@ class AsrApiClient:
                 # FireRed uses direct HTTP calls instead of OpenAI SDK.
                 self.client = True
                 self.logger.info("FireRedASR2S client initialised successfully")
+                return
+            if self.config.provider == 'voxtral':
+                if not self.config.base_url:
+                    self.logger.error("Missing Voxtral base URL - ASR client not initialised")
+                    return
+                # Voxtral uses direct HTTP calls instead of OpenAI SDK.
+                self.client = True
+                self.logger.info("Voxtral client initialised successfully")
                 return
 
             import openai
@@ -183,6 +194,8 @@ class AsrApiClient:
         """
         if self.config.provider == 'fireredasr2s':
             return self._transcribe_segment_firered(wav_path, segment_info)
+        if self.config.provider == 'voxtral':
+            return self._transcribe_segment_voxtral(wav_path, segment_info)
 
         model = self.config.model_name or 'whisper-1'
         segment_desc = segment_info or wav_path
@@ -360,6 +373,86 @@ class AsrApiClient:
                     )
         return None
 
+    def _transcribe_segment_voxtral(
+        self,
+        wav_path: str,
+        segment_info: Optional[str] = None,
+    ) -> Optional[str]:
+        """Transcribe one segment via Mistral Voxtral `/v1/audio/transcriptions`."""
+        segment_desc = segment_info or wav_path
+        endpoint_url = self._build_voxtral_transcriptions_url(self.config.base_url)
+        if not endpoint_url:
+            self.logger.error("Voxtral base URL is empty or invalid")
+            return None
+
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers['x-api-key'] = self.config.api_key
+
+        model = self.config.model_name or 'voxtral-mini-latest'
+        timestamp_granularities = self._parse_voxtral_timestamp_granularities(
+            self.config.timestamp_granularities,
+        )
+        context_bias_items = self._parse_voxtral_context_bias(self.config.context_bias)
+        lang_hint = (self._language_hint or self.config.language or '').strip()
+        use_language = bool(lang_hint and lang_hint.lower() != 'unknown')
+
+        # Mistral docs note: timestamp_granularities and language are incompatible.
+        if timestamp_granularities and use_language:
+            self.logger.warning(
+                "Voxtral conflict detected for segment [%s]: both timestamp_granularities and language were set. "
+                "Ignoring language and using automatic language detection.",
+                segment_desc,
+            )
+            use_language = False
+
+        for attempt in range(self.config.max_retries):
+            try:
+                form_data: List[Tuple[str, str]] = [('model', model)]
+                for gran in timestamp_granularities:
+                    form_data.append(('timestamp_granularities', gran))
+                if self.config.diarize:
+                    form_data.append(('diarize', 'true'))
+                for item in context_bias_items:
+                    form_data.append(('context_bias', item))
+                if use_language:
+                    form_data.append(('language', lang_hint))
+
+                with open(wav_path, 'rb') as f:
+                    files = {
+                        'file': (os.path.basename(wav_path), f, 'audio/wav')
+                    }
+                    resp = requests.post(
+                        endpoint_url,
+                        headers=headers,
+                        files=files,
+                        data=form_data,
+                        timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+                    )
+
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+
+                payload = resp.json()
+                srt_text = self._verbose_json_to_srt(payload)
+                if srt_text:
+                    return srt_text
+                raise RuntimeError("Voxtral response has no usable subtitle content")
+            except Exception as exc:
+                if attempt < self.config.max_retries - 1:
+                    delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
+                    self.logger.warning(
+                        f"Voxtral request failed for segment [{segment_desc}]: {exc} "
+                        f"(attempt {attempt + 1}/{self.config.max_retries}), retrying in {delay:.1f}s"
+                    )
+                    time.sleep(delay)
+                else:
+                    self.logger.error(
+                        f"Voxtral request failed for segment [{segment_desc}] after "
+                        f"{self.config.max_retries} attempts: {exc}"
+                    )
+        return None
+
     # ------------------------------------------------------------------
     # Public API – concurrent multi-segment
     # ------------------------------------------------------------------
@@ -441,10 +534,12 @@ class AsrApiClient:
     # ------------------------------------------------------------------
 
     def detect_language(self, wav_path: str) -> str:
-        """Probe language of a short audio clip via Whisper."""
+        """Probe language of a short audio clip via the active ASR provider."""
         if self.config.provider == 'fireredasr2s':
             # FireRed `/v1/process_all` already runs LID internally.
             return ''
+        if self.config.provider == 'voxtral':
+            return self._detect_language_voxtral(wav_path)
         try:
             model = self.config.model_name or 'whisper-1'
             with open(wav_path, 'rb') as f:
@@ -474,6 +569,46 @@ class AsrApiClient:
             return ''
         except Exception as exc:
             self.logger.warning(f"Language detection failed: {exc}")
+            return ''
+
+    def _detect_language_voxtral(self, wav_path: str) -> str:
+        endpoint_url = self._build_voxtral_transcriptions_url(self.config.base_url)
+        if not endpoint_url:
+            return ''
+
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers['x-api-key'] = self.config.api_key
+
+        model = self.config.model_name or 'voxtral-mini-latest'
+        try:
+            with open(wav_path, 'rb') as f:
+                files = {
+                    'file': (os.path.basename(wav_path), f, 'audio/wav')
+                }
+                resp = requests.post(
+                    endpoint_url,
+                    headers=headers,
+                    files=files,
+                    data=[('model', model)],
+                    timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+                )
+
+            if resp.status_code != 200:
+                return ''
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                return ''
+
+            lang = payload.get('language', '')
+            if lang:
+                return str(lang).strip()
+            segs = payload.get('segments') or []
+            if segs and isinstance(segs, list):
+                return str(segs[0].get('language', '')).strip()
+            return ''
+        except Exception as exc:
+            self.logger.warning(f"Voxtral language detection failed: {exc}")
             return ''
 
     def detect_language_from_segments(
@@ -620,6 +755,63 @@ class AsrApiClient:
             urlencode(query, doseq=True),
             parsed.fragment,
         ))
+
+    @staticmethod
+    def _build_voxtral_transcriptions_url(base_url: str) -> str:
+        raw = (base_url or '').strip()
+        if not raw:
+            return ''
+
+        if '://' not in raw:
+            raw = f"https://{raw}"
+
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return ''
+
+        path = (parsed.path or '').rstrip('/')
+        if path.endswith('/audio/transcriptions'):
+            normalized_path = path
+        elif path.endswith('/v1'):
+            normalized_path = f"{path}/audio/transcriptions"
+        elif path:
+            normalized_path = f"{path}/v1/audio/transcriptions"
+        else:
+            normalized_path = '/v1/audio/transcriptions'
+
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            normalized_path,
+            parsed.params,
+            '',
+            parsed.fragment,
+        ))
+
+    @staticmethod
+    def _parse_voxtral_timestamp_granularities(value: str) -> List[str]:
+        raw = str(value or '').strip()
+        if not raw:
+            return []
+        pieces = [p.strip().lower() for p in raw.replace('\n', ',').split(',')]
+        allowed = {'segment', 'word'}
+        result: List[str] = []
+        for piece in pieces:
+            if piece in allowed and piece not in result:
+                result.append(piece)
+        return result
+
+    @staticmethod
+    def _parse_voxtral_context_bias(value: str) -> List[str]:
+        raw = str(value or '').strip()
+        if not raw:
+            return []
+        items = [p.strip() for p in raw.replace('\n', ',').split(',')]
+        deduped: List[str] = []
+        for item in items:
+            if item and item not in deduped:
+                deduped.append(item)
+        return deduped
 
     def _firered_response_to_srt(self, payload: Dict[str, Any]) -> Optional[str]:
         """Convert FireRed `/v1/process_all` response JSON to SRT."""

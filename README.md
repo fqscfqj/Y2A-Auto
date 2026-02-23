@@ -170,6 +170,25 @@ python app.py
 }
 ```
 
+### Voxtral 转录配置（Mistral）
+
+当 `SPEECH_RECOGNITION_PROVIDER` 设为 `voxtral` 时，可使用以下配置：
+
+```json
+{
+  "SPEECH_RECOGNITION_PROVIDER": "voxtral",
+  "VOXTRAL_API_KEY": "",
+  "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",
+  "VOXTRAL_MODEL_NAME": "voxtral-mini-latest",
+  "VOXTRAL_TIMESTAMP_GRANULARITIES": "segment",
+  "VOXTRAL_DIARIZE": false,
+  "VOXTRAL_CONTEXT_BIAS": "",
+  "VOXTRAL_LANGUAGE": ""
+}
+```
+
+注意：`VOXTRAL_TIMESTAMP_GRANULARITIES` 与 `VOXTRAL_LANGUAGE` 同时设置时，系统会优先时间戳并自动忽略 `VOXTRAL_LANGUAGE`。
+
 ### 字幕 QC 说明
 
 启用 `SUBTITLE_QC_ENABLED: true` 后，系统会在字幕生成或翻译后进行抽样质检：
