@@ -806,12 +806,11 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         if (Date.now() < interactionHoldUntil) return true;
 
         const activeEl = document.activeElement;
-        if (activeEl && root.contains(activeEl)) return true;
-
-        try {
-            if (root.matches(':hover')) return true;
-        } catch (e) {
-            // ignore
+        if (activeEl && root.contains(activeEl)) {
+            const tagName = (activeEl.tagName || '').toLowerCase();
+            if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || activeEl.isContentEditable) {
+                return true;
+            }
         }
         return false;
     }
@@ -916,6 +915,13 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         applyTasksContentHtml(newTasksContent.innerHTML);
     }
 
+    function closeTasksEventSource() {
+        if (tasksEventSource) {
+            tasksEventSource.close();
+            tasksEventSource = null;
+        }
+    }
+
     let eventSourceReconnectAttempts = 0;
     const MAX_RECONNECT_ATTEMPTS = 5;
     const RECONNECT_DELAY_BASE = 1000;
@@ -960,27 +966,25 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         };
 
         tasksEventSource.onerror = function() {
-            if (tasksEventSource.readyState === EventSource.CLOSED) {
+            const readyState = tasksEventSource ? tasksEventSource.readyState : EventSource.CLOSED;
+            if (readyState === EventSource.CLOSED) {
                 eventSourceReconnectAttempts++;
                 if (eventSourceReconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                     const delay = RECONNECT_DELAY_BASE * Math.pow(1.5, eventSourceReconnectAttempts - 1);
                     setTimeout(() => {
-                        if (!fallbackMode) {
+                        if (!tasksEventSource) {
                             initTasksEventStream();
                         }
                     }, delay);
-                } else {
-                    enableFallbackPolling(REFRESH_INTERVAL_ACTIVE);
                 }
+                closeTasksEventSource();
             }
-            enableFallbackPolling(REFRESH_INTERVAL_IDLE);
+            const activeDelay = hasProcessingTasks() ? REFRESH_INTERVAL_ACTIVE : REFRESH_INTERVAL_IDLE;
+            enableFallbackPolling(activeDelay);
         };
 
         window.addEventListener('beforeunload', function cleanupStream() {
-            if (tasksEventSource) {
-                tasksEventSource.close();
-                tasksEventSource = null;
-            }
+            closeTasksEventSource();
             window.removeEventListener('beforeunload', cleanupStream);
         });
     }
@@ -1113,10 +1117,15 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         showRefreshIndicator(true);
 
         try {
-            const response = await fetch(window.location.pathname + window.location.search, {
+            const requestUrl = new URL(window.location.href);
+            requestUrl.searchParams.set('_ts', String(Date.now()));
+            const response = await fetch(requestUrl.toString(), {
                 method: 'GET',
+                cache: 'no-store',
                 headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Cache-Control': 'no-cache, no-store, max-age=0',
+                    'Pragma': 'no-cache'
                 }
             });
 
@@ -1138,7 +1147,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     }
 
     function hasProcessingTasks() {
-        const statusBadges = document.querySelectorAll('.task-status-badge');
+        const statusBadges = document.querySelectorAll('.task-status-badge, .task-card .badge.rounded-pill');
         let hasProcessing = false;
 
         statusBadges.forEach(function(badge) {
@@ -1153,7 +1162,22 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             }
         });
 
-        return hasProcessing;
+        if (hasProcessing) {
+            return true;
+        }
+
+        const statusRows = document.querySelectorAll('.tasks-table tbody tr[class*="status-"]');
+        const processingStatuses = ['pending', 'downloading', 'uploading', 'translating', 'translating_subtitle', 'asr_transcribing', 'encoding_video', 'processing'];
+        for (const row of statusRows) {
+            const className = row.className || '';
+            for (const status of processingStatuses) {
+                if (className.includes('status-' + status)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     function determineRefreshDelay() {
@@ -1181,8 +1205,8 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         // 监听交互，减少实时刷新带来的 hover 闪烁/误点
         const tasksRoot = document.querySelector('#tasksContent');
         if (tasksRoot) {
-            tasksRoot.addEventListener('pointerenter', () => markTasksInteracting(1000), { passive: true });
-            tasksRoot.addEventListener('pointermove', () => markTasksInteracting(800), { passive: true });
+            tasksRoot.addEventListener('pointerenter', () => markTasksInteracting(500), { passive: true });
+            tasksRoot.addEventListener('pointermove', () => markTasksInteracting(250), { passive: true });
             tasksRoot.addEventListener('pointerdown', () => markTasksInteracting(2000));
             tasksRoot.addEventListener('focusin', () => markTasksInteracting(2000));
             tasksRoot.addEventListener('focusout', () => markTasksInteracting(600));
