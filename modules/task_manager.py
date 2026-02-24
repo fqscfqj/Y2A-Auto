@@ -4068,6 +4068,29 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             except Exception as e:
                 task_logger.error(f"读取视频元数据失败: {str(e)}")
 
+        # 与 AcFun 保持一致：可选追加转载声明；并确保简介中可见 YouTube URL
+        try:
+            from modules.acfun_uploader import build_upload_description
+
+            description = build_upload_description(
+                base_desc=description,
+                original_url=original_url,
+                original_uploader=original_uploader,
+                original_upload_date=original_upload_date,
+                append_repost_notice=bool(self.config.get('UPLOAD_APPEND_REPOST_NOTICE', True)),
+                max_len=2000,
+            )
+        except Exception as e:
+            task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")
+
+        visible_url = str(original_url or '').strip()
+        if visible_url and visible_url not in (description or ''):
+            if description:
+                remain_len = max(0, 2000 - len(visible_url) - 2)
+                description = f"{visible_url}\n\n{description[:remain_len]}" if remain_len > 0 else visible_url[:2000]
+            else:
+                description = visible_url[:2000]
+
         if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
             from modules.utils import safe_str
             uploader_tag = safe_str(original_uploader).strip()
