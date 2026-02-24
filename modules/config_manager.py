@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
     "LOGIN_LOCKOUT_MINUTES": 15,     # 被锁定后持续的分钟数
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt", # AcFun Cookie文件路径
-    "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # B站 Cookie 文件路径
+    "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
@@ -42,7 +42,7 @@ DEFAULT_CONFIG = {
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
-    # B站固定分区ID（可选）：如设置则B站推荐分区将直接使用该ID
+    # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID
     "FIXED_PARTITION_ID_BILIBILI": "",
     # 字幕翻译可单独指定OpenAI Base URL；为空则回退到 OPENAI_BASE_URL
     "SUBTITLE_OPENAI_BASE_URL": "",

@@ -3307,12 +3307,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             try:
                 from bilibili_api import video_zone
                 zone_data = video_zone.get_zone_list_sub() or []
-                task_logger.info(f"成功读取B站分区数据，长度: {len(zone_data)}")
+                task_logger.info(f"成功读取bilibili分区数据，长度: {len(zone_data)}")
             except Exception as e:
-                task_logger.error(f"读取B站分区数据失败: {e}")
+                task_logger.error(f"读取bilibili分区数据失败: {e}")
 
             if not zone_data:
-                task_logger.warning("B站分区数据为空，跳过推荐")
+                task_logger.warning("bilibili分区数据为空，跳过推荐")
                 return True
 
             recommended_partition_id = recommend_bilibili_partition(
@@ -3492,7 +3492,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         task_logger.info(f"上传分发目标平台: {upload_target}")
 
         if upload_target == UPLOAD_TARGET_BOTH:
-            # 双平台投稿：按 AcFun -> B站 顺序执行，且对已成功的平台幂等跳过
+            # 双平台投稿：按 AcFun -> bilibili 顺序执行，且对已成功的平台幂等跳过
             if not _task_has_platform_upload_response(task, UPLOAD_TARGET_ACFUN):
                 self._upload_to_acfun(task_id, task_logger)
                 task = get_task(task_id)
@@ -3504,7 +3504,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if not _task_has_platform_upload_response(task, UPLOAD_TARGET_BILIBILI):
                 self._upload_to_bilibili(task_id, task_logger)
             else:
-                task_logger.info("检测到已有 B站 上传结果，跳过 B站 上传")
+                task_logger.info("检测到已有 bilibili 上传结果，跳过 bilibili 上传")
             return
 
         if upload_target == UPLOAD_TARGET_BILIBILI:
@@ -4012,7 +4012,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             bilibili_cookies_path = os.path.join(app_root, bilibili_cookies_path)
 
-        # 固定 B站 分区优先；否则使用任务分区。并校验分区合法性
+        # 固定 bilibili 分区优先；否则使用任务分区。并校验分区合法性
         task_partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
         fixed_bili_pid = str(self.config.get('FIXED_PARTITION_ID_BILIBILI', '') or '').strip()
         partition_id = fixed_bili_pid or task_partition_id
@@ -4030,12 +4030,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             if stid not in (None, '', 0, '0'):
                                 valid_tids.add(str(stid))
             if partition_id and str(partition_id) not in valid_tids:
-                task_logger.warning(f"B站分区ID无效: {partition_id}")
+                task_logger.warning(f"bilibili分区ID无效: {partition_id}")
                 partition_id = ''
             if not partition_id and task_partition_id and str(task_partition_id) in valid_tids:
                 partition_id = str(task_partition_id)
         except Exception as e:
-            task_logger.warning(f"校验 B站 分区列表失败，继续使用当前分区ID: {e}")
+            task_logger.warning(f"校验 bilibili 分区列表失败，继续使用当前分区ID: {e}")
 
         missing_params = []
         if not video_path or not os.path.exists(video_path):
@@ -4082,21 +4082,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             )
 
             if success:
-                task_logger.info(f"B站上传成功: {result}")
+                task_logger.info(f"bilibili上传成功: {result}")
                 update_task(
                     task_id,
                     status=TASK_STATES['COMPLETED'],
                     bilibili_upload_response=json.dumps(result, ensure_ascii=False)
                 )
             else:
-                task_logger.error(f"B站上传失败: {result}")
+                task_logger.error(f"bilibili上传失败: {result}")
                 update_task(
                     task_id,
                     status=TASK_STATES['FAILED'],
                     error_message=f"上传失败: {result}"
                 )
         except Exception as e:
-            task_logger.error(f"B站上传过程中发生异常: {str(e)}")
+            task_logger.error(f"bilibili上传过程中发生异常: {str(e)}")
             import traceback
             task_logger.error(traceback.format_exc())
             update_task(

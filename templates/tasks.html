@@ -109,7 +109,7 @@
                             <td>
                                 {% set target = (task.upload_target or 'acfun')|lower %}
                                 {% if target == 'bilibili' %}
-                                    <span class="badge bg-danger">B站</span>
+                                    <span class="badge bg-danger">bilibili</span>
                                 {% elif target == 'both' %}
                                     <span class="badge bg-warning text-dark">双平台</span>
                                 {% else %}
@@ -149,7 +149,7 @@
                                     {% set ac_result = parse_json(task.acfun_upload_response) if task.acfun_upload_response else {} %}
                                     {% set bili_result = parse_json(task.bilibili_upload_response) if task.bilibili_upload_response else {} %}
                                     {% if bili_result and bili_result.bvid %}
-                                        <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开B站页面">{{ bili_result.bvid }}</a>
+                                        <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ bili_result.bvid }}</a>
                                     {% else %}
                                         <span class="badge bg-secondary">BV待上传</span>
                                     {% endif %}
@@ -161,7 +161,7 @@
                                 {% elif task.status == 'completed' and target == 'bilibili' and task.bilibili_upload_response %}
                                     {% set upload_result = parse_json(task.bilibili_upload_response) %}
                                     {% if upload_result and upload_result.bvid %}
-                                        <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开B站页面">{{ upload_result.bvid }}</a>
+                                        <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ upload_result.bvid }}</a>
                                         <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-bv-btn" title="复制BV号" data-bv-number="{{ upload_result.bvid }}">
                                             <i class="bi bi-clipboard"></i>
                                         </button>
@@ -211,7 +211,7 @@
                                         <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
                                             {% set target = (task.upload_target or 'acfun')|lower %}
                                             <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center task-action-btn">
-                                                <i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if target == 'both' else ('B站' if target == 'bilibili' else 'AcFun') }}
+                                                <i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}
                                             </button>
                                         </form>
                                     {% endif %}
@@ -281,7 +281,7 @@
                             <div class="vr mx-1"></div>
                             <div>
                                 {% set target = (task.upload_target or 'acfun')|lower %}
-                                <i class="bi bi-hdd me-1"></i>{{ '双平台' if target == 'both' else ('B站' if target == 'bilibili' else 'AcFun') }}
+                                <i class="bi bi-hdd me-1"></i>{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}
                             </div>
                             <div class="vr mx-1"></div>
                             <div>
@@ -370,7 +370,7 @@
                             {% elif task.status == 'ready_for_upload' %}
                                 <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
                                     {% set target = (task.upload_target or 'acfun')|lower %}
-                                    <button type="submit" class="btn btn-sm btn-success w-100"><i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if target == 'both' else ('B站' if target == 'bilibili' else 'AcFun') }}</button>
+                                    <button type="submit" class="btn btn-sm btn-success w-100"><i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}</button>
                                 </form>
                             {% endif %}
                             <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i> 编辑</a>
@@ -467,8 +467,8 @@
                         {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
                         <select class="form-select" id="upload_target" name="upload_target">
                             <option value="acfun" {% if default_target == 'acfun' %}selected{% endif %}>AcFun</option>
-                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
-                            <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + B站）</option>
+                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>bilibili</option>
+                            <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + bilibili）</option>
                         </select>
                         <div class="form-text">不选择时将使用系统默认平台</div>
                     </div>

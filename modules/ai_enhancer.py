@@ -721,7 +721,7 @@ def flatten_bilibili_partitions(zone_data):
     将 Bilibili video_zone.get_zone_list_sub() 扁平化为分区列表。
 
     Args:
-        zone_data (list): B站分区原始数据
+        zone_data (list): bilibili分区原始数据
 
     Returns:
         list: 统一结构分区列表
@@ -780,12 +780,12 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
     title = safe_str(title)
     description = safe_str(description)
     if not title and not description:
-        logger.warning("缺少标题和描述，无法推荐 B站 分区")
+        logger.warning("缺少标题和描述，无法推荐 bilibili 分区")
         return None
 
     partitions = flatten_bilibili_partitions(zone_data)
     if not partitions:
-        logger.warning("B站分区数据为空，无法推荐")
+        logger.warning("bilibili分区数据为空，无法推荐")
         return None
 
     available_partition_ids = [p["id"] for p in partitions]
@@ -793,7 +793,7 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
     fixed_pid = safe_str((openai_config or {}).get("FIXED_PARTITION_ID_BILIBILI"))
     if fixed_pid:
         if fixed_pid in available_partition_ids:
-            logger.info(f"命中 B站 固定分区ID: {fixed_pid}")
+            logger.info(f"命中 bilibili 固定分区ID: {fixed_pid}")
             return fixed_pid
         logger.warning(f"配置的 FIXED_PARTITION_ID_BILIBILI 无效: {fixed_pid}")
 
@@ -876,7 +876,7 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
             result = re.sub(r"^```[a-zA-Z0-9]*\s*", "", result)
             result = re.sub(r"\s*```$", "", result)
 
-        logger.info(f"B站分区推荐原始响应: {result}")
+        logger.info(f"bilibili分区推荐原始响应: {result}")
 
         try:
             data = json.loads(result)
@@ -903,7 +903,7 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
         return _rule_based_fallback(title, description)
 
     except Exception as e:
-        logger.error(f"B站分区推荐异常: {e}")
+        logger.error(f"bilibili分区推荐异常: {e}")
         logger.error(traceback.format_exc())
         return _rule_based_fallback(title, description)
 

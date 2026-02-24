@@ -29,7 +29,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
 
-# B站二维码登录会话（内存）
+# bilibili二维码登录会话（内存）
 _BILIBILI_QR_SESSIONS = {}
 _BILIBILI_QR_SESSION_LOCK = threading.Lock()
 _BILIBILI_QR_SESSION_TTL_SECONDS = 300
@@ -270,7 +270,7 @@ def _get_bilibili_zone_data():
         from bilibili_api import video_zone
         return video_zone.get_zone_list_sub() or []
     except Exception as e:
-        logger.warning(f"读取B站分区数据失败: {e}")
+        logger.warning(f"读取bilibili分区数据失败: {e}")
         return []
 
 
@@ -292,7 +292,7 @@ def get_partition_name(partition_id, upload_target='acfun'):
                     if str(sub.get('tid')) == pid:
                         return sub.get('name')
         except Exception as e:
-            logger.error(f"获取B站分区名称时出错: {str(e)}")
+            logger.error(f"获取bilibili分区名称时出错: {str(e)}")
         return None
 
     # 默认 AcFun
@@ -665,7 +665,7 @@ def edit_task(task_id):
     
     if request.method == 'POST':
         upload_target = str(task.get('upload_target') or 'acfun').lower()
-        platform_name = '双平台' if upload_target == 'both' else ('B站' if upload_target == 'bilibili' else 'AcFun')
+        platform_name = '双平台' if upload_target == 'both' else ('bilibili' if upload_target == 'bilibili' else 'AcFun')
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
@@ -1074,7 +1074,7 @@ def force_upload_task_route(task_id):
     # 获取当前配置
     config = load_config()
     upload_target = str(task.get('upload_target') or 'acfun').lower()
-    platform_name = '双平台' if upload_target == 'both' else ('B站' if upload_target == 'bilibili' else 'AcFun')
+    platform_name = '双平台' if upload_target == 'both' else ('bilibili' if upload_target == 'bilibili' else 'AcFun')
     
     # 启动后台强制上传
     logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
@@ -1741,7 +1741,7 @@ def settings():
 @app.route('/settings/bilibili/qrcode/start', methods=['POST'])
 @login_required
 def bilibili_qrcode_start():
-    """发起 B站 二维码登录并返回二维码图片。"""
+    """发起 bilibili 二维码登录并返回二维码图片。"""
     config = load_config()
     cookie_path = config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
     if not os.path.isabs(cookie_path):
@@ -1759,13 +1759,13 @@ def bilibili_qrcode_start():
             'cookie_path': cookie_path,
         })
     except Exception as e:
-        logger.error(f"发起 B站 二维码登录失败: {e}")
+        logger.error(f"发起 bilibili 二维码登录失败: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/settings/bilibili/qrcode/status/<session_id>', methods=['GET'])
 @login_required
 def bilibili_qrcode_status(session_id):
-    """轮询 B站 二维码登录状态。"""
+    """轮询 bilibili 二维码登录状态。"""
     qr_session = _get_bilibili_qr_session(session_id)
     if not qr_session:
         return jsonify({'success': False, 'message': '二维码会话不存在或已过期'}), 404
@@ -1783,7 +1783,7 @@ def bilibili_qrcode_status(session_id):
                 _BILIBILI_QR_SESSIONS.pop(session_id, None)
         return jsonify({'success': True, **status_data})
     except Exception as e:
-        logger.error(f"查询 B站 二维码登录状态失败: {e}")
+        logger.error(f"查询 bilibili 二维码登录状态失败: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/settings/reset', methods=['POST'])

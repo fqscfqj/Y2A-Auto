@@ -90,12 +90,12 @@ class BilibiliUploader:
             safe_tags = safe_tags[:12]
 
             if not safe_title:
-                return False, "标题为空，无法上传到B站"
+                return False, "标题为空，无法上传到bilibili"
             if not partition_id:
-                return False, "分区ID为空，无法上传到B站"
+                return False, "分区ID为空，无法上传到bilibili"
 
             tid = int(partition_id)
-            # 业务要求：B站强制按非自制（转载）投稿
+            # 业务要求：bilibili强制按非自制（转载）投稿
             is_original = False
             source = youtube_url or None
 
@@ -137,14 +137,14 @@ class BilibiliUploader:
             @uploader.on(video_uploader.VideoUploaderEvents.FAILED.value)
             def on_failed(data):
                 err = data.get("err") if isinstance(data, dict) else data
-                self.log(f"B站上传失败事件: {err}")
+                self.log(f"bilibili上传失败事件: {err}")
 
-            self.log("开始上传到B站")
+            self.log("开始上传到bilibili")
             result = asyncio.run(uploader.start())
-            self.log(f"B站上传完成: {result}")
+            self.log(f"bilibili上传完成: {result}")
 
             if not isinstance(result, dict):
-                return False, "B站返回结果格式异常"
+                return False, "bilibili返回结果格式异常"
 
             bvid = result.get("bvid")
             aid = result.get("aid")
@@ -153,7 +153,7 @@ class BilibiliUploader:
                 aid = result["data"].get("aid", aid)
 
             if not bvid and not aid:
-                return False, f"B站返回中未找到 bvid/aid: {result}"
+                return False, f"bilibili返回中未找到 bvid/aid: {result}"
 
             video_url = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
             return True, {"bvid": bvid, "aid": aid, "url": video_url}
@@ -164,6 +164,6 @@ class BilibiliUploader:
                 f" 详细错误: {e}"
             )
         except Exception as e:
-            self.log(f"B站上传异常: {e}")
+            self.log(f"bilibili上传异常: {e}")
             self.log(traceback.format_exc())
-            return False, f"B站上传异常: {e}"
+            return False, f"bilibili上传异常: {e}"

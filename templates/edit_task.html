@@ -25,7 +25,7 @@
                                 {{ task_status_display(task.status) }}
                             </span>
                         </p>
-                        <p><strong>目标平台:</strong> {{ '双平台' if (upload_target|default('acfun')) == 'both' else ('B站' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}</p>
+                        <p><strong>目标平台:</strong> {{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}</p>
                         <p><strong>YouTube网址:</strong> <a href="{{ task.youtube_url }}" target="_blank" rel="noopener">{{ task.youtube_url }}</a></p>
                     </div>
                 </div>
@@ -232,14 +232,14 @@
                     
                     <div class="d-flex justify-content-between">
                         <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-cloud-upload"></i> 保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('B站' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}
+                            <i class="bi bi-cloud-upload"></i> 保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}
                         </button>
                         <a href="{{ url_for('tasks') }}" class="btn btn-outline-secondary">取消</a>
                     </div>
                     
                     <div class="mt-3">
                         <div class="alert alert-info small">
-                            <i class="bi bi-info-circle"></i> 点击"保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('B站' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}"按钮后，系统将保存您的编辑并在后台上传视频。
+                            <i class="bi bi-info-circle"></i> 点击"保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}"按钮后，系统将保存您的编辑并在后台上传视频。
                             <br><strong>💡 上传将在后台进行，您可以立即返回任务列表，无需等待。</strong>
                             {% if task.status == 'completed' %}
                                 <br><strong>当前状态：已完成处理，可以直接上传</strong>

@@ -179,14 +179,14 @@
                                             <select name="UPLOAD_TARGET_DEFAULT" id="upload-target-default" class="form-select">
                                                 {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
                                                 <option value="acfun" {% if default_target == 'acfun' %}selected{% endif %}>AcFun</option>
-                                                <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
-                                                <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + B站）</option>
+                                                <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>bilibili</option>
+                                                <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + bilibili）</option>
                                             </select>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
-                                            <label for="fixed-partition-id-bilibili">B站固定分区ID（可选）:</label>
+                                            <label for="fixed-partition-id-bilibili">bilibili固定分区ID（可选）:</label>
                                             <input type="text" id="fixed-partition-id-bilibili" name="FIXED_PARTITION_ID_BILIBILI" value="{{ config.get('FIXED_PARTITION_ID_BILIBILI', '') }}" class="form-control" placeholder="留空则自动推荐">
                                         </div>
                                     </div>
@@ -446,16 +446,16 @@
                             </div>
                         </div>
                         <div class="settings-section">
-                            <h5 class="mt-1">B站 账号</h5>
+                            <h5 class="mt-1">bilibili 账号</h5>
 
                             <div class="form-group">
-                                <label for="bilibili-cookies">B站 Cookies文件路径:</label>
+                                <label for="bilibili-cookies">bilibili Cookies文件路径:</label>
                                 <input type="text" id="bilibili-cookies" name="BILIBILI_COOKIES_PATH" value="{{ config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json') }}" class="form-control">
                                 <p class="help-text">推荐使用二维码登录自动生成该文件；也支持手动上传 JSON/Netscape Cookies 文件。</p>
                             </div>
 
                             <div class="form-group">
-                                <label for="bilibili-cookies-file">上传新的B站 Cookies文件:</label>
+                                <label for="bilibili-cookies-file">上传新的bilibili Cookies文件:</label>
                                 <input type="file" id="bilibili-cookies-file" name="bilibili_cookies_file" class="form-control">
                             </div>
 
@@ -467,7 +467,7 @@
                             </div>
 
                             <div class="mt-3 d-none" id="bili-qrcode-wrap">
-                                <img id="bili-qrcode-image" alt="B站登录二维码" style="max-width: 220px; border: 1px solid #eee; border-radius: 8px; padding: 8px;">
+                                <img id="bili-qrcode-image" alt="bilibili登录二维码" style="max-width: 220px; border: 1px solid #eee; border-radius: 8px; padding: 8px;">
                                 <div class="mt-2">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" id="bili-qrcode-check-btn">
                                         <i class="bi bi-arrow-repeat"></i> 检查状态
@@ -1499,7 +1499,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // B站二维码登录
+    // bilibili二维码登录
     const biliStartBtn = document.getElementById('bili-qrcode-start-btn');
     const biliCheckBtn = document.getElementById('bili-qrcode-check-btn');
     const biliWrap = document.getElementById('bili-qrcode-wrap');
