@@ -152,7 +152,9 @@
                         <td class="text-center"><span class="task-datetime" data-datetime="{{ t.updated_at }}">{{ t.updated_at }}</span></td>
                         <td class="text-end">
                             {% if t.upload_id %}
-                                {% if (t.upload_target or 'acfun') == 'bilibili' %}
+                                {% if (t.upload_target or 'acfun') == 'both' %}
+                                    <span class="badge bg-success text-decoration-none">{{ t.upload_id }}</span>
+                                {% elif (t.upload_target or 'acfun') == 'bilibili' %}
                                     <a href="https://www.bilibili.com/video/{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">{{ t.upload_id }}</a>
                                 {% else %}
                                     <a href="https://www.acfun.cn/v/ac{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ t.upload_id }}</a>

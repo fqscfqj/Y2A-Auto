@@ -35,8 +35,8 @@ DEFAULT_CONFIG = {
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # B站 Cookie 文件路径
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
-    "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili
-    "BILIBILI_DEFAULT_REPOST": True,  # B站默认按转载投稿
+    "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
+    "BILIBILI_DEFAULT_REPOST": True,  # 兼容旧配置（已固定为转载投稿）
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
@@ -213,7 +213,7 @@ def load_config():
 
                 upload_target_before = config.get('UPLOAD_TARGET_DEFAULT')
                 upload_target_normalized = str(upload_target_before or 'acfun').strip().lower()
-                if upload_target_normalized not in ('acfun', 'bilibili'):
+                if upload_target_normalized not in ('acfun', 'bilibili', 'both'):
                     upload_target_normalized = 'acfun'
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
@@ -297,7 +297,7 @@ def update_config(new_config):
                     current_config[key] = 'auto'
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
-                current_config[key] = target if target in ('acfun', 'bilibili') else 'acfun'
+                current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'
             elif key == 'VOXTRAL_MODEL_NAME':
                 current_config[key] = _normalize_voxtral_model_name(new_config[key])
             else:

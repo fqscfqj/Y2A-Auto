@@ -70,7 +70,6 @@ class BilibiliUploader:
         tags: List[str],
         partition_id: Union[str, int],
         youtube_url: str = "",
-        default_repost: bool = True,
         task_id: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> Tuple[bool, Union[dict, str]]:
@@ -96,8 +95,9 @@ class BilibiliUploader:
                 return False, "分区ID为空，无法上传到B站"
 
             tid = int(partition_id)
-            is_original = not bool(default_repost)
-            source = youtube_url if (not is_original and youtube_url) else None
+            # 业务要求：B站强制按非自制（转载）投稿
+            is_original = False
+            source = youtube_url or None
 
             meta = video_uploader.VideoMeta(
                 tid=tid,
@@ -167,4 +167,3 @@ class BilibiliUploader:
             self.log(f"B站上传异常: {e}")
             self.log(traceback.format_exc())
             return False, f"B站上传异常: {e}"
-

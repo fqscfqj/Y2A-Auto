@@ -30,10 +30,7 @@
                             <i class="bi bi-sliders2 settings-item-icon"></i> 自动化流程
                         </a>
                         <a class="nav-link" id="vtab-acfun-tab" data-bs-toggle="pill" href="#vtab-acfun" role="tab" aria-controls="vtab-acfun" aria-selected="false">
-                            <i class="bi bi-person-badge settings-item-icon"></i> AcFun 账号
-                        </a>
-                        <a class="nav-link" id="vtab-bilibili-tab" data-bs-toggle="pill" href="#vtab-bilibili" role="tab" aria-controls="vtab-bilibili" aria-selected="false">
-                            <i class="bi bi-play-btn settings-item-icon"></i> B站 账号
+                            <i class="bi bi-person-badge settings-item-icon"></i> 账号配置
                         </a>
                         <a class="nav-link" id="vtab-youtube-tab" data-bs-toggle="pill" href="#vtab-youtube" role="tab" aria-controls="vtab-youtube" aria-selected="false">
                             <i class="bi bi-cloud-arrow-down settings-item-icon"></i> 下载与代理
@@ -181,8 +178,9 @@
                                             <label for="upload-target-default">默认投稿平台:</label>
                                             <select name="UPLOAD_TARGET_DEFAULT" id="upload-target-default" class="form-select">
                                                 {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
-                                                <option value="acfun" {% if default_target != 'bilibili' %}selected{% endif %}>AcFun</option>
+                                                <option value="acfun" {% if default_target == 'acfun' %}selected{% endif %}>AcFun</option>
                                                 <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
+                                                <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + B站）</option>
                                             </select>
                                         </div>
                                     </div>
@@ -190,14 +188,6 @@
                                         <div class="form-group">
                                             <label for="fixed-partition-id-bilibili">B站固定分区ID（可选）:</label>
                                             <input type="text" id="fixed-partition-id-bilibili" name="FIXED_PARTITION_ID_BILIBILI" value="{{ config.get('FIXED_PARTITION_ID_BILIBILI', '') }}" class="form-control" placeholder="留空则自动推荐">
-                                        </div>
-                                    </div>
-                                    <div class="col-md-6">
-                                        <div class="form-group">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" name="BILIBILI_DEFAULT_REPOST" {% if config.get('BILIBILI_DEFAULT_REPOST', True) %}checked{% endif %}>
-                                                B站默认按转载投稿
-                                            </label>
                                         </div>
                                     </div>
                                 </div>
@@ -421,10 +411,11 @@
                         </div>
                     </div>
 
-                    <!-- AcFun账号设置 -->
+                    <!-- 账号设置 -->
                     <div class="tab-pane fade" id="vtab-acfun" role="tabpanel" aria-labelledby="vtab-acfun-tab">
                         <div class="settings-section">
-                            <h3>AcFun账号设置</h3>
+                            <h3>账号配置</h3>
+                            <h5 class="mt-2">AcFun 账号</h5>
 
                             <div class="form-group">
                                 <label for="acfun-cookies">AcFun Cookies文件路径:</label>
@@ -454,12 +445,8 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
-
-                    <!-- B站账号设置 -->
-                    <div class="tab-pane fade" id="vtab-bilibili" role="tabpanel" aria-labelledby="vtab-bilibili-tab">
                         <div class="settings-section">
-                            <h3>B站账号设置</h3>
+                            <h5 class="mt-1">B站 账号</h5>
 
                             <div class="form-group">
                                 <label for="bilibili-cookies">B站 Cookies文件路径:</label>

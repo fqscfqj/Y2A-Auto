@@ -536,7 +536,18 @@ def index():
             upload_id = None
             upload_target = (r[5] or 'acfun').lower()
             try:
-                if upload_target == 'bilibili':
+                if upload_target == 'both':
+                    resp_b = json.loads(r[7]) if r[7] else None
+                    resp_a = json.loads(r[6]) if r[6] else None
+                    bv = resp_b.get('bvid') if isinstance(resp_b, dict) else None
+                    ac = resp_a.get('ac_number') if isinstance(resp_a, dict) else None
+                    if bv and ac:
+                        upload_id = f"{bv} / AC{ac}"
+                    elif bv:
+                        upload_id = bv
+                    elif ac:
+                        upload_id = f"AC{ac}"
+                elif upload_target == 'bilibili':
                     resp = json.loads(r[7]) if r[7] else None
                     if isinstance(resp, dict):
                         upload_id = resp.get('bvid') or resp.get('aid')
@@ -654,7 +665,7 @@ def edit_task(task_id):
     
     if request.method == 'POST':
         upload_target = str(task.get('upload_target') or 'acfun').lower()
-        platform_name = 'B站' if upload_target == 'bilibili' else 'AcFun'
+        platform_name = '双平台' if upload_target == 'both' else ('B站' if upload_target == 'bilibili' else 'AcFun')
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
@@ -1063,7 +1074,7 @@ def force_upload_task_route(task_id):
     # 获取当前配置
     config = load_config()
     upload_target = str(task.get('upload_target') or 'acfun').lower()
-    platform_name = 'B站' if upload_target == 'bilibili' else 'AcFun'
+    platform_name = '双平台' if upload_target == 'both' else ('B站' if upload_target == 'bilibili' else 'AcFun')
     
     # 启动后台强制上传
     logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
@@ -1533,7 +1544,6 @@ def settings():
         checkboxes = [
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'UPLOAD_APPEND_REPOST_NOTICE',
-            'BILIBILI_DEFAULT_REPOST',
             'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
             'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',

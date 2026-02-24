@@ -159,7 +159,7 @@
                                 <button type="button" class="btn btn-success" 
                                         onclick="confirmForceUpload('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
                                     {% set target = (task.upload_target or 'acfun')|lower %}
-                                    <i class="bi bi-upload"></i> 强制上传到{{ 'B站' if target == 'bilibili' else 'AcFun' }}
+                                    <i class="bi bi-upload"></i> 强制上传到{{ '双平台' if target == 'both' else ('B站' if target == 'bilibili' else 'AcFun') }}
                                 </button>
                                 <button type="button" class="btn btn-outline-danger"
                                         onclick="confirmAbandon('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">

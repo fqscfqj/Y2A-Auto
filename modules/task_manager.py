@@ -160,7 +160,8 @@ PIPELINE_STAGE_ORDER = [
 
 UPLOAD_TARGET_ACFUN = 'acfun'
 UPLOAD_TARGET_BILIBILI = 'bilibili'
-VALID_UPLOAD_TARGETS = {UPLOAD_TARGET_ACFUN, UPLOAD_TARGET_BILIBILI}
+UPLOAD_TARGET_BOTH = 'both'
+VALID_UPLOAD_TARGETS = {UPLOAD_TARGET_ACFUN, UPLOAD_TARGET_BILIBILI, UPLOAD_TARGET_BOTH}
 
 _RESUME_RECOVERY_DONE = False
 
@@ -186,7 +187,18 @@ def _task_has_upload_response(task, upload_target=None):
     if not task:
         return False
     target = normalize_upload_target(upload_target or task.get('upload_target'))
+    if target == UPLOAD_TARGET_BOTH:
+        return bool(task.get('acfun_upload_response')) and bool(task.get('bilibili_upload_response'))
     if target == UPLOAD_TARGET_BILIBILI:
+        return bool(task.get('bilibili_upload_response'))
+    return bool(task.get('acfun_upload_response'))
+
+
+def _task_has_platform_upload_response(task, platform):
+    if not task:
+        return False
+    p = normalize_upload_target(platform)
+    if p == UPLOAD_TARGET_BILIBILI:
         return bool(task.get('bilibili_upload_response'))
     return bool(task.get('acfun_upload_response'))
 
@@ -345,7 +357,9 @@ def recover_interrupted_tasks_to_pending():
             task_id = row['id']
             status = row['status']
             upload_target = normalize_upload_target(row['upload_target'])
-            if upload_target == UPLOAD_TARGET_BILIBILI:
+            if upload_target == UPLOAD_TARGET_BOTH:
+                has_upload_resp = bool(row['acfun_upload_response']) and bool(row['bilibili_upload_response'])
+            elif upload_target == UPLOAD_TARGET_BILIBILI:
                 has_upload_resp = bool(row['bilibili_upload_response'])
             else:
                 has_upload_resp = bool(row['acfun_upload_response'])
@@ -603,7 +617,7 @@ def add_task(youtube_url, upload_target=None):
     
     Args:
         youtube_url: YouTube视频URL
-        upload_target: 投稿平台(acfun|bilibili)，为空则使用配置默认值
+        upload_target: 投稿平台(acfun|bilibili|both)，为空则使用配置默认值
         
     Returns:
         task_id: 新创建的任务ID
@@ -3477,6 +3491,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         upload_target = _get_task_upload_target(task)
         task_logger.info(f"上传分发目标平台: {upload_target}")
 
+        if upload_target == UPLOAD_TARGET_BOTH:
+            # 双平台投稿：按 AcFun -> B站 顺序执行，且对已成功的平台幂等跳过
+            if not _task_has_platform_upload_response(task, UPLOAD_TARGET_ACFUN):
+                self._upload_to_acfun(task_id, task_logger)
+                task = get_task(task_id)
+                if not task or task.get('status') == TASK_STATES['FAILED']:
+                    return
+            else:
+                task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
+
+            if not _task_has_platform_upload_response(task, UPLOAD_TARGET_BILIBILI):
+                self._upload_to_bilibili(task_id, task_logger)
+            else:
+                task_logger.info("检测到已有 B站 上传结果，跳过 B站 上传")
+            return
+
         if upload_target == UPLOAD_TARGET_BILIBILI:
             self._upload_to_bilibili(task_id, task_logger)
             return
@@ -3576,6 +3606,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
         partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
+        fixed_acfun_pid = str(self.config.get('FIXED_PARTITION_ID', '') or '').strip()
+        if fixed_acfun_pid:
+            partition_id = fixed_acfun_pid
         
         # 如果没有视频文件，先下载视频
         if not video_path or not os.path.exists(video_path):
@@ -3842,7 +3875,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         cover_path = task.get('cover_path_local', '') if task else ''
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
-        partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
+        partition_id = ''
 
         if not video_path or not os.path.exists(video_path):
             task_logger.info("检测到视频文件缺失，开始下载视频文件...")
@@ -3975,10 +4008,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     pass
 
         bilibili_cookies_path = self.config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
-        bilibili_default_repost = bool(self.config.get('BILIBILI_DEFAULT_REPOST', True))
         if bilibili_cookies_path and not os.path.isabs(bilibili_cookies_path):
             app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             bilibili_cookies_path = os.path.join(app_root, bilibili_cookies_path)
+
+        # 固定 B站 分区优先；否则使用任务分区。并校验分区合法性
+        task_partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
+        fixed_bili_pid = str(self.config.get('FIXED_PARTITION_ID_BILIBILI', '') or '').strip()
+        partition_id = fixed_bili_pid or task_partition_id
+        try:
+            from bilibili_api import video_zone
+            valid_tids = set()
+            for z in (video_zone.get_zone_list_sub() or []):
+                if isinstance(z, dict):
+                    tid = z.get('tid')
+                    if tid not in (None, '', 0, '0'):
+                        valid_tids.add(str(tid))
+                    for sub in (z.get('sub') or []):
+                        if isinstance(sub, dict):
+                            stid = sub.get('tid')
+                            if stid not in (None, '', 0, '0'):
+                                valid_tids.add(str(stid))
+            if partition_id and str(partition_id) not in valid_tids:
+                task_logger.warning(f"B站分区ID无效: {partition_id}")
+                partition_id = ''
+            if not partition_id and task_partition_id and str(task_partition_id) in valid_tids:
+                partition_id = str(task_partition_id)
+        except Exception as e:
+            task_logger.warning(f"校验 B站 分区列表失败，继续使用当前分区ID: {e}")
 
         missing_params = []
         if not video_path or not os.path.exists(video_path):
@@ -4020,7 +4077,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 tags=tags,
                 partition_id=partition_id,
                 youtube_url=original_url,
-                default_repost=bilibili_default_repost,
                 task_id=task_id,
                 progress_callback=lambda p: update_task(task_id, upload_progress=p, silent=True),
             )
