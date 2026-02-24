@@ -314,6 +314,44 @@ def _get_bilibili_zone_data():
         return []
 
 
+def _load_acfun_partition_mapping():
+    id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
+    try:
+        with open(id_mapping_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"读取AcFun分区映射失败: {e}")
+        return []
+
+
+def _build_bilibili_partition_mapping():
+    id_mapping = []
+    zone_data = _get_bilibili_zone_data()
+    for parent in zone_data:
+        if not isinstance(parent, dict):
+            continue
+        parent_tid = parent.get('tid')
+        parent_name = parent.get('name')
+        if parent_tid in (None, 0, '0') or not parent_name:
+            continue
+        id_mapping.append({
+            'category': parent_name,
+            'partitions': [{
+                'id': str(parent_tid),
+                'name': parent_name,
+                'sub_partitions': [
+                    {
+                        'id': str(sub.get('tid')),
+                        'name': sub.get('name'),
+                    }
+                    for sub in (parent.get('sub') or [])
+                    if isinstance(sub, dict) and sub.get('tid') not in (None, 0, '0') and sub.get('name')
+                ]
+            }]
+        })
+    return id_mapping
+
+
 def get_partition_name(partition_id, upload_target='acfun'):
     """根据分区ID和平台获取分区名称"""
     if not partition_id:
@@ -709,16 +747,32 @@ def edit_task(task_id):
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
-        partition_id = request.form.get('selected_partition_id', '')
+        legacy_partition_id = request.form.get('selected_partition_id', '')
+        partition_id_acfun = request.form.get('selected_partition_id_acfun', '')
+        partition_id_bilibili = request.form.get('selected_partition_id_bilibili', '')
         tags_json = request.form.get('tags_json', '[]')
+
+        if upload_target == 'both':
+            partition_id_acfun = partition_id_acfun or legacy_partition_id
+        elif upload_target == 'bilibili':
+            partition_id_bilibili = partition_id_bilibili or legacy_partition_id
+        else:
+            partition_id_acfun = partition_id_acfun or legacy_partition_id
         
         # 更新任务信息
         update_data = {
             'video_title_translated': video_title,
             'description_translated': description,
-            'selected_partition_id': partition_id,
+            'selected_partition_id_acfun': partition_id_acfun,
+            'selected_partition_id_bilibili': partition_id_bilibili,
             'tags_generated': tags_json
         }
+
+        # 兼容旧字段（历史逻辑仍会读取）
+        if upload_target == 'bilibili':
+            update_data['selected_partition_id'] = partition_id_bilibili
+        else:
+            update_data['selected_partition_id'] = partition_id_acfun
         
         # 只有在安全状态下才允许设置为可上传状态，避免与正在处理的任务产生竞态条件
         safe_states_to_make_uploadable = [
@@ -795,39 +849,9 @@ def edit_task(task_id):
     # GET请求，显示编辑页面
     # 封面图片现在直接从downloads目录提供
     upload_target = str(task.get('upload_target') or 'acfun').lower()
-
-    id_mapping = []
-    try:
-        if upload_target == 'bilibili':
-            zone_data = _get_bilibili_zone_data()
-            for parent in zone_data:
-                if not isinstance(parent, dict):
-                    continue
-                parent_tid = parent.get('tid')
-                parent_name = parent.get('name')
-                if parent_tid in (None, 0, '0') or not parent_name:
-                    continue
-                id_mapping.append({
-                    'category': parent_name,
-                    'partitions': [{
-                        'id': str(parent_tid),
-                        'name': parent_name,
-                        'sub_partitions': [
-                            {
-                                'id': str(sub.get('tid')),
-                                'name': sub.get('name'),
-                            }
-                            for sub in (parent.get('sub') or [])
-                            if isinstance(sub, dict) and sub.get('tid') not in (None, 0, '0') and sub.get('name')
-                        ]
-                    }]
-                })
-        else:
-            id_mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'acfunid', 'id_mapping.json')
-            with open(id_mapping_path, 'r', encoding='utf-8') as f:
-                id_mapping = json.load(f)
-    except Exception as e:
-        logger.error(f"读取分区映射数据失败: {str(e)}")
+    acfun_id_mapping = _load_acfun_partition_mapping()
+    bilibili_id_mapping = _build_bilibili_partition_mapping()
+    id_mapping = bilibili_id_mapping if upload_target == 'bilibili' else acfun_id_mapping
     
     # 准备标签字符串
     tags_string = ""
@@ -845,6 +869,8 @@ def edit_task(task_id):
         'edit_task.html', 
         task=task, 
         id_mapping=id_mapping, 
+        acfun_id_mapping=acfun_id_mapping,
+        bilibili_id_mapping=bilibili_id_mapping,
         tags_string=tags_string,
         config=config,
         upload_target=upload_target
@@ -1776,7 +1802,15 @@ def settings():
     
     # GET请求，显示设置页面
     config = load_config()
-    return render_template('settings.html', config=config, whisper_languages=WHISPER_LANGUAGE_LIST)
+    acfun_partition_mapping = _load_acfun_partition_mapping()
+    bilibili_partition_mapping = _build_bilibili_partition_mapping()
+    return render_template(
+        'settings.html',
+        config=config,
+        whisper_languages=WHISPER_LANGUAGE_LIST,
+        acfun_partition_mapping=acfun_partition_mapping,
+        bilibili_partition_mapping=bilibili_partition_mapping
+    )
 
 @app.route('/settings/acfun/qrcode/start', methods=['POST'])
 @login_required

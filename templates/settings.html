@@ -169,8 +169,20 @@
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
-                                            <label for="fixed-partition-id">固定分区ID（可选）:</label>
-                                            <input type="text" id="fixed-partition-id" name="FIXED_PARTITION_ID" value="{{ config.get('FIXED_PARTITION_ID', '') }}" class="form-control" placeholder="留空则自动推荐">
+                                            <label for="fixed-partition-id">AcFun 固定分区（可选）:</label>
+                                            <select id="fixed-partition-id" name="FIXED_PARTITION_ID" class="form-select">
+                                                <option value="" {% if not config.get('FIXED_PARTITION_ID', '') %}selected{% endif %}>留空则自动推荐</option>
+                                                {% for category in acfun_partition_mapping or [] %}
+                                                    <optgroup label="{{ category.category }}">
+                                                        {% for partition in category.partitions %}
+                                                            <option value="{{ partition.id }}" {% if config.get('FIXED_PARTITION_ID', '') == partition.id %}selected{% endif %}>{{ partition.name }} ({{ partition.id }})</option>
+                                                            {% for sub_partition in partition.sub_partitions %}
+                                                                <option value="{{ sub_partition.id }}" {% if config.get('FIXED_PARTITION_ID', '') == sub_partition.id %}selected{% endif %}>&nbsp;&nbsp;└ {{ sub_partition.name }} ({{ sub_partition.id }})</option>
+                                                            {% endfor %}
+                                                        {% endfor %}
+                                                    </optgroup>
+                                                {% endfor %}
+                                            </select>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
@@ -186,8 +198,20 @@
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group">
-                                            <label for="fixed-partition-id-bilibili">bilibili固定分区ID（可选）:</label>
-                                            <input type="text" id="fixed-partition-id-bilibili" name="FIXED_PARTITION_ID_BILIBILI" value="{{ config.get('FIXED_PARTITION_ID_BILIBILI', '') }}" class="form-control" placeholder="留空则自动推荐">
+                                            <label for="fixed-partition-id-bilibili">bilibili 固定分区（可选）:</label>
+                                            <select id="fixed-partition-id-bilibili" name="FIXED_PARTITION_ID_BILIBILI" class="form-select">
+                                                <option value="" {% if not config.get('FIXED_PARTITION_ID_BILIBILI', '') %}selected{% endif %}>留空则自动推荐</option>
+                                                {% for category in bilibili_partition_mapping or [] %}
+                                                    <optgroup label="{{ category.category }}">
+                                                        {% for partition in category.partitions %}
+                                                            <option value="{{ partition.id }}" {% if config.get('FIXED_PARTITION_ID_BILIBILI', '') == partition.id %}selected{% endif %}>{{ partition.name }} ({{ partition.id }})</option>
+                                                            {% for sub_partition in partition.sub_partitions %}
+                                                                <option value="{{ sub_partition.id }}" {% if config.get('FIXED_PARTITION_ID_BILIBILI', '') == sub_partition.id %}selected{% endif %}>&nbsp;&nbsp;└ {{ sub_partition.name }} ({{ sub_partition.id }})</option>
+                                                            {% endfor %}
+                                                        {% endfor %}
+                                                    </optgroup>
+                                                {% endfor %}
+                                            </select>
                                         </div>
                                     </div>
                                 </div>

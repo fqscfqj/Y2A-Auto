@@ -126,13 +126,35 @@
                             <div class="mt-3">
                                 <h6><i class="bi bi-folder"></i> 当前分区:</h6>
                                 {% set target = (task.upload_target or 'acfun')|lower %}
-                                {% if task.selected_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id, target) or task.selected_partition_id }}</span>
-                                {% elif task.recommended_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id, target) or task.recommended_partition_id }}</span>
-                                    <span class="badge bg-secondary"><i class="bi bi-stars"></i> 推荐</span>
+                                {% if target == 'both' %}
+                                    {% if task.selected_partition_id_acfun or task.recommended_partition_id_acfun %}
+                                        {% set ac_pid = task.selected_partition_id_acfun or task.recommended_partition_id_acfun %}
+                                        <span class="badge bg-info">AcFun: {{ get_partition_name(ac_pid, 'acfun') or ac_pid }}</span>
+                                        {% if (not task.selected_partition_id_acfun) and task.recommended_partition_id_acfun %}
+                                            <span class="badge bg-secondary"><i class="bi bi-stars"></i> AcFun推荐</span>
+                                        {% endif %}
+                                    {% endif %}
+                                    {% if task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili %}
+                                        {% set bili_pid = task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili %}
+                                        <span class="badge bg-info">bili: {{ get_partition_name(bili_pid, 'bilibili') or bili_pid }}</span>
+                                        {% if (not task.selected_partition_id_bilibili) and task.recommended_partition_id_bilibili %}
+                                            <span class="badge bg-secondary"><i class="bi bi-stars"></i> bili推荐</span>
+                                        {% endif %}
+                                    {% endif %}
+                                {% elif target == 'bilibili' %}
+                                    {% set bili_pid = task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili or task.selected_partition_id or task.recommended_partition_id %}
+                                    {% if bili_pid %}
+                                        <span class="badge bg-info">{{ get_partition_name(bili_pid, 'bilibili') or bili_pid }}</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">未设置</span>
+                                    {% endif %}
                                 {% else %}
-                                    <span class="badge bg-secondary">未设置</span>
+                                    {% set ac_pid = task.selected_partition_id_acfun or task.recommended_partition_id_acfun or task.selected_partition_id or task.recommended_partition_id %}
+                                    {% if ac_pid %}
+                                        <span class="badge bg-info">{{ get_partition_name(ac_pid, 'acfun') or ac_pid }}</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">未设置</span>
+                                    {% endif %}
                                 {% endif %}
                             </div>
                             
