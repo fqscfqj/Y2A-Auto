@@ -57,6 +57,10 @@ DB_PATH = os.path.join(DB_DIR, 'tasks.db')
 LOGS_DIR = get_app_subdir('logs')
 DOWNLOADS_DIR = get_app_subdir('downloads')
 PROCESS_TERMINATE_WAIT_SECONDS = 5
+DB_CONNECT_TIMEOUT_SECONDS = 10
+DB_BUSY_TIMEOUT_MS = 30000
+DB_WRITE_RETRY_TIMES = 5
+DB_WRITE_RETRY_SLEEP_SECONDS = 0.2
 
 
 class TaskCancelledError(Exception):
@@ -557,7 +561,13 @@ def setup_task_logger(task_id):
 # 数据库操作
 def init_db():
     """初始化数据库，创建tasks表"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+    try:
+        conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
+        conn.execute('PRAGMA journal_mode = WAL')
+        conn.execute('PRAGMA synchronous = NORMAL')
+    except Exception:
+        pass
     cursor = conn.cursor()
     
     # 创建tasks表
@@ -701,8 +711,14 @@ def get_db_path():
 
 def get_db_connection():
     """获取数据库连接"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_CONNECT_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row  # 返回字典形式的结果
+    try:
+        conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
+        conn.execute('PRAGMA journal_mode = WAL')
+        conn.execute('PRAGMA synchronous = NORMAL')
+    except Exception as e:
+        logger.debug(f"设置SQLite连接参数失败，将使用默认参数: {e}")
     return conn
 
 def add_task(youtube_url, upload_target=None):
@@ -793,21 +809,38 @@ def update_task(task_id, silent=False, **kwargs):
     
     conn = get_db_connection()
     try:
-        conn.execute(
-            f'UPDATE tasks SET {set_clause} WHERE id = ?',
-            values
-        )
-        conn.commit()
-        publish_task_event('task_updated', {
-            'task_id': task_id,
-            'status': kwargs.get('status')
-        })
-        if not silent:  # 只有非静默模式才记录到主日志
-            logger.info(f"任务 {task_id} 更新成功: {kwargs}")
-        return True
-    except Exception as e:
-        logger.error(f"更新任务 {task_id} 失败: {str(e)}")
-        return False
+        for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
+            try:
+                conn.execute(
+                    f'UPDATE tasks SET {set_clause} WHERE id = ?',
+                    values
+                )
+                conn.commit()
+                publish_task_event('task_updated', {
+                    'task_id': task_id,
+                    'status': kwargs.get('status')
+                })
+                if not silent:  # 只有非静默模式才记录到主日志
+                    logger.info(f"任务 {task_id} 更新成功: {kwargs}")
+                return True
+            except sqlite3.OperationalError as e:
+                err_msg = str(e).lower()
+                is_locked = (
+                    'database is locked' in err_msg
+                    or 'database is busy' in err_msg
+                    or 'locked' in err_msg
+                    or 'busy' in err_msg
+                )
+                if is_locked and attempt < DB_WRITE_RETRY_TIMES:
+                    time.sleep(DB_WRITE_RETRY_SLEEP_SECONDS * attempt)
+                    continue
+                logger.error(
+                    f"更新任务 {task_id} 失败 (attempt={attempt}/{DB_WRITE_RETRY_TIMES}): {str(e)}"
+                )
+                return False
+            except Exception as e:
+                logger.error(f"更新任务 {task_id} 失败: {str(e)}")
+                return False
     finally:
         conn.close()
 
