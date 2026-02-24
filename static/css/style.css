@@ -124,6 +124,14 @@ body {
     padding: 20px;
 }
 
+/* QR码图片统一样式（避免模板中内联样式） */
+.qrcode-img {
+    max-width: 220px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px;
+}
+
 .settings-container h2 {
     margin: 0;
     color: #0d6efd;
