@@ -273,6 +273,10 @@ class BilibiliUploader:
                 else:
                     subtitle_error = str(subtitle_payload)
                     self.log(f"字幕上传失败（不影响视频投稿结果）: {subtitle_error}")
+            elif subtitle_file_path:
+                self.log(f"字幕路径不存在，跳过字幕上传: {subtitle_file_path}")
+            else:
+                self.log("未提供字幕文件路径，跳过字幕上传")
 
             return True, {
                 "bvid": bvid,

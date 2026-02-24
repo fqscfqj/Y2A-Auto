@@ -4021,17 +4021,63 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         translated_subtitle = task.get('subtitle_path_translated', '') if task else ''
         original_subtitle = task.get('subtitle_path_original', '') if task else ''
         detected_subtitle_lang = str(task.get('subtitle_language_detected', '') if task else '').strip().lower()
+        lang_mapping = {
+            'zh': 'zh-CN',
+            'en': 'en-US',
+            'ja': 'ja',
+            'ko': 'ko',
+        }
+
         if translated_subtitle and os.path.exists(translated_subtitle):
             subtitle_file_path = translated_subtitle
             subtitle_language = 'zh-CN'
         elif original_subtitle and os.path.exists(original_subtitle):
             subtitle_file_path = original_subtitle
-            subtitle_language = {
-                'zh': 'zh-CN',
-                'en': 'en-US',
-                'ja': 'ja',
-                'ko': 'ko',
-            }.get(detected_subtitle_lang, 'zh-CN')
+            subtitle_language = lang_mapping.get(detected_subtitle_lang, 'zh-CN')
+        else:
+            if translated_subtitle or original_subtitle:
+                task_logger.warning(
+                    f"任务记录的字幕路径不可用，尝试回查任务目录: translated={translated_subtitle}, original={original_subtitle}"
+                )
+
+            task_dir = os.path.dirname(video_path) if video_path else os.path.join(DOWNLOADS_DIR, task_id)
+            subtitle_candidates = []
+            if os.path.isdir(task_dir):
+                try:
+                    for name in os.listdir(task_dir):
+                        lower = str(name).lower()
+                        if lower.endswith('.srt'):
+                            subtitle_candidates.append(os.path.join(task_dir, name))
+                except Exception as e:
+                    task_logger.warning(f"扫描任务目录字幕文件失败: {e}")
+
+            if subtitle_candidates:
+                translated_candidates = [
+                    p for p in subtitle_candidates if os.path.basename(p).lower() == f"translated_{task_id}.srt"
+                ]
+                if not translated_candidates:
+                    translated_candidates = [
+                        p for p in subtitle_candidates if os.path.basename(p).lower().startswith('translated_')
+                    ]
+                asr_candidates = [
+                    p for p in subtitle_candidates if os.path.basename(p).lower().startswith('asr_')
+                ]
+                other_candidates = [
+                    p for p in subtitle_candidates if p not in translated_candidates and p not in asr_candidates
+                ]
+
+                ranked_candidates = translated_candidates + asr_candidates + other_candidates
+                subtitle_file_path = ranked_candidates[0]
+
+                if subtitle_file_path in translated_candidates:
+                    subtitle_language = 'zh-CN'
+                else:
+                    fallback_lang = detected_subtitle_lang or str(self._detect_subtitle_language(subtitle_file_path)).strip().lower()
+                    subtitle_language = lang_mapping.get(fallback_lang, 'zh-CN')
+
+                task_logger.info(
+                    f"Bilibili 字幕路径已通过目录回查恢复: {os.path.basename(subtitle_file_path)} ({subtitle_language})"
+                )
 
         if subtitle_file_path:
             task_logger.info(f"Bilibili 将上传独立字幕文件: {os.path.basename(subtitle_file_path)} ({subtitle_language})")
