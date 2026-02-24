@@ -109,11 +109,11 @@
                             <td>
                                 {% set target = (task.upload_target or 'acfun')|lower %}
                                 {% if target == 'bilibili' %}
-                                    <span class="badge bg-danger">bilibili</span>
+                                    <span class="badge-platform badge-platform-bilibili"><i class="bi bi-play-btn-fill"></i>bilibili</span>
                                 {% elif target == 'both' %}
-                                    <span class="badge bg-warning text-dark">双平台</span>
+                                    <span class="badge-platform badge-platform-both"><i class="bi bi-collection-play-fill"></i>双平台</span>
                                 {% else %}
-                                    <span class="badge bg-primary">AcFun</span>
+                                    <span class="badge-platform badge-platform-acfun"><i class="bi bi-camera-video-fill"></i>AcFun</span>
                                 {% endif %}
                             </td>
                             <td>
@@ -281,7 +281,13 @@
                             <div class="vr mx-1"></div>
                             <div>
                                 {% set target = (task.upload_target or 'acfun')|lower %}
-                                <i class="bi bi-hdd me-1"></i>{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}
+                                {% if target == 'bilibili' %}
+                                    <span class="badge-platform badge-platform-bilibili"><i class="bi bi-play-btn-fill"></i>bilibili</span>
+                                {% elif target == 'both' %}
+                                    <span class="badge-platform badge-platform-both"><i class="bi bi-collection-play-fill"></i>双平台</span>
+                                {% else %}
+                                    <span class="badge-platform badge-platform-acfun"><i class="bi bi-camera-video-fill"></i>AcFun</span>
+                                {% endif %}
                             </div>
                             <div class="vr mx-1"></div>
                             <div>
