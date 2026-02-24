@@ -1850,7 +1850,7 @@ class TaskProcessor:
         task_logger.info("翻译完成")
         return True
     
-    def _translate_subtitle(self, task_id, task_logger):
+    def _translate_subtitle(self, task_id, task_logger, embed_in_video_override=None):
         """翻译字幕文件"""
         from modules.subtitle_translator import create_translator_from_config
         import glob
@@ -1869,6 +1869,16 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['TRANSLATING_SUBTITLE'])
         
         try:
+            task_upload_target = _get_task_upload_target(task)
+            config_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+            if embed_in_video_override is None:
+                should_embed_subtitle = config_embed_enabled and task_upload_target != UPLOAD_TARGET_BILIBILI
+            else:
+                should_embed_subtitle = bool(embed_in_video_override)
+
+            if task_upload_target == UPLOAD_TARGET_BILIBILI and config_embed_enabled and not should_embed_subtitle:
+                task_logger.info("检测到 Bilibili 单平台投稿：跳过字幕硬编码，保留独立字幕文件用于上传")
+
             asr_generated = False
             # 查找字幕文件（大小写无关）
             task_dir = os.path.join(DOWNLOADS_DIR, task_id)
@@ -1987,7 +1997,7 @@ class TaskProcessor:
                 subtitle_lang = 'zh'
                 task_logger.info(f"检测到中文字幕，直接烧录，无需翻译: {os.path.basename(subtitle_file)}")
 
-                if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
+                if should_embed_subtitle:
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], subtitle_file, task_logger
                     )
@@ -2068,7 +2078,7 @@ class TaskProcessor:
                 update_task(task_id, upload_progress=None, silent=True)
                 
                 # 如果配置了将字幕嵌入视频
-                if self.config.get('SUBTITLE_EMBED_IN_VIDEO', True):
+                if should_embed_subtitle:
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], 
                         translated_subtitle_path, task_logger
@@ -3834,7 +3844,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # 重新设置状态为上传中（字幕翻译可能已在上述步骤执行）
         update_task(task_id, status=TASK_STATES['UPLOADING'])
-        
+
         # 解析标签
         tags = []
         try:
@@ -4006,6 +4016,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         update_task(task_id, status=TASK_STATES['UPLOADING'])
 
+        subtitle_file_path = ''
+        subtitle_language = 'zh-CN'
+        translated_subtitle = task.get('subtitle_path_translated', '') if task else ''
+        original_subtitle = task.get('subtitle_path_original', '') if task else ''
+        detected_subtitle_lang = str(task.get('subtitle_language_detected', '') if task else '').strip().lower()
+        if translated_subtitle and os.path.exists(translated_subtitle):
+            subtitle_file_path = translated_subtitle
+            subtitle_language = 'zh-CN'
+        elif original_subtitle and os.path.exists(original_subtitle):
+            subtitle_file_path = original_subtitle
+            subtitle_language = {
+                'zh': 'zh-CN',
+                'en': 'en-US',
+                'ja': 'ja',
+                'ko': 'ko',
+            }.get(detected_subtitle_lang, 'zh-CN')
+
+        if subtitle_file_path:
+            task_logger.info(f"Bilibili 将上传独立字幕文件: {os.path.basename(subtitle_file_path)} ({subtitle_language})")
+        else:
+            task_logger.info("Bilibili 未检测到可用字幕文件，将仅上传视频")
+
         tags = []
         try:
             tags_json = task.get('tags_generated', '[]') if task else '[]'
@@ -4130,6 +4162,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 tags=tags,
                 partition_id=partition_id,
                 youtube_url=original_url,
+                subtitle_file_path=subtitle_file_path,
+                subtitle_language=subtitle_language,
                 task_id=task_id,
                 progress_callback=_on_progress,
             )

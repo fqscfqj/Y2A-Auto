@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import json
 import logging
 import os
 import re
 import traceback
 from logging.handlers import RotatingFileHandler
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
+from bilibili_api import video as bili_video
 from bilibili_api import video_uploader
 from bilibili_api.exceptions import ArgsException
 
@@ -47,6 +49,102 @@ def _compact_text(text: str, max_len: int) -> str:
     return text[: max_len - 3] + "..." if max_len > 3 else text[:max_len]
 
 
+def _normalize_subtitle_language(language: Optional[str]) -> str:
+    code = str(language or "").strip()
+    if not code:
+        return "zh-CN"
+
+    normalized = code.replace("_", "-").lower()
+    mapping = {
+        "zh": "zh-CN",
+        "zh-cn": "zh-CN",
+        "zh-hans": "zh-Hans",
+        "zh-hant": "zh-Hant",
+        "en": "en-US",
+        "en-us": "en-US",
+        "ja": "ja",
+        "jp": "ja",
+        "ko": "ko",
+    }
+    return mapping.get(normalized, code)
+
+
+def _parse_srt_timestamp_to_seconds(timestamp: str) -> float:
+    ts = str(timestamp or "").strip().replace(".", ",")
+    match = re.match(r"^(\d{1,2}):(\d{2}):(\d{2}),(\d{3})$", ts)
+    if not match:
+        return 0.0
+    h, m, s, ms = [int(x) for x in match.groups()]
+    return h * 3600 + m * 60 + s + ms / 1000.0
+
+
+def _parse_srt_file_to_payload(subtitle_file_path: str) -> Optional[Dict[str, Union[float, str, List[dict]]]]:
+    if not subtitle_file_path or not os.path.exists(subtitle_file_path):
+        return None
+
+    try:
+        with open(subtitle_file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read().strip()
+        if not content:
+            return None
+
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+
+        strict_pattern = re.compile(
+            r"(\d+)\n(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\n(.*?)(?=\n\d+\n|\Z)",
+            re.DOTALL,
+        )
+        loose_pattern = re.compile(
+            r"(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\n(.*?)(?=\n\d{1,2}:\d{2}:\d{2}|\Z)",
+            re.DOTALL,
+        )
+
+        body = []
+
+        strict_matches = strict_pattern.findall(content)
+        if strict_matches:
+            for _, start, end, text in strict_matches:
+                merged_text = " ".join([line.strip() for line in text.split("\n") if line.strip()])
+                if not merged_text:
+                    continue
+                body.append(
+                    {
+                        "from": _parse_srt_timestamp_to_seconds(start),
+                        "to": _parse_srt_timestamp_to_seconds(end),
+                        "location": 2,
+                        "content": merged_text,
+                    }
+                )
+        else:
+            loose_matches = loose_pattern.findall(content)
+            for start, end, text in loose_matches:
+                merged_text = " ".join([line.strip() for line in text.split("\n") if line.strip()])
+                if not merged_text:
+                    continue
+                body.append(
+                    {
+                        "from": _parse_srt_timestamp_to_seconds(start),
+                        "to": _parse_srt_timestamp_to_seconds(end),
+                        "location": 2,
+                        "content": merged_text,
+                    }
+                )
+
+        if not body:
+            return None
+
+        return {
+            "font_size": 0.4,
+            "font_color": "#FFFFFF",
+            "background_alpha": 0.5,
+            "background_color": "#9C27B0",
+            "Stroke": "none",
+            "body": body,
+        }
+    except Exception:
+        return None
+
+
 class BilibiliUploader:
     """Bilibili uploader based on bilibili-api-python."""
 
@@ -70,6 +168,8 @@ class BilibiliUploader:
         tags: List[str],
         partition_id: Union[str, int],
         youtube_url: str = "",
+        subtitle_file_path: str = "",
+        subtitle_language: str = "zh-CN",
         task_id: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> Tuple[bool, Union[dict, str]]:
@@ -156,7 +256,32 @@ class BilibiliUploader:
                 return False, f"bilibili返回中未找到 bvid/aid: {result}"
 
             video_url = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
-            return True, {"bvid": bvid, "aid": aid, "url": video_url}
+
+            subtitle_result = None
+            subtitle_error = None
+            if subtitle_file_path and os.path.exists(subtitle_file_path):
+                self.log(f"检测到字幕文件，开始上传字幕: {subtitle_file_path}")
+                subtitle_ok, subtitle_payload = self.upload_subtitle(
+                    bvid=bvid,
+                    aid=aid,
+                    subtitle_file_path=subtitle_file_path,
+                    subtitle_language=subtitle_language,
+                )
+                if subtitle_ok:
+                    subtitle_result = subtitle_payload
+                    self.log(f"字幕上传成功: {subtitle_payload}")
+                else:
+                    subtitle_error = str(subtitle_payload)
+                    self.log(f"字幕上传失败（不影响视频投稿结果）: {subtitle_error}")
+
+            return True, {
+                "bvid": bvid,
+                "aid": aid,
+                "url": video_url,
+                "subtitle_uploaded": bool(subtitle_result),
+                "subtitle_result": subtitle_result,
+                "subtitle_error": subtitle_error,
+            }
 
         except ArgsException as e:
             return False, (
@@ -167,3 +292,50 @@ class BilibiliUploader:
             self.log(f"bilibili上传异常: {e}")
             self.log(traceback.format_exc())
             return False, f"bilibili上传异常: {e}"
+
+    def upload_subtitle(
+        self,
+        bvid: Optional[str],
+        aid: Optional[Union[int, str]],
+        subtitle_file_path: str,
+        subtitle_language: str = "zh-CN",
+    ) -> Tuple[bool, Union[dict, str]]:
+        try:
+            subtitle_payload = _parse_srt_file_to_payload(subtitle_file_path)
+            if not subtitle_payload:
+                return False, f"字幕文件解析失败或为空: {subtitle_file_path}"
+
+            credential = load_credential_from_file(self.cookie_file)
+            video_obj = bili_video.Video(
+                bvid=bvid or None,
+                aid=int(aid) if aid not in (None, "", 0, "0") else None,
+                credential=credential,
+            )
+
+            pages = asyncio.run(video_obj.get_pages())
+            if not pages:
+                return False, "未能获取稿件分P信息，无法上传字幕"
+
+            cid = pages[0].get("cid")
+            if not cid:
+                return False, "未能获取分P cid，无法上传字幕"
+
+            language_code = _normalize_subtitle_language(subtitle_language)
+            result = asyncio.run(
+                video_obj.submit_subtitle(
+                    lan=language_code,
+                    data=subtitle_payload,
+                    submit=True,
+                    sign=False,
+                    cid=int(cid),
+                )
+            )
+            return True, {
+                "language": language_code,
+                "cid": int(cid),
+                "response": result,
+            }
+        except ArgsException as e:
+            return False, f"字幕上传参数错误: {e}"
+        except Exception as e:
+            return False, f"字幕上传异常: {e}"
