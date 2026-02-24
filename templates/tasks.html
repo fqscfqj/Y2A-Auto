@@ -36,6 +36,7 @@
                         <col class="col-title">
                         <col class="col-status">
                         <col class="col-time">
+                        <col class="col-platform">
                         <col class="col-partition">
                         <col class="col-tags">
                         <col class="col-result">
@@ -47,6 +48,7 @@
                             <th class="col-title">视频标题</th>
                             <th class="col-status">状态</th>
                             <th class="col-time">时间</th>
+                            <th class="col-platform">平台</th>
                             <th class="col-partition">分区</th>
                             <th class="col-tags">标签</th>
                             <th class="col-result">上传结果</th>
@@ -105,10 +107,19 @@
                                 </span>
                             </td>
                             <td>
+                                {% set target = (task.upload_target or 'acfun')|lower %}
+                                {% if target == 'bilibili' %}
+                                    <span class="badge bg-danger">B站</span>
+                                {% else %}
+                                    <span class="badge bg-primary">AcFun</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% set target = (task.upload_target or 'acfun')|lower %}
                                 {% if task.selected_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}</span>
+                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id, target) or task.selected_partition_id }}</span>
                                 {% elif task.recommended_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}</span>
+                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id, target) or task.recommended_partition_id }}</span>
                                     <div class="small text-muted mt-1">推荐</div>
                                 {% else %}
                                     <span class="badge bg-secondary">未设置</span>
@@ -131,7 +142,18 @@
                             </td>
                             <td>
                                 <div class="upload-result-container">
-                                {% if task.status == 'completed' and task.acfun_upload_response %}
+                                {% set target = (task.upload_target or 'acfun')|lower %}
+                                {% if task.status == 'completed' and target == 'bilibili' and task.bilibili_upload_response %}
+                                    {% set upload_result = parse_json(task.bilibili_upload_response) %}
+                                    {% if upload_result and upload_result.bvid %}
+                                        <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开B站页面">{{ upload_result.bvid }}</a>
+                                        <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-bv-btn" title="复制BV号" data-bv-number="{{ upload_result.bvid }}">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    {% else %}
+                                        <span class="badge bg-secondary">未获取BV号</span>
+                                    {% endif %}
+                                {% elif task.status == 'completed' and target != 'bilibili' and task.acfun_upload_response %}
                                     {% set upload_result = parse_json(task.acfun_upload_response) %}
                                     {% if upload_result and upload_result.ac_number %}
                                         <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开AC页面">AC{{ upload_result.ac_number }}</a>
@@ -172,8 +194,9 @@
                                         </form>
                                     {% elif task.status == 'ready_for_upload' %}
                                         <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                                            {% set target = (task.upload_target or 'acfun')|lower %}
                                             <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center task-action-btn">
-                                                <i class="bi bi-cloud-upload me-1"></i> 上传
+                                                <i class="bi bi-cloud-upload me-1"></i> 上传到{{ 'B站' if target == 'bilibili' else 'AcFun' }}
                                             </button>
                                         </form>
                                     {% endif %}
@@ -242,11 +265,17 @@
                             <div><i class="bi bi-clock me-1"></i><span class="task-datetime" data-datetime="{{ task.updated_at or task.created_at }}">{{ task.updated_at or task.created_at }}</span></div>
                             <div class="vr mx-1"></div>
                             <div>
+                                {% set target = (task.upload_target or 'acfun')|lower %}
+                                <i class="bi bi-hdd me-1"></i>{{ 'B站' if target == 'bilibili' else 'AcFun' }}
+                            </div>
+                            <div class="vr mx-1"></div>
+                            <div>
+                                {% set target = (task.upload_target or 'acfun')|lower %}
                                 <i class="bi bi-diagram-3 me-1"></i>
                                 {% if task.selected_partition_id %}
-                                    {{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}
+                                    {{ get_partition_name(task.selected_partition_id, target) or task.selected_partition_id }}
                                 {% elif task.recommended_partition_id %}
-                                    {{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}<span class="text-secondary ms-1">(荐)</span>
+                                    {{ get_partition_name(task.recommended_partition_id, target) or task.recommended_partition_id }}<span class="text-secondary ms-1">(荐)</span>
                                 {% else %}
                                     未设置
                                 {% endif %}
@@ -270,7 +299,18 @@
                         </div>
 
                         <div class="mt-2">
-                            {% if task.status == 'completed' and task.acfun_upload_response %}
+                            {% set target = (task.upload_target or 'acfun')|lower %}
+                            {% if task.status == 'completed' and target == 'bilibili' and task.bilibili_upload_response %}
+                                {% set upload_result = parse_json(task.bilibili_upload_response) %}
+                                {% if upload_result and upload_result.bvid %}
+                                    <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">{{ upload_result.bvid }}</a>
+                                    <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-bv-btn" title="复制BV号" data-bv-number="{{ upload_result.bvid }}">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                {% else %}
+                                    <span class="badge bg-secondary">未获取BV号</span>
+                                {% endif %}
+                            {% elif task.status == 'completed' and target != 'bilibili' and task.acfun_upload_response %}
                                 {% set upload_result = parse_json(task.acfun_upload_response) %}
                                 {% if upload_result and upload_result.ac_number %}
                                     <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ upload_result.ac_number }}</a>
@@ -301,7 +341,8 @@
                                 </form>
                             {% elif task.status == 'ready_for_upload' %}
                                 <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
-                                    <button type="submit" class="btn btn-sm btn-success w-100"><i class="bi bi-cloud-upload me-1"></i> 上传</button>
+                                    {% set target = (task.upload_target or 'acfun')|lower %}
+                                    <button type="submit" class="btn btn-sm btn-success w-100"><i class="bi bi-cloud-upload me-1"></i> 上传到{{ 'B站' if target == 'bilibili' else 'AcFun' }}</button>
                                 </form>
                             {% endif %}
                             <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i> 编辑</a>
@@ -392,6 +433,15 @@
                         <input type="text" class="form-control" id="youtube_url" name="youtube_url" required 
                                placeholder="https://www.youtube.com/watch?v=...">
                         <div class="form-text">支持标准YouTube视频链接</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="upload_target" class="form-label">目标平台</label>
+                        {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
+                        <select class="form-select" id="upload_target" name="upload_target">
+                            <option value="acfun" {% if default_target != 'bilibili' %}selected{% endif %}>AcFun</option>
+                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
+                        </select>
+                        <div class="form-text">不选择时将使用系统默认平台</div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -545,6 +595,7 @@
 /* 统一列宽在全局样式中设置为百分比，避免像素宽度导致超出 */
 .tasks-table .col-status { text-align: center; }
 .tasks-table .col-time { text-align: center; }
+.tasks-table .col-platform { text-align: center; }
 .tasks-table .col-partition { text-align: center; }
 .tasks-table .col-actions { width: 160px; text-align: right; }
 
@@ -920,6 +971,10 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
         document.querySelectorAll('.copy-ac-btn').forEach(btn => {
             btn.addEventListener('click', () => copyToClipboard('AC' + btn.dataset.acNumber));
+        });
+
+        document.querySelectorAll('.copy-bv-btn').forEach(btn => {
+            btn.addEventListener('click', () => copyToClipboard(btn.dataset.bvNumber || ''));
         });
     }
 

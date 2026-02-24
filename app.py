@@ -7,6 +7,8 @@ import logging
 import shutil
 import time
 import datetime
+import uuid
+import threading
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -18,6 +20,7 @@ from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
+from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -25,6 +28,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
+
+# B站二维码登录会话（内存）
+_BILIBILI_QR_SESSIONS = {}
+_BILIBILI_QR_SESSION_LOCK = threading.Lock()
+_BILIBILI_QR_SESSION_TTL_SECONDS = 300
 # 登录安全状态存储
 def _get_security_state_path():
     try:
@@ -63,6 +71,41 @@ def _save_security_state(state):
         return True
     except Exception:
         return False
+
+
+def _cleanup_bilibili_qr_sessions():
+    now_ts = time.time()
+    with _BILIBILI_QR_SESSION_LOCK:
+        stale_ids = []
+        for sid, item in _BILIBILI_QR_SESSIONS.items():
+            created_at = float(item.get('created_at', 0) or 0)
+            if now_ts - created_at > _BILIBILI_QR_SESSION_TTL_SECONDS:
+                stale_ids.append(sid)
+        for sid in stale_ids:
+            _BILIBILI_QR_SESSIONS.pop(sid, None)
+
+
+def _create_bilibili_qr_session():
+    _cleanup_bilibili_qr_sessions()
+    session_id = str(uuid.uuid4())
+    session_obj = BilibiliQrLoginSession()
+    with _BILIBILI_QR_SESSION_LOCK:
+        _BILIBILI_QR_SESSIONS[session_id] = {
+            'created_at': time.time(),
+            'session': session_obj,
+        }
+    return session_id, session_obj
+
+
+def _get_bilibili_qr_session(session_id: str):
+    if not session_id:
+        return None
+    _cleanup_bilibili_qr_sessions()
+    with _BILIBILI_QR_SESSION_LOCK:
+        item = _BILIBILI_QR_SESSIONS.get(session_id)
+    if not item:
+        return None
+    return item.get('session')
 
 
 # 登录验证装饰器
@@ -222,30 +265,53 @@ def task_status_color(status):
     }
     return color_map.get(status, 'secondary')
 
-def get_partition_name(partition_id):
-    """根据分区ID获取分区名称"""
+def _get_bilibili_zone_data():
+    try:
+        from bilibili_api import video_zone
+        return video_zone.get_zone_list_sub() or []
+    except Exception as e:
+        logger.warning(f"读取B站分区数据失败: {e}")
+        return []
+
+
+def get_partition_name(partition_id, upload_target='acfun'):
+    """根据分区ID和平台获取分区名称"""
     if not partition_id:
         return None
-    
-    # 读取分区映射数据 - 修改路径为 acfunid
+
+    target = str(upload_target or 'acfun').strip().lower()
+    pid = str(partition_id)
+
+    if target == 'bilibili':
+        try:
+            zone_data = _get_bilibili_zone_data()
+            for parent in zone_data:
+                if str(parent.get('tid')) == pid:
+                    return parent.get('name')
+                for sub in parent.get('sub', []) or []:
+                    if str(sub.get('tid')) == pid:
+                        return sub.get('name')
+        except Exception as e:
+            logger.error(f"获取B站分区名称时出错: {str(e)}")
+        return None
+
+    # 默认 AcFun
     id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
     try:
         with open(id_mapping_path, 'r', encoding='utf-8') as f:
             id_mapping = json.load(f)
-            
-        # 遍历查找匹配的分区ID
+
         for category in id_mapping:
             for partition in category.get('partitions', []):
-                if partition.get('id') == partition_id:
+                if str(partition.get('id')) == pid:
                     return partition.get('name')
-                
-                # 检查子分区
+
                 for sub_partition in partition.get('sub_partitions', []):
-                    if sub_partition.get('id') == partition_id:
+                    if str(sub_partition.get('id')) == pid:
                         return sub_partition.get('name')
     except Exception as e:
-        logger.error(f"获取分区名称时出错: {str(e)}")
-    
+        logger.error(f"获取AcFun分区名称时出错: {str(e)}")
+
     return None
 
 def parse_json(json_str):
@@ -462,24 +528,31 @@ def index():
 
         # 最近任务（按更新时间倒序）
         cur.execute(
-            "SELECT id, video_title_translated, video_title_original, status, updated_at, acfun_upload_response FROM tasks ORDER BY updated_at DESC LIMIT 10"
+            "SELECT id, video_title_translated, video_title_original, status, updated_at, upload_target, acfun_upload_response, bilibili_upload_response FROM tasks ORDER BY updated_at DESC LIMIT 10"
         )
         rows = cur.fetchall()
         recent_tasks = []
         for r in rows:
-            ac_number = None
+            upload_id = None
+            upload_target = (r[5] or 'acfun').lower()
             try:
-                resp = json.loads(r[5]) if r[5] else None
-                if isinstance(resp, dict):
-                    ac_number = resp.get('ac_number')
+                if upload_target == 'bilibili':
+                    resp = json.loads(r[7]) if r[7] else None
+                    if isinstance(resp, dict):
+                        upload_id = resp.get('bvid') or resp.get('aid')
+                else:
+                    resp = json.loads(r[6]) if r[6] else None
+                    if isinstance(resp, dict):
+                        upload_id = resp.get('ac_number')
             except Exception:
-                ac_number = None
+                upload_id = None
             recent_tasks.append({
                 'id': r[0],
                 'title': r[1] or r[2] or '未获取标题',
                 'status': r[3],
                 'updated_at': r[4],
-                'ac_number': ac_number
+                'upload_target': upload_target,
+                'upload_id': upload_id
             })
 
         conn.close()
@@ -524,10 +597,12 @@ def tasks():
     
     # 获取分页数据
     pagination_data = get_tasks_paginated(page=page, per_page=per_page)
+    config = load_config()
     
     return render_template('tasks.html', 
                          tasks=pagination_data['tasks'],
-                         pagination=pagination_data)
+                         pagination=pagination_data,
+                         config=config)
     
 @app.route('/tasks/stream')
 @login_required
@@ -578,6 +653,8 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
+        upload_target = str(task.get('upload_target') or 'acfun').lower()
+        platform_name = 'B站' if upload_target == 'bilibili' else 'AcFun'
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
@@ -636,8 +713,8 @@ def edit_task(task_id):
             config = load_config()
             
             # 启动后台上传
-            logger.info(f"开始后台上传任务 {task_id} 到AcFun")
-            flash('任务已保存，正在后台上传到AcFun...', 'info')
+            logger.info(f"开始后台上传任务 {task_id} 到{platform_name}")
+            flash(f'任务已保存，正在后台上传到{platform_name}...', 'info')
             
             import threading
             
@@ -666,13 +743,38 @@ def edit_task(task_id):
     
     # GET请求，显示编辑页面
     # 封面图片现在直接从downloads目录提供
-    
-    # 读取分区映射数据
-    id_mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'acfunid', 'id_mapping.json')
+    upload_target = str(task.get('upload_target') or 'acfun').lower()
+
     id_mapping = []
     try:
-        with open(id_mapping_path, 'r', encoding='utf-8') as f:
-            id_mapping = json.load(f)
+        if upload_target == 'bilibili':
+            zone_data = _get_bilibili_zone_data()
+            for parent in zone_data:
+                if not isinstance(parent, dict):
+                    continue
+                parent_tid = parent.get('tid')
+                parent_name = parent.get('name')
+                if parent_tid in (None, 0, '0') or not parent_name:
+                    continue
+                id_mapping.append({
+                    'category': parent_name,
+                    'partitions': [{
+                        'id': str(parent_tid),
+                        'name': parent_name,
+                        'sub_partitions': [
+                            {
+                                'id': str(sub.get('tid')),
+                                'name': sub.get('name'),
+                            }
+                            for sub in (parent.get('sub') or [])
+                            if isinstance(sub, dict) and sub.get('tid') not in (None, 0, '0') and sub.get('name')
+                        ]
+                    }]
+                })
+        else:
+            id_mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'acfunid', 'id_mapping.json')
+            with open(id_mapping_path, 'r', encoding='utf-8') as f:
+                id_mapping = json.load(f)
     except Exception as e:
         logger.error(f"读取分区映射数据失败: {str(e)}")
     
@@ -693,7 +795,8 @@ def edit_task(task_id):
         task=task, 
         id_mapping=id_mapping, 
         tags_string=tags_string,
-        config=config
+        config=config,
+        upload_target=upload_target
     )
 
 @app.route('/tasks/<task_id>/cover')
@@ -754,16 +857,21 @@ def add_task_via_extension():
         if request.is_json:
             data = request.get_json()
             youtube_url = data.get('youtube_url') if data else None
+            upload_target = data.get('upload_target') if data else None
         else:
             youtube_url = request.form.get('youtube_url')
-        
+            upload_target = request.form.get('upload_target')
+
         if not youtube_url:
             return jsonify({'success': False, 'message': 'YouTube URL不能为空'}), 400
+
+        config = load_config()
+        if not upload_target:
+            upload_target = config.get('UPLOAD_TARGET_DEFAULT', 'acfun')
         
         # 判断是否为播放列表URL
         if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
             # 提取所有视频URL
-            config = load_config()
             cookies_path = config.get('YOUTUBE_COOKIES_PATH')
             video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
             if not video_urls:
@@ -772,12 +880,11 @@ def add_task_via_extension():
             added_count = 0
             task_ids = []
             for url in video_urls:
-                task_id = add_task(url)
+                task_id = add_task(url, upload_target=upload_target)
                 if task_id:
                     added_count += 1
                     task_ids.append(task_id)
                     # 自动模式下启动任务
-                    config = load_config()
                     if config.get('AUTO_MODE_ENABLED', False):
                         start_task(task_id, config)
             
@@ -789,9 +896,8 @@ def add_task_via_extension():
             }), 200
         else:
             # 单个视频
-            task_id = add_task(youtube_url)
+            task_id = add_task(youtube_url, upload_target=upload_target)
             if task_id:
-                config = load_config()
                 if config.get('AUTO_MODE_ENABLED', False):
                     logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
                     start_task(task_id, config)
@@ -818,15 +924,19 @@ def add_task_via_extension():
 def add_task_route():
     """添加新任务，支持播放列表批量添加"""
     youtube_url = request.form.get('youtube_url')
+    upload_target = request.form.get('upload_target')
     
     if not youtube_url:
         flash('YouTube URL不能为空', 'danger')
         return redirect(url_for('tasks'))
 
+    config = load_config()
+    if not upload_target:
+        upload_target = config.get('UPLOAD_TARGET_DEFAULT', 'acfun')
+
     # 判断是否为播放列表URL
     if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
         # 提取所有视频URL
-        config = load_config()
         cookies_path = config.get('YOUTUBE_COOKIES_PATH')
         video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
         if not video_urls:
@@ -834,15 +944,14 @@ def add_task_route():
             return redirect(url_for('tasks'))
         added_count = 0
         for url in video_urls:
-            task_id = add_task(url)
+            task_id = add_task(url, upload_target=upload_target)
             if task_id:
                 added_count += 1
         flash(f'已批量添加 {added_count} 个视频任务（来自播放列表）', 'success')
         return redirect(url_for('tasks'))
     else:
-        task_id = add_task(youtube_url)
+        task_id = add_task(youtube_url, upload_target=upload_target)
         if task_id:
-            config = load_config()
             if config.get('AUTO_MODE_ENABLED', False):
                 logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
                 start_task(task_id, config)
@@ -953,10 +1062,12 @@ def force_upload_task_route(task_id):
     
     # 获取当前配置
     config = load_config()
+    upload_target = str(task.get('upload_target') or 'acfun').lower()
+    platform_name = 'B站' if upload_target == 'bilibili' else 'AcFun'
     
     # 启动后台强制上传
-    logger.info(f"开始后台强制上传任务 {task_id} 到AcFun")
-    flash('已启动强制上传，正在后台处理...', 'info')
+    logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
+    flash(f'已启动强制上传到{platform_name}，正在后台处理...', 'info')
     
     import threading
     
@@ -1190,6 +1301,7 @@ def system_health():
         'database': {'status': 'unknown', 'message': ''},
         'youtube_cookies': {'status': 'unknown', 'message': ''},
         'acfun_cookies': {'status': 'unknown', 'message': ''},
+        'bilibili_cookies': {'status': 'unknown', 'message': ''},
         'stuck_tasks': {'count': 0, 'tasks': []},
         'recent_errors': [],
         'docker_volumes': {}
@@ -1338,6 +1450,39 @@ def system_health():
                 'status': 'warning',
                 'message': '未配置AcFun cookies路径'
             }
+
+        # Bilibili cookies
+        bili_cookies_path = config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
+        if bili_cookies_path:
+            if not os.path.isabs(bili_cookies_path):
+                bili_cookies_path = os.path.join(app_root, bili_cookies_path)
+
+            try:
+                logger.debug(f"检查Bilibili cookies文件: {bili_cookies_path}")
+                is_valid, message = validate_cookies(bili_cookies_path, "Bilibili")
+                file_info = get_file_info(bili_cookies_path)
+                health_status['bilibili_cookies'] = {
+                    'status': 'ok' if is_valid else 'error',
+                    'message': message,
+                    'path': bili_cookies_path,
+                    'exists': file_info['exists'],
+                    'size': file_info['size'],
+                    'readable': file_info['readable'],
+                    'last_modified': file_info['last_modified']
+                }
+            except Exception as e:
+                logger.error(f"Bilibili cookies检查异常: {str(e)}")
+                health_status['bilibili_cookies'] = {
+                    'status': 'error',
+                    'message': f'检查失败: {str(e)}',
+                    'path': bili_cookies_path,
+                    'debug_info': get_path_debug_info(bili_cookies_path)
+                }
+        else:
+            health_status['bilibili_cookies'] = {
+                'status': 'warning',
+                'message': '未配置Bilibili cookies路径'
+            }
         
         logger.info("cookies健康检查完成")
             
@@ -1349,6 +1494,11 @@ def system_health():
             'debug_info': str(e)
         }
         health_status['acfun_cookies'] = {
+            'status': 'error',
+            'message': f'检查失败: {str(e)}',
+            'debug_info': str(e)
+        }
+        health_status['bilibili_cookies'] = {
             'status': 'error',
             'message': f'检查失败: {str(e)}',
             'debug_info': str(e)
@@ -1383,6 +1533,7 @@ def settings():
         checkboxes = [
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
             'UPLOAD_APPEND_REPOST_NOTICE',
+            'BILIBILI_DEFAULT_REPOST',
             'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
             'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
@@ -1519,6 +1670,15 @@ def settings():
                 form_data['ACFUN_COOKIES_PATH'] = 'cookies/ac_cookies.txt'
                 
                 logger.info(f"AcFun cookies文件已上传并保存到: {ac_cookies_path}")
+
+        # 处理Bilibili Cookies文件上传
+        if 'bilibili_cookies_file' in request.files:
+            cookies_file = request.files['bilibili_cookies_file']
+            if cookies_file.filename:
+                bili_cookies_path = os.path.join(cookies_dir, 'bili_cookies.json')
+                cookies_file.save(bili_cookies_path)
+                form_data['BILIBILI_COOKIES_PATH'] = 'cookies/bili_cookies.json'
+                logger.info(f"Bilibili cookies文件已上传并保存到: {bili_cookies_path}")
         
         # 更新配置
         updated_config = update_config(form_data)
@@ -1567,6 +1727,54 @@ def settings():
     # GET请求，显示设置页面
     config = load_config()
     return render_template('settings.html', config=config, whisper_languages=WHISPER_LANGUAGE_LIST)
+
+@app.route('/settings/bilibili/qrcode/start', methods=['POST'])
+@login_required
+def bilibili_qrcode_start():
+    """发起 B站 二维码登录并返回二维码图片。"""
+    config = load_config()
+    cookie_path = config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
+    if not os.path.isabs(cookie_path):
+        cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cookie_path)
+
+    try:
+        session_id, qr_session = _create_bilibili_qr_session()
+        qr_data = qr_session.generate()
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'image_base64': qr_data.get('image_base64', ''),
+            'mime_type': qr_data.get('mime_type', 'image/png'),
+            'expires_in': _BILIBILI_QR_SESSION_TTL_SECONDS,
+            'cookie_path': cookie_path,
+        })
+    except Exception as e:
+        logger.error(f"发起 B站 二维码登录失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/settings/bilibili/qrcode/status/<session_id>', methods=['GET'])
+@login_required
+def bilibili_qrcode_status(session_id):
+    """轮询 B站 二维码登录状态。"""
+    qr_session = _get_bilibili_qr_session(session_id)
+    if not qr_session:
+        return jsonify({'success': False, 'message': '二维码会话不存在或已过期'}), 404
+
+    config = load_config()
+    cookie_path = config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
+    if not os.path.isabs(cookie_path):
+        cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cookie_path)
+
+    try:
+        status_data = qr_session.check_status(cookie_file=cookie_path)
+        status = status_data.get('status')
+        if status in ('done', 'timeout', 'failed'):
+            with _BILIBILI_QR_SESSION_LOCK:
+                _BILIBILI_QR_SESSIONS.pop(session_id, None)
+        return jsonify({'success': True, **status_data})
+    except Exception as e:
+        logger.error(f"查询 B站 二维码登录状态失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/settings/reset', methods=['POST'])
 @login_required

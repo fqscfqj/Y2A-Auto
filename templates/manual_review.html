@@ -125,10 +125,11 @@
                             
                             <div class="mt-3">
                                 <h6><i class="bi bi-folder"></i> 当前分区:</h6>
+                                {% set target = (task.upload_target or 'acfun')|lower %}
                                 {% if task.selected_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id) or task.selected_partition_id }}</span>
+                                    <span class="badge bg-info">{{ get_partition_name(task.selected_partition_id, target) or task.selected_partition_id }}</span>
                                 {% elif task.recommended_partition_id %}
-                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id) or task.recommended_partition_id }}</span>
+                                    <span class="badge bg-info">{{ get_partition_name(task.recommended_partition_id, target) or task.recommended_partition_id }}</span>
                                     <span class="badge bg-secondary"><i class="bi bi-stars"></i> 推荐</span>
                                 {% else %}
                                     <span class="badge bg-secondary">未设置</span>
@@ -157,7 +158,8 @@
                                 </a>
                                 <button type="button" class="btn btn-success" 
                                         onclick="confirmForceUpload('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
-                                    <i class="bi bi-upload"></i> 强制上传
+                                    {% set target = (task.upload_target or 'acfun')|lower %}
+                                    <i class="bi bi-upload"></i> 强制上传到{{ 'B站' if target == 'bilibili' else 'AcFun' }}
                                 </button>
                                 <button type="button" class="btn btn-outline-danger"
                                         onclick="confirmAbandon('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">

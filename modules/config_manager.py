@@ -32,13 +32,18 @@ DEFAULT_CONFIG = {
     "LOGIN_LOCKOUT_MINUTES": 15,     # 被锁定后持续的分钟数
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt", # AcFun Cookie文件路径
+    "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # B站 Cookie 文件路径
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
+    "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili
+    "BILIBILI_DEFAULT_REPOST": True,  # B站默认按转载投稿
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
+    # B站固定分区ID（可选）：如设置则B站推荐分区将直接使用该ID
+    "FIXED_PARTITION_ID_BILIBILI": "",
     # 字幕翻译可单独指定OpenAI Base URL；为空则回退到 OPENAI_BASE_URL
     "SUBTITLE_OPENAI_BASE_URL": "",
     # 字幕翻译可单独指定 API Key 与 模型名；为空则分别回退到 OPENAI_API_KEY 与 OPENAI_MODEL_NAME
@@ -205,6 +210,13 @@ def load_config():
                     logger.warning(f"检测到无效的视频编码器配置 {encoder_value}，已自动回退为 auto")
                     config['VIDEO_ENCODER'] = 'auto'
                     encoder_changed = True
+
+                upload_target_before = config.get('UPLOAD_TARGET_DEFAULT')
+                upload_target_normalized = str(upload_target_before or 'acfun').strip().lower()
+                if upload_target_normalized not in ('acfun', 'bilibili'):
+                    upload_target_normalized = 'acfun'
+                config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
+                upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
                 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
                 voxtral_model_before = config.get('VOXTRAL_MODEL_NAME')
@@ -213,7 +225,7 @@ def load_config():
                 )
                 voxtral_model_changed = config['VOXTRAL_MODEL_NAME'] != voxtral_model_before
 
-                if missing_keys or encoder_changed or voxtral_model_changed:
+                if missing_keys or encoder_changed or voxtral_model_changed or upload_target_changed:
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
@@ -283,6 +295,9 @@ def update_config(new_config):
                 else:
                     logger.warning(f"无效的视频编码器配置 {encoder_value}，已回退为 auto")
                     current_config[key] = 'auto'
+            elif key == 'UPLOAD_TARGET_DEFAULT':
+                target = str(new_config[key]).strip().lower()
+                current_config[key] = target if target in ('acfun', 'bilibili') else 'acfun'
             elif key == 'VOXTRAL_MODEL_NAME':
                 current_config[key] = _normalize_voxtral_model_name(new_config[key])
             else:

@@ -12,6 +12,8 @@ APScheduler==3.11.0
 flask-cors
 requests==2.32.4
 urllib3>=1.26.0
+httpx>=0.27.0
+bilibili-api-python==17.4.1
 python-dotenv
 pytz
 google-api-python-client==2.116.0

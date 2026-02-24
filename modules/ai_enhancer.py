@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import json
+import traceback
 from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, strip_reasoning_thoughts, safe_str
@@ -714,6 +715,197 @@ def flatten_partitions(id_mapping_data):
                     })
     
     return partitions
+
+def flatten_bilibili_partitions(zone_data):
+    """
+    将 Bilibili video_zone.get_zone_list_sub() 扁平化为分区列表。
+
+    Args:
+        zone_data (list): B站分区原始数据
+
+    Returns:
+        list: 统一结构分区列表
+    """
+    if not zone_data:
+        return []
+
+    partitions = []
+    for item in zone_data:
+        if not isinstance(item, dict):
+            continue
+
+        parent_tid = item.get("tid")
+        parent_name = safe_str(item.get("name"))
+        parent_desc = safe_str(item.get("desc"))
+
+        # 跳过“全部分区”等无效顶层
+        if parent_tid not in (None, "", 0, "0") and parent_name:
+            partitions.append(
+                {
+                    "id": str(parent_tid),
+                    "name": parent_name,
+                    "description": parent_desc,
+                    "parent_name": "",
+                }
+            )
+
+        for sub in item.get("sub", []) or []:
+            if not isinstance(sub, dict):
+                continue
+            sub_tid = sub.get("tid")
+            sub_name = safe_str(sub.get("name"))
+            if sub_tid in (None, "", 0, "0") or not sub_name:
+                continue
+            partitions.append(
+                {
+                    "id": str(sub_tid),
+                    "name": sub_name,
+                    "description": safe_str(sub.get("desc")),
+                    "parent_name": parent_name,
+                }
+            )
+
+    return partitions
+
+def recommend_bilibili_partition(title, description, zone_data, openai_config=None, task_id=None):
+    """
+    使用 OpenAI + 规则策略推荐 Bilibili 分区。
+
+    Returns:
+        str | None: 推荐分区ID
+    """
+    logger = setup_task_logger(task_id or "unknown")
+    logger.info("开始推荐 Bilibili 视频分区")
+
+    title = safe_str(title)
+    description = safe_str(description)
+    if not title and not description:
+        logger.warning("缺少标题和描述，无法推荐 B站 分区")
+        return None
+
+    partitions = flatten_bilibili_partitions(zone_data)
+    if not partitions:
+        logger.warning("B站分区数据为空，无法推荐")
+        return None
+
+    available_partition_ids = [p["id"] for p in partitions]
+
+    fixed_pid = safe_str((openai_config or {}).get("FIXED_PARTITION_ID_BILIBILI"))
+    if fixed_pid:
+        if fixed_pid in available_partition_ids:
+            logger.info(f"命中 B站 固定分区ID: {fixed_pid}")
+            return fixed_pid
+        logger.warning(f"配置的 FIXED_PARTITION_ID_BILIBILI 无效: {fixed_pid}")
+
+    def _find_partition_id_by_name(name_sub: str):
+        name_sub = safe_str(name_sub)
+        if not name_sub:
+            return None
+        for p in partitions:
+            if name_sub in p.get("name", ""):
+                return p["id"]
+        return None
+
+    def _rule_based_fallback(t: str, d: str):
+        text = f"{t or ''}\n{d or ''}".lower()
+        if any(k in text for k in ["music", "歌曲", "演唱", "mv", "翻唱", "乐器"]):
+            return _find_partition_id_by_name("音乐") or _find_partition_id_by_name("音乐综合")
+        if any(k in text for k in ["舞蹈", "dance", "编舞", "翻跳", "宅舞"]):
+            return _find_partition_id_by_name("舞蹈")
+        if any(k in text for k in ["game", "游戏", "实况", "电竞", "攻略"]):
+            return _find_partition_id_by_name("游戏")
+        if any(k in text for k in ["科技", "数码", "评测", "开箱"]):
+            return _find_partition_id_by_name("科技") or _find_partition_id_by_name("数码")
+        if any(k in text for k in ["vlog", "生活", "美食", "旅行", "宠物"]):
+            return _find_partition_id_by_name("生活") or _find_partition_id_by_name("美食")
+        if any(k in text for k in ["电影", "影视", "预告", "花絮", "trailer"]):
+            return _find_partition_id_by_name("影视")
+        if any(k in text for k in ["教程", "科普", "知识", "教学"]):
+            return _find_partition_id_by_name("知识") or _find_partition_id_by_name("科普")
+        return None
+
+    if not openai_config or not openai_config.get("OPENAI_API_KEY"):
+        logger.info("未配置 OpenAI，使用规则回退")
+        return _rule_based_fallback(title, description)
+
+    try:
+        client = get_openai_client(openai_config)
+        model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+
+        partition_lines = []
+        for p in partitions:
+            prefix = f"{p.get('parent_name')} - " if p.get("parent_name") else ""
+            partition_lines.append(
+                f"{prefix}{p['name']} (ID: {p['id']}): {p.get('description', '无描述')}"
+            )
+        partitions_text = "\n".join(partition_lines)
+
+        short_desc = (description[:500] + "...") if len(description) > 500 else description
+        prompt = f"""请从分区列表中选择最适合该视频的 Bilibili 分区。
+
+标题：{title}
+描述：{short_desc}
+
+分区列表：
+{partitions_text}
+
+要求：
+1. 只返回JSON
+2. 格式必须是：{{"id":"分区ID","reason":"理由"}}
+3. id 必须来自列表中的 ID
+"""
+
+        create_kwargs = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": '视频分区选择器。仅输出JSON：{"id":"...","reason":"..."}。'},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 200,
+        }
+        try:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        except Exception:
+            pass
+
+        response = client.chat.completions.create(**create_kwargs)
+        message = response.choices[0].message
+        result = (message.content or getattr(message, "reasoning_content", None) or "")
+        result = strip_reasoning_thoughts(result).strip()
+        if result.startswith("```"):
+            result = re.sub(r"^```[a-zA-Z0-9]*\s*", "", result)
+            result = re.sub(r"\s*```$", "", result)
+
+        logger.info(f"B站分区推荐原始响应: {result}")
+
+        try:
+            data = json.loads(result)
+            pid = str(data.get("id", "")).strip()
+            if pid in available_partition_ids:
+                return pid
+        except Exception:
+            pass
+
+        id_match = re.search(r'"id"\s*:\s*"?(?P<id>\d+)"?', result)
+        if id_match:
+            pid = id_match.group("id")
+            if pid in available_partition_ids:
+                return pid
+
+        # 在输出文本里兜底匹配合法 ID
+        joined = "|".join(re.escape(pid) for pid in available_partition_ids)
+        if joined:
+            any_match = re.search(rf"\b({joined})\b", result)
+            if any_match:
+                return any_match.group(1)
+
+        logger.warning("OpenAI 分区推荐解析失败，使用规则回退")
+        return _rule_based_fallback(title, description)
+
+    except Exception as e:
+        logger.error(f"B站分区推荐异常: {e}")
+        logger.error(traceback.format_exc())
+        return _rule_based_fallback(title, description)
 
 def recommend_acfun_partition(title, description, id_mapping_data, openai_config=None, task_id=None):
     """

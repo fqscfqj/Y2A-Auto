@@ -158,7 +158,37 @@ PIPELINE_STAGE_ORDER = [
     PIPELINE_STAGE_UPLOAD_TO_ACFUN,
 ]
 
+UPLOAD_TARGET_ACFUN = 'acfun'
+UPLOAD_TARGET_BILIBILI = 'bilibili'
+VALID_UPLOAD_TARGETS = {UPLOAD_TARGET_ACFUN, UPLOAD_TARGET_BILIBILI}
+
 _RESUME_RECOVERY_DONE = False
+
+
+def normalize_upload_target(upload_target):
+    """归一化任务投稿平台，默认 acfun。"""
+    target = str(upload_target or '').strip().lower()
+    if target not in VALID_UPLOAD_TARGETS:
+        return UPLOAD_TARGET_ACFUN
+    return target
+
+
+def _get_task_upload_target(task, fallback=UPLOAD_TARGET_ACFUN):
+    if not task:
+        return normalize_upload_target(fallback)
+    task_target = task.get('upload_target')
+    if not task_target:
+        return normalize_upload_target(fallback)
+    return normalize_upload_target(task_target)
+
+
+def _task_has_upload_response(task, upload_target=None):
+    if not task:
+        return False
+    target = normalize_upload_target(upload_target or task.get('upload_target'))
+    if target == UPLOAD_TARGET_BILIBILI:
+        return bool(task.get('bilibili_upload_response'))
+    return bool(task.get('acfun_upload_response'))
 
 
 def _safe_json_loads(value, default):
@@ -247,7 +277,8 @@ def _infer_completed_stages_from_task(task):
             break
 
     # 上传：有上传响应或已完成
-    if task.get('acfun_upload_response') or task.get('status') == TASK_STATES['COMPLETED']:
+    upload_target = _get_task_upload_target(task)
+    if _task_has_upload_response(task, upload_target) or task.get('status') == TASK_STATES['COMPLETED']:
         completed.add(PIPELINE_STAGE_UPLOAD_TO_ACFUN)
 
     return completed
@@ -300,7 +331,7 @@ def recover_interrupted_tasks_to_pending():
     try:
         placeholders = ','.join(['?'] * len(processing_states))
         cursor = conn.execute(
-            f'SELECT id, status, acfun_upload_response FROM tasks WHERE status IN ({placeholders})',
+            f'SELECT id, status, upload_target, acfun_upload_response, bilibili_upload_response FROM tasks WHERE status IN ({placeholders})',
             tuple(processing_states)
         )
         rows = cursor.fetchall() or []
@@ -313,7 +344,11 @@ def recover_interrupted_tasks_to_pending():
         for row in rows:
             task_id = row['id']
             status = row['status']
-            has_upload_resp = bool(row['acfun_upload_response'])
+            upload_target = normalize_upload_target(row['upload_target'])
+            if upload_target == UPLOAD_TARGET_BILIBILI:
+                has_upload_resp = bool(row['bilibili_upload_response'])
+            else:
+                has_upload_resp = bool(row['acfun_upload_response'])
 
             # 若上传响应已存在，直接标记为 completed（避免重复上传）
             if has_upload_resp:
@@ -465,6 +500,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         youtube_url TEXT NOT NULL,
+        upload_target TEXT DEFAULT 'acfun',
         status TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -489,7 +525,8 @@ def init_db():
         error_message TEXT,
         pipeline_checkpoint TEXT,  -- JSON: 断点续跑已完成阶段
         upload_progress TEXT,  -- 上传进度
-        acfun_upload_response TEXT
+        acfun_upload_response TEXT,
+        bilibili_upload_response TEXT
     )
     ''')
     
@@ -529,6 +566,20 @@ def init_db():
             cursor.execute("ALTER TABLE tasks ADD COLUMN pipeline_checkpoint TEXT")
             logger.info("数据库升级：添加pipeline_checkpoint字段")
             conn.commit()
+
+        if 'upload_target' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN upload_target TEXT DEFAULT 'acfun'")
+            logger.info("数据库升级：添加upload_target字段")
+            conn.commit()
+
+        if 'bilibili_upload_response' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_upload_response TEXT")
+            logger.info("数据库升级：添加bilibili_upload_response字段")
+            conn.commit()
+
+        # 兼容历史任务：空 upload_target 默认回填 acfun
+        cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
+        conn.commit()
     except Exception as e:
         logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
     
@@ -546,12 +597,13 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row  # 返回字典形式的结果
     return conn
 
-def add_task(youtube_url):
+def add_task(youtube_url, upload_target=None):
     """
     添加新任务到数据库
     
     Args:
         youtube_url: YouTube视频URL
+        upload_target: 投稿平台(acfun|bilibili)，为空则使用配置默认值
         
     Returns:
         task_id: 新创建的任务ID
@@ -560,12 +612,20 @@ def add_task(youtube_url):
     conn = get_db_connection()
     
     try:
+        normalized_target = normalize_upload_target(upload_target)
+        if not upload_target:
+            try:
+                from modules.config_manager import load_config
+                cfg = load_config()
+                normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
+            except Exception:
+                normalized_target = UPLOAD_TARGET_ACFUN
         conn.execute(
-            'INSERT INTO tasks (id, youtube_url, status) VALUES (?, ?, ?)',
-            (task_id, youtube_url, TASK_STATES['PENDING'])
+            'INSERT INTO tasks (id, youtube_url, upload_target, status) VALUES (?, ?, ?, ?)',
+            (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'])
         )
         conn.commit()
-        logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}")
+        logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}")
         
         # 新任务添加后，触发全局任务处理器检查是否需要启动任务
         try:
@@ -1322,28 +1382,31 @@ class TaskProcessor:
             if self.config.get('AUTO_MODE_ENABLED', False):
                 # 若已有上传响应，避免重复上传
                 task = get_task(task_id)
-                if task and task.get('acfun_upload_response'):
+                upload_target = _get_task_upload_target(task)
+                if task and _task_has_upload_response(task, upload_target):
                     task_logger.info("检测到已有上传响应，跳过上传（避免重复上传）")
                     completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
                 elif PIPELINE_STAGE_UPLOAD_TO_ACFUN in completed_stages:
                     task_logger.info("跳过上传（checkpoint已完成）")
                 else:
-                    self._upload_to_acfun(task_id, task_logger)
+                    self._upload_to_target(task_id, task_logger)
                     _raise_if_cancelled(task_id, task_logger)
                     task = get_task(task_id)
-                    if task and (task.get('acfun_upload_response') or task.get('status') == TASK_STATES['COMPLETED']):
+                    upload_target = _get_task_upload_target(task)
+                    if task and (_task_has_upload_response(task, upload_target) or task.get('status') == TASK_STATES['COMPLETED']):
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
 
-            # 任务处理完成后，根据是否已上传到AcFun决定状态
+            # 任务处理完成后，根据是否已上传到目标平台决定状态
             task = get_task(task_id)
             if task is not None:
+                upload_target = _get_task_upload_target(task)
                 if task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
                     # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
-                    if not self.config.get('AUTO_MODE_ENABLED', False) or not task.get('acfun_upload_response'):
+                    if not self.config.get('AUTO_MODE_ENABLED', False) or not _task_has_upload_response(task, upload_target):
                         update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
                         task_logger.info("任务处理完成，标记为准备上传")
                     else:
-                        # 只有成功上传到AcFun的视频才会被标记为"已完成"
+                        # 只有成功上传到目标平台的视频才会被标记为"已完成"
                         update_task(task_id, status=TASK_STATES['COMPLETED'])
                         task_logger.info("任务处理并上传完成")
             else:
@@ -3187,90 +3250,105 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return True
     
     def _recommend_partition(self, task_id, task_logger):
-        """推荐视频分区"""
-        from modules.ai_enhancer import recommend_acfun_partition
-        
+        """推荐视频分区（平台感知：AcFun/Bilibili）"""
+        from modules.ai_enhancer import recommend_acfun_partition, recommend_bilibili_partition
+
         task = get_task(task_id)
         if not task:
             task_logger.error("任务不存在")
             return
-        
+
         task_logger.info("开始推荐视频分区")
         update_task(task_id, status=TASK_STATES['PARTITIONING'])
-        
-        # 优先使用原始视频信息进行AI分区推荐
+
         title = task.get('video_title_original', '') or task.get('video_title_translated', '')
         description = task.get('description_original', '') or task.get('description_translated', '')
-        
-        # 读取分区ID映射
-        from .utils import get_app_subdir
-        id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
-        task_logger.info(f"尝试读取分区映射文件: {id_mapping_path}")
-        
-        try:
-            if not os.path.exists(id_mapping_path):
-                task_logger.error(f"分区映射文件不存在: {id_mapping_path}")
-                id_mapping_data = []
-            else:
-                with open(id_mapping_path, 'r', encoding='utf-8') as f:
-                    id_mapping_data = json.load(f)
-                category_count = len(id_mapping_data)
-                task_logger.info(f"成功读取分区映射文件，包含 {category_count} 个分类")
-        except Exception as e:
-            task_logger.error(f"读取分区ID映射失败: {str(e)}")
-            id_mapping_data = []
-        
-        # 构建OpenAI配置
+        upload_target = _get_task_upload_target(task)
+
         openai_config = {
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
+            'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
         }
-        
+
         task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
         from modules.utils import safe_str
         task_logger.info(f"标题长度: {len(safe_str(title))}, 描述长度: {len(safe_str(description))}")
-        task_logger.info(f"分区数据长度: {len(id_mapping_data)}")
-        
+        task_logger.info(f"任务目标平台: {upload_target}")
+
         recommended_partition_id = None
-        
-        # 检查分区推荐的前置条件
+
         if not self.config.get('RECOMMEND_PARTITION', False):
             task_logger.info("分区推荐功能已禁用，跳过推荐")
-        elif not (title or description):
+            return True
+
+        if not (title or description):
             task_logger.warning("缺少标题和描述，无法进行分区推荐")
-        elif not id_mapping_data:
-            task_logger.error("分区映射数据为空，无法进行分区推荐")
+            return True
+
+        if upload_target == UPLOAD_TARGET_BILIBILI:
+            zone_data = []
+            try:
+                from bilibili_api import video_zone
+                zone_data = video_zone.get_zone_list_sub() or []
+                task_logger.info(f"成功读取B站分区数据，长度: {len(zone_data)}")
+            except Exception as e:
+                task_logger.error(f"读取B站分区数据失败: {e}")
+
+            if not zone_data:
+                task_logger.warning("B站分区数据为空，跳过推荐")
+                return True
+
+            recommended_partition_id = recommend_bilibili_partition(
+                title,
+                description,
+                zone_data,
+                openai_config=openai_config,
+                task_id=task_id
+            )
         else:
-            task_logger.info("满足推荐分区的所有条件，开始调用推荐函数")
-            
-            # 调用推荐函数，现在它返回分区ID字符串或None
+            from .utils import get_app_subdir
+            id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
+            task_logger.info(f"尝试读取 AcFun 分区映射文件: {id_mapping_path}")
+
+            id_mapping_data = []
+            try:
+                if not os.path.exists(id_mapping_path):
+                    task_logger.error(f"分区映射文件不存在: {id_mapping_path}")
+                else:
+                    with open(id_mapping_path, 'r', encoding='utf-8') as f:
+                        id_mapping_data = json.load(f)
+                    task_logger.info(f"成功读取 AcFun 分区映射文件，包含 {len(id_mapping_data)} 个分类")
+            except Exception as e:
+                task_logger.error(f"读取 AcFun 分区ID映射失败: {str(e)}")
+                id_mapping_data = []
+
+            if not id_mapping_data:
+                task_logger.warning("AcFun 分区映射数据为空，跳过推荐")
+                return True
+
             recommended_partition_id = recommend_acfun_partition(
-                title, 
-                description, 
+                title,
+                description,
                 id_mapping_data,
                 openai_config=openai_config,
                 task_id=task_id
             )
-            
-            if recommended_partition_id:
-                task_logger.info(f"获取到推荐分区ID: {recommended_partition_id}")
-                
-                # 保存推荐分区ID
-                update_task(task_id, recommended_partition_id=recommended_partition_id)
-                
-                # 如果还没有选定分区，也将推荐分区设为选定分区
-                if not task.get('selected_partition_id'):
-                    update_task(task_id, selected_partition_id=recommended_partition_id)
-                    task_logger.info(f"已自动选择推荐分区: {recommended_partition_id}")
+
+        if recommended_partition_id:
+            task_logger.info(f"获取到推荐分区ID: {recommended_partition_id}")
+            update_task(task_id, recommended_partition_id=recommended_partition_id)
+            if not task.get('selected_partition_id'):
+                update_task(task_id, selected_partition_id=recommended_partition_id)
+                task_logger.info(f"已自动选择推荐分区: {recommended_partition_id}")
+        else:
+            if not openai_config.get('OPENAI_API_KEY'):
+                task_logger.warning("分区推荐未命中：未配置OpenAI且规则匹配失败")
             else:
-                # 提供更详细的失败原因
-                if not openai_config.get('OPENAI_API_KEY'):
-                    task_logger.warning("分区推荐失败: 未配置OpenAI API密钥，且规则匹配未命中")
-                else:
-                    task_logger.warning("分区推荐失败: OpenAI推荐和规则匹配均未成功")
-            
+                task_logger.warning("分区推荐未命中：OpenAI与规则匹配均失败")
+
         task_logger.info(f"分区推荐流程完成，结果: {recommended_partition_id or '无推荐'}")
         return True
     
@@ -3389,6 +3467,56 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.info("内容审核不通过，需要人工审核")
             update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
     
+    def _upload_to_target(self, task_id, task_logger):
+        """按任务平台分发上传实现。"""
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在")
+            return
+
+        upload_target = _get_task_upload_target(task)
+        task_logger.info(f"上传分发目标平台: {upload_target}")
+
+        if upload_target == UPLOAD_TARGET_BILIBILI:
+            self._upload_to_bilibili(task_id, task_logger)
+            return
+
+        self._upload_to_acfun(task_id, task_logger)
+
+    def _upload_to_bilibili(self, task_id, task_logger):
+        """上传到 Bilibili - 带并发控制"""
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在")
+            return
+
+        global upload_semaphore
+        if upload_semaphore is None:
+            task_logger.warning("upload_semaphore 为 None，正在初始化...")
+            init_upload_semaphore(1)
+            task_logger.info(f"upload_semaphore 初始化完成，当前值: {upload_semaphore}")
+            if upload_semaphore is None:
+                task_logger.error("upload_semaphore 初始化失败，无法继续执行任务")
+                return
+
+        task_logger.info("等待获取上传锁...")
+        try:
+            assert upload_semaphore is not None, "upload_semaphore 应该已经初始化"
+            with upload_semaphore:
+                task_logger.info("获得上传锁，开始上传到 Bilibili")
+                self._do_upload_to_bilibili(task_id, task_logger)
+                task_logger.info("释放上传锁")
+        except Exception as e:
+            task_logger.error(f"获取或使用上传锁时出错: {e}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=f"上传锁异常: {str(e)}"
+            )
+            return
+
     def _upload_to_acfun(self, task_id, task_logger):
         """上传到AcFun - 带并发控制"""
         from modules.acfun_uploader import AcfunUploader
@@ -3699,6 +3827,228 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 error_message=f"上传异常: {str(e)}"
             )
 
+    def _do_upload_to_bilibili(self, task_id, task_logger):
+        """实际执行上传到 Bilibili 的逻辑"""
+        from modules.bilibili_uploader import BilibiliUploader
+
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在")
+            return
+
+        update_task(task_id, status=TASK_STATES['UPLOADING'])
+
+        video_path = task.get('video_path_local', '') if task else ''
+        cover_path = task.get('cover_path_local', '') if task else ''
+        title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
+        description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
+        partition_id = (task.get('selected_partition_id', '') or task.get('recommended_partition_id', '')) if task else ''
+
+        if not video_path or not os.path.exists(video_path):
+            task_logger.info("检测到视频文件缺失，开始下载视频文件...")
+            youtube_url = task.get('youtube_url', '') if task else ''
+            if not youtube_url:
+                task_logger.error("无法获取YouTube URL，无法下载视频")
+                update_task(task_id, error_message="无法获取YouTube URL，无法下载视频")
+                return
+
+            self._download_video_file(task_id, youtube_url, task_logger)
+            task = get_task(task_id)
+            video_path = task.get('video_path_local', '') if task else ''
+
+        try:
+            if video_path and os.path.exists(video_path):
+                task_dir = os.path.dirname(video_path)
+                base_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
+                if base_name_no_ext.endswith('_with_subtitle'):
+                    task_logger.info("检测到已嵌入字幕的视频文件，跳过重复转码步骤")
+                else:
+                    _raise_if_cancelled(task_id, task_logger)
+                    subtitle_files = []
+                    try:
+                        for name in os.listdir(task_dir):
+                            if not isinstance(name, str):
+                                continue
+                            lower = name.lower()
+                            if lower.endswith('.srt') or lower.endswith('.vtt'):
+                                subtitle_files.append(os.path.join(task_dir, name))
+                    except Exception:
+                        pass
+
+                    if _is_asr_enabled(self.config):
+                        if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
+                            task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
+                            if task and task.get('subtitle_qc_failed') == 1:
+                                task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
+                            else:
+                                self._translate_subtitle(task_id, task_logger)
+                                task = get_task(task_id)
+                                video_path = task.get('video_path_local', '') if task else video_path
+                        else:
+                            if task and task.get('subtitle_qc_failed') == 1:
+                                task_logger.warning("检测到字幕质检已失败，跳过上传前的ASR处理")
+                            elif not subtitle_files:
+                                task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
+                                try:
+                                    from modules.speech_recognition import create_speech_recognizer_from_config
+                                    recognizer = create_speech_recognizer_from_config(self.config, task_id)
+                                except Exception as e:
+                                    recognizer = None
+                                    task_logger.error(f"创建语音识别器失败: {e}")
+                                if recognizer:
+                                    _t2 = get_task(task_id)
+                                    prev_status2 = _t2['status'] if _t2 else TASK_STATES['UPLOADING']
+                                    update_task(task_id, status=TASK_STATES['ASR_TRANSCRIBING'])
+                                    asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
+                                    asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
+                                    out_path = None
+                                    _raise_if_cancelled(task_id, task_logger)
+                                    out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
+                                    update_task(task_id, status=prev_status2)
+                                    if out_path and os.path.exists(out_path):
+                                        self._run_subtitle_qc(task_id, out_path, task_logger)
+                                        detected_lang = self._detect_subtitle_language(out_path)
+                                        update_task(
+                                            task_id,
+                                            subtitle_path_original=out_path,
+                                            subtitle_path_translated=None,
+                                            subtitle_language_detected=detected_lang
+                                        )
+                                        task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
+                                    else:
+                                        task_logger.warning("ASR 未能生成字幕，继续上传流程")
+                            else:
+                                task_logger.info("已存在字幕文件，跳过ASR 生成")
+                    else:
+                        task_logger.info("未启用语音识别，跳过上传前的字幕处理")
+            else:
+                task_logger.warning("视频文件不存在，无法进行上传前的字幕处理")
+        except TaskCancelledError:
+            task_logger.info("上传前字幕处理检测到任务取消请求")
+            raise
+        except Exception as e:
+            task_logger.error(f"上传前字幕处理出现异常: {e}")
+
+        update_task(task_id, status=TASK_STATES['UPLOADING'])
+
+        tags = []
+        try:
+            tags_json = task.get('tags_generated', '[]') if task else '[]'
+            tags = json.loads(tags_json)
+        except Exception as e:
+            task_logger.error(f"解析标签失败: {str(e)}")
+
+        metadata_path = task.get('metadata_json_path_local', '') if task else ''
+        original_url = task.get('youtube_url', '') if task else ''
+        original_uploader = ''
+        original_upload_date = ''
+
+        if metadata_path and os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    original_url = metadata.get('webpage_url', original_url)
+                    original_uploader = metadata.get('uploader', '')
+                    original_upload_date = metadata.get('upload_date', '')
+            except Exception as e:
+                task_logger.error(f"读取视频元数据失败: {str(e)}")
+
+        if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
+            from modules.utils import safe_str
+            uploader_tag = safe_str(original_uploader).strip()
+            if uploader_tag:
+                normalized_uploader = uploader_tag.lower()
+                cleaned_tags = []
+                for tag in tags:
+                    tag_value = safe_str(tag).strip()
+                    if not tag_value:
+                        continue
+                    if tag_value.lower() == normalized_uploader:
+                        continue
+                    cleaned_tags.append(tag_value)
+                tags = [uploader_tag] + cleaned_tags
+                if len(tags) > 12:
+                    tags = tags[:12]
+                try:
+                    update_task(task_id, tags_generated=json.dumps(tags, ensure_ascii=False))
+                except Exception:
+                    pass
+
+        bilibili_cookies_path = self.config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
+        bilibili_default_repost = bool(self.config.get('BILIBILI_DEFAULT_REPOST', True))
+        if bilibili_cookies_path and not os.path.isabs(bilibili_cookies_path):
+            app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            bilibili_cookies_path = os.path.join(app_root, bilibili_cookies_path)
+
+        missing_params = []
+        if not video_path or not os.path.exists(video_path):
+            missing_params.append("video_path (视频文件)")
+        if not cover_path or not os.path.exists(cover_path):
+            missing_params.append("cover_path (封面文件)")
+        if not title:
+            missing_params.append("title (视频标题)")
+        if not partition_id:
+            missing_params.append("partition_id (分区ID)")
+        if not bilibili_cookies_path:
+            missing_params.append("BILIBILI_COOKIES_PATH")
+
+        if missing_params:
+            error_msg = f"上传参数不完整，缺少: {', '.join(missing_params)}"
+            task_logger.error(error_msg)
+            update_task(task_id, error_message=error_msg)
+            return
+
+        cookie_file_exists = os.path.exists(bilibili_cookies_path)
+        if not cookie_file_exists:
+            task_logger.error(f"Bilibili Cookies文件不存在: {bilibili_cookies_path}")
+            update_task(task_id, error_message=f"Bilibili Cookies文件不存在: {bilibili_cookies_path}")
+            return
+
+        is_valid, error_msg = validate_cookies(bilibili_cookies_path, "Bilibili")
+        if not is_valid:
+            task_logger.error(f"Bilibili Cookies文件验证失败: {error_msg}")
+            update_task(task_id, error_message=f"Bilibili Cookies无效: {error_msg}")
+            return
+
+        try:
+            uploader = BilibiliUploader(cookie_file=bilibili_cookies_path)
+            success, result = uploader.upload_video(
+                video_file_path=video_path,
+                cover_file_path=cover_path,
+                title=title,
+                description=description,
+                tags=tags,
+                partition_id=partition_id,
+                youtube_url=original_url,
+                default_repost=bilibili_default_repost,
+                task_id=task_id,
+                progress_callback=lambda p: update_task(task_id, upload_progress=p, silent=True),
+            )
+
+            if success:
+                task_logger.info(f"B站上传成功: {result}")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['COMPLETED'],
+                    bilibili_upload_response=json.dumps(result, ensure_ascii=False)
+                )
+            else:
+                task_logger.error(f"B站上传失败: {result}")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['FAILED'],
+                    error_message=f"上传失败: {result}"
+                )
+        except Exception as e:
+            task_logger.error(f"B站上传过程中发生异常: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=f"上传异常: {str(e)}"
+            )
+
 # 任务控制函数
 def start_task(task_id, config=None):
     """
@@ -3783,7 +4133,7 @@ def force_upload_task(task_id, config=None):
     
     try:
         # 直接执行上传步骤
-        processor._upload_to_acfun(task_id, task_logger)
+        processor._upload_to_target(task_id, task_logger)
 
         # 上传流程（强制路径）不会进入 process_task 的 finally，需手动唤醒队列
         try:

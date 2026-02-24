@@ -32,6 +32,9 @@
                         <a class="nav-link" id="vtab-acfun-tab" data-bs-toggle="pill" href="#vtab-acfun" role="tab" aria-controls="vtab-acfun" aria-selected="false">
                             <i class="bi bi-person-badge settings-item-icon"></i> AcFun 账号
                         </a>
+                        <a class="nav-link" id="vtab-bilibili-tab" data-bs-toggle="pill" href="#vtab-bilibili" role="tab" aria-controls="vtab-bilibili" aria-selected="false">
+                            <i class="bi bi-play-btn settings-item-icon"></i> B站 账号
+                        </a>
                         <a class="nav-link" id="vtab-youtube-tab" data-bs-toggle="pill" href="#vtab-youtube" role="tab" aria-controls="vtab-youtube" aria-selected="false">
                             <i class="bi bi-cloud-arrow-down settings-item-icon"></i> 下载与代理
                         </a>
@@ -171,6 +174,30 @@
                                         <div class="form-group">
                                             <label for="fixed-partition-id">固定分区ID（可选）:</label>
                                             <input type="text" id="fixed-partition-id" name="FIXED_PARTITION_ID" value="{{ config.get('FIXED_PARTITION_ID', '') }}" class="form-control" placeholder="留空则自动推荐">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="upload-target-default">默认投稿平台:</label>
+                                            <select name="UPLOAD_TARGET_DEFAULT" id="upload-target-default" class="form-select">
+                                                {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
+                                                <option value="acfun" {% if default_target != 'bilibili' %}selected{% endif %}>AcFun</option>
+                                                <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label for="fixed-partition-id-bilibili">B站固定分区ID（可选）:</label>
+                                            <input type="text" id="fixed-partition-id-bilibili" name="FIXED_PARTITION_ID_BILIBILI" value="{{ config.get('FIXED_PARTITION_ID_BILIBILI', '') }}" class="form-control" placeholder="留空则自动推荐">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="BILIBILI_DEFAULT_REPOST" {% if config.get('BILIBILI_DEFAULT_REPOST', True) %}checked{% endif %}>
+                                                B站默认按转载投稿
+                                            </label>
                                         </div>
                                     </div>
                                 </div>
@@ -424,6 +451,41 @@
                                         <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}" class="form-control">
                                         <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- B站账号设置 -->
+                    <div class="tab-pane fade" id="vtab-bilibili" role="tabpanel" aria-labelledby="vtab-bilibili-tab">
+                        <div class="settings-section">
+                            <h3>B站账号设置</h3>
+
+                            <div class="form-group">
+                                <label for="bilibili-cookies">B站 Cookies文件路径:</label>
+                                <input type="text" id="bilibili-cookies" name="BILIBILI_COOKIES_PATH" value="{{ config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json') }}" class="form-control">
+                                <p class="help-text">推荐使用二维码登录自动生成该文件；也支持手动上传 JSON/Netscape Cookies 文件。</p>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="bilibili-cookies-file">上传新的B站 Cookies文件:</label>
+                                <input type="file" id="bilibili-cookies-file" name="bilibili_cookies_file" class="form-control">
+                            </div>
+
+                            <div class="mt-3">
+                                <button type="button" class="btn btn-outline-primary" id="bili-qrcode-start-btn">
+                                    <i class="bi bi-qr-code"></i> 获取二维码登录
+                                </button>
+                                <span class="help-text ms-2">扫码并在手机端确认后会自动写入 Cookies 文件</span>
+                            </div>
+
+                            <div class="mt-3 d-none" id="bili-qrcode-wrap">
+                                <img id="bili-qrcode-image" alt="B站登录二维码" style="max-width: 220px; border: 1px solid #eee; border-radius: 8px; padding: 8px;">
+                                <div class="mt-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="bili-qrcode-check-btn">
+                                        <i class="bi bi-arrow-repeat"></i> 检查状态
+                                    </button>
+                                    <span class="ms-2" id="bili-qrcode-status-text"></span>
                                 </div>
                             </div>
                         </div>
@@ -1447,6 +1509,96 @@ document.addEventListener('DOMContentLoaded', function () {
                     alert('重置请求发生错误');
                 });
             }
+        });
+    }
+
+    // B站二维码登录
+    const biliStartBtn = document.getElementById('bili-qrcode-start-btn');
+    const biliCheckBtn = document.getElementById('bili-qrcode-check-btn');
+    const biliWrap = document.getElementById('bili-qrcode-wrap');
+    const biliImage = document.getElementById('bili-qrcode-image');
+    const biliStatusText = document.getElementById('bili-qrcode-status-text');
+    let biliSessionId = null;
+    let biliTimer = null;
+
+    const setBiliStatus = function (text, isError) {
+        if (!biliStatusText) return;
+        biliStatusText.textContent = text || '';
+        biliStatusText.classList.toggle('text-danger', !!isError);
+        biliStatusText.classList.toggle('text-success', !isError);
+    };
+
+    const stopBiliPolling = function () {
+        if (biliTimer) {
+            clearInterval(biliTimer);
+            biliTimer = null;
+        }
+    };
+
+    const checkBiliStatus = function () {
+        if (!biliSessionId) return;
+        fetch(`/settings/bilibili/qrcode/status/${biliSessionId}`, { method: 'GET' })
+            .then(resp => resp.json())
+            .then(data => {
+                if (!data.success) {
+                    setBiliStatus(data.message || '状态查询失败', true);
+                    stopBiliPolling();
+                    return;
+                }
+
+                const status = data.status || '';
+                if (status === 'scan') {
+                    setBiliStatus('已扫码，请在手机端确认', false);
+                } else if (status === 'confirm') {
+                    setBiliStatus('等待手机端确认登录', false);
+                } else if (status === 'done') {
+                    setBiliStatus('登录成功，Cookies 已保存', false);
+                    stopBiliPolling();
+                } else if (status === 'timeout') {
+                    setBiliStatus('二维码已过期，请重新获取', true);
+                    stopBiliPolling();
+                } else if (status === 'failed') {
+                    setBiliStatus(data.message || '登录失败', true);
+                    stopBiliPolling();
+                } else {
+                    setBiliStatus(`当前状态: ${status}`, false);
+                }
+            })
+            .catch(err => {
+                setBiliStatus(`状态请求失败: ${err}`, true);
+                stopBiliPolling();
+            });
+    };
+
+    if (biliStartBtn) {
+        biliStartBtn.addEventListener('click', function () {
+            fetch('/settings/bilibili/qrcode/start', { method: 'POST' })
+                .then(resp => resp.json())
+                .then(data => {
+                    if (!data.success) {
+                        setBiliStatus(data.message || '获取二维码失败', true);
+                        return;
+                    }
+                    biliSessionId = data.session_id;
+                    if (biliImage && data.image_base64) {
+                        biliImage.src = `data:${data.mime_type || 'image/png'};base64,${data.image_base64}`;
+                    }
+                    if (biliWrap) {
+                        biliWrap.classList.remove('d-none');
+                    }
+                    setBiliStatus('二维码已生成，请扫码登录', false);
+                    stopBiliPolling();
+                    biliTimer = setInterval(checkBiliStatus, 2000);
+                })
+                .catch(err => {
+                    setBiliStatus(`获取二维码失败: ${err}`, true);
+                });
+        });
+    }
+
+    if (biliCheckBtn) {
+        biliCheckBtn.addEventListener('click', function () {
+            checkBiliStatus();
         });
     }
 });

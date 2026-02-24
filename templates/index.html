@@ -151,8 +151,12 @@
                         <td class="text-center"><span class="badge bg-{{ task_status_color(t.status) }}">{{ task_status_display(t.status) }}</span></td>
                         <td class="text-center"><span class="task-datetime" data-datetime="{{ t.updated_at }}">{{ t.updated_at }}</span></td>
                         <td class="text-end">
-                            {% if t.ac_number %}
-                                <a href="https://www.acfun.cn/v/ac{{ t.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ t.ac_number }}</a>
+                            {% if t.upload_id %}
+                                {% if (t.upload_target or 'acfun') == 'bilibili' %}
+                                    <a href="https://www.bilibili.com/video/{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">{{ t.upload_id }}</a>
+                                {% else %}
+                                    <a href="https://www.acfun.cn/v/ac{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ t.upload_id }}</a>
+                                {% endif %}
                             {% else %}
                                 <span class="badge bg-secondary">—</span>
                             {% endif %}
@@ -182,7 +186,7 @@
             <div class="modal-body">
                 <h5>第一步：准备工作</h5>
                 <ul>
-                    <li>确保已在"设置"页面配置了AcFun账号信息</li>
+                    <li>确保已在"设置"页面配置了目标投稿平台账号信息（AcFun / B站）</li>
                     <li>如需AI功能，请配置OpenAI API密钥</li>
                     <li>如需内容审核，请配置阿里云内容安全API</li>
                 </ul>
