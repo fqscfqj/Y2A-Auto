@@ -104,7 +104,7 @@ Y2A-Auto/
 
 1. 准备 Cookie（必须）
 - `cookies/yt_cookies.txt`：YouTube 登录 Cookie
-- `cookies/ac_cookies.txt`：AcFun 登录 Cookie
+- `cookies/ac_cookies.json`：AcFun 登录 Cookie
 - 可使用浏览器扩展导出 `cookies.txt`，请勿提交到仓库
 
 2. 启动服务
@@ -154,7 +154,7 @@ python app.py
   "password_protection_enabled": true,
   "password": "请自行设置",
  "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt",
-  "ACFUN_COOKIES_PATH": "cookies/ac_cookies.txt",
+  "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json",
   "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json",
   "UPLOAD_TARGET_DEFAULT": "acfun",
   "BILIBILI_DEFAULT_REPOST": true,
@@ -254,7 +254,7 @@ group_add:
 - 找不到 FFmpeg / yt-dlp
   - Docker 环境通常无需处理；本地运行请确保 PATH 正确
 - 上传 AcFun 失败
-  - 更新 `cookies/ac_cookies.txt`，并检查人工审核页元信息是否合规
+  - 更新 `cookies/ac_cookies.json`，并检查人工审核页元信息是否合规
 - 字幕翻译慢
   - 调整并发与批量大小（注意 API 限速）
 - Docker 未启用 NVENC

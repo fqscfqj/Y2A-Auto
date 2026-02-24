@@ -3762,10 +3762,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 except Exception:
                     pass
         
-        # AcFun配置
-        acfun_username = self.config.get('ACFUN_USERNAME', '')
-        acfun_password = self.config.get('ACFUN_PASSWORD', '')
-        acfun_cookies_path = self.config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.txt')
+        # AcFun配置（仅支持Cookies，推荐使用设置页二维码登录自动生成）
+        acfun_cookies_path = self.config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json')
         
         # 获取封面处理模式
         cover_mode = self.config.get('COVER_PROCESSING_MODE', 'crop')
@@ -3787,10 +3785,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(task_id, error_message=error_msg)
             return
         
-        # 检查登录凭据 - Cookie文件或用户名密码至少要有一个
+        # 检查登录凭据 - 必须提供有效的Cookie文件
         cookie_file_exists = os.path.exists(acfun_cookies_path)
-        has_credentials = acfun_username and acfun_password
-        
+
         # 验证cookies文件（如果存在）
         cookies_valid = False
         if cookie_file_exists:
@@ -3800,23 +3797,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 task_logger.info("AcFun Cookies文件验证通过")
             else:
                 task_logger.warning(f"AcFun Cookies文件验证失败: {error_msg}")
-                if not has_credentials:
-                    task_logger.error("AcFun Cookies无效且没有提供用户名密码")
-                    update_task(task_id, error_message=f"AcFun Cookies无效且没有提供用户名密码: {error_msg}")
-                    return
-        
-        if not cookies_valid and not has_credentials:
-            task_logger.error("AcFun登录信息不完整，需要有效的Cookie文件或用户名密码")
-            update_task(task_id, error_message="AcFun登录信息不完整，需要有效的Cookie文件或用户名密码")
+                task_logger.error("AcFun Cookies无效，请在设置页重新扫码登录或上传可用Cookies")
+                update_task(task_id, error_message=f"AcFun Cookies无效，请重新登录: {error_msg}")
+                return
+
+        if not cookies_valid:
+            task_logger.error("AcFun登录信息不完整，需要有效的Cookie文件")
+            update_task(task_id, error_message="AcFun登录信息不完整，需要有效的Cookie文件（可在设置页扫码登录）")
             return
         
         # 创建上传器并执行上传
         try:
-            uploader = AcfunUploader(
-                acfun_username=acfun_username,
-                acfun_password=acfun_password,
-                cookie_file=acfun_cookies_path
-            )
+            uploader = AcfunUploader(cookie_file=acfun_cookies_path)
             
             cancel_event = get_task_cancel_event(task_id)
             # 上传视频

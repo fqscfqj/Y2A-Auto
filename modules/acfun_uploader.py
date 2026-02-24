@@ -105,7 +105,7 @@ class AcfunUploader:
         """
         self.username = acfun_username
         self.password = acfun_password
-        self.cookie_file = cookie_file or "cookies/ac_cookies.txt"
+        self.cookie_file = cookie_file or "cookies/ac_cookies.json"
         self.session = requests.Session()
         self.logger = None  # 需要在上传时设置
         
@@ -835,7 +835,7 @@ class AcfunUploader:
         try:
             # 尝试登录
             if not self.login():
-                return False, "AcFun登录失败，请检查用户名密码或Cookie文件"
+                return False, "AcFun登录失败，请检查Cookies文件是否有效"
 
             if cancel_event is not None and cancel_event.is_set():
                 return False, "任务已取消"

@@ -420,28 +420,29 @@
                             <div class="form-group">
                                 <label for="acfun-cookies">AcFun Cookies文件路径:</label>
                                 <input type="text" id="acfun-cookies" name="ACFUN_COOKIES_PATH" value="{{ config.ACFUN_COOKIES_PATH }}" class="form-control">
-                                <p class="help-text">推荐使用Cookie登录，支持Netscape和JSON格式</p>
+                                <p class="help-text">推荐使用二维码登录自动生成该文件；也支持手动上传 Netscape/JSON Cookies 文件。</p>
                             </div>
 
                             <div class="form-group">
                                 <label for="acfun-cookies-file">上传新的AcFun Cookies文件:</label>
                                 <input type="file" id="acfun-cookies-file" name="acfun_cookies_file" class="form-control">
-                                <p class="help-text">上传新文件将覆盖原有文件。Cookie优先级高于用户名密码</p>
+                                <p class="help-text">上传新文件将覆盖原有文件。</p>
                             </div>
 
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="acfun-username">AcFun用户名（备用）:</label>
-                                        <input type="text" id="acfun-username" name="ACFUN_USERNAME" value="{{ config.ACFUN_USERNAME }}" class="form-control">
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-group">
-                                        <label for="acfun-password">AcFun密码（备用）:</label>
-                                        <input type="password" id="acfun-password" name="ACFUN_PASSWORD" value="{{ config.ACFUN_PASSWORD }}" class="form-control">
-                                        <p class="help-text">密码仅用于自动登录，不会被发送到其它地方</p>
-                                    </div>
+                            <div class="mt-3">
+                                <button type="button" class="btn btn-outline-primary" id="acfun-qrcode-start-btn">
+                                    <i class="bi bi-qr-code"></i> 获取二维码登录
+                                </button>
+                                <span class="help-text ms-2">扫码并在手机端确认后会自动写入 Cookies 文件</span>
+                            </div>
+
+                            <div class="mt-3 d-none" id="acfun-qrcode-wrap">
+                                <img id="acfun-qrcode-image" alt="AcFun登录二维码" style="max-width: 220px; border: 1px solid #eee; border-radius: 8px; padding: 8px;">
+                                <div class="mt-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="acfun-qrcode-check-btn">
+                                        <i class="bi bi-arrow-repeat"></i> 检查状态
+                                    </button>
+                                    <span class="ms-2" id="acfun-qrcode-status-text"></span>
                                 </div>
                             </div>
                         </div>
@@ -1496,6 +1497,103 @@ document.addEventListener('DOMContentLoaded', function () {
                     alert('重置请求发生错误');
                 });
             }
+        });
+    }
+
+    // AcFun二维码登录
+    const acfunStartBtn = document.getElementById('acfun-qrcode-start-btn');
+    const acfunCheckBtn = document.getElementById('acfun-qrcode-check-btn');
+    const acfunWrap = document.getElementById('acfun-qrcode-wrap');
+    const acfunImage = document.getElementById('acfun-qrcode-image');
+    const acfunStatusText = document.getElementById('acfun-qrcode-status-text');
+    let acfunSessionId = null;
+    let acfunTimer = null;
+    let acfunPollingBusy = false;
+
+    const setAcfunStatus = function (text, isError) {
+        if (!acfunStatusText) return;
+        acfunStatusText.textContent = text || '';
+        acfunStatusText.classList.toggle('text-danger', !!isError);
+        acfunStatusText.classList.toggle('text-success', !isError);
+    };
+
+    const stopAcfunPolling = function () {
+        if (acfunTimer) {
+            clearInterval(acfunTimer);
+            acfunTimer = null;
+        }
+    };
+
+    const checkAcfunStatus = function () {
+        if (!acfunSessionId || acfunPollingBusy) return;
+        acfunPollingBusy = true;
+        fetch(`/settings/acfun/qrcode/status/${acfunSessionId}`, { method: 'GET' })
+            .then(resp => resp.json())
+            .then(data => {
+                if (!data.success) {
+                    setAcfunStatus(data.message || '状态查询失败', true);
+                    stopAcfunPolling();
+                    return;
+                }
+
+                const status = data.status || '';
+                if (status === 'wait_scan') {
+                    setAcfunStatus('等待扫码', false);
+                } else if (status === 'scan') {
+                    setAcfunStatus('已扫码，请在手机端确认', false);
+                } else if (status === 'confirm') {
+                    setAcfunStatus('等待手机端确认登录', false);
+                } else if (status === 'done') {
+                    setAcfunStatus('登录成功，Cookies 已保存', false);
+                    stopAcfunPolling();
+                } else if (status === 'timeout') {
+                    setAcfunStatus('二维码已过期，请重新获取', true);
+                    stopAcfunPolling();
+                } else if (status === 'failed') {
+                    setAcfunStatus(data.message || '登录失败', true);
+                    stopAcfunPolling();
+                } else {
+                    setAcfunStatus(`当前状态: ${status}`, false);
+                }
+            })
+            .catch(err => {
+                setAcfunStatus(`状态请求失败: ${err}`, true);
+            })
+            .finally(() => {
+                acfunPollingBusy = false;
+            });
+    };
+
+    if (acfunStartBtn) {
+        acfunStartBtn.addEventListener('click', function () {
+            fetch('/settings/acfun/qrcode/start', { method: 'POST' })
+                .then(resp => resp.json())
+                .then(data => {
+                    if (!data.success) {
+                        setAcfunStatus(data.message || '获取二维码失败', true);
+                        return;
+                    }
+                    acfunSessionId = data.session_id;
+                    if (acfunImage && data.image_base64) {
+                        acfunImage.src = `data:${data.mime_type || 'image/png'};base64,${data.image_base64}`;
+                    }
+                    if (acfunWrap) {
+                        acfunWrap.classList.remove('d-none');
+                    }
+                    setAcfunStatus('二维码已生成，请扫码登录', false);
+                    stopAcfunPolling();
+                    acfunTimer = setInterval(checkAcfunStatus, 2500);
+                    checkAcfunStatus();
+                })
+                .catch(err => {
+                    setAcfunStatus(`获取二维码失败: ${err}`, true);
+                });
+        });
+    }
+
+    if (acfunCheckBtn) {
+        acfunCheckBtn.addEventListener('click', function () {
+            checkAcfunStatus();
         });
     }
 
