@@ -110,6 +110,9 @@ Y2A-Auto/
 2. 启动服务
 
 ```bash
+# 默认会从 Docker Hub 拉取镜像 fqscfqj/y2a-auto:latest
+# 如果想使用 GitHub 容器注册表，请修改为：
+# ghcr.io/fqscfqj/y2a-auto:latest
 docker compose up -d
 ```
 
