@@ -232,6 +232,16 @@ NVIDIA（推荐）：
 gpus: all
 ```
 
+推荐直接使用仓库内的 NVIDIA 覆盖文件启动：
+
+```bash
+# 使用预构建镜像
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
+
+# 本地构建镜像
+docker compose -f docker-compose-build.yml -f docker-compose-build.nvidia.yml up -d --build
+```
+
 可选补充（通常无需设置）：
 
 ```yaml
@@ -261,7 +271,8 @@ group_add:
 - 字幕翻译慢
   - 调整并发与批量大小（注意 API 限速）
 - Docker 未启用 NVENC
-  - 确认 compose 已配置 `gpus: all` 且主机安装 `nvidia-container-toolkit`
+  - 优先使用 `docker-compose.nvidia.yml` / `docker-compose-build.nvidia.yml` 覆盖文件启动
+  - 确认主机已安装 `nvidia-container-toolkit`
 
 ## 贡献与反馈
 

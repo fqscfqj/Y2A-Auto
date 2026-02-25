@@ -20,7 +20,7 @@ from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
-from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener
+from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
@@ -1382,7 +1382,7 @@ def get_path_debug_info(file_path):
 @app.route('/system_health')
 def system_health():
     """系统健康检查 - 增强Docker环境兼容性"""
-    from modules.task_manager import get_db_connection, validate_cookies
+    from modules.task_manager import get_db_connection, validate_cookies, resolve_cookie_file_path
     import sqlite3
     import os
     import platform
@@ -1475,15 +1475,17 @@ def system_health():
         logger.info("开始cookies健康检查...")
         config = load_config()
         
-        # 获取应用根目录
-        app_root = os.path.dirname(os.path.abspath(__file__))
-        
         # YouTube cookies
         yt_cookies_path = config.get('YOUTUBE_COOKIES_PATH', 'cookies/yt_cookies.txt')
         if yt_cookies_path:
             # 如果是相对路径，转换为绝对路径
-            if not os.path.isabs(yt_cookies_path):
-                yt_cookies_path = os.path.join(app_root, yt_cookies_path)
+            yt_cookies_path = resolve_cookie_file_path(
+                path_value=yt_cookies_path,
+                default_relative_path='cookies/yt_cookies.txt',
+                service_name='YouTube',
+                logger_obj=logger,
+                allow_json_txt_fallback=False
+            )
             
             try:
                 logger.debug(f"检查YouTube cookies文件: {yt_cookies_path}")
@@ -1516,12 +1518,14 @@ def system_health():
             }
         
         # AcFun cookies
-        ac_cookies_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json')
+        ac_cookies_path = resolve_cookie_file_path(
+            path_value=config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json'),
+            default_relative_path='cookies/ac_cookies.json',
+            service_name='AcFun',
+            logger_obj=logger,
+            allow_json_txt_fallback=True
+        )
         if ac_cookies_path:
-            # 如果是相对路径，转换为绝对路径
-            if not os.path.isabs(ac_cookies_path):
-                ac_cookies_path = os.path.join(app_root, ac_cookies_path)
-            
             try:
                 logger.debug(f"检查AcFun cookies文件: {ac_cookies_path}")
                 is_valid, message = validate_cookies(ac_cookies_path, "AcFun")
@@ -1555,8 +1559,13 @@ def system_health():
         # Bilibili cookies
         bili_cookies_path = config.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json')
         if bili_cookies_path:
-            if not os.path.isabs(bili_cookies_path):
-                bili_cookies_path = os.path.join(app_root, bili_cookies_path)
+            bili_cookies_path = resolve_cookie_file_path(
+                path_value=bili_cookies_path,
+                default_relative_path='cookies/bili_cookies.json',
+                service_name='Bilibili',
+                logger_obj=logger,
+                allow_json_txt_fallback=False
+            )
 
             try:
                 logger.debug(f"检查Bilibili cookies文件: {bili_cookies_path}")
@@ -1841,9 +1850,13 @@ def settings():
 def acfun_qrcode_start():
     """发起 AcFun 二维码登录并返回二维码图片。"""
     config = load_config()
-    cookie_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json')
-    if not os.path.isabs(cookie_path):
-        cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cookie_path)
+    cookie_path = resolve_cookie_file_path(
+        path_value=config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json'),
+        default_relative_path='cookies/ac_cookies.json',
+        service_name='AcFun',
+        logger_obj=logger,
+        allow_json_txt_fallback=True
+    )
 
     try:
         session_id, qr_session = _create_acfun_qr_session()
@@ -1870,9 +1883,13 @@ def acfun_qrcode_status(session_id):
         return jsonify({'success': False, 'message': '二维码会话不存在或已过期'}), 404
 
     config = load_config()
-    cookie_path = config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json')
-    if not os.path.isabs(cookie_path):
-        cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cookie_path)
+    cookie_path = resolve_cookie_file_path(
+        path_value=config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json'),
+        default_relative_path='cookies/ac_cookies.json',
+        service_name='AcFun',
+        logger_obj=logger,
+        allow_json_txt_fallback=True
+    )
 
     try:
         status_data = qr_session.check_status(cookie_file=cookie_path)

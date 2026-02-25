@@ -217,12 +217,6 @@ def load_config():
                     upload_target_normalized = 'acfun'
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
-
-                # 兼容迁移：旧默认 ac_cookies.txt 自动切换到 ac_cookies.json
-                acfun_path_before = config.get('ACFUN_COOKIES_PATH')
-                if str(acfun_path_before or '').strip() == 'cookies/ac_cookies.txt':
-                    config['ACFUN_COOKIES_PATH'] = 'cookies/ac_cookies.json'
-                acfun_path_changed = config.get('ACFUN_COOKIES_PATH') != acfun_path_before
                 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
                 voxtral_model_before = config.get('VOXTRAL_MODEL_NAME')
@@ -231,7 +225,7 @@ def load_config():
                 )
                 voxtral_model_changed = config['VOXTRAL_MODEL_NAME'] != voxtral_model_before
 
-                if missing_keys or encoder_changed or voxtral_model_changed or upload_target_changed or acfun_path_changed:
+                if missing_keys or encoder_changed or voxtral_model_changed or upload_target_changed:
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:

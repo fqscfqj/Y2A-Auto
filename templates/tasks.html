@@ -200,6 +200,18 @@
                                     {% else %}
                                         <span class="badge bg-secondary">未获取AC号</span>
                                     {% endif %}
+                                {% elif task.status == 'ready_for_upload' and task.error_message %}
+                                    {% set error_msg = task.error_message %}
+                                    {% if error_msg|length > 30 %}
+                                        <span class="badge bg-warning text-dark error-message-badge"
+                                              title="{{ error_msg }}"
+                                              data-bs-toggle="tooltip"
+                                              data-bs-placement="top">
+                                            {{ error_msg[:27] }}...
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-warning text-dark">{{ error_msg }}</span>
+                                    {% endif %}
                                 {% elif task.status == 'failed' %}
                                     {% set error_msg = task.error_message or '未知错误' %}
                                     {% if error_msg|length > 30 %}
@@ -389,6 +401,13 @@
                                     </button>
                                 {% else %}
                                     <span class="badge bg-secondary">未获取AC号</span>
+                                {% endif %}
+                            {% elif task.status == 'ready_for_upload' and task.error_message %}
+                                {% set error_msg = task.error_message %}
+                                {% if error_msg|length > 24 %}
+                                    <span class="badge bg-warning text-dark" title="{{ error_msg }}">{{ error_msg[:21] }}...</span>
+                                {% else %}
+                                    <span class="badge bg-warning text-dark">{{ error_msg }}</span>
                                 {% endif %}
                             {% elif task.status == 'failed' %}
                                 {% set error_msg = task.error_message or '未知错误' %}

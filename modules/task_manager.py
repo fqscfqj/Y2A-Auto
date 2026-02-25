@@ -189,6 +189,52 @@ def normalize_upload_target(upload_target):
     return target
 
 
+def resolve_cookie_file_path(
+    path_value,
+    default_relative_path,
+    service_name="Cookie",
+    logger_obj=None,
+    allow_json_txt_fallback=False
+):
+    """解析 Cookie 文件路径并可选在 .json/.txt 之间做兼容回退。"""
+    raw_path = str(path_value or default_relative_path or '').strip()
+    if not raw_path:
+        return ''
+
+    app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    resolved_path = raw_path if os.path.isabs(raw_path) else os.path.join(app_root, raw_path)
+    resolved_path = os.path.normpath(resolved_path)
+
+    if os.path.exists(resolved_path):
+        return resolved_path
+
+    if not allow_json_txt_fallback:
+        return resolved_path
+
+    base, ext = os.path.splitext(resolved_path)
+    ext_lower = ext.lower()
+    if ext_lower == '.json':
+        alt_candidates = [base + '.txt']
+    elif ext_lower == '.txt':
+        alt_candidates = [base + '.json']
+    else:
+        alt_candidates = [resolved_path + '.json', resolved_path + '.txt']
+
+    for alt_path in alt_candidates:
+        if not os.path.exists(alt_path):
+            continue
+        target_logger = logger_obj if logger_obj is not None else logger
+        try:
+            target_logger.warning(
+                f"{service_name} Cookies路径 {resolved_path} 不存在，自动回退到兼容路径: {alt_path}"
+            )
+        except Exception:
+            pass
+        return alt_path
+
+    return resolved_path
+
+
 def _get_task_upload_target(task, fallback=UPLOAD_TARGET_ACFUN):
     if not task:
         return normalize_upload_target(fallback)
@@ -2660,7 +2706,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # --------------------------------------------------
                 # 缓存硬件编码器检测结果，避免重复测试
                 _hw_encoder_cache = {}
+                _hw_encoder_error_cache = {}
                 amd_backend_cache = None
+
+                def _is_encoder_listed(encoder_name: str) -> bool:
+                    """仅检查编码器是否在 ffmpeg -encoders 中出现。"""
+                    try:
+                        list_result = subprocess.run(
+                            [ffmpeg_bin, '-hide_banner', '-encoders'],
+                            capture_output=True,
+                            text=True,
+                            encoding='utf-8',
+                            errors='replace',
+                            timeout=10
+                        )
+                        encoder_text = f"{list_result.stdout or ''}\n{list_result.stderr or ''}"
+                        return list_result.returncode == 0 and encoder_name in encoder_text
+                    except Exception:
+                        return False
 
                 def _detect_hw_encoder(encoder_name: str) -> bool:
                     """通过实际测试编码来检测硬件编码器是否可用（而非仅检查编译列表）"""
@@ -2750,17 +2813,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         _hw_encoder_cache[encoder_name] = available
                         if not available:
                             err_msg = (test_result.stderr or test_result.stdout or '未知错误').strip()
+                            _hw_encoder_error_cache[encoder_name] = err_msg
                             if not encoder_list_available:
                                 task_logger.debug(f"编码器 {encoder_name} 未在 ffmpeg -encoders 列表中匹配到，且实测失败: {err_msg[:240]}")
                             else:
                                 task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {err_msg[:240]}")
                             task_logger.debug(f"编码器 {encoder_name} 探测命令: {' '.join(test_cmd)}")
                         else:
+                            _hw_encoder_error_cache[encoder_name] = ''
                             task_logger.debug(f"编码器 {encoder_name} 测试成功，硬件可用")
                         return available
                     except Exception as e:
                         task_logger.debug(f"检测编码器 {encoder_name} 时出错: {e}")
                         _hw_encoder_cache[encoder_name] = False
+                        _hw_encoder_error_cache[encoder_name] = str(e)
                     return False
 
                 def _detect_amd_backend() -> str:
@@ -2923,6 +2989,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 elif encoder_pref == 'nvidia':
                     if not _detect_nvidia():
                         task_logger.warning("配置使用 NVIDIA 编码但未检测到 NVENC，回退到自动检测")
+                        nvenc_listed = _is_encoder_listed('h264_nvenc')
+                        nvidia_device_visible = any(
+                            os.path.exists(path)
+                            for path in ('/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-modeset')
+                        )
+                        nvenc_reason = (_hw_encoder_error_cache.get('h264_nvenc') or '未知').replace('\n', ' ')
+                        task_logger.warning(
+                            f"NVENC诊断信息: ffmpeg={ffmpeg_bin}, h264_nvenc_listed={nvenc_listed}, "
+                            f"nvidia_device_visible={nvidia_device_visible}, detect_error={nvenc_reason[:240]}"
+                        )
+                        task_logger.warning(
+                            "NVENC 不可用常见原因：Docker 未启用 GPU 透传（gpus: all）、"
+                            "主机未安装 nvidia-container-toolkit、"
+                            "或 NVIDIA_DRIVER_CAPABILITIES 未包含 video,utility。"
+                        )
                         actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'intel':
                     if not _detect_intel():
@@ -3858,7 +3939,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             youtube_url = task.get('youtube_url', '') if task else ''
             if not youtube_url:
                 task_logger.error("无法获取YouTube URL，无法下载视频")
-                update_task(task_id, error_message="无法获取YouTube URL，无法下载视频")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['FAILED'],
+                    error_message="无法获取YouTube URL，无法下载视频"
+                )
                 return
             
             # 下载视频文件
@@ -3922,7 +4007,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     pass
         
         # AcFun配置（仅支持Cookies，推荐使用设置页二维码登录自动生成）
-        acfun_cookies_path = self.config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json')
+        acfun_cookies_path = resolve_cookie_file_path(
+            path_value=self.config.get('ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json'),
+            default_relative_path='cookies/ac_cookies.json',
+            service_name='AcFun',
+            logger_obj=task_logger,
+            allow_json_txt_fallback=True
+        )
         
         # 获取封面处理模式
         cover_mode = self.config.get('COVER_PROCESSING_MODE', 'crop')
@@ -3941,7 +4032,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if missing_params:
             error_msg = f"上传参数不完整，缺少: {', '.join(missing_params)}"
             task_logger.error(error_msg)
-            update_task(task_id, error_message=error_msg)
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=error_msg
+            )
             return
         
         # 检查登录凭据 - 必须提供有效的Cookie文件
@@ -3957,12 +4052,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             else:
                 task_logger.warning(f"AcFun Cookies文件验证失败: {error_msg}")
                 task_logger.error("AcFun Cookies无效，请在设置页重新扫码登录或上传可用Cookies")
-                update_task(task_id, error_message=f"AcFun Cookies无效，请重新登录: {error_msg}")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['FAILED'],
+                    error_message=f"AcFun Cookies无效，请重新登录: {error_msg}"
+                )
                 return
 
         if not cookies_valid:
             task_logger.error("AcFun登录信息不完整，需要有效的Cookie文件")
-            update_task(task_id, error_message="AcFun登录信息不完整，需要有效的Cookie文件（可在设置页扫码登录）")
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message="AcFun登录信息不完整，需要有效的Cookie文件（可在设置页扫码登录）"
+            )
             return
         
         # 创建上传器并执行上传
@@ -4033,7 +4136,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             youtube_url = task.get('youtube_url', '') if task else ''
             if not youtube_url:
                 task_logger.error("无法获取YouTube URL，无法下载视频")
-                update_task(task_id, error_message="无法获取YouTube URL，无法下载视频")
+                update_task(
+                    task_id,
+                    status=TASK_STATES['FAILED'],
+                    error_message="无法获取YouTube URL，无法下载视频"
+                )
                 return
 
             self._download_video_file(task_id, youtube_url, task_logger)
@@ -4164,19 +4271,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if missing_params:
             error_msg = f"上传参数不完整，缺少: {', '.join(missing_params)}"
             task_logger.error(error_msg)
-            update_task(task_id, error_message=error_msg)
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=error_msg
+            )
             return
 
         cookie_file_exists = os.path.exists(bilibili_cookies_path)
         if not cookie_file_exists:
             task_logger.error(f"Bilibili Cookies文件不存在: {bilibili_cookies_path}")
-            update_task(task_id, error_message=f"Bilibili Cookies文件不存在: {bilibili_cookies_path}")
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=f"Bilibili Cookies文件不存在: {bilibili_cookies_path}"
+            )
             return
 
         is_valid, error_msg = validate_cookies(bilibili_cookies_path, "Bilibili")
         if not is_valid:
             task_logger.error(f"Bilibili Cookies文件验证失败: {error_msg}")
-            update_task(task_id, error_message=f"Bilibili Cookies无效: {error_msg}")
+            update_task(
+                task_id,
+                status=TASK_STATES['FAILED'],
+                error_message=f"Bilibili Cookies无效: {error_msg}"
+            )
             return
 
         try:
