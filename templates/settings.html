@@ -1381,6 +1381,8 @@
     <form method="post" action="{{ url_for('cleanup_downloads_route') }}" class="d-none" id="download-cleanup-form">
     <input type="hidden" name="hours" id="download-cleanup-hours-input" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}">
     </form>
+
+    <div class="toast-container position-fixed top-0 end-0 p-3" id="settings-toast-container"></div>
 </div>
 {% endblock %}
 
@@ -1524,6 +1526,55 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    const settingsToastContainer = document.getElementById('settings-toast-container');
+
+    const showSettingsToast = function (type, message) {
+        const text = String(message || '').trim();
+        if (!text || !settingsToastContainer || typeof bootstrap === 'undefined') {
+            return;
+        }
+        const tone = type === 'success' ? 'success' : (type === 'error' ? 'danger' : 'secondary');
+        const toastEl = document.createElement('div');
+        toastEl.className = `toast align-items-center text-bg-${tone} border-0`;
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'd-flex';
+        const body = document.createElement('div');
+        body.className = 'toast-body';
+        body.textContent = text;
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn-close btn-close-white me-2 m-auto';
+        closeBtn.setAttribute('data-bs-dismiss', 'toast');
+        closeBtn.setAttribute('aria-label', '关闭');
+        wrapper.appendChild(body);
+        wrapper.appendChild(closeBtn);
+        toastEl.appendChild(wrapper);
+        settingsToastContainer.appendChild(toastEl);
+        toastEl.addEventListener('hidden.bs.toast', function () {
+            toastEl.remove();
+        }, { once: true });
+        const toast = bootstrap.Toast.getOrCreateInstance(toastEl, { delay: 4500 });
+        toast.show();
+    };
+
+    const applyStatusTone = function (el, tone) {
+        if (!el) return;
+        el.classList.remove('text-danger', 'text-success', 'text-muted');
+        if (tone === 'error') {
+            el.classList.add('text-danger');
+            return;
+        }
+        if (tone === 'success') {
+            el.classList.add('text-success');
+            return;
+        }
+        el.classList.add('text-muted');
+    };
+
     // AcFun二维码登录
     const acfunStartBtn = document.getElementById('acfun-qrcode-start-btn');
     const acfunCheckBtn = document.getElementById('acfun-qrcode-check-btn');
@@ -1533,12 +1584,12 @@ document.addEventListener('DOMContentLoaded', function () {
     let acfunSessionId = null;
     let acfunTimer = null;
     let acfunPollingBusy = false;
+    let acfunSuccessNotified = false;
 
-    const setAcfunStatus = function (text, isError) {
+    const setAcfunStatus = function (text, tone) {
         if (!acfunStatusText) return;
         acfunStatusText.textContent = text || '';
-        acfunStatusText.classList.toggle('text-danger', !!isError);
-        acfunStatusText.classList.toggle('text-success', !isError);
+        applyStatusTone(acfunStatusText, tone || 'neutral');
     };
 
     const stopAcfunPolling = function () {
@@ -1555,33 +1606,46 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(resp => resp.json())
             .then(data => {
                 if (!data.success) {
-                    setAcfunStatus(data.message || '状态查询失败', true);
+                    setAcfunStatus(data.message || '状态查询失败', 'error');
                     stopAcfunPolling();
                     return;
                 }
 
                 const status = data.status || '';
                 if (status === 'wait_scan') {
-                    setAcfunStatus('等待扫码', false);
+                    setAcfunStatus('等待扫码', 'neutral');
                 } else if (status === 'scan') {
-                    setAcfunStatus('已扫码，请在手机端确认', false);
+                    setAcfunStatus('已扫码，请在手机端确认', 'neutral');
                 } else if (status === 'confirm') {
-                    setAcfunStatus('等待手机端确认登录', false);
+                    setAcfunStatus('等待手机端确认登录', 'neutral');
                 } else if (status === 'done') {
-                    setAcfunStatus('登录成功，Cookies 已保存', false);
+                    const doneParts = [];
+                    if (typeof data.cookies_count === 'number') {
+                        doneParts.push(`保存 ${data.cookies_count} 条Cookie`);
+                    }
+                    if (data.cookies_path) {
+                        doneParts.push(`路径: ${data.cookies_path}`);
+                    }
+                    const doneDetail = doneParts.length ? `（${doneParts.join('，')}）` : '';
+                    const doneMessage = `登录成功，Cookies 已保存${doneDetail}`;
+                    setAcfunStatus(doneMessage, 'success');
+                    if (!acfunSuccessNotified) {
+                        showSettingsToast('success', doneMessage);
+                        acfunSuccessNotified = true;
+                    }
                     stopAcfunPolling();
                 } else if (status === 'timeout') {
-                    setAcfunStatus('二维码已过期，请重新获取', true);
+                    setAcfunStatus('二维码已过期，请重新获取', 'error');
                     stopAcfunPolling();
                 } else if (status === 'failed') {
-                    setAcfunStatus(data.message || '登录失败', true);
+                    setAcfunStatus(data.message || '登录失败', 'error');
                     stopAcfunPolling();
                 } else {
-                    setAcfunStatus(`当前状态: ${status}`, false);
+                    setAcfunStatus(`当前状态: ${status}`, 'neutral');
                 }
             })
             .catch(err => {
-                setAcfunStatus(`状态请求失败: ${err}`, true);
+                setAcfunStatus(`状态请求失败: ${err}`, 'error');
             })
             .finally(() => {
                 acfunPollingBusy = false;
@@ -1594,23 +1658,24 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(resp => resp.json())
                 .then(data => {
                     if (!data.success) {
-                        setAcfunStatus(data.message || '获取二维码失败', true);
+                        setAcfunStatus(data.message || '获取二维码失败', 'error');
                         return;
                     }
                     acfunSessionId = data.session_id;
+                    acfunSuccessNotified = false;
                     if (acfunImage && data.image_base64) {
                         acfunImage.src = `data:${data.mime_type || 'image/png'};base64,${data.image_base64}`;
                     }
                     if (acfunWrap) {
                         acfunWrap.classList.remove('d-none');
                     }
-                    setAcfunStatus('二维码已生成，请扫码登录', false);
+                    setAcfunStatus('二维码已生成，请扫码登录', 'neutral');
                     stopAcfunPolling();
                     acfunTimer = setInterval(checkAcfunStatus, 2500);
                     checkAcfunStatus();
                 })
                 .catch(err => {
-                    setAcfunStatus(`获取二维码失败: ${err}`, true);
+                    setAcfunStatus(`获取二维码失败: ${err}`, 'error');
                 });
         });
     }
@@ -1630,11 +1695,10 @@ document.addEventListener('DOMContentLoaded', function () {
     let biliSessionId = null;
     let biliTimer = null;
 
-    const setBiliStatus = function (text, isError) {
+    const setBiliStatus = function (text, tone) {
         if (!biliStatusText) return;
         biliStatusText.textContent = text || '';
-        biliStatusText.classList.toggle('text-danger', !!isError);
-        biliStatusText.classList.toggle('text-success', !isError);
+        applyStatusTone(biliStatusText, tone || 'neutral');
     };
 
     const stopBiliPolling = function () {
@@ -1650,31 +1714,31 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(resp => resp.json())
             .then(data => {
                 if (!data.success) {
-                    setBiliStatus(data.message || '状态查询失败', true);
+                    setBiliStatus(data.message || '状态查询失败', 'error');
                     stopBiliPolling();
                     return;
                 }
 
                 const status = data.status || '';
                 if (status === 'scan') {
-                    setBiliStatus('已扫码，请在手机端确认', false);
+                    setBiliStatus('已扫码，请在手机端确认', 'neutral');
                 } else if (status === 'confirm') {
-                    setBiliStatus('等待手机端确认登录', false);
+                    setBiliStatus('等待手机端确认登录', 'neutral');
                 } else if (status === 'done') {
-                    setBiliStatus('登录成功，Cookies 已保存', false);
+                    setBiliStatus('登录成功，Cookies 已保存', 'success');
                     stopBiliPolling();
                 } else if (status === 'timeout') {
-                    setBiliStatus('二维码已过期，请重新获取', true);
+                    setBiliStatus('二维码已过期，请重新获取', 'error');
                     stopBiliPolling();
                 } else if (status === 'failed') {
-                    setBiliStatus(data.message || '登录失败', true);
+                    setBiliStatus(data.message || '登录失败', 'error');
                     stopBiliPolling();
                 } else {
-                    setBiliStatus(`当前状态: ${status}`, false);
+                    setBiliStatus(`当前状态: ${status}`, 'neutral');
                 }
             })
             .catch(err => {
-                setBiliStatus(`状态请求失败: ${err}`, true);
+                setBiliStatus(`状态请求失败: ${err}`, 'error');
                 stopBiliPolling();
             });
     };
@@ -1685,7 +1749,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(resp => resp.json())
                 .then(data => {
                     if (!data.success) {
-                        setBiliStatus(data.message || '获取二维码失败', true);
+                        setBiliStatus(data.message || '获取二维码失败', 'error');
                         return;
                     }
                     biliSessionId = data.session_id;
@@ -1695,12 +1759,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (biliWrap) {
                         biliWrap.classList.remove('d-none');
                     }
-                    setBiliStatus('二维码已生成，请扫码登录', false);
+                    setBiliStatus('二维码已生成，请扫码登录', 'neutral');
                     stopBiliPolling();
                     biliTimer = setInterval(checkBiliStatus, 2000);
                 })
                 .catch(err => {
-                    setBiliStatus(`获取二维码失败: ${err}`, true);
+                    setBiliStatus(`获取二维码失败: ${err}`, 'error');
                 });
         });
     }

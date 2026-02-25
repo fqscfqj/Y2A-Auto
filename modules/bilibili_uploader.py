@@ -8,7 +8,7 @@ import os
 import re
 import traceback
 from logging.handlers import RotatingFileHandler
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 from bilibili_api import video_uploader
 from bilibili_api.exceptions import ArgsException
@@ -122,16 +122,104 @@ class BilibiliUploader:
                 cover=cover_file_path,
             )
 
+            last_emitted_percent = 0.0
+            last_emitted_text = ""
+
+            def _emit_progress(text: str):
+                nonlocal last_emitted_text
+                if not progress_callback:
+                    return
+                progress_text = str(text or "").strip()
+                if not progress_text:
+                    return
+                if progress_text == last_emitted_text:
+                    return
+                last_emitted_text = progress_text
+                try:
+                    progress_callback(progress_text)
+                except Exception:
+                    pass
+
+            def _to_float(value: Any) -> Optional[float]:
+                try:
+                    if value is None:
+                        return None
+                    return float(value)
+                except Exception:
+                    return None
+
+            def _extract_progress_percent(payload: Any) -> Optional[float]:
+                if not isinstance(payload, dict):
+                    return None
+
+                candidates = []
+
+                for key in (
+                    "percent",
+                    "progress",
+                    "uploaded_percent",
+                    "upload_percent",
+                ):
+                    value = _to_float(payload.get(key))
+                    if value is None:
+                        continue
+                    if 0.0 <= value <= 1.0:
+                        value *= 100.0
+                    candidates.append(value)
+
+                total_keys = (
+                    "total_chunk_count",
+                    "chunk_count",
+                    "total_chunks",
+                    "chunks_total",
+                )
+                current_keys = (
+                    "chunk_number",
+                    "chunk_index",
+                    "uploaded_chunk_count",
+                    "uploaded_chunks",
+                    "chunk_id",
+                    "current_chunk",
+                )
+
+                totals = [_to_float(payload.get(k)) for k in total_keys]
+                currents = [_to_float(payload.get(k)) for k in current_keys]
+
+                for total in totals:
+                    if total is None or total <= 0:
+                        continue
+                    for current in currents:
+                        if current is None:
+                            continue
+                        candidates.append((current / total) * 100.0)
+                        candidates.append(((current + 1.0) / total) * 100.0)
+
+                normalized = [
+                    max(0.0, min(100.0, value))
+                    for value in candidates
+                    if value is not None
+                ]
+                if not normalized:
+                    return None
+
+                # 优先选择“略大于上一进度”的最小值，兼容 chunk 索引基数差异
+                forward = [value for value in normalized if value > (last_emitted_percent + 0.05)]
+                if forward:
+                    return min(forward)
+                return max(normalized)
+
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_CHUNK.value)
             def on_after_chunk(data):
+                nonlocal last_emitted_percent
                 try:
-                    total = int(data.get("total_chunk_count", 0) or 0)
-                    idx = int(data.get("chunk_number", -1) or -1)
-                    if total > 0 and idx >= 0:
-                        pct = ((idx + 1) / total) * 100
-                        text = f"{pct:.1f}%"
-                        if progress_callback:
-                            progress_callback(text)
+                    percent = _extract_progress_percent(data)
+                    if percent is None:
+                        _emit_progress("上传中...")
+                        return
+                    if percent < last_emitted_percent:
+                        percent = last_emitted_percent
+                    last_emitted_percent = min(100.0, percent)
+                    _emit_progress(f"{last_emitted_percent:.1f}%")
                 except Exception:
                     pass
 
@@ -140,8 +228,11 @@ class BilibiliUploader:
                 err = data.get("err") if isinstance(data, dict) else data
                 self.log(f"bilibili上传失败事件: {err}")
 
+            _emit_progress("0.0%")
             self.log("开始上传到bilibili")
             result = asyncio.run(uploader.start())
+            last_emitted_percent = 100.0
+            _emit_progress("100.0%")
             self.log(f"bilibili上传完成: {result}")
 
             if not isinstance(result, dict):

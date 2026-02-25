@@ -84,6 +84,7 @@ class AcfunQrLoginSession:
         self.qr_login_token = ""
         self.qr_login_signature = ""
         self.qr_expire_ms = 120000
+        self.done_payload: Optional[Dict[str, object]] = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -206,6 +207,7 @@ class AcfunQrLoginSession:
                         "status": "failed",
                         "message": "登录成功但未获取到有效 Cookie，请重试",
                     }
+            self.done_payload = dict(payload)
             self.phase = "done"
             return payload
 
@@ -221,6 +223,8 @@ class AcfunQrLoginSession:
         if not self.generated:
             return {"status": "not_started", "message": "二维码未初始化"}
         if self.phase == "done":
+            if isinstance(self.done_payload, dict) and self.done_payload:
+                return dict(self.done_payload)
             return {"status": "done", "message": "登录成功"}
         if self.phase == "timeout":
             return {"status": "timeout", "message": "二维码已过期，请重新获取"}

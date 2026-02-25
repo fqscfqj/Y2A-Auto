@@ -4123,7 +4123,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task_logger.error("任务不存在")
             return
 
-        update_task(task_id, status=TASK_STATES['UPLOADING'])
+        update_task(task_id, status=TASK_STATES['UPLOADING'], upload_progress='0.0%')
 
         video_path = task.get('video_path_local', '') if task else ''
         cover_path = task.get('cover_path_local', '') if task else ''
@@ -4139,7 +4139,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 update_task(
                     task_id,
                     status=TASK_STATES['FAILED'],
-                    error_message="无法获取YouTube URL，无法下载视频"
+                    error_message="无法获取YouTube URL，无法下载视频",
+                    upload_progress=None
                 )
                 return
 
@@ -4151,7 +4152,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             task = self._prepare_subtitle_for_upload(task_id, task_logger) or task
             video_path = task.get('video_path_local', '') if task else video_path
 
-        update_task(task_id, status=TASK_STATES['UPLOADING'])
+        update_task(task_id, status=TASK_STATES['UPLOADING'], upload_progress='0.0%')
 
         tags = []
         try:
@@ -4274,7 +4275,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(
                 task_id,
                 status=TASK_STATES['FAILED'],
-                error_message=error_msg
+                error_message=error_msg,
+                upload_progress=None
             )
             return
 
@@ -4284,7 +4286,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(
                 task_id,
                 status=TASK_STATES['FAILED'],
-                error_message=f"Bilibili Cookies文件不存在: {bilibili_cookies_path}"
+                error_message=f"Bilibili Cookies文件不存在: {bilibili_cookies_path}",
+                upload_progress=None
             )
             return
 
@@ -4294,15 +4297,43 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(
                 task_id,
                 status=TASK_STATES['FAILED'],
-                error_message=f"Bilibili Cookies无效: {error_msg}"
+                error_message=f"Bilibili Cookies无效: {error_msg}",
+                upload_progress=None
             )
             return
 
         try:
             uploader = BilibiliUploader(cookie_file=bilibili_cookies_path)
+            last_progress_text = '0.0%'
+
+            def _normalize_progress_text(progress_text):
+                text = str(progress_text or '').strip()
+                if not text:
+                    return '上传中...'
+                match = re.search(r'(\d+(?:\.\d+)?)\s*%', text)
+                if match:
+                    try:
+                        percent = float(match.group(1))
+                        percent = max(0.0, min(100.0, percent))
+                        return f"{percent:.1f}%"
+                    except Exception:
+                        return '上传中...'
+                try:
+                    numeric = float(text)
+                    if 0.0 <= numeric <= 1.0:
+                        numeric *= 100.0
+                    numeric = max(0.0, min(100.0, numeric))
+                    return f"{numeric:.1f}%"
+                except Exception:
+                    return '上传中...'
 
             def _on_progress(progress_text):
-                update_task(task_id, upload_progress=progress_text, silent=True)
+                nonlocal last_progress_text
+                normalized_text = _normalize_progress_text(progress_text)
+                if normalized_text == last_progress_text:
+                    return
+                last_progress_text = normalized_text
+                update_task(task_id, upload_progress=normalized_text, silent=True)
 
             success, result = uploader.upload_video(
                 video_file_path=video_path,
@@ -4321,14 +4352,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 update_task(
                     task_id,
                     status=TASK_STATES['COMPLETED'],
-                    bilibili_upload_response=json.dumps(result, ensure_ascii=False)
+                    bilibili_upload_response=json.dumps(result, ensure_ascii=False),
+                    upload_progress=None
                 )
             else:
                 task_logger.error(f"bilibili上传失败: {result}")
                 update_task(
                     task_id,
                     status=TASK_STATES['FAILED'],
-                    error_message=f"上传失败: {result}"
+                    error_message=f"上传失败: {result}",
+                    upload_progress=None
                 )
         except Exception as e:
             task_logger.error(f"bilibili上传过程中发生异常: {str(e)}")
@@ -4337,7 +4370,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             update_task(
                 task_id,
                 status=TASK_STATES['FAILED'],
-                error_message=f"上传异常: {str(e)}"
+                error_message=f"上传异常: {str(e)}",
+                upload_progress=None
             )
 
 # 任务控制函数
