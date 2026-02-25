@@ -9,7 +9,7 @@ import time
 import datetime
 import uuid
 import threading
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -153,15 +153,23 @@ def _is_safe_redirect_url(target):
     """Validate that a redirect target is safe (same origin, not external)."""
     if not target:
         return False
+    # Normalize whitespace to prevent bypass via leading/trailing spaces or
+    # control characters (e.g. " http://evil.com" or "\nhttp://evil.com")
+    target = target.strip()
+    if not target:
+        return False
+    # Reject backslashes — some browsers treat \\ as // (e.g. \\evil.com)
+    if '\\' in target:
+        return False
     # Reject any URL with a scheme (e.g. http://, https://) or a netloc
-    # (e.g. //evil.com protocol-relative URLs) before joining
+    # (e.g. //evil.com protocol-relative URLs). Only purely relative URLs
+    # (path, query, fragment) are allowed.
     parsed_target = urlparse(target)
     if parsed_target.scheme or parsed_target.netloc:
         return False
-    host_url = urlparse(request.host_url)
-    redirect_url = urlparse(urljoin(request.host_url, target))
-    return (redirect_url.scheme in ('http', 'https') and
-            host_url.netloc == redirect_url.netloc)
+    # At this point, target is a relative URL without scheme or netloc,
+    # which is safe from open redirect to an external host.
+    return True
 
 
 # 登录验证装饰器
