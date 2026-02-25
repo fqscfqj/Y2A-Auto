@@ -9,6 +9,7 @@ import time
 import datetime
 import uuid
 import threading
+from urllib.parse import urlparse
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -148,6 +149,29 @@ def _get_acfun_qr_session(session_id: str):
     return item.get('session')
 
 
+def _is_safe_redirect_url(target):
+    """Validate that a redirect target is safe (same origin, not external)."""
+    if not target:
+        return False
+    # Normalize whitespace to prevent bypass via leading/trailing spaces or
+    # control characters (e.g. " http://evil.com" or "\nhttp://evil.com")
+    target = target.strip()
+    if not target:
+        return False
+    # Reject backslashes — some browsers treat \\ as // (e.g. \\evil.com)
+    if '\\' in target:
+        return False
+    # Reject any URL with a scheme (e.g. http://, https://) or a netloc
+    # (e.g. //evil.com protocol-relative URLs). Only purely relative URLs
+    # (path, query, fragment) are allowed.
+    parsed_target = urlparse(target)
+    if parsed_target.scheme or parsed_target.netloc:
+        return False
+    # At this point, target is a relative URL without scheme or netloc,
+    # which is safe from open redirect to an external host.
+    return True
+
+
 # 登录验证装饰器
 def login_required(f):
     @wraps(f)
@@ -156,7 +180,7 @@ def login_required(f):
         if config.get('password_protection_enabled'):
             if 'logged_in' not in session:
                 flash('请先登录以访问此页面。', 'info')
-                return redirect(url_for('login', next=request.url))
+                return redirect(url_for('login', next=request.full_path))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -512,7 +536,7 @@ def login():
             _save_security_state(sec)
             flash('登录成功', 'success')
             next_url = request.args.get('next')
-            return redirect(next_url or url_for('index'))
+            return redirect(next_url if _is_safe_redirect_url(next_url) else url_for('index'))
         else:
             # 密码错误，更新失败计数
             max_attempts = int(config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) or 5)
