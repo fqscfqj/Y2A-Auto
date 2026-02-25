@@ -14,7 +14,11 @@ from logging.handlers import RotatingFileHandler
 import concurrent.futures
 from threading import Lock
 from modules.task_manager import TaskCancelledError
-from .utils import get_app_subdir, strip_reasoning_thoughts
+from .utils import (
+    get_app_subdir,
+    strip_reasoning_thoughts,
+    openai_chat_create_with_thinking_control,
+)
 
 logger = logging.getLogger('subtitle_translator')
 
@@ -101,6 +105,7 @@ class TranslationConfig:
     max_retries: int = 3
     retry_delay: int = 2
     max_workers: int = 2  # 减少最大并发线程数以降低内存使用
+    thinking_enabled: bool = False
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -349,14 +354,20 @@ class LLMRequester:
                 )
             
             # 使用与ai_enhancer.py相同的API调用方式，添加JSON输出格式
-            response = self.client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=4096,
-                response_format={"type": "json_object"}  # 强制JSON输出
+            response = openai_chat_create_with_thinking_control(
+                client=self.client,
+                create_kwargs={
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "max_tokens": 4096,
+                    "response_format": {"type": "json_object"},  # 强制JSON输出
+                },
+                thinking_enabled=self.openai_config.get('OPENAI_THINKING_ENABLED', False),
+                logger=self.logger,
+                scene_name='subtitle_translate_batch',
             )
             
             response_time = time.time() - start_time
@@ -414,14 +425,20 @@ class LLMRequester:
             model_name = self.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
             with self._log_lock:
                 self.logger.info(f"开始严格模式翻译批次 {batch_id}，包含 {len(texts)} 条字幕")
-            response = self.client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=4096,
-                response_format={"type": "json_object"}
+            response = openai_chat_create_with_thinking_control(
+                client=self.client,
+                create_kwargs={
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "max_tokens": 4096,
+                    "response_format": {"type": "json_object"},
+                },
+                thinking_enabled=self.openai_config.get('OPENAI_THINKING_ENABLED', False),
+                logger=self.logger,
+                scene_name='subtitle_translate_batch_strict',
             )
             
             # 检查响应是否有效
@@ -590,7 +607,8 @@ class SubtitleTranslator:
         self.openai_config = {
             'OPENAI_API_KEY': config.api_key or '',
             'OPENAI_BASE_URL': config.base_url or 'https://api.openai.com/v1',
-            'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo'
+            'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
+            'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
         }
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
@@ -1072,7 +1090,8 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             batch_size=batch_size,
             max_retries=max_retries,
             retry_delay=retry_delay,
-            max_workers=max_workers
+            max_workers=max_workers,
+            thinking_enabled=app_config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
         )
         
         if not translation_config.api_key:

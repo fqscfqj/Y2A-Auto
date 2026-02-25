@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .subtitle_translator import SubtitleReader
-from .utils import strip_reasoning_thoughts
+from .utils import strip_reasoning_thoughts, openai_chat_create_with_thinking_control
 
 logger = logging.getLogger('subtitle_qc')
 
@@ -265,13 +265,19 @@ def _call_ai_judge(
     }
 
     try:
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {'role': 'system', 'content': system},
-                {'role': 'user', 'content': json.dumps(user, ensure_ascii=False)}
-            ],
-            temperature=0.2,
+        resp = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs={
+                'model': model_name,
+                'messages': [
+                    {'role': 'system', 'content': system},
+                    {'role': 'user', 'content': json.dumps(user, ensure_ascii=False)}
+                ],
+                'temperature': 0.2,
+            },
+            thinking_enabled=config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
+            logger=logger,
+            scene_name='subtitle_qc',
         )
         content = (resp.choices[0].message.content or '').strip()
         parsed = _extract_json(content)

@@ -40,6 +40,8 @@ def get_app_subdir(subdir_name):
 """
 
 import re
+import copy
+from urllib.parse import urlparse
 from PIL import Image
 
 def init_app():
@@ -241,3 +243,89 @@ def safe_str(value, default=''):
         return str(value)
     except Exception:
         return default
+
+
+_THINKING_FALLBACK_WARNED_SCENES = set()
+
+
+def _coerce_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def _mask_base_url(base_url):
+    text = safe_str(base_url).strip()
+    if not text:
+        return 'unknown'
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    return text[:64]
+
+
+def _is_thinking_param_unsupported_error(exc):
+    text = safe_str(exc).lower()
+    signals = (
+        'unknown parameter',
+        'unrecognized',
+        'unsupported',
+        'invalid parameter',
+        'extra_body',
+        'thinking',
+        'reasoning_effort',
+        'not permitted',
+    )
+    return any(sig in text for sig in signals)
+
+
+def openai_chat_create_with_thinking_control(
+    client,
+    create_kwargs,
+    thinking_enabled=False,
+    logger=None,
+    scene_name='unknown',
+):
+    """统一 chat.completions 请求，支持“尝试关闭思考 + 自动降级”策略。"""
+    if _coerce_bool(thinking_enabled, default=False):
+        return client.chat.completions.create(**create_kwargs)
+
+    disabled_kwargs = copy.deepcopy(create_kwargs or {})
+    extra_body = disabled_kwargs.get('extra_body')
+    if not isinstance(extra_body, dict):
+        extra_body = {}
+    extra_body = copy.deepcopy(extra_body)
+    thinking_body = extra_body.get('thinking')
+    if not isinstance(thinking_body, dict):
+        thinking_body = {}
+    thinking_body.update({'type': 'disabled', 'enabled': False})
+    extra_body['thinking'] = thinking_body
+    disabled_kwargs['extra_body'] = extra_body
+
+    try:
+        return client.chat.completions.create(**disabled_kwargs)
+    except Exception as exc:
+        if not _is_thinking_param_unsupported_error(exc):
+            raise
+
+        model_name = safe_str((create_kwargs or {}).get('model'), default='unknown')
+        base_url = _mask_base_url(getattr(client, 'base_url', None))
+        scene = safe_str(scene_name, default='unknown')
+        warn_key = f"{scene}:{model_name}:{base_url}"
+        if logger:
+            if warn_key not in _THINKING_FALLBACK_WARNED_SCENES:
+                logger.warning(
+                    f"场景[{scene}] 模型[{model_name}] 接口[{base_url}] 不支持 thinking 控制参数，"
+                    "已降级为普通请求"
+                )
+                _THINKING_FALLBACK_WARNED_SCENES.add(warn_key)
+            else:
+                logger.debug(
+                    f"场景[{scene}] 模型[{model_name}] 接口[{base_url}] thinking 控制参数不受支持，继续普通请求"
+                )
+        return client.chat.completions.create(**create_kwargs)

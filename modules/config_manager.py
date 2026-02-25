@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
+    "OPENAI_THINKING_ENABLED": False,
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
     # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID
@@ -49,6 +50,7 @@ DEFAULT_CONFIG = {
     # 字幕翻译可单独指定 API Key 与 模型名；为空则分别回退到 OPENAI_API_KEY 与 OPENAI_MODEL_NAME
     "SUBTITLE_OPENAI_API_KEY": "",
     "SUBTITLE_OPENAI_MODEL_NAME": "",
+    "SUBTITLE_OPENAI_THINKING_ENABLED": False,
     "YOUTUBE_API_KEY": "",
     "ALIYUN_ACCESS_KEY_ID": "",
     "ALIYUN_ACCESS_KEY_SECRET": "",

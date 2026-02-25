@@ -9,7 +9,12 @@ import json
 import traceback
 from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
-from .utils import get_app_subdir, strip_reasoning_thoughts, safe_str
+from .utils import (
+    get_app_subdir,
+    strip_reasoning_thoughts,
+    safe_str,
+    openai_chat_create_with_thinking_control,
+)
 
 import openai
 
@@ -438,7 +443,14 @@ def _apply_output_limits(text: str, content_type: str = "description", logger=No
         limited = limited[:997] + "..."
     return limited
 
-def _request_translation(client, model_name: str, prompt: str, max_tokens: int = 4096):
+def _request_translation(
+    client,
+    model_name: str,
+    prompt: str,
+    max_tokens: int = 4096,
+    thinking_enabled: bool = False,
+    logger_obj=None,
+):
     create_kwargs = {
         "model": model_name,
         "messages": [
@@ -451,7 +463,13 @@ def _request_translation(client, model_name: str, prompt: str, max_tokens: int =
         create_kwargs["response_format"] = {"type": "json_object"}
     except Exception:
         pass
-    response = client.chat.completions.create(**create_kwargs)
+    response = openai_chat_create_with_thinking_control(
+        client=client,
+        create_kwargs=create_kwargs,
+        thinking_enabled=thinking_enabled,
+        logger=logger_obj,
+        scene_name='ai_enhancer_translation',
+    )
     return _extract_translation_from_message(response.choices[0].message)
 
 def translate_text(text, target_language="zh-CN", openai_config=None, task_id=None, content_type: str = "description"):
@@ -493,7 +511,9 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
             client=client,
             model_name=model_name,
             prompt=prompt,
-            max_tokens=4096 if ct_lower != 'title' else 1024
+            max_tokens=4096 if ct_lower != 'title' else 1024,
+            thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger_obj=logger,
         )
         translated_text = _post_clean(translated_text, content_type=ct_lower)
         translated_text = _apply_output_limits(translated_text, content_type=ct_lower, logger=logger)
@@ -511,7 +531,9 @@ def translate_text(text, target_language="zh-CN", openai_config=None, task_id=No
                 client=client,
                 model_name=model_name,
                 prompt=strict_prompt,
-                max_tokens=3072 if ct_lower != 'title' else 1024
+                max_tokens=3072 if ct_lower != 'title' else 1024,
+                thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+                logger_obj=logger,
             )
             retried_text = _post_clean(retried_text, content_type=ct_lower)
             retried_text = _apply_output_limits(retried_text, content_type=ct_lower, logger=logger)
@@ -600,7 +622,13 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         except Exception:
             pass
 
-        response = client.chat.completions.create(**create_kwargs)
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger=logger,
+            scene_name='ai_enhancer_tags',
+        )
         response_time = time.time() - start_time
         logger.info(f"标签生成完成，耗时: {response_time:.2f}秒")
 
@@ -868,7 +896,13 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
         except Exception:
             pass
 
-        response = client.chat.completions.create(**create_kwargs)
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger=logger,
+            scene_name='ai_enhancer_partition_bilibili',
+        )
         message = response.choices[0].message
         result = (message.content or getattr(message, "reasoning_content", None) or "")
         result = strip_reasoning_thoughts(result).strip()
@@ -1079,7 +1113,13 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
         except Exception:
             pass
 
-        response = client.chat.completions.create(**create_kwargs)
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger=logger,
+            scene_name='ai_enhancer_partition_acfun',
+        )
         
         message = response.choices[0].message
         result = (message.content or getattr(message, 'reasoning_content', None) or '')

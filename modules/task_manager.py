@@ -1892,6 +1892,7 @@ class TaskProcessor:
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
             # 可选：允许用户配置固定分区ID，确保一次命中
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
@@ -3585,6 +3586,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
@@ -3629,6 +3631,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
             'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
         }

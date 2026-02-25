@@ -1264,6 +1264,13 @@
                                     </div>
                                 </div>
                                 <div class="col-12">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
+                                        <label class="form-check-label" for="openai-thinking-enabled">通用 LLM 启用思考</label>
+                                        <p class="help-text mb-0">关闭后将尝试在请求中禁用思考；若接口不支持会自动降级为普通请求。</p>
+                                    </div>
+                                </div>
+                                <div class="col-12">
                                     <div class="form-group">
                                         <label for="subtitle-openai-url">字幕翻译专用 Base URL（可选）:</label>
                                         <input type="text" id="subtitle-openai-url" name="SUBTITLE_OPENAI_BASE_URL" value="{{ config.get('SUBTITLE_OPENAI_BASE_URL', '') }}" class="form-control" placeholder="留空则与上方一致">
@@ -1280,6 +1287,13 @@
                                     <div class="form-group">
                                         <label for="subtitle-openai-model">字幕翻译专用模型名（可选）:</label>
                                         <input type="text" id="subtitle-openai-model" name="SUBTITLE_OPENAI_MODEL_NAME" value="{{ config.get('SUBTITLE_OPENAI_MODEL_NAME', '') }}" class="form-control" placeholder="留空沿用通用模型名">
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="subtitle-openai-thinking-enabled" name="SUBTITLE_OPENAI_THINKING_ENABLED" {% if config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
+                                        <label class="form-check-label" for="subtitle-openai-thinking-enabled">字幕 LLM 启用思考</label>
+                                        <p class="help-text mb-0">仅影响字幕翻译与字幕质检；关闭后同样会尝试禁用思考，不支持则自动降级。</p>
                                     </div>
                                 </div>
                             </div>
