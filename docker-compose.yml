@@ -26,16 +26,16 @@ services:
     # 根据您的显卡类型，取消注释对应的配置部分
     # ========================================
 
-    # --- NVIDIA GPU 配置 ---
-    # 需要安装 nvidia-container-toolkit
-    # 安装指南: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
-    # 普通 `docker compose` 推荐配置：
-    # gpus: all
+    # --- GPU 编码加速配置示例 ---
+    # 根据显卡类型，取消对应部分的注释
     #
-    # 可选补充（通常无需设置）：
-    # environment:
-    #   - NVIDIA_VISIBLE_DEVICES=all
-    #   - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    # NVIDIA 图形卡示例：
+    #   gpus: all
+    #   environment:
+    #     - NVIDIA_VISIBLE_DEVICES=all
+    #     - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    #
+    # 以下为 Intel/AMD 样板（保留）。若不需要 GPU，整个区块可忽略。
 
     # --- Intel GPU 配置 (QSV) ---
     # 需要挂载 /dev/dri 设备
