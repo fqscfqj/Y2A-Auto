@@ -2331,6 +2331,149 @@ class TaskProcessor:
         'Failed to configure output pad on Parsed_hwupload',
     )
 
+    _HW_PROBE_DEFAULT_SIZE = '640x480'
+    _HW_PROBE_RETRY_SIZE = '1280x720'
+    _HW_PROBE_DURATION = '0.1'
+    _HW_PROBE_DIMENSION_ERROR_PATTERNS = (
+        'frame dimension less than the minimum supported value',
+        'invalid param (8)',
+    )
+
+    @staticmethod
+    def _short_error_text(error_output, limit=240):
+        text = str(error_output or '').replace('\n', ' ').strip()
+        if not text:
+            return ''
+        return text[:limit]
+
+    @staticmethod
+    def _summarize_cmd(cmd, limit=300):
+        summary = ' '.join(str(x) for x in (cmd or []))
+        if len(summary) <= limit:
+            return summary
+        return summary[:limit]
+
+    @classmethod
+    def _is_probe_dimension_error(cls, error_output):
+        if not error_output:
+            return False
+        text = str(error_output).lower()
+        return any(pattern in text for pattern in cls._HW_PROBE_DIMENSION_ERROR_PATTERNS)
+
+    @classmethod
+    def _should_keep_nvidia_preference_on_probe_failure(cls, nvenc_listed, nvidia_device_visible, detect_error):
+        return bool(
+            nvenc_listed
+            and nvidia_device_visible
+            and cls._is_probe_dimension_error(detect_error)
+        )
+
+    @classmethod
+    def _build_hw_probe_cmd(cls, ffmpeg_bin, encoder_name, probe_size=None):
+        size = probe_size or cls._HW_PROBE_DEFAULT_SIZE
+        color_src = f"color=c=black:s={size}:d={cls._HW_PROBE_DURATION}"
+        encoder_name_lower = str(encoder_name or '').lower().strip()
+        test_cmd = [ffmpeg_bin, '-hide_banner', '-loglevel', 'error']
+
+        if encoder_name_lower == 'h264_vaapi':
+            test_cmd.extend([
+                '-vaapi_device', '/dev/dri/renderD128',
+                '-f', 'lavfi', '-i', color_src,
+                '-vf', 'format=nv12,hwupload',
+                '-frames:v', '1',
+                '-c:v', 'h264_vaapi',
+                '-qp', '23',
+            ])
+        elif encoder_name_lower == 'h264_qsv':
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', 'h264_qsv',
+                '-global_quality', '23',
+                '-look_ahead', '0',
+                '-pix_fmt', 'nv12',
+            ])
+        elif 'amf' in encoder_name_lower:
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', encoder_name,
+                '-usage', 'transcoding',
+                '-quality', 'balanced',
+                '-rc', 'cqp',
+                '-qp_i', '23',
+                '-qp_p', '23',
+                '-qp_b', '23',
+            ])
+        elif 'nvenc' in encoder_name_lower:
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', encoder_name,
+                '-preset', 'p4',
+                '-rc:v', 'vbr',
+                '-cq:v', '23',
+            ])
+        else:
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', encoder_name,
+            ])
+
+        test_cmd.extend(['-f', 'null', '-'])
+        return test_cmd
+
+    @classmethod
+    def _probe_hw_encoder_availability(cls, ffmpeg_bin, encoder_name):
+        attempts = [cls._HW_PROBE_DEFAULT_SIZE]
+        last_meta = None
+        last_error = ''
+
+        for idx, probe_size in enumerate(attempts):
+            probe_retry = idx > 0
+            test_cmd = cls._build_hw_probe_cmd(
+                ffmpeg_bin=ffmpeg_bin,
+                encoder_name=encoder_name,
+                probe_size=probe_size,
+            )
+            test_result = subprocess.run(
+                test_cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=15
+            )
+            err_msg = (test_result.stderr or test_result.stdout or '').strip()
+            if not err_msg and test_result.returncode != 0:
+                err_msg = '未知错误'
+            last_error = err_msg
+            probe_error_short = cls._short_error_text(err_msg)
+            last_meta = {
+                'probe_size': probe_size,
+                'probe_retry': probe_retry,
+                'probe_returncode': test_result.returncode,
+                'probe_error_short': probe_error_short,
+                'probe_cmd_summary': cls._summarize_cmd(test_cmd),
+            }
+
+            if test_result.returncode == 0:
+                return True, '', last_meta
+
+            if idx == 0 and cls._is_probe_dimension_error(err_msg):
+                attempts.append(cls._HW_PROBE_RETRY_SIZE)
+
+        if not last_meta:
+            last_meta = {
+                'probe_size': cls._HW_PROBE_DEFAULT_SIZE,
+                'probe_retry': False,
+                'probe_returncode': -1,
+                'probe_error_short': '未知错误',
+                'probe_cmd_summary': '',
+            }
+        return False, last_error or '未知错误', last_meta
+
     def _parse_custom_video_params(self, task_logger):
         """解析自定义视频参数，解析失败时回退默认策略。"""
         enabled = _as_bool(self.config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False))
@@ -2707,6 +2850,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # 缓存硬件编码器检测结果，避免重复测试
                 _hw_encoder_cache = {}
                 _hw_encoder_error_cache = {}
+                _hw_encoder_probe_meta_cache = {}
                 amd_backend_cache = None
 
                 def _is_encoder_listed(encoder_name: str) -> bool:
@@ -2750,83 +2894,53 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             # 枚举失败不影响后续实际测试
                             pass
 
-                        # 实际测试编码：按硬件后端定制探测命令，避免通用命令误判
-                        # 这能验证硬件是否真正可用（而非仅 ffmpeg 编译时启用了支持）
-                        encoder_name_lower = encoder_name.lower().strip()
-                        test_cmd = [ffmpeg_bin, '-hide_banner', '-loglevel', 'error']
-
-                        if encoder_name_lower == 'h264_vaapi':
-                            # VAAPI 需要显式设备和 hwupload 流程
-                            test_cmd.extend([
-                                '-vaapi_device', '/dev/dri/renderD128',
-                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                                '-vf', 'format=nv12,hwupload',
-                                '-frames:v', '1',
-                                '-c:v', 'h264_vaapi',
-                                '-qp', '23',
-                            ])
-                        elif encoder_name_lower == 'h264_qsv':
-                            # QSV 使用更稳妥的参数组合，降低探测误判
-                            test_cmd.extend([
-                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                                '-frames:v', '1',
-                                '-c:v', 'h264_qsv',
-                                '-global_quality', '23',
-                                '-look_ahead', '0',
-                                '-pix_fmt', 'nv12',
-                            ])
-                        elif 'amf' in encoder_name_lower:
-                            test_cmd.extend([
-                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                                '-frames:v', '1',
-                                '-c:v', encoder_name,
-                                '-usage', 'transcoding',
-                                '-quality', 'balanced',
-                                '-rc', 'cqp',
-                                '-qp_i', '23',
-                                '-qp_p', '23',
-                                '-qp_b', '23',
-                            ])
-                        elif 'nvenc' in encoder_name_lower:
-                            test_cmd.extend([
-                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                                '-frames:v', '1',
-                                '-c:v', encoder_name,
-                                '-preset', 'p4',
-                                '-rc:v', 'vbr',
-                                '-cq:v', '23',
-                            ])
-                        else:
-                            test_cmd.extend([
-                                '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
-                                '-frames:v', '1',
-                                '-c:v', encoder_name,
-                            ])
-
-                        test_cmd.extend(['-f', 'null', '-'])
-
-                        test_result = subprocess.run(
-                            test_cmd,
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15
+                        available, probe_err, probe_meta = self._probe_hw_encoder_availability(
+                            ffmpeg_bin=ffmpeg_bin,
+                            encoder_name=encoder_name,
                         )
-                        available = test_result.returncode == 0
+                        _hw_encoder_probe_meta_cache[encoder_name] = dict(probe_meta or {})
                         _hw_encoder_cache[encoder_name] = available
                         if not available:
-                            err_msg = (test_result.stderr or test_result.stdout or '未知错误').strip()
-                            _hw_encoder_error_cache[encoder_name] = err_msg
+                            _hw_encoder_error_cache[encoder_name] = probe_err or '未知错误'
                             if not encoder_list_available:
-                                task_logger.debug(f"编码器 {encoder_name} 未在 ffmpeg -encoders 列表中匹配到，且实测失败: {err_msg[:240]}")
+                                task_logger.debug(
+                                    f"编码器 {encoder_name} 未在 ffmpeg -encoders 列表中匹配到，且实测失败: "
+                                    f"{self._short_error_text(probe_err)}"
+                                )
                             else:
-                                task_logger.debug(f"编码器 {encoder_name} 已编译但硬件不可用: {err_msg[:240]}")
-                            task_logger.debug(f"编码器 {encoder_name} 探测命令: {' '.join(test_cmd)}")
+                                task_logger.debug(
+                                    f"编码器 {encoder_name} 已编译但硬件不可用: {self._short_error_text(probe_err)}"
+                                )
+                            task_logger.warning(
+                                f"编码器 {encoder_name} 探测失败: "
+                                f"probe_size={probe_meta.get('probe_size', 'unknown')}, "
+                                f"probe_retry={probe_meta.get('probe_retry', False)}, "
+                                f"probe_returncode={probe_meta.get('probe_returncode', 'unknown')}, "
+                                f"probe_error_short={probe_meta.get('probe_error_short', '')}"
+                            )
+                            task_logger.debug(
+                                f"编码器 {encoder_name} 探测命令摘要: {probe_meta.get('probe_cmd_summary', '')}"
+                            )
                         else:
                             _hw_encoder_error_cache[encoder_name] = ''
-                            task_logger.debug(f"编码器 {encoder_name} 测试成功，硬件可用")
+                            task_logger.debug(
+                                f"编码器 {encoder_name} 测试成功，硬件可用: "
+                                f"probe_size={probe_meta.get('probe_size', 'unknown')}, "
+                                f"probe_retry={probe_meta.get('probe_retry', False)}, "
+                                f"probe_returncode={probe_meta.get('probe_returncode', 0)}"
+                            )
                         return available
                     except Exception as e:
                         task_logger.debug(f"检测编码器 {encoder_name} 时出错: {e}")
                         _hw_encoder_cache[encoder_name] = False
-                        _hw_encoder_error_cache[encoder_name] = str(e)
+                        _hw_encoder_error_cache[encoder_name] = self._short_error_text(str(e))
+                        _hw_encoder_probe_meta_cache[encoder_name] = {
+                            'probe_size': 'unknown',
+                            'probe_retry': False,
+                            'probe_returncode': -1,
+                            'probe_error_short': self._short_error_text(str(e)),
+                            'probe_cmd_summary': '',
+                        }
                     return False
 
                 def _detect_amd_backend() -> str:
@@ -2988,23 +3102,44 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'nvidia':
                     if not _detect_nvidia():
-                        task_logger.warning("配置使用 NVIDIA 编码但未检测到 NVENC，回退到自动检测")
                         nvenc_listed = _is_encoder_listed('h264_nvenc')
                         nvidia_device_visible = any(
                             os.path.exists(path)
                             for path in ('/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-modeset')
                         )
-                        nvenc_reason = (_hw_encoder_error_cache.get('h264_nvenc') or '未知').replace('\n', ' ')
+                        nvenc_reason_raw = _hw_encoder_error_cache.get('h264_nvenc') or '未知'
+                        nvenc_reason = nvenc_reason_raw.replace('\n', ' ')
+                        nvenc_probe_meta = _hw_encoder_probe_meta_cache.get('h264_nvenc') or {}
+                        nvenc_probe_size = nvenc_probe_meta.get('probe_size', 'unknown')
+                        nvenc_probe_retry = nvenc_probe_meta.get('probe_retry', False)
+                        nvenc_probe_error_short = nvenc_probe_meta.get('probe_error_short', '')
+                        nvenc_probe_cmd_summary = nvenc_probe_meta.get('probe_cmd_summary', '')
                         task_logger.warning(
                             f"NVENC诊断信息: ffmpeg={ffmpeg_bin}, h264_nvenc_listed={nvenc_listed}, "
-                            f"nvidia_device_visible={nvidia_device_visible}, detect_error={nvenc_reason[:240]}"
+                            f"nvidia_device_visible={nvidia_device_visible}, detect_error={nvenc_reason[:240]}, "
+                            f"probe_size={nvenc_probe_size}, probe_retry={nvenc_probe_retry}, "
+                            f"probe_error_short={nvenc_probe_error_short}"
                         )
-                        task_logger.warning(
-                            "NVENC 不可用常见原因：Docker 未启用 GPU 透传（gpus: all）、"
-                            "主机未安装 nvidia-container-toolkit、"
-                            "或 NVIDIA_DRIVER_CAPABILITIES 未包含 video,utility。"
-                        )
-                        actual_encoder = _get_best_encoder()
+                        if nvenc_probe_cmd_summary:
+                            task_logger.debug(f"NVENC探测命令摘要: {nvenc_probe_cmd_summary}")
+
+                        if self._should_keep_nvidia_preference_on_probe_failure(
+                            nvenc_listed=nvenc_listed,
+                            nvidia_device_visible=nvidia_device_visible,
+                            detect_error=nvenc_reason_raw,
+                        ):
+                            task_logger.warning(
+                                "NVENC 预检命中分辨率限制类错误，保留 NVIDIA 编码偏好并尝试真实转码"
+                            )
+                            actual_encoder = 'nvidia'
+                        else:
+                            task_logger.warning("配置使用 NVIDIA 编码但未检测到 NVENC，回退到自动检测")
+                            task_logger.warning(
+                                "NVENC 不可用常见原因：Docker 未启用 GPU 透传（gpus: all）、"
+                                "主机未安装 nvidia-container-toolkit、"
+                                "或 NVIDIA_DRIVER_CAPABILITIES 未包含 video,utility。"
+                            )
+                            actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'intel':
                     if not _detect_intel():
                         task_logger.warning("配置使用 Intel 编码但未检测到 QSV，回退到自动检测")
