@@ -56,14 +56,6 @@ jobs:
           }
           Copy-Item -Path $licenseCandidate.FullName -Destination (Join-Path $ffmpegDir 'FFMPEG_GPLv3.txt') -Force
 
-          $readmeCandidate = Get-ChildItem -Path $extractDir -Recurse -File |
-            Where-Object { $_.Name -in @('README.txt', 'README.md', 'README') } |
-            Select-Object -First 1
-          if (-not $readmeCandidate) {
-            throw "Failed to locate FFmpeg README file in extracted archive."
-          }
-          Copy-Item -Path $readmeCandidate.FullName -Destination (Join-Path $ffmpegDir 'FFMPEG_README.txt') -Force
-
           Write-Host "Validating downloaded FFmpeg binaries..."
           & (Join-Path $ffmpegDir 'ffmpeg.exe') -version
           if ($LASTEXITCODE -ne 0) {
@@ -95,7 +87,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $bundleDir = Join-Path $env:GITHUB_WORKSPACE 'build-tools/dist/Y2A-Auto/ffmpeg'
-          $requiredFiles = @('ffmpeg.exe', 'ffprobe.exe', 'FFMPEG_GPLv3.txt', 'FFMPEG_README.txt')
+          $requiredFiles = @('ffmpeg.exe', 'ffprobe.exe', 'FFMPEG_GPLv3.txt')
 
           foreach ($file in $requiredFiles) {
             $path = Join-Path $bundleDir $file
