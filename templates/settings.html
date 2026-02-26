@@ -1068,6 +1068,26 @@
                                             <input type="text" id="voxtral-language" name="VOXTRAL_LANGUAGE" value="{{ config.get('VOXTRAL_LANGUAGE', '') }}" class="form-control" placeholder="留空则自动检测">
                                         </div>
                                     </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="voxtral-max-audio-duration">单请求最大时长(秒):</label>
+                                            <input type="number" min="60" step="1" id="voxtral-max-audio-duration" name="VOXTRAL_MAX_AUDIO_DURATION_S" value="{{ config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label for="voxtral-long-audio-margin">长音频安全余量(秒):</label>
+                                            <input type="number" min="0" step="1" id="voxtral-long-audio-margin" name="VOXTRAL_LONG_AUDIO_MARGIN_S" value="{{ config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) }}" class="form-control">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="form-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" name="VOXTRAL_ENFORCE_MAX_DURATION" {% if config.get('VOXTRAL_ENFORCE_MAX_DURATION', True) %}checked{% endif %}>
+                                                启用单请求时长硬限制
+                                            </label>
+                                        </div>
+                                    </div>
                                     <div class="col-md-12">
                                         <div class="form-group">
                                             <label for="voxtral-context-bias">上下文偏置（可选）:</label>
@@ -1091,6 +1111,7 @@
                                     <ul class="mb-0 mt-2">
                                         <li>实际调用接口：<code>{VOXTRAL_BASE_URL}/audio/transcriptions</code>（会自动规范化）</li>
                                         <li><code>timestamp_granularities</code> 与 <code>language</code> 互斥；系统优先时间戳并忽略 language</li>
+                                        <li>Voxtral Mini Transcribe V2 单次请求建议不超过约 3 小时；超限会自动切片并拼接</li>
                                         <li>Voxtral 路径不启用 VAD 与字幕后处理调参项</li>
                                     </ul>
                                 </div>

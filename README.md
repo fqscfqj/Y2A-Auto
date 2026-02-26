@@ -191,11 +191,15 @@ python app.py
   "VOXTRAL_TIMESTAMP_GRANULARITIES": "segment",
   "VOXTRAL_DIARIZE": false,
   "VOXTRAL_CONTEXT_BIAS": "",
-  "VOXTRAL_LANGUAGE": ""
+  "VOXTRAL_LANGUAGE": "",
+  "VOXTRAL_MAX_AUDIO_DURATION_S": 10800,
+  "VOXTRAL_LONG_AUDIO_MARGIN_S": 5,
+  "VOXTRAL_ENFORCE_MAX_DURATION": true
 }
 ```
 
 注意：`VOXTRAL_TIMESTAMP_GRANULARITIES` 与 `VOXTRAL_LANGUAGE` 同时设置时，系统会优先时间戳并自动忽略 `VOXTRAL_LANGUAGE`。
+注意：Voxtral Mini Transcribe V2 单次请求最大处理时长约 3 小时。超过上限时，系统会自动分割为多个片段（每段不超过上限）并进行拼接/后处理。
 
 ### 字幕 QC 说明
 

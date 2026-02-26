@@ -108,6 +108,9 @@ class SpeechRecognitionConfig:
     voxtral_timestamp_granularities: str = 'segment'
     voxtral_diarize: bool = False
     voxtral_context_bias: str = ''
+    voxtral_max_audio_duration_s: float = 10800.0
+    voxtral_long_audio_margin_s: float = 5.0
+    voxtral_enforce_max_duration: bool = True
     max_workers: int = 3                # Concurrent segment uploads
 
     # Text post-processing (only for Whisper)
@@ -202,6 +205,8 @@ class SpeechRecognizer:
                 retry_delay_s=config.retry_delay_s,
                 max_workers=config.max_workers,
                 request_timeout_s=config.request_timeout_s,
+                voxtral_max_audio_duration_s=config.voxtral_max_audio_duration_s,
+                voxtral_enforce_max_duration=config.voxtral_enforce_max_duration,
             ),
             logger=self.logger,
         )
@@ -419,7 +424,18 @@ class SpeechRecognizer:
         force_chunks: bool,
     ) -> List[Dict[str, Any]]:
         """Transcribe without VAD using fixed chunks or as a single clip."""
-        if force_chunks or total_duration > self.config.chunk_window_s * 2:
+        force_voxtral_chunks = (
+            self.config.api_provider == 'voxtral'
+            and self.config.voxtral_enforce_max_duration
+            and total_duration > max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
+        )
+        if force_voxtral_chunks:
+            self.logger.warning(
+                "Voxtral audio %.1fs exceeds max request duration %.1fs; forcing chunked transcription.",
+                total_duration,
+                float(self.config.voxtral_max_audio_duration_s or 10800.0),
+            )
+        if force_chunks or force_voxtral_chunks or total_duration > self.config.chunk_window_s * 2:
             self.logger.info("Fallback: fixed-window chunked transcription")
             chunks = self._create_audio_chunks(total_duration)
             segment_inputs = self._prepare_chunk_inputs(audio_wav, chunks)
@@ -470,8 +486,22 @@ class SpeechRecognizer:
         self, total_duration_s: float
     ) -> List[Tuple[float, float]]:
         """Create overlapping fixed-size chunks."""
-        window = self.config.chunk_window_s
+        window = max(0.1, float(self.config.chunk_window_s or 25.0))
         overlap = self.config.chunk_overlap_s
+        if self.config.api_provider == 'voxtral' and self.config.voxtral_enforce_max_duration:
+            max_duration_s = max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
+            margin_s = max(0.0, float(self.config.voxtral_long_audio_margin_s or 0.0))
+            effective_max_window = max(1.0, max_duration_s - margin_s)
+            if window > effective_max_window:
+                self.logger.warning(
+                    "AUDIO_CHUNK_WINDOW_S %.2fs exceeds Voxtral safe window %.2fs "
+                    "(max %.2fs - margin %.2fs); clamping automatically.",
+                    window,
+                    effective_max_window,
+                    max_duration_s,
+                    margin_s,
+                )
+                window = effective_max_window
         if total_duration_s <= window:
             return [(0.0, total_duration_s)]
         chunks: List[Tuple[float, float]] = []
@@ -627,6 +657,9 @@ def create_speech_recognizer_from_config(
         voxtral_timestamp_granularities = 'segment'
         voxtral_diarize = False
         voxtral_context_bias = ''
+        voxtral_max_audio_duration_s = 10800.0
+        voxtral_long_audio_margin_s = 5.0
+        voxtral_enforce_max_duration = True
 
         if use_fireredasr:
             asr_provider = 'fireredasr2s'
@@ -659,6 +692,15 @@ def create_speech_recognizer_from_config(
             )
             voxtral_diarize = _to_bool(app_config.get('VOXTRAL_DIARIZE', False))
             voxtral_context_bias = app_config.get('VOXTRAL_CONTEXT_BIAS') or ''
+            voxtral_max_audio_duration_s = float(
+                app_config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) or 10800.0
+            )
+            voxtral_long_audio_margin_s = float(
+                app_config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) or 5.0
+            )
+            voxtral_enforce_max_duration = _to_bool(
+                app_config.get('VOXTRAL_ENFORCE_MAX_DURATION', True)
+            )
         else:
             asr_provider = 'whisper'
             asr_base_url = (
@@ -709,6 +751,9 @@ def create_speech_recognizer_from_config(
             voxtral_timestamp_granularities=voxtral_timestamp_granularities,
             voxtral_diarize=voxtral_diarize,
             voxtral_context_bias=voxtral_context_bias,
+            voxtral_max_audio_duration_s=voxtral_max_audio_duration_s,
+            voxtral_long_audio_margin_s=voxtral_long_audio_margin_s,
+            voxtral_enforce_max_duration=voxtral_enforce_max_duration,
             max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
             # Text processing
             max_subtitle_line_length=int(

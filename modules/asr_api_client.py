@@ -71,6 +71,8 @@ class AsrConfig:
     retry_delay_s: float = 2.0
     max_workers: int = 3     # Concurrent segment uploads
     request_timeout_s: float = 300.0
+    voxtral_max_audio_duration_s: float = 10800.0
+    voxtral_enforce_max_duration: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +382,18 @@ class AsrApiClient:
     ) -> Optional[str]:
         """Transcribe one segment via Mistral Voxtral `/v1/audio/transcriptions`."""
         segment_desc = segment_info or wav_path
+        if self.config.voxtral_enforce_max_duration:
+            duration_s = self._probe_wav_duration(wav_path)
+            max_duration_s = max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
+            if duration_s is not None and duration_s > max_duration_s:
+                self.logger.error(
+                    "Voxtral segment exceeds max duration: %.2fs > %.2fs [%s]. "
+                    "Refusing local upload; split audio into shorter chunks first.",
+                    duration_s,
+                    max_duration_s,
+                    segment_desc,
+                )
+                return None
         endpoint_url = self._build_voxtral_transcriptions_url(self.config.base_url)
         if not endpoint_url:
             self.logger.error("Voxtral base URL is empty or invalid")
@@ -812,6 +826,18 @@ class AsrApiClient:
             if item and item not in deduped:
                 deduped.append(item)
         return deduped
+
+    @staticmethod
+    def _probe_wav_duration(wav_path: str) -> Optional[float]:
+        try:
+            import wave
+            with wave.open(wav_path, 'rb') as wf:
+                rate = wf.getframerate()
+                if rate <= 0:
+                    return None
+                return wf.getnframes() / rate
+        except Exception:
+            return None
 
     def _firered_response_to_srt(self, payload: Dict[str, Any]) -> Optional[str]:
         """Convert FireRed `/v1/process_all` response JSON to SRT."""
