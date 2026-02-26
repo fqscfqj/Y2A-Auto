@@ -16,6 +16,64 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Prepare bundled FFmpeg (latest)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $archiveUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          $archivePath = Join-Path $env:RUNNER_TEMP 'ffmpeg-master-latest-win64-gpl.zip'
+          $extractDir = Join-Path $env:RUNNER_TEMP 'ffmpeg-master-latest-win64-gpl'
+          $ffmpegDir = Join-Path $env:GITHUB_WORKSPACE 'ffmpeg'
+
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+          if (Test-Path $extractDir) {
+            Remove-Item $extractDir -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $ffmpegDir -Force | Out-Null
+
+          Write-Host "Downloading FFmpeg archive: $archiveUrl"
+          Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath
+          Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+
+          $ffmpegExe = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffmpeg.exe' | Select-Object -First 1
+          $ffprobeExe = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffprobe.exe' | Select-Object -First 1
+          if (-not $ffmpegExe -or -not $ffprobeExe) {
+            throw "Failed to locate ffmpeg.exe or ffprobe.exe in extracted archive."
+          }
+
+          Copy-Item -Path $ffmpegExe.FullName -Destination (Join-Path $ffmpegDir 'ffmpeg.exe') -Force
+          Copy-Item -Path $ffprobeExe.FullName -Destination (Join-Path $ffmpegDir 'ffprobe.exe') -Force
+
+          $licenseCandidate = Get-ChildItem -Path $extractDir -Recurse -File |
+            Where-Object { $_.Name -in @('COPYING.GPLv3', 'LICENSE.GPLv3', 'GPLv3.txt', 'LICENSE.txt', 'COPYING') } |
+            Select-Object -First 1
+          if (-not $licenseCandidate) {
+            throw "Failed to locate FFmpeg GPLv3 license file in extracted archive."
+          }
+          Copy-Item -Path $licenseCandidate.FullName -Destination (Join-Path $ffmpegDir 'FFMPEG_GPLv3.txt') -Force
+
+          $readmeCandidate = Get-ChildItem -Path $extractDir -Recurse -File |
+            Where-Object { $_.Name -in @('README.txt', 'README.md', 'README') } |
+            Select-Object -First 1
+          if (-not $readmeCandidate) {
+            throw "Failed to locate FFmpeg README file in extracted archive."
+          }
+          Copy-Item -Path $readmeCandidate.FullName -Destination (Join-Path $ffmpegDir 'FFMPEG_README.txt') -Force
+
+          Write-Host "Validating downloaded FFmpeg binaries..."
+          & (Join-Path $ffmpegDir 'ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "ffmpeg.exe validation failed."
+          }
+          & (Join-Path $ffmpegDir 'ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "ffprobe.exe validation failed."
+          }
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -30,6 +88,30 @@ jobs:
         run: |
           cd build-tools
           python build_exe.py
+
+      - name: Verify packaged FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $bundleDir = Join-Path $env:GITHUB_WORKSPACE 'build-tools/dist/Y2A-Auto/ffmpeg'
+          $requiredFiles = @('ffmpeg.exe', 'ffprobe.exe', 'FFMPEG_GPLv3.txt', 'FFMPEG_README.txt')
+
+          foreach ($file in $requiredFiles) {
+            $path = Join-Path $bundleDir $file
+            if (-not (Test-Path $path)) {
+              throw "Missing packaged FFmpeg file: $path"
+            }
+          }
+
+          & (Join-Path $bundleDir 'ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged ffmpeg.exe validation failed."
+          }
+          & (Join-Path $bundleDir 'ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged ffprobe.exe validation failed."
+          }
 
       - name: Archive build output
         run: |
