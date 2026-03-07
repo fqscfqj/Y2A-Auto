@@ -132,7 +132,7 @@ class SpeechRecognitionConfig:
     # Retry / fallback
     max_retries: int = 3
     retry_delay_s: float = 2.0
-    fallback_to_fixed_chunks: bool = True
+    fallback_to_fixed_chunks: bool = False
     request_timeout_s: float = 300.0
 
 
@@ -786,7 +786,7 @@ def create_speech_recognizer_from_config(
             max_retries=asr_max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
             fallback_to_fixed_chunks=_to_bool(
-                app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True)
+                app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False)
             ),
             request_timeout_s=asr_timeout_s,
         )

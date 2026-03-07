@@ -1141,10 +1141,10 @@
                                                         <div class="col-12">
                                                             <div class="form-group mb-0">
                                                                 <label class="checkbox-label">
-                                                                    <input type="checkbox" name="WHISPER_FALLBACK_TO_FIXED_CHUNKS" {% if config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True) %}checked{% endif %}>
+                                                                    <input type="checkbox" name="WHISPER_FALLBACK_TO_FIXED_CHUNKS" {% if config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False) %}checked{% endif %}>
                                                                     VAD 失败时回退到固定分片
                                                                 </label>
-                                                                <p class="help-text mb-0">Whisper / Voxtral 一致生效。关闭后，VAD 无结果时优先整段发送；仅超出 Voxtral 单请求上限时仍自动切片。</p>
+                                                                <p class="help-text mb-0">Whisper / Voxtral 一致生效，默认关闭。关闭后，VAD 无结果时会直接跳过 ASR；仅超出 Voxtral 单请求上限时仍自动切片。手动开启后，VAD 失败时才会回退到固定分片。</p>
                                                             </div>
                                                         </div>
                                                     </div>

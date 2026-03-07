@@ -164,7 +164,7 @@ DEFAULT_CONFIG = {
     # 重试与回退策略
     "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
-    "WHISPER_FALLBACK_TO_FIXED_CHUNKS": True,  # VAD失败时回退到固定切分
+    "WHISPER_FALLBACK_TO_FIXED_CHUNKS": False,  # VAD失败时回退到固定切分（默认关闭）
 }
 
 CONFIG_FILE = "config.json"
