@@ -645,6 +645,7 @@ def init_db():
         subtitle_qc_reason TEXT,  -- 字幕质检失败原因（可选）
         subtitle_qc_score REAL,  -- 字幕质检评分（可选）
         subtitle_qc_checked_at TIMESTAMP,  -- 字幕质检时间（可选）
+        subtitle_qc_fingerprint TEXT,  -- 字幕质检指纹（用于结果复用）
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
@@ -685,6 +686,11 @@ def init_db():
         if 'subtitle_qc_checked_at' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_checked_at TIMESTAMP")
             logger.info("数据库升级：添加subtitle_qc_checked_at字段")
+            conn.commit()
+
+        if 'subtitle_qc_fingerprint' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_fingerprint TEXT")
+            logger.info("数据库升级：添加subtitle_qc_fingerprint字段")
             conn.commit()
 
         if 'pipeline_checkpoint' not in columns:
@@ -2203,7 +2209,7 @@ class TaskProcessor:
             return False
 
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
-        """可选的最终字幕质检：失败则仅跳过烧录字幕，不影响后续上传与任务完成。"""
+        """对 ASR 生成字幕执行预检，命中缓存时复用历史结果。"""
         try:
             enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', False)
             enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() in ['true', '1', 'on']
@@ -2213,24 +2219,51 @@ class TaskProcessor:
             if not srt_path or not os.path.exists(srt_path):
                 return True
 
-            from modules.subtitle_qc import run_subtitle_qc
+            from modules.subtitle_qc import build_subtitle_qc_fingerprint, run_subtitle_qc
+
+            task = get_task(task_id) or {}
+            fingerprint = build_subtitle_qc_fingerprint(srt_path)
+            cached_checked_at = str(task.get('subtitle_qc_checked_at') or '').strip()
+            cached_fingerprint = str(task.get('subtitle_qc_fingerprint') or '').strip()
+            if fingerprint and cached_checked_at and cached_fingerprint == fingerprint:
+                cached_failed = int(task.get('subtitle_qc_failed') or 0) == 1
+                cached_score = float(task.get('subtitle_qc_score') or 0.0)
+                cached_reason = str(task.get('subtitle_qc_reason') or 'reuse').strip()
+                task_logger.info(
+                    f"字幕质检命中缓存: reason=cached:{cached_reason}, score={cached_score:.3f}, passed={not cached_failed}"
+                )
+                return not cached_failed
 
             result = run_subtitle_qc(srt_path, self.config)
             checked_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
             update_task(
                 task_id,
                 subtitle_qc_failed=0 if result.passed else 1,
                 subtitle_qc_reason=result.reason,
                 subtitle_qc_score=float(result.score),
                 subtitle_qc_checked_at=checked_at,
+                subtitle_qc_fingerprint=fingerprint,
             )
 
             if result.passed:
-                task_logger.info(f"字幕质检通过: score={result.score:.3f}")
+                task_logger.info(
+                    "字幕质检通过: decision=%s, reason=%s, score=%.3f, sample_items=%s, sample_chars=%s",
+                    result.decision or 'unknown',
+                    result.reason,
+                    float(result.score),
+                    result.sample_items,
+                    result.sample_chars,
+                )
                 return True
 
-            task_logger.warning(f"字幕质检失败: score={result.score:.3f}, reason={result.reason}")
+            task_logger.warning(
+                "字幕质检失败: decision=%s, reason=%s, score=%.3f, sample_items=%s, sample_chars=%s",
+                result.decision or 'unknown',
+                result.reason,
+                float(result.score),
+                result.sample_items,
+                result.sample_chars,
+            )
             return False
         except Exception as e:
             # QC 失败不应阻断主流程，默认放行
@@ -4111,6 +4144,62 @@ class TaskProcessor:
             task_logger.info("内容审核不通过，需要人工审核")
             update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
 
+    def _get_embedded_video_candidate(self, video_path: str) -> str:
+        if not video_path:
+            return ''
+        if os.path.exists(video_path):
+            base_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
+            if base_name_no_ext.endswith('_with_subtitle'):
+                return video_path
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        candidate = os.path.join(video_dir, f"{video_name}_with_subtitle.mp4")
+        return candidate if os.path.exists(candidate) else ''
+
+    def _resolve_existing_subtitle_assets(self, task_id: str, task: dict, task_dir: str):
+        def _existing_path(value):
+            path_value = str(value or '').strip()
+            return path_value if path_value and os.path.exists(path_value) else ''
+
+        subtitle_path_original = _existing_path(task.get('subtitle_path_original'))
+        subtitle_path_translated = _existing_path(task.get('subtitle_path_translated'))
+        subtitle_language = str(task.get('subtitle_language_detected') or '').strip().lower()
+
+        if not subtitle_path_translated:
+            translated_candidate = os.path.join(task_dir, f"translated_{task_id}.srt")
+            if os.path.exists(translated_candidate):
+                subtitle_path_translated = translated_candidate
+
+        if not subtitle_path_original:
+            for ext in ('.srt', '.vtt'):
+                asr_candidate = os.path.join(task_dir, f"asr_{task_id}{ext}")
+                if os.path.exists(asr_candidate):
+                    subtitle_path_original = asr_candidate
+                    break
+
+        subtitle_candidates = []
+        try:
+            for name in os.listdir(task_dir):
+                if not isinstance(name, str):
+                    continue
+                lower = name.lower()
+                if lower.endswith('.srt') or lower.endswith('.vtt'):
+                    subtitle_candidates.append(os.path.join(task_dir, name))
+        except Exception:
+            subtitle_candidates = []
+
+        subtitle_candidates = sorted(set(subtitle_candidates))
+        for candidate in subtitle_candidates:
+            lower_name = os.path.basename(candidate).lower()
+            if lower_name.startswith('translated_'):
+                if not subtitle_path_translated:
+                    subtitle_path_translated = candidate
+                continue
+            if not subtitle_path_original:
+                subtitle_path_original = candidate
+
+        return subtitle_path_original, subtitle_path_translated, subtitle_language
+
     def _prepare_subtitle_for_upload(self, task_id, task_logger):
         """上传前字幕处理（ASR/翻译/嵌入）。返回最新任务对象。"""
         task = get_task(task_id)
@@ -4124,13 +4213,84 @@ class TaskProcessor:
             return get_task(task_id)
 
         try:
+            _raise_if_cancelled(task_id, task_logger)
             task_dir = os.path.dirname(video_path)
-            base_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
-            if base_name_no_ext.endswith('_with_subtitle'):
-                task_logger.info("检测到已嵌入字幕的视频文件，跳过重复转码步骤")
+            reusable_embedded_video = self._get_embedded_video_candidate(video_path)
+            if reusable_embedded_video:
+                if reusable_embedded_video != video_path:
+                    update_task(task_id, video_path_local=reusable_embedded_video)
+                task_logger.info("检测到已存在带字幕视频，复用现有转码产物")
                 return get_task(task_id)
 
-            _raise_if_cancelled(task_id, task_logger)
+            if task.get('subtitle_qc_failed') == 1:
+                task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
+                return get_task(task_id)
+
+            should_embed_subtitle = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+            translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
+            subtitle_path_original, subtitle_path_translated, subtitle_language = self._resolve_existing_subtitle_assets(
+                task_id, task, task_dir
+            )
+            if subtitle_path_original and not subtitle_language:
+                subtitle_language = self._detect_subtitle_language(subtitle_path_original)
+
+            reusable_updates = {}
+            if subtitle_path_original and task.get('subtitle_path_original') != subtitle_path_original:
+                reusable_updates['subtitle_path_original'] = subtitle_path_original
+            if subtitle_path_translated and task.get('subtitle_path_translated') != subtitle_path_translated:
+                reusable_updates['subtitle_path_translated'] = subtitle_path_translated
+            if subtitle_language and task.get('subtitle_language_detected') != subtitle_language:
+                reusable_updates['subtitle_language_detected'] = subtitle_language
+            if reusable_updates:
+                update_task(task_id, **reusable_updates)
+                task = get_task(task_id) or task
+
+            if translation_enabled and subtitle_path_translated and os.path.exists(subtitle_path_translated):
+                if not should_embed_subtitle:
+                    task_logger.info("检测到已存在翻译字幕且未开启烧录，复用现有字幕产物")
+                    return get_task(task_id)
+
+                embedded_video_path = self._embed_subtitle_in_video(
+                    task_id, video_path, subtitle_path_translated, task_logger
+                )
+                if embedded_video_path:
+                    update_task(
+                        task_id,
+                        video_path_local=embedded_video_path,
+                        subtitle_path_original=subtitle_path_original,
+                        subtitle_path_translated=subtitle_path_translated,
+                        subtitle_language_detected=subtitle_language,
+                    )
+                    task_logger.info("检测到已存在翻译字幕，仅补做烧录")
+                else:
+                    task_logger.warning("复用已有翻译字幕烧录失败，保留原视频继续上传")
+                return get_task(task_id)
+
+            if translation_enabled and subtitle_path_original and str(subtitle_language or '').startswith('zh'):
+                if not should_embed_subtitle:
+                    task_logger.info("检测到已存在中文字幕且未开启烧录，复用现有字幕产物")
+                    return get_task(task_id)
+
+                embedded_video_path = self._embed_subtitle_in_video(
+                    task_id, video_path, subtitle_path_original, task_logger
+                )
+                if embedded_video_path:
+                    update_task(
+                        task_id,
+                        video_path_local=embedded_video_path,
+                        subtitle_path_original=subtitle_path_original,
+                        subtitle_path_translated=None,
+                        subtitle_language_detected=subtitle_language or 'zh',
+                    )
+                    task_logger.info("检测到已存在中文字幕，仅补做烧录")
+                else:
+                    task_logger.warning("复用已有中文字幕烧录失败，保留原视频继续上传")
+                return get_task(task_id)
+
+            if not translation_enabled and (subtitle_path_original or subtitle_path_translated):
+                task_logger.info("检测到已有字幕产物，跳过上传前重复字幕处理")
+                return get_task(task_id)
+
             subtitle_files = []
             try:
                 for name in os.listdir(task_dir):
@@ -4143,7 +4303,7 @@ class TaskProcessor:
                 pass
 
             if _is_asr_enabled(self.config):
-                if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
+                if translation_enabled:
                     task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
                     if task.get('subtitle_qc_failed') == 1:
                         task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")

@@ -1715,6 +1715,8 @@ def settings():
                         'VAD_SILERO_MAX_SPEECH_S': 120,
                         'VAD_SILERO_SPEECH_PAD_MS': 30,
                         'VAD_MAX_SEGMENT_S': 90,
+                        'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
+                        'SUBTITLE_QC_MAX_CHARS': 9000,
                         'FIREREDASR_TIMEOUT': 300,
                         'FIREREDASR_MAX_RETRIES': 3
                     }
@@ -1745,7 +1747,8 @@ def settings():
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.5
+                        'VAD_SILERO_THRESHOLD': 0.5,
+                        'SUBTITLE_QC_THRESHOLD': 0.35,
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
