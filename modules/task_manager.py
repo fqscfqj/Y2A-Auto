@@ -2719,14 +2719,29 @@ class TaskProcessor:
         if height <= 0:
             height = cls._ASS_PLAY_RES_Y
 
-        scale = min(width / cls._ASS_PLAY_RES_X, height / cls._ASS_PLAY_RES_Y)
-        if scale <= 0:
-            scale = 1.0
-
         style = dict(cls._ASS_STYLE_BASE)
         style.update({
             'PlayResX': width,
             'PlayResY': height,
+        })
+
+        if height > width:
+            font_size = cls._clamp(height * 0.03, 44.0, 68.0)
+            style.update({
+                'FontSize': font_size,
+                'Outline': cls._clamp(font_size * 0.06, 2.2, 3.8),
+                'Shadow': cls._clamp(font_size * 0.02, 0.8, 1.6),
+                'MarginV': cls._clamp(height * 0.135, 150.0, 300.0),
+                'MarginL': cls._clamp(width * 0.11, 72.0, 156.0),
+                'MarginR': cls._clamp(width * 0.11, 72.0, 156.0),
+            })
+            return style
+
+        scale = min(width / cls._ASS_PLAY_RES_X, height / cls._ASS_PLAY_RES_Y)
+        if scale <= 0:
+            scale = 1.0
+
+        style.update({
             'FontSize': cls._clamp(cls._ASS_STYLE_BASE['FontSize'] * scale, 28.0, 72.0),
             'Outline': cls._clamp(cls._ASS_STYLE_BASE['Outline'] * scale, 1.4, 3.6),
             'Shadow': cls._clamp(cls._ASS_STYLE_BASE['Shadow'] * scale, 0.6, 1.4),
@@ -2735,6 +2750,37 @@ class TaskProcessor:
             'MarginR': cls._clamp(cls._ASS_STYLE_BASE['MarginR'] * scale, 40.0, 160.0),
         })
         return style
+
+    @staticmethod
+    def _sanitize_ass_font_name(font_family):
+        return str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ').strip() or 'Arial'
+
+    @classmethod
+    def _build_subtitle_style_description(cls, font_family, video_width, video_height):
+        style = cls._build_streaming_ass_style(video_width, video_height)
+        font_name = cls._sanitize_ass_font_name(font_family)
+        force_style = {
+            'FontName': font_name,
+            'FontSize': cls._format_ass_number(style['FontSize']),
+            'Outline': cls._format_ass_number(style['Outline']),
+            'Shadow': cls._format_ass_number(style['Shadow']),
+            'MarginL': str(int(round(style['MarginL']))),
+            'MarginR': str(int(round(style['MarginR']))),
+            'MarginV': str(int(round(style['MarginV']))),
+            'Alignment': str(style['Alignment']),
+        }
+        return style, force_style
+
+    @classmethod
+    def _build_subtitle_force_style(cls, font_family, video_width, video_height):
+        _, force_style = cls._build_subtitle_style_description(
+            font_family,
+            video_width,
+            video_height,
+        )
+        entries = [f"{key}={value}" for key, value in force_style.items()]
+        payload = ','.join(entries).replace("'", r"\'")
+        return f"force_style='{payload}'"
 
     @classmethod
     def _parse_subtitle_text_to_cues(cls, subtitle_text):
@@ -2864,8 +2910,12 @@ class TaskProcessor:
 
     @classmethod
     def _build_default_ass_document(cls, cues, font_family, video_width, video_height):
-        style = cls._build_streaming_ass_style(video_width, video_height)
-        font_name = str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ')
+        style, force_style = cls._build_subtitle_style_description(
+            font_family,
+            video_width,
+            video_height,
+        )
+        font_name = force_style['FontName']
         ass_header = (
             "[Script Info]\n"
             "Title: Streaming Subtitle\n"
@@ -2882,19 +2932,19 @@ class TaskProcessor:
             "Alignment, MarginL, MarginR, MarginV, Encoding\n"
             "Style: Default,"
             f"{font_name},"
-            f"{cls._format_ass_number(style['FontSize'])},"
+            f"{force_style['FontSize']},"
             f"{style['PrimaryColour']},"
             f"{style['SecondaryColour']},"
             f"{style['OutlineColour']},"
             f"{style['BackColour']},"
             f"{style['Bold']},0,0,0,100,100,0,0,"
             f"{style['BorderStyle']},"
-            f"{cls._format_ass_number(style['Outline'])},"
-            f"{cls._format_ass_number(style['Shadow'])},"
-            f"{style['Alignment']},"
-            f"{int(round(style['MarginL']))},"
-            f"{int(round(style['MarginR']))},"
-            f"{int(round(style['MarginV']))},1\n"
+            f"{force_style['Outline']},"
+            f"{force_style['Shadow']},"
+            f"{force_style['Alignment']},"
+            f"{force_style['MarginL']},"
+            f"{force_style['MarginR']},"
+            f"{force_style['MarginV']},1\n"
             "\n"
             "[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -3054,7 +3104,7 @@ class TaskProcessor:
                     task_logger.warning(f"清理旧临时输出文件失败: {e}")
                 
                 subtitle_font = self._resolve_subtitle_font(task_logger, temp_fonts_dir)
-                font_family = subtitle_font.get('configured_font_name')
+                font_family = subtitle_font.get('font_family') or subtitle_font.get('configured_font_name')
                 if task_logger:
                     task_logger.debug(
                         f"当前字幕字体配置: {subtitle_font.get('configured_font_name')}"
@@ -3121,8 +3171,13 @@ class TaskProcessor:
                     "charenc=UTF-8",
                 ]
                 if use_force_style_fallback:
-                    font_family_escaped = font_family.replace(' ', '\\ ')
-                    filter_segments.append(f"force_style=FontName={font_family_escaped}")
+                    filter_segments.append(
+                        self._build_subtitle_force_style(
+                            font_family,
+                            input_width,
+                            input_height,
+                        )
+                    )
                 vf_filter = ':'.join(filter_segments)
 
                 # 若字幕滤镜不可用，提前报错并放弃嵌入
