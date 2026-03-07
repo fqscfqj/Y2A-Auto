@@ -3,14 +3,6 @@ name: Docker Image CI/CD
 on:
   push:
     tags: [ "*.*.*" ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'userscripts/**'
-      - '.gitignore'
-      - 'LICENSE'
-      - '.github/**'
-      - '!.github/workflows/docker-publish.yml'
 
 env:
   REGISTRY_DOCKERHUB: docker.io
@@ -78,8 +70,8 @@ jobs:
           exit 1
         fi
 
-    - name: Build and push Docker image (linux/amd64 only)
-      uses: docker/build-push-action@v5
+    - name: Build and push Docker image (linux/amd64)
+      uses: docker/build-push-action@v6
       with:
         context: .
         file: ./Dockerfile
@@ -113,18 +105,28 @@ jobs:
           exit 1
         fi
 
-        # 等待镜像可用
-        sleep 30
+        # 拉取镜像（带重试，等待镜像在 registry 中可用）
+        pulled=false
+        for i in $(seq 1 6); do
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG && pulled=true && break
+          echo "拉取失败，重试 $i/6，等待 10 秒..."
+          sleep 10
+        done
+        [ "$pulled" = true ] || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
         
         # 测试镜像启动
         docker run --rm -d --name test-y2a-auto-dockerhub \
           -p 5001:5000 \
           ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG
         
-        # 等待应用启动
-        sleep 30
+        # 等待应用启动（带重试）
+        for i in $(seq 1 12); do
+          curl -sf http://localhost:5001/ && break
+          echo "等待应用启动... ($i/12)"
+          sleep 5
+        done
         
-        # 测试健康检查
+        # 验证应用可访问
         curl -f http://localhost:5001/ || exit 1
         
         # 检查 yt-dlp 是否可用
@@ -142,15 +144,28 @@ jobs:
           exit 1
         fi
 
+        # 拉取镜像（带重试，等待镜像在 registry 中可用）
+        pulled=false
+        for i in $(seq 1 6); do
+          docker pull ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG && pulled=true && break
+          echo "拉取失败，重试 $i/6，等待 10 秒..."
+          sleep 10
+        done
+        [ "$pulled" = true ] || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
+
         # 测试 GHCR 镜像启动
         docker run --rm -d --name test-y2a-auto-ghcr \
           -p 5002:5000 \
           ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG
         
-        # 等待应用启动
-        sleep 30
+        # 等待应用启动（带重试）
+        for i in $(seq 1 12); do
+          curl -sf http://localhost:5002/ && break
+          echo "等待应用启动... ($i/12)"
+          sleep 5
+        done
         
-        # 测试健康检查
+        # 验证应用可访问
         curl -f http://localhost:5002/ || exit 1
         
         # 检查 yt-dlp 是否可用
