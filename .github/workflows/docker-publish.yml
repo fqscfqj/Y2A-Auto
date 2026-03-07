@@ -106,12 +106,13 @@ jobs:
         fi
 
         # 拉取镜像（带重试，等待镜像在 registry 中可用）
+        pulled=false
         for i in $(seq 1 6); do
-          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG && break
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG && pulled=true && break
           echo "拉取失败，重试 $i/6，等待 10 秒..."
           sleep 10
         done
-        docker pull ${{ secrets.DOCKERHUB_USERNAME }}/y2a-auto:$IMAGE_TAG || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
+        [ "$pulled" = true ] || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
         
         # 测试镜像启动
         docker run --rm -d --name test-y2a-auto-dockerhub \
@@ -144,12 +145,13 @@ jobs:
         fi
 
         # 拉取镜像（带重试，等待镜像在 registry 中可用）
+        pulled=false
         for i in $(seq 1 6); do
-          docker pull ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG && break
+          docker pull ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG && pulled=true && break
           echo "拉取失败，重试 $i/6，等待 10 秒..."
           sleep 10
         done
-        docker pull ghcr.io/fqscfqj/y2a-auto:$IMAGE_TAG || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
+        [ "$pulled" = true ] || { echo "拉取镜像失败（已重试 6 次）"; exit 1; }
 
         # 测试 GHCR 镜像启动
         docker run --rm -d --name test-y2a-auto-ghcr \
