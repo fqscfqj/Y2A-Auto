@@ -328,11 +328,9 @@ class AsrApiClient:
             if lang and lang.lower() != 'unknown':
                 params['language'] = lang
 
-            base_prompt = "Transcribe speech only. Ignore noise."
-            if self.config.prompt:
-                params['prompt'] = f"{base_prompt} {self.config.prompt}"
-            else:
-                params['prompt'] = base_prompt
+            prompt = (self.config.prompt or '').strip()
+            if prompt:
+                params['prompt'] = prompt
 
             if self.config.translate:
                 resp = self.client.audio.translations.create(**params)

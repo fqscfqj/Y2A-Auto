@@ -234,7 +234,8 @@ class VadProcessor:
         all_segments: List[Tuple[float, float]] = []
         consecutive_failures = 0
 
-        for chunk_start, chunk_end in chunks:
+        total_chunks = len(chunks)
+        for chunk_index, (chunk_start, chunk_end) in enumerate(chunks):
             chunk_wav = self._extract_audio_clip(wav_path, chunk_start, chunk_end)
             if not chunk_wav:
                 continue
@@ -244,6 +245,13 @@ class VadProcessor:
 
             if chunk_segments:
                 adjusted = [(s + chunk_start, e + chunk_start) for s, e in chunk_segments]
+                adjusted = self._clip_chunk_segments(
+                    adjusted,
+                    chunk_index=chunk_index,
+                    total_chunks=total_chunks,
+                    chunk_start=chunk_start,
+                    chunk_end=chunk_end,
+                )
                 all_segments.extend(adjusted)
                 consecutive_failures = 0
             else:
@@ -256,7 +264,7 @@ class VadProcessor:
         if not all_segments:
             return None
 
-        return self._apply_constraints(all_segments)
+        return self._apply_constraints(all_segments, allow_gap_merge=False)
 
     def _create_chunks(self, total_duration_s: float) -> List[Tuple[float, float]]:
         """Create overlapping time windows for chunked processing."""
@@ -279,24 +287,63 @@ class VadProcessor:
     # Post-processing constraints (broad / lenient)
     # ------------------------------------------------------------------
 
+    def _clip_chunk_segments(
+        self,
+        segments: List[Tuple[float, float]],
+        *,
+        chunk_index: int,
+        total_chunks: int,
+        chunk_start: float,
+        chunk_end: float,
+    ) -> List[Tuple[float, float]]:
+        """Clip chunk-local segments to the chunk's non-overlap ownership window."""
+        if not segments:
+            return []
+
+        half_overlap = max(0.0, float(self.config.chunk_overlap_s or 0.0) / 2.0)
+        keep_start = chunk_start + (half_overlap if chunk_index > 0 else 0.0)
+        keep_end = chunk_end - (half_overlap if chunk_index < total_chunks - 1 else 0.0)
+        if keep_end <= keep_start:
+            keep_start, keep_end = chunk_start, chunk_end
+
+        clipped: List[Tuple[float, float]] = []
+        for start, end in segments:
+            clipped_start = max(float(start), keep_start)
+            clipped_end = min(float(end), keep_end)
+            if clipped_end > clipped_start:
+                clipped.append((clipped_start, clipped_end))
+        return clipped
+
     def _apply_constraints(
-        self, segments: List[Tuple[float, float]]
+        self,
+        segments: List[Tuple[float, float]],
+        *,
+        allow_gap_merge: bool = True,
     ) -> List[Tuple[float, float]]:
         """Merge nearby segments, drop tiny ones, split overly-long ones."""
         if not segments:
             return []
 
         segments = sorted(segments, key=lambda x: x[0])
+        max_dur = max(0.1, float(self.config.max_segment_s_for_split or 29.0))
 
         # 1. Merge gaps < merge_gap_s
-        merge_gap = self.config.merge_gap_s
+        merge_gap = max(0.0, float(self.config.merge_gap_s or 0.0))
+        chunk_stitch_gap = max(0.0, float(self.config.chunk_overlap_s or 0.0) / 2.0 + 0.02)
         merged: List[List[float]] = []
         for start, end in segments:
+            start = float(start)
+            end = float(end)
             if not merged:
                 merged.append([start, end])
             else:
                 last = merged[-1]
-                if start - last[1] < merge_gap:
+                combined_duration = max(last[1], end) - last[0]
+                boundary_gap = start - last[1]
+                can_merge = boundary_gap < merge_gap if allow_gap_merge else (
+                    boundary_gap <= chunk_stitch_gap and combined_duration <= max_dur
+                )
+                if can_merge:
                     last[1] = max(last[1], end)
                 else:
                     merged.append([start, end])
@@ -322,7 +369,6 @@ class VadProcessor:
             i += 1
 
         # 3. Split extremely long segments
-        max_dur = max(self.config.max_segment_s_for_split, 60.0)
         final: List[Tuple[float, float]] = []
         for seg in filtered:
             duration = seg[1] - seg[0]
