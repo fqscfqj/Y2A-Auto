@@ -2376,10 +2376,10 @@ class TaskProcessor:
     _ASS_PLAY_RES_X = 1920
     _ASS_PLAY_RES_Y = 1080
     _ASS_STYLE_BASE = {
-        'FontSize': 42.0,
-        'Outline': 2.4,
-        'Shadow': 0.8,
-        'MarginV': 60.0,
+        'FontSize': 56.0,
+        'Outline': 2.0,
+        'Shadow': 1.0,
+        'MarginV': 40.0,
         'MarginL': 96.0,
         'MarginR': 96.0,
         'Alignment': 2,
@@ -2390,6 +2390,32 @@ class TaskProcessor:
         'OutlineColour': '&H00000000',
         'BackColour': '&H64000000',
     }
+    _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
+        (720.0, 44.0),
+        (1080.0, 56.0),
+        (1440.0, 64.0),
+        (2160.0, 76.0),
+    )
+    _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
+        (1280.0, 70.0),
+        (1920.0, 76.0),
+        (2560.0, 84.0),
+    )
+    _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
+        (720.0, 34.0),
+        (1080.0, 40.0),
+        (1440.0, 48.0),
+        (2160.0, 64.0),
+    )
+    _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
+        (1280.0, 120.0),
+        (1920.0, 160.0),
+        (2560.0, 200.0),
+    )
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
+    _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.11
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.68
+    _ASS_PORTRAIT_LAYOUT_DENSITY = 0.95
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
     @staticmethod
@@ -2671,6 +2697,50 @@ class TaskProcessor:
         return max(minimum, min(maximum, value))
 
     @staticmethod
+    def _interpolate_anchor_value(position, anchors):
+        normalized_anchors = []
+        for anchor_position, anchor_value in anchors or ():
+            try:
+                normalized_anchors.append((float(anchor_position), float(anchor_value)))
+            except Exception:
+                continue
+
+        if not normalized_anchors:
+            return 0.0
+
+        normalized_anchors.sort(key=lambda item: item[0])
+        if position <= normalized_anchors[0][0]:
+            return normalized_anchors[0][1]
+
+        for idx in range(1, len(normalized_anchors)):
+            left_position, left_value = normalized_anchors[idx - 1]
+            right_position, right_value = normalized_anchors[idx]
+            if position <= right_position:
+                if right_position <= left_position:
+                    return right_value
+                ratio = (position - left_position) / (right_position - left_position)
+                return left_value + (right_value - left_value) * ratio
+
+        return normalized_anchors[-1][1]
+
+    @classmethod
+    def _resolve_ass_dimensions(cls, video_width, video_height):
+        try:
+            width = int(video_width)
+        except Exception:
+            width = 0
+        try:
+            height = int(video_height)
+        except Exception:
+            height = 0
+
+        if width <= 0:
+            width = cls._ASS_PLAY_RES_X
+        if height <= 0:
+            height = cls._ASS_PLAY_RES_Y
+        return width, height
+
+    @staticmethod
     def _format_ass_number(value):
         try:
             value_f = float(value)
@@ -2706,19 +2776,7 @@ class TaskProcessor:
 
     @classmethod
     def _build_streaming_ass_style(cls, video_width, video_height):
-        try:
-            width = int(video_width)
-        except Exception:
-            width = 0
-        try:
-            height = int(video_height)
-        except Exception:
-            height = 0
-
-        if width <= 0:
-            width = cls._ASS_PLAY_RES_X
-        if height <= 0:
-            height = cls._ASS_PLAY_RES_Y
+        width, height = cls._resolve_ass_dimensions(video_width, video_height)
 
         style = dict(cls._ASS_STYLE_BASE)
         style.update({
@@ -2726,29 +2784,39 @@ class TaskProcessor:
             'PlayResY': height,
         })
 
-        if height > width:
-            font_size = cls._clamp(height * 0.03, 44.0, 68.0)
-            style.update({
-                'FontSize': font_size,
-                'Outline': cls._clamp(font_size * 0.06, 2.2, 3.8),
-                'Shadow': cls._clamp(font_size * 0.02, 0.8, 1.6),
-                'MarginV': cls._clamp(height * 0.135, 150.0, 300.0),
-                'MarginL': cls._clamp(width * 0.11, 72.0, 156.0),
-                'MarginR': cls._clamp(width * 0.11, 72.0, 156.0),
-            })
-            return style
-
-        scale = min(width / cls._ASS_PLAY_RES_X, height / cls._ASS_PLAY_RES_Y)
-        if scale <= 0:
-            scale = 1.0
+        is_portrait = height > width
+        if is_portrait:
+            font_size = cls._clamp(
+                cls._interpolate_anchor_value(height, cls._ASS_PORTRAIT_FONT_SIZE_ANCHORS),
+                70.0,
+                85.0,
+            )
+            margin_v = cls._clamp(
+                cls._interpolate_anchor_value(height, cls._ASS_PORTRAIT_MARGIN_V_ANCHORS),
+                120.0,
+                200.0,
+            )
+            side_margin = cls._clamp(width * cls._ASS_PORTRAIT_SIDE_MARGIN_RATIO, 84.0, 156.0)
+        else:
+            font_size = cls._clamp(
+                cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_FONT_SIZE_ANCHORS),
+                38.0,
+                80.0,
+            )
+            margin_v = cls._clamp(
+                cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_MARGIN_V_ANCHORS),
+                30.0,
+                72.0,
+            )
+            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 48.0, 160.0)
 
         style.update({
-            'FontSize': cls._clamp(cls._ASS_STYLE_BASE['FontSize'] * scale, 28.0, 72.0),
-            'Outline': cls._clamp(cls._ASS_STYLE_BASE['Outline'] * scale, 1.4, 3.6),
-            'Shadow': cls._clamp(cls._ASS_STYLE_BASE['Shadow'] * scale, 0.6, 1.4),
-            'MarginV': cls._clamp(cls._ASS_STYLE_BASE['MarginV'] * scale, 34.0, 108.0),
-            'MarginL': cls._clamp(cls._ASS_STYLE_BASE['MarginL'] * scale, 40.0, 160.0),
-            'MarginR': cls._clamp(cls._ASS_STYLE_BASE['MarginR'] * scale, 40.0, 160.0),
+            'FontSize': font_size,
+            'Outline': cls._clamp(font_size * 0.036, 1.8, 3.0),
+            'Shadow': cls._clamp(font_size * 0.018, 0.8, 1.5),
+            'MarginV': margin_v,
+            'MarginL': side_margin,
+            'MarginR': side_margin,
         })
         return style
 
@@ -2786,16 +2854,18 @@ class TaskProcessor:
     @classmethod
     def _estimate_subtitle_layout_limits(cls, video_width, video_height):
         style = cls._build_streaming_ass_style(video_width, video_height)
-        if style['PlayResY'] <= style['PlayResX']:
-            return 42, 2
-
+        is_portrait = float(style['PlayResY']) > float(style['PlayResX'])
         usable_width = max(
             120.0,
             float(style['PlayResX']) - float(style['MarginL']) - float(style['MarginR']),
         )
         font_size = max(1.0, float(style['FontSize']))
-        max_line_length = int(usable_width / font_size * 0.95)
-        max_line_length = int(cls._clamp(max_line_length, 10.0, 18.0))
+        density = cls._ASS_PORTRAIT_LAYOUT_DENSITY if is_portrait else cls._ASS_LANDSCAPE_LAYOUT_DENSITY
+        max_line_length = int(round(usable_width / font_size * density))
+        if is_portrait:
+            max_line_length = int(cls._clamp(max_line_length, 10.0, 14.0))
+        else:
+            max_line_length = int(cls._clamp(max_line_length, 16.0, 20.0))
         return max_line_length, 2
 
     @staticmethod
