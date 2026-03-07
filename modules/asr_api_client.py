@@ -190,6 +190,10 @@ class AsrApiClient:
             self._supported_format = None
             self._format_probe_incompatible = False
 
+    def _needs_serial_format_probe(self) -> bool:
+        with self._format_probe_condition:
+            return not self._supported_format and not self._format_probe_incompatible
+
     def _build_incompatible_error(self) -> RuntimeError:
         return AsrFormatIncompatibleError(
             "ASR API incompatible: neither verbose_json nor srt format is supported. "
@@ -555,29 +559,68 @@ class AsrApiClient:
             same order as the input.
         """
         results: Dict[int, Tuple[float, Optional[str]]] = {}
+        if not segments:
+            return []
+
         workers = max(1, self.config.max_workers)
+        total_failures = 0
+        max_total_failures = max(5, len(segments) // 2)
 
         self.logger.info(
             f"Transcribing {len(segments)} segments with {workers} workers"
         )
 
+        segment_jobs: List[Tuple[int, float, str, str]] = []
+        for idx, (offset, wav_path) in enumerate(segments):
+            try:
+                import wave
+                with wave.open(wav_path, 'rb') as wf:
+                    duration = wf.getnframes() / wf.getframerate() if wf.getframerate() > 0 else 0.0
+                segment_info = f"{offset:.2f}s-{offset+duration:.2f}s, {duration:.2f}s"
+            except Exception:
+                segment_info = f"{offset:.2f}s"
+            segment_jobs.append((idx, offset, wav_path, segment_info))
+
+        remaining_jobs = segment_jobs
+        if self._needs_serial_format_probe():
+            idx, offset, wav_path, segment_info = segment_jobs[0]
+            self.logger.info(
+                "ASR format not cached yet; probing capabilities with the first segment serially before enabling concurrency"
+            )
+            try:
+                srt_text = self.transcribe_segment(wav_path, segment_info)
+                results[idx] = (offset, srt_text)
+                if not srt_text:
+                    total_failures += 1
+                    self.logger.warning(
+                        f"Segment {idx+1}/{len(segments)} [{segment_info}] transcription returned empty result"
+                    )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Segment {idx+1}/{len(segments)} [{segment_info}] transcription error: {exc}"
+                )
+                results[idx] = (offset, None)
+                total_failures += 1
+            remaining_jobs = segment_jobs[1:]
+
+        if total_failures >= max_total_failures:
+            self.logger.error(
+                f"ASR failed on {total_failures}/{len(segments)} segments (threshold: {max_total_failures}) – aborting"
+            )
+            ordered: List[Tuple[float, Optional[str]]] = []
+            for idx in range(len(segments)):
+                if idx in results:
+                    ordered.append(results[idx])
+                else:
+                    ordered.append((segments[idx][0], None))
+            return ordered
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {}
-            for idx, (offset, wav_path) in enumerate(segments):
-                # Create segment info for better logging
-                try:
-                    import wave
-                    with wave.open(wav_path, 'rb') as wf:
-                        duration = wf.getnframes() / wf.getframerate() if wf.getframerate() > 0 else 0.0
-                    segment_info = f"{offset:.2f}s-{offset+duration:.2f}s, {duration:.2f}s"
-                except Exception:
-                    segment_info = f"{offset:.2f}s"
-
+            for idx, offset, wav_path, segment_info in remaining_jobs:
                 future = pool.submit(self.transcribe_segment, wav_path, segment_info)
                 futures[future] = (idx, offset, segment_info)
 
-            total_failures = 0
-            max_total_failures = max(5, len(segments) // 2)
             for future in as_completed(futures):
                 idx, offset, segment_info = futures[future]
                 try:
