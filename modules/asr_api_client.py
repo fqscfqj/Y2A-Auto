@@ -17,6 +17,7 @@ Features:
 
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -79,6 +80,10 @@ class AsrConfig:
 # AsrApiClient
 # ---------------------------------------------------------------------------
 
+class AsrFormatIncompatibleError(RuntimeError):
+    """Raised when the ASR API supports neither verbose_json nor srt."""
+
+
 class AsrApiClient:
     """Client for OpenAI-compatible Whisper transcription APIs.
 
@@ -92,6 +97,10 @@ class AsrApiClient:
         self.client: Any = None
         self._language_hint: str = ''
         self._supported_format: Optional[str] = None  # Cache supported format
+        self._format_probe_condition = threading.Condition()
+        self._format_probe_in_progress = False
+        self._format_probe_incompatible = False
+        self._fallback_warning_logged = False
         self._init_client()
 
     # ------------------------------------------------------------------
@@ -142,6 +151,161 @@ class AsrApiClient:
     # ------------------------------------------------------------------
     # Public API – single segment
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_format_error(exc: Exception) -> bool:
+        err_str = str(exc).lower()
+        return (
+            'response_format' in err_str or
+            'invalid response format' in err_str or
+            'unsupported format' in err_str or
+            ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
+        )
+
+    def _log_fallback_warning_once(self, exc: Exception):
+        with self._format_probe_condition:
+            if self._fallback_warning_logged:
+                return
+            self._fallback_warning_logged = True
+        self.logger.warning(
+            "ASR server does not support response_format='verbose_json'; "
+            "falling back to 'srt'. Last error: %s",
+            exc,
+        )
+
+    def _mark_supported_format(self, fmt: str):
+        should_log = False
+        with self._format_probe_condition:
+            if self._supported_format != fmt:
+                should_log = self._supported_format is None
+                self._supported_format = fmt
+            self._format_probe_incompatible = False
+        if should_log:
+            self.logger.info(f"Successfully using {fmt} format")
+
+    def _invalidate_supported_format(self, expected_fmt: Optional[str] = None):
+        with self._format_probe_condition:
+            if expected_fmt is not None and self._supported_format != expected_fmt:
+                return
+            self._supported_format = None
+            self._format_probe_incompatible = False
+
+    def _build_incompatible_error(self) -> RuntimeError:
+        return AsrFormatIncompatibleError(
+            "ASR API incompatible: neither verbose_json nor srt format is supported. "
+            "Cannot proceed with transcription."
+        )
+
+    def _probe_supported_format(self, wav_path: str, model: str) -> Tuple[Optional[str], Optional[str]]:
+        format_errors: List[Tuple[str, Exception]] = []
+
+        for fmt in _SUPPORTED_FORMATS:
+            try:
+                srt_text = self._try_format(wav_path, fmt, model)
+                if srt_text:
+                    if fmt == 'srt' and format_errors:
+                        self._log_fallback_warning_once(format_errors[-1][1])
+                    return fmt, srt_text
+            except Exception as exc:
+                if self._is_format_error(exc):
+                    format_errors.append((fmt, exc))
+                    continue
+                raise
+
+        if len(format_errors) == len(_SUPPORTED_FORMATS):
+            last_error = format_errors[-1][1]
+            self.logger.error(
+                "ASR API does not support required formats (verbose_json, srt). "
+                "Last error: %s",
+                last_error,
+            )
+            raise self._build_incompatible_error()
+
+        return None, None
+
+    def _get_or_probe_supported_format(
+        self,
+        wav_path: str,
+        model: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        while True:
+            with self._format_probe_condition:
+                if self._supported_format:
+                    return self._supported_format, None
+                if self._format_probe_incompatible:
+                    raise self._build_incompatible_error()
+                if self._format_probe_in_progress:
+                    self._format_probe_condition.wait()
+                    continue
+                self._format_probe_in_progress = True
+                break
+
+        try:
+            fmt, srt_text = self._probe_supported_format(wav_path, model)
+        except AsrFormatIncompatibleError:
+            with self._format_probe_condition:
+                self._format_probe_in_progress = False
+                self._format_probe_incompatible = True
+                self._format_probe_condition.notify_all()
+            raise
+        except Exception:
+            with self._format_probe_condition:
+                self._format_probe_in_progress = False
+                self._format_probe_condition.notify_all()
+            raise
+
+        with self._format_probe_condition:
+            self._format_probe_in_progress = False
+            if fmt:
+                self._supported_format = fmt
+                self._format_probe_incompatible = False
+            self._format_probe_condition.notify_all()
+
+        if fmt and self._supported_format == fmt:
+            self.logger.info(f"Successfully using {fmt} format")
+
+        return fmt, srt_text
+
+    def _transcribe_with_negotiated_format(
+        self,
+        wav_path: str,
+        model: str,
+        segment_desc: str,
+        allow_reprobe: bool = True,
+    ) -> Optional[str]:
+        fmt, srt_text = self._get_or_probe_supported_format(wav_path, model)
+        if srt_text:
+            return srt_text
+        if not fmt:
+            return None
+
+        try:
+            srt_text = self._try_format(wav_path, fmt, model)
+            if srt_text:
+                self._mark_supported_format(fmt)
+                return srt_text
+            self.logger.warning(
+                f"Cached format '{fmt}' returned empty result for segment [{segment_desc}], clearing cache"
+            )
+            if allow_reprobe:
+                self._invalidate_supported_format(expected_fmt=fmt)
+                return self._transcribe_with_negotiated_format(
+                    wav_path, model, segment_desc, allow_reprobe=False,
+                )
+            return None
+        except Exception as exc:
+            if not self._is_format_error(exc):
+                raise
+            self.logger.warning(
+                f"Cached format '{fmt}' is no longer supported for segment [{segment_desc}], "
+                f"clearing cache: {exc}"
+            )
+            if allow_reprobe:
+                self._invalidate_supported_format(expected_fmt=fmt)
+                return self._transcribe_with_negotiated_format(
+                    wav_path, model, segment_desc, allow_reprobe=False,
+                )
+            raise
 
     def _try_format(self, wav_path: str, fmt: str, model: str) -> Optional[str]:
         """Try transcribing with a specific format.
@@ -204,113 +368,21 @@ class AsrApiClient:
 
         for attempt in range(self.config.max_retries):
             srt_text = None
-            format_error = None
-            last_was_format_error = False
-            cache_invalidated = False
-            
-            # Try formats in order: verbose_json → srt
-            # If cached format is set, try it first but fall back to full sequence if it fails
-            using_cached_format = self._supported_format is not None
-            formats_to_try = [self._supported_format] if using_cached_format else _SUPPORTED_FORMATS
-            
-            for fmt in formats_to_try:
-                try:
-                    srt_text = self._try_format(wav_path, fmt, model)
-                    
-                    if srt_text:
-                        if self._supported_format is None:
-                            self.logger.info(f"Successfully using {fmt} format")
-                        self._supported_format = fmt  # Cache successful format
-                        return srt_text
-                    
-                    # No SRT text from cached format - clear cache and signal to retry
-                    if using_cached_format and not cache_invalidated:
-                        self.logger.warning(
-                            f"Cached format '{self._supported_format}' returned empty result, "
-                            f"clearing cache"
-                        )
-                        self._supported_format = None
-                        cache_invalidated = True
-                        break  # Exit format loop to retry with all formats
-                        
-                except Exception as exc:
-                    err_str = str(exc).lower()
-                    # Check if it's a format-related error (more specific patterns)
-                    is_format_error = (
-                        'response_format' in err_str or
-                        'invalid response format' in err_str or
-                        'unsupported format' in err_str or
-                        ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
-                    )
-                    if is_format_error:
-                        format_error = exc
-                        last_was_format_error = True
-                        self.logger.warning(
-                            f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
-                        )
-                        # If cached format failed with format error, clear cache and signal to retry
-                        if using_cached_format and not cache_invalidated:
-                            self.logger.warning(
-                                f"Cached format '{self._supported_format}' no longer supported, "
-                                f"clearing cache"
-                            )
-                            self._supported_format = None
-                            cache_invalidated = True
-                            break  # Exit format loop to retry with all formats
-                        continue  # Try next format
-                    else:
-                        # Non-format error - log and break format loop to trigger retry
-                        last_was_format_error = False
-                        error_type = type(exc).__name__
-                        self.logger.warning(
-                            f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
-                            f"(attempt {attempt + 1}/{self.config.max_retries})"
-                        )
-                        break  # Break format loop to trigger outer retry loop
-            
-            # If cache was invalidated, retry with all formats once before giving up
-            if cache_invalidated and not srt_text:
-                self.logger.info("Retrying with all formats after cache invalidation")
-                for fmt in _SUPPORTED_FORMATS:
-                    try:
-                        srt_text = self._try_format(wav_path, fmt, model)
-                        
-                        if srt_text:
-                            self.logger.info(f"Successfully using {fmt} format after cache invalidation")
-                            self._supported_format = fmt
-                            return srt_text
-                            
-                    except Exception as exc:
-                        err_str = str(exc).lower()
-                        is_format_error = (
-                            'response_format' in err_str or
-                            'invalid response format' in err_str or
-                            'unsupported format' in err_str or
-                            ('format' in err_str and ('not supported' in err_str or 'invalid' in err_str))
-                        )
-                        if is_format_error:
-                            format_error = exc
-                            last_was_format_error = True
-                            self.logger.warning(
-                                f"Format '{fmt}' not supported for segment [{segment_desc}]: {exc}"
-                            )
-                            continue
-                        else:
-                            last_was_format_error = False
-                            break
-            
-            # Only raise RuntimeError if all formats failed specifically due to format support
-            if format_error and last_was_format_error:
-                self.logger.error(
-                    f"ASR API does not support required formats (verbose_json, srt) for segment [{segment_desc}]. "
-                    f"Last error: {format_error}"
+            try:
+                srt_text = self._transcribe_with_negotiated_format(
+                    wav_path, model, segment_desc,
                 )
-                raise RuntimeError(
-                    f"ASR API incompatible: neither verbose_json nor srt format is supported. "
-                    f"Cannot proceed with transcription."
+                if srt_text:
+                    return srt_text
+            except AsrFormatIncompatibleError:
+                raise
+            except Exception as exc:
+                error_type = type(exc).__name__
+                self.logger.warning(
+                    f"ASR request failed for segment [{segment_desc}] with {error_type}: {exc} "
+                    f"(attempt {attempt + 1}/{self.config.max_retries})"
                 )
-            
-            # Empty response or error - retry if attempts remain
+
             if not srt_text:
                 if attempt < self.config.max_retries - 1:
                     delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
