@@ -48,6 +48,89 @@ def _compact_text(text: str, max_len: int) -> str:
     return text[: max_len - 3] + "..." if max_len > 3 else text[:max_len]
 
 
+def _normalize_multiline_text(text: str) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = []
+    last_blank = True
+
+    for raw_line in normalized.split("\n"):
+        line = re.sub(r"[^\S\n]+", " ", raw_line).strip()
+        if not line:
+            if not last_blank and lines:
+                lines.append("")
+            last_blank = True
+            continue
+        lines.append(line)
+        last_blank = False
+
+    while lines and not lines[-1]:
+        lines.pop()
+
+    return "\n".join(lines)
+
+
+def _truncate_multiline_text(text: str, max_len: int) -> str:
+    normalized = _normalize_multiline_text(text)
+    if len(normalized) <= max_len:
+        return normalized
+    if max_len <= 0:
+        return ""
+    if max_len <= 3:
+        return normalized[:max_len]
+    return normalized[: max_len - 3].rstrip() + "..."
+
+
+def _remove_redundant_original_url(text: str, original_url: str) -> str:
+    normalized = _normalize_multiline_text(text)
+    visible_url = str(original_url or "").strip()
+    if not normalized or not visible_url:
+        return normalized
+
+    cleaned_lines = []
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            cleaned_lines.append("")
+            continue
+        if line == visible_url:
+            continue
+        line = line.replace(visible_url, "").strip()
+        if line:
+            cleaned_lines.append(line)
+
+    return _normalize_multiline_text("\n".join(cleaned_lines))
+
+
+def format_bilibili_description(
+    base_desc: str,
+    original_url: str = "",
+    original_uploader: str = "",
+    original_upload_date: str = "",
+    append_repost_notice: bool = True,
+    max_len: int = 2000,
+) -> str:
+    summary = _remove_redundant_original_url(base_desc, original_url)
+    is_repost = bool(original_url or original_uploader or original_upload_date)
+    if not is_repost or not append_repost_notice:
+        return _truncate_multiline_text(summary, max_len)
+
+    notice_parts = ["本视频转载自YouTube"]
+    if original_upload_date:
+        notice_parts.append(f"原始上传时间：{original_upload_date}")
+    if original_uploader:
+        notice_parts.append(f"UP主：{original_uploader}")
+    repost_notice = "，".join(notice_parts)
+
+    if not summary:
+        return _truncate_multiline_text(repost_notice, max_len)
+
+    remain_len = max(0, max_len - len(repost_notice) - 2)
+    summary = _truncate_multiline_text(summary, remain_len)
+    if not summary:
+        return _truncate_multiline_text(repost_notice, max_len)
+    return f"{repost_notice}\n\n{summary}"
+
+
 class BilibiliUploader:
     """Bilibili uploader based on bilibili-api-python."""
 
@@ -86,7 +169,10 @@ class BilibiliUploader:
             credential = load_credential_from_file(self.cookie_file)
 
             safe_title = _compact_text(title or "", 80)
-            safe_desc = _compact_text(description or "", 2000)
+            safe_desc = _truncate_multiline_text(
+                _remove_redundant_original_url(description or "", youtube_url or ""),
+                2000,
+            )
             safe_tags = [str(t).strip()[:20] for t in (tags or []) if str(t).strip()]
             safe_tags = safe_tags[:12]
 

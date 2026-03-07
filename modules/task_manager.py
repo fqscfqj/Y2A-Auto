@@ -4567,11 +4567,11 @@ class TaskProcessor:
             except Exception as e:
                 task_logger.error(f"读取视频元数据失败: {str(e)}")
 
-        # 与 AcFun 保持一致：可选追加转载声明；并确保简介中可见 YouTube URL
+        # bilibili 转载页会单独展示 source，这里只保留说明文案和正文，避免 URL 重复出现。
         try:
-            from modules.acfun_uploader import build_upload_description
+            from modules.bilibili_uploader import format_bilibili_description
 
-            description = build_upload_description(
+            description = format_bilibili_description(
                 base_desc=description,
                 original_url=original_url,
                 original_uploader=original_uploader,
@@ -4581,14 +4581,6 @@ class TaskProcessor:
             )
         except Exception as e:
             task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")
-
-        visible_url = str(original_url or '').strip()
-        if visible_url and visible_url not in (description or ''):
-            if description:
-                remain_len = max(0, 2000 - len(visible_url) - 2)
-                description = f"{visible_url}\n\n{description[:remain_len]}" if remain_len > 0 else visible_url[:2000]
-            else:
-                description = visible_url[:2000]
 
         if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
             from modules.utils import safe_str
