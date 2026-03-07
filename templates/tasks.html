@@ -203,26 +203,44 @@
                                 {% elif task.status == 'ready_for_upload' and task.error_message %}
                                     {% set error_msg = task.error_message %}
                                     {% if error_msg|length > 30 %}
-                                        <span class="badge bg-warning text-dark error-message-badge"
-                                              title="{{ error_msg }}"
-                                              data-bs-toggle="tooltip"
-                                              data-bs-placement="top">
+                                        <button type="button"
+                                              class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                              title="点击查看完整错误信息"
+                                              data-error-message="{{ error_msg }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">
                                             {{ error_msg[:27] }}...
-                                        </span>
+                                        </button>
                                     {% else %}
-                                        <span class="badge bg-warning text-dark">{{ error_msg }}</span>
+                                        <button type="button"
+                                              class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                              title="点击查看完整错误信息"
+                                              data-error-message="{{ error_msg }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">
+                                            {{ error_msg }}
+                                        </button>
                                     {% endif %}
                                 {% elif task.status == 'failed' %}
                                     {% set error_msg = task.error_message or '未知错误' %}
                                     {% if error_msg|length > 30 %}
-                                        <span class="badge bg-danger error-message-badge" 
-                                              title="{{ error_msg }}" 
-                                              data-bs-toggle="tooltip" 
-                                              data-bs-placement="top">
+                                        <button type="button"
+                                              class="badge bg-danger error-message-badge error-message-trigger border-0"
+                                              title="点击查看完整错误信息"
+                                              data-error-message="{{ error_msg }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">
                                             {{ error_msg[:27] }}...
-                                        </span>
+                                        </button>
                                     {% else %}
-                                        <span class="badge bg-danger">{{ error_msg }}</span>
+                                        <button type="button"
+                                              class="badge bg-danger error-message-badge error-message-trigger border-0"
+                                              title="点击查看完整错误信息"
+                                              data-error-message="{{ error_msg }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">
+                                            {{ error_msg }}
+                                        </button>
                                     {% endif %}
                                 {% else %}
                                     <span class="badge bg-secondary">未上传</span>
@@ -408,16 +426,36 @@
                             {% elif task.status == 'ready_for_upload' and task.error_message %}
                                 {% set error_msg = task.error_message %}
                                 {% if error_msg|length > 24 %}
-                                    <span class="badge bg-warning text-dark" title="{{ error_msg }}">{{ error_msg[:21] }}...</span>
+                                    <button type="button"
+                                            class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                            title="点击查看完整错误信息"
+                                            data-error-message="{{ error_msg }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">{{ error_msg[:21] }}...</button>
                                 {% else %}
-                                    <span class="badge bg-warning text-dark">{{ error_msg }}</span>
+                                    <button type="button"
+                                            class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                            title="点击查看完整错误信息"
+                                            data-error-message="{{ error_msg }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">{{ error_msg }}</button>
                                 {% endif %}
                             {% elif task.status == 'failed' %}
                                 {% set error_msg = task.error_message or '未知错误' %}
                                 {% if error_msg|length > 24 %}
-                                    <span class="badge bg-danger" title="{{ error_msg }}">{{ error_msg[:21] }}...</span>
+                                    <button type="button"
+                                            class="badge bg-danger error-message-badge error-message-trigger border-0"
+                                            title="点击查看完整错误信息"
+                                            data-error-message="{{ error_msg }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">{{ error_msg[:21] }}...</button>
                                 {% else %}
-                                    <span class="badge bg-danger">{{ error_msg }}</span>
+                                    <button type="button"
+                                            class="badge bg-danger error-message-badge error-message-trigger border-0"
+                                            title="点击查看完整错误信息"
+                                            data-error-message="{{ error_msg }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">{{ error_msg }}</button>
                                 {% endif %}
                             {% else %}
                                 <span class="badge bg-secondary">未上传</span>
@@ -640,6 +678,27 @@
         </div>
     </div>
 </div>
+
+<!-- 错误详情浮窗 -->
+<div class="modal fade" id="taskErrorModal" tabindex="-1" aria-labelledby="taskErrorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="taskErrorModalLabel">错误详情</h5>
+                    <div class="small text-muted mt-1" id="taskErrorMeta"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <pre class="task-error-content mb-0" id="taskErrorMessage"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_css %}
@@ -652,11 +711,34 @@
 
 .error-message-badge {
     max-width: 180px;
-    cursor: help;
+    cursor: pointer;
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
     display: inline-block;
+    text-align: left;
+}
+
+.error-message-trigger {
+    padding: 0.35em 0.65em;
+}
+
+.error-message-trigger:focus-visible {
+    outline: 2px solid rgba(13, 110, 253, 0.45);
+    outline-offset: 2px;
+}
+
+.task-error-content {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: #212529;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 0.5rem;
+    padding: 1rem;
 }
 
 .tasks-table {
@@ -834,6 +916,27 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         if (modalEl) {
             new bootstrap.Modal(modalEl).show();
         }
+    }
+
+    function showTaskErrorMessage(taskId, taskTitle, errorMessage) {
+        const modalEl = document.getElementById('taskErrorModal');
+        const metaEl = document.getElementById('taskErrorMeta');
+        const messageEl = document.getElementById('taskErrorMessage');
+        if (!modalEl || !metaEl || !messageEl) {
+            return;
+        }
+
+        const metaParts = [];
+        if (taskTitle) {
+            metaParts.push(taskTitle);
+        }
+        if (taskId) {
+            metaParts.push('任务ID: ' + taskId);
+        }
+
+        metaEl.textContent = metaParts.join(' | ');
+        messageEl.textContent = errorMessage || '未知错误';
+        new bootstrap.Modal(modalEl).show();
     }
 
     const REFRESH_INTERVAL_ACTIVE = 2000;  // 活跃任务时 2 秒刷新一次
@@ -1072,6 +1175,16 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
         document.querySelectorAll('.copy-bv-btn').forEach(btn => {
             btn.addEventListener('click', () => copyToClipboard(btn.dataset.bvNumber || ''));
+        });
+
+        document.querySelectorAll('.error-message-trigger').forEach(btn => {
+            btn.addEventListener('click', function() {
+                showTaskErrorMessage(
+                    this.dataset.taskId || '',
+                    this.dataset.taskTitle || '',
+                    this.dataset.errorMessage || ''
+                );
+            });
         });
     }
 
