@@ -767,7 +767,6 @@ def edit_task(task_id):
     
     if request.method == 'POST':
         upload_target = str(task.get('upload_target') or 'acfun').lower()
-        platform_name = '双平台' if upload_target == 'both' else ('bilibili' if upload_target == 'bilibili' else 'AcFun')
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
@@ -834,41 +833,13 @@ def edit_task(task_id):
         except Exception as e:
             print(f"DEBUG: update_task调用失败: {e}")
         logger.info(f"任务 {task_id} 信息已更新")
-        
-        # 执行上传操作（当任务处于"已完成"、"等待处理"或"准备上传"状态时）
-        task = get_task(task_id)  # 重新获取更新后的任务信息
-        if task and task['status'] in [TASK_STATES['COMPLETED'], TASK_STATES['PENDING'], TASK_STATES['READY_FOR_UPLOAD']]:
-            # 获取当前配置
-            config = load_config()
-            
-            # 启动后台上传
-            logger.info(f"开始后台上传任务 {task_id} 到{platform_name}")
-            flash(f'任务已保存，正在后台上传到{platform_name}...', 'info')
-            
-            import threading
-            
-            def background_upload():
-                """后台上传函数"""
-                try:
-                    # 调用上传函数
-                    success = force_upload_task(task_id, config)
-                    
-                    if success:
-                        logger.info(f"任务 {task_id} 后台上传成功")
-                    else:
-                        logger.error(f"任务 {task_id} 后台上传失败")
-                except Exception as e:
-                    logger.error(f"任务 {task_id} 后台上传出错: {str(e)}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            
-            # 启动后台线程
-            upload_thread = threading.Thread(target=background_upload, daemon=True)
-            upload_thread.start()
+        updated_task = get_task(task_id)
+        if updated_task and updated_task['status'] == TASK_STATES['READY_FOR_UPLOAD']:
+            flash('任务已保存，当前可单独执行上传。', 'success')
         else:
-            flash('任务已保存，但尚未完成处理，无法上传', 'warning')
-        
-        return redirect(url_for('tasks'))
+            flash('任务已保存。', 'success')
+
+        return redirect(url_for('edit_task', task_id=task_id))
     
     # GET请求，显示编辑页面
     # 封面图片现在直接从downloads目录提供
@@ -888,6 +859,12 @@ def edit_task(task_id):
     
     # 获取当前配置
     config = load_config()
+    can_upload = task['status'] in [
+        TASK_STATES['COMPLETED'],
+        TASK_STATES['PENDING'],
+        TASK_STATES['READY_FOR_UPLOAD'],
+        TASK_STATES['AWAITING_REVIEW']
+    ]
     
     return render_template(
         'edit_task.html', 
@@ -897,7 +874,8 @@ def edit_task(task_id):
         bilibili_id_mapping=bilibili_id_mapping,
         tags_string=tags_string,
         config=config,
-        upload_target=upload_target
+        upload_target=upload_target,
+        can_upload=can_upload
     )
 
 @app.route('/tasks/<task_id>/cover')
@@ -1190,7 +1168,10 @@ def force_upload_task_route(task_id):
     # 启动后台线程
     upload_thread = threading.Thread(target=background_force_upload, daemon=True)
     upload_thread.start()
-    
+
+    next_url = request.form.get('next') or request.args.get('next')
+    if _is_safe_redirect_url(next_url):
+        return redirect(next_url)
     return redirect(url_for('manual_review'))
 
 @app.route('/tasks/reset_stuck', methods=['POST'])

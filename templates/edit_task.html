@@ -135,7 +135,7 @@
             
             <!-- 右侧编辑表单 -->
             <div class="col-md-8">
-                <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}">
+                <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}" id="task-edit-form">
                     <div class="card mb-4">
                         <div class="card-header">
                             编辑视频信息
@@ -260,28 +260,31 @@
                         </div>
                     </div>
                     
-                    <div class="d-flex justify-content-between">
-                        <button type="submit" class="btn btn-primary">
-                            <i class="bi bi-cloud-upload"></i> 保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}
-                        </button>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center">
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-floppy me-1"></i> 保存修改
+                            </button>
+                            <button type="submit" form="task-upload-form" class="btn btn-success" {% if not can_upload %}disabled{% endif %}>
+                                <i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}
+                            </button>
+                        </div>
                         <a href="{{ url_for('tasks') }}" class="btn btn-outline-secondary">取消</a>
                     </div>
                     
                     <div class="mt-3">
-                        <div class="alert alert-info small">
-                            <i class="bi bi-info-circle"></i> 点击"保存并上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}"按钮后，系统将保存您的编辑并在后台上传视频。
-                            <br><strong>💡 上传将在后台进行，您可以立即返回任务列表，无需等待。</strong>
-                            {% if task.status == 'completed' %}
-                                <br><strong>当前状态：已完成处理，可以直接上传</strong>
-                            {% elif task.status == 'pending' %}
-                                <br><strong>当前状态：等待处理，点击后将开始上传</strong>
-                            {% elif task.status == 'ready_for_upload' %}
-                                <br><strong>当前状态：准备上传，可以直接上传</strong>
+                        <div class="alert alert-info small mb-0">
+                            <i class="bi bi-info-circle"></i> “保存修改”只更新标题、描述、分区和标签；“上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}”会单独在后台启动上传。
+                            {% if can_upload %}
+                                <br><strong>当前状态：{{ task_status_display(task.status) }}，可以直接上传。</strong>
                             {% else %}
-                                <br><strong>当前状态：{{ task_status_display(task.status) }}，需要等待处理完成后才能上传</strong>
+                                <br><strong>当前状态：{{ task_status_display(task.status) }}，请先等待任务处理完成，或先保存使其进入可上传状态。</strong>
                             {% endif %}
                         </div>
                     </div>
+                </form>
+                <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" id="task-upload-form" class="d-none">
+                    <input type="hidden" name="next" value="{{ url_for('edit_task', task_id=task.id) }}">
                 </form>
             </div>
         </div>
