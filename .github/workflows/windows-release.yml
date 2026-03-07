@@ -1,10 +1,14 @@
 name: Build and Release Windows Desktop App
 
 on:
-  push:
-    tags:
-      - '*.*.*'   # 仅在推送tag时自动发布
+  release:
+    types:
+      - published   # 在 GitHub Releases 页面正式发布后，仅追加构建产物
   workflow_dispatch:  # 允许手动触发
+    inputs:
+      release_tag:
+        description: Existing release tag to upload asset to
+        required: true
 
 jobs:
   build-windows:
@@ -109,13 +113,10 @@ jobs:
         run: |
           Compress-Archive -Path build-tools/dist/Y2A-Auto/* -DestinationPath Y2A-Auto-win64.zip
 
-      - name: Create or Update GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ github.ref_name }}
-          artifacts: Y2A-Auto-win64.zip
-          allowUpdates: true
-          removeArtifacts: true
-          generateReleaseNotes: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifact to existing GitHub Release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+        run: |
+          gh release upload "$env:RELEASE_TAG" Y2A-Auto-win64.zip --clobber
