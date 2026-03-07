@@ -188,6 +188,7 @@ python app.py
 ```json
 {
   "SPEECH_RECOGNITION_PROVIDER": "voxtral",
+  "VAD_ENABLED": false,
   "VOXTRAL_API_KEY": "",
   "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",
   "VOXTRAL_MODEL_NAME": "voxtral-mini-latest",
@@ -197,12 +198,15 @@ python app.py
   "VOXTRAL_LANGUAGE": "",
   "VOXTRAL_MAX_AUDIO_DURATION_S": 10800,
   "VOXTRAL_LONG_AUDIO_MARGIN_S": 5,
-  "VOXTRAL_ENFORCE_MAX_DURATION": true
+  "VOXTRAL_ENFORCE_MAX_DURATION": true,
+  "WHISPER_FALLBACK_TO_FIXED_CHUNKS": true
 }
 ```
 
 注意：`VOXTRAL_TIMESTAMP_GRANULARITIES` 与 `VOXTRAL_LANGUAGE` 同时设置时，系统会优先时间戳并自动忽略 `VOXTRAL_LANGUAGE`。
-注意：Voxtral Mini Transcribe V2 单次请求最大处理时长约 3 小时。超过上限时，系统会自动分割为多个片段（每段不超过上限）并进行拼接/后处理。
+注意：`VAD_ENABLED=true` 时，Voxtral 会先走与 Whisper 相同的 VAD 分段流程，再逐段转写。
+注意：`VAD_ENABLED=false` 时，Voxtral 默认整段发送；仅当音频超过 `VOXTRAL_MAX_AUDIO_DURATION_S` 时，系统才会自动分割为多个片段以满足单请求上限。
+注意：`WHISPER_FALLBACK_TO_FIXED_CHUNKS` 沿用旧配置键名，但现在同时用于控制 Whisper / Voxtral 在 VAD 失败或无结果时是否回退到固定分片。
 
 ### 字幕 QC 说明
 

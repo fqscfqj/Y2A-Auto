@@ -435,7 +435,20 @@ class SpeechRecognizer:
                 total_duration,
                 float(self.config.voxtral_max_audio_duration_s or 10800.0),
             )
-        if force_chunks or force_voxtral_chunks or total_duration > self.config.chunk_window_s * 2:
+        should_chunk = False
+        if self.config.api_provider == 'voxtral':
+            # Voxtral without VAD should prefer a single upload unless we are
+            # explicitly falling back to fixed windows or must respect the
+            # provider-side maximum request duration.
+            should_chunk = force_chunks or force_voxtral_chunks
+        else:
+            should_chunk = (
+                force_chunks
+                or force_voxtral_chunks
+                or total_duration > self.config.chunk_window_s * 2
+            )
+
+        if should_chunk:
             self.logger.info("Fallback: fixed-window chunked transcription")
             chunks = self._create_audio_chunks(total_duration)
             segment_inputs = self._prepare_chunk_inputs(audio_wav, chunks)
@@ -730,7 +743,7 @@ def create_speech_recognizer_from_config(
                 app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0
             ),
             # VAD
-            vad_enabled=bool(app_config.get('VAD_ENABLED', False)) if not use_voxtral else False,
+            vad_enabled=_to_bool(app_config.get('VAD_ENABLED', False)),
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
             vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 250) or 250),
@@ -747,7 +760,7 @@ def create_speech_recognizer_from_config(
             # Transcription
             language=asr_language,
             prompt=asr_prompt,
-            translate=bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr and not use_voxtral else False,
+            translate=_to_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr and not use_voxtral else False,
             voxtral_timestamp_granularities=voxtral_timestamp_granularities,
             voxtral_diarize=voxtral_diarize,
             voxtral_context_bias=voxtral_context_bias,
@@ -799,7 +812,7 @@ def create_speech_recognizer_from_config(
             ),
             max_retries=asr_max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
-            fallback_to_fixed_chunks=bool(
+            fallback_to_fixed_chunks=_to_bool(
                 app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', True)
             ),
             request_timeout_s=asr_timeout_s,
