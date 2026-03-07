@@ -1710,10 +1710,10 @@ def settings():
                         'YOUTUBE_DOWNLOAD_THREADS': 4,
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15,
-                        'VAD_SILERO_MIN_SPEECH_MS': 250,
-                        'VAD_SILERO_MIN_SILENCE_MS': 100,
+                        'VAD_SILERO_MIN_SPEECH_MS': 220,
+                        'VAD_SILERO_MIN_SILENCE_MS': 500,
                         'VAD_SILERO_MAX_SPEECH_S': 120,
-                        'VAD_SILERO_SPEECH_PAD_MS': 30,
+                        'VAD_SILERO_SPEECH_PAD_MS': 180,
                         'VAD_MAX_SEGMENT_S': 90,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
                         'SUBTITLE_QC_MAX_CHARS': 9000,
@@ -1747,7 +1747,7 @@ def settings():
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.5,
+                        'VAD_SILERO_THRESHOLD': 0.55,
                         'SUBTITLE_QC_THRESHOLD': 0.35,
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))

@@ -82,11 +82,11 @@ class SpeechRecognitionConfig:
     # VAD settings (broad / lenient)
     vad_enabled: bool = False
     vad_provider: str = 'silero-vad'
-    vad_threshold: float = 0.5
-    vad_min_speech_ms: int = 250
+    vad_threshold: float = 0.55
+    vad_min_speech_ms: int = 220
     vad_min_silence_ms: int = 500       # Broad: avoid mid-word cuts
     vad_max_speech_s: int = 120
-    vad_speech_pad_ms: int = 500        # Dynamic padding 500 ms+
+    vad_speech_pad_ms: int = 180        # Dynamic padding
 
     # Audio chunking
     chunk_window_s: float = 25.0
@@ -718,11 +718,11 @@ def create_speech_recognizer_from_config(
             # VAD
             vad_enabled=_to_bool(app_config.get('VAD_ENABLED', False)),
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
-            vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.5) or 0.5),
-            vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 250) or 250),
+            vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.55) or 0.55),
+            vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 220) or 220),
             vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 500) or 500),
             vad_max_speech_s=int(app_config.get('VAD_SILERO_MAX_SPEECH_S', 120) or 120),
-            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 500) or 500),
+            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 180) or 180),
             chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 25.0) or 25.0),
             chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) or 0.2),
             vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 1.0) or 1.0),

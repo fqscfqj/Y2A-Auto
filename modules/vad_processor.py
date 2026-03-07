@@ -8,7 +8,7 @@ This module implements a lenient VAD strategy designed to produce "search window
 for the downstream ASR engine, **not** final subtitle boundaries.
 
 Key design decisions:
-  - Dynamic padding (default 500 ms) to avoid cutting mid-word.
+  - Dynamic padding (default 180 ms) to avoid cutting mid-word.
   - Aggressive gap merging (default 1 s) to keep semantic context intact.
   - Thread-safe, lazy-loaded Silero VAD model cached at class level.
 """
@@ -32,11 +32,11 @@ from .ffmpeg_manager import get_ffmpeg_path
 class VadConfig:
     """Configuration for the broad VAD preprocessor."""
     provider: str = 'silero-vad'
-    threshold: float = 0.5          # Speech probability threshold (lenient)
-    min_speech_ms: int = 250        # Ignore sounds shorter than this
+    threshold: float = 0.55         # Speech probability threshold
+    min_speech_ms: int = 220        # Ignore sounds shorter than this
     min_silence_ms: int = 500       # Min silence to split (broad – avoid mid-word cuts)
     max_speech_s: int = 120         # Max continuous speech before forced split
-    speech_pad_ms: int = 500        # Dynamic padding before/after speech (500 ms+)
+    speech_pad_ms: int = 180        # Dynamic padding before/after speech
 
     # Audio chunking (for processing long files in manageable pieces)
     chunk_window_s: float = 25.0

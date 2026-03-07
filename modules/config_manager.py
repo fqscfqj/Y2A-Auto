@@ -126,11 +126,11 @@ DEFAULT_CONFIG = {
     # 语音活动检测（VAD）
     "VAD_ENABLED": False,
     "VAD_PROVIDER": "silero-vad",
-    "VAD_SILERO_THRESHOLD": 0.5,
-    "VAD_SILERO_MIN_SPEECH_MS": 250,
+    "VAD_SILERO_THRESHOLD": 0.55,
+    "VAD_SILERO_MIN_SPEECH_MS": 220,
     "VAD_SILERO_MIN_SILENCE_MS": 500,   # Broad: 避免在词语中间切断
     "VAD_SILERO_MAX_SPEECH_S": 120,
-    "VAD_SILERO_SPEECH_PAD_MS": 500,    # 动态填充 500ms+，确保完整语义上下文
+    "VAD_SILERO_SPEECH_PAD_MS": 180,    # 动态填充，保留语义上下文
     "VAD_MAX_SEGMENT_S": 90,
     # 音频分片策略（针对长音频）
     "AUDIO_CHUNK_WINDOW_S": 25.0,  # 固定窗口大小（20-30s推荐）

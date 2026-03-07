@@ -14,6 +14,7 @@ import shlex
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 import re
+import unicodedata
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor as APSchedulerThreadPoolExecutor
 from apscheduler.schedulers.base import SchedulerNotRunningError
@@ -2783,11 +2784,158 @@ class TaskProcessor:
         return f"force_style='{payload}'"
 
     @classmethod
-    def _parse_subtitle_text_to_cues(cls, subtitle_text):
+    def _estimate_subtitle_layout_limits(cls, video_width, video_height):
+        style = cls._build_streaming_ass_style(video_width, video_height)
+        if style['PlayResY'] <= style['PlayResX']:
+            return 42, 2
+
+        usable_width = max(
+            120.0,
+            float(style['PlayResX']) - float(style['MarginL']) - float(style['MarginR']),
+        )
+        font_size = max(1.0, float(style['FontSize']))
+        max_line_length = int(usable_width / font_size * 0.95)
+        max_line_length = int(cls._clamp(max_line_length, 10.0, 18.0))
+        return max_line_length, 2
+
+    @staticmethod
+    def _is_preferred_wrap_boundary(char):
+        if not char:
+            return False
+        if char.isspace():
+            return True
+        return char in '.,!?;:，。！？；：、)]}】）》」』'
+
+    @classmethod
+    def _find_wrap_boundary(cls, chars):
+        for idx in range(len(chars) - 1, -1, -1):
+            if cls._is_preferred_wrap_boundary(chars[idx]):
+                return idx
+        return -1
+
+    @staticmethod
+    def _estimate_subtitle_char_units(char):
+        if not char:
+            return 0.0
+        if char.isspace():
+            return 0.35
+        if unicodedata.east_asian_width(char) in {'W', 'F'}:
+            if unicodedata.category(char).startswith('P'):
+                return 0.7
+            return 1.0
+        if char.isascii():
+            if char.isalnum():
+                return 0.6
+            return 0.45
+        if unicodedata.category(char).startswith('P'):
+            return 0.6
+        return 0.8
+
+    @classmethod
+    def _wrap_subtitle_text_for_ass(cls, text, video_width, video_height):
+        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        if not normalized:
+            return ''
+
+        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
+        raw_segments = [segment.strip() for segment in normalized.split('\n') if segment.strip()]
+        wrapped_lines = []
+
+        for segment in raw_segments:
+            chars = []
+            current_units = 0.0
+            idx = 0
+            while idx < len(segment):
+                char = segment[idx]
+                char_units = cls._estimate_subtitle_char_units(char)
+                if chars and current_units + char_units > max_line_length:
+                    break_at = cls._find_wrap_boundary(chars)
+                    if break_at >= 0:
+                        line_chars = chars[:break_at + 1]
+                        remainder = ''.join(chars[break_at + 1:]).strip()
+                    else:
+                        line_chars = chars
+                        remainder = ''
+
+                    line = ''.join(line_chars).strip()
+                    if line:
+                        wrapped_lines.append(line)
+                    chars = list(remainder)
+                    current_units = sum(cls._estimate_subtitle_char_units(ch) for ch in chars)
+                    continue
+
+                chars.append(char)
+                current_units += char_units
+                idx += 1
+
+            line = ''.join(chars).strip()
+            if line:
+                wrapped_lines.append(line)
+
+        wrapped_lines = [line for line in wrapped_lines if line]
+        if len(wrapped_lines) <= max_lines:
+            return '\n'.join(wrapped_lines)
+
+        visible_lines = wrapped_lines[:max_lines - 1]
+        visible_lines.append(''.join(wrapped_lines[max_lines - 1:]).strip())
+        return '\n'.join(line for line in visible_lines if line)
+
+    @classmethod
+    def _rebalance_split_cue_durations(cls, cues):
+        if not cues:
+            return []
+
+        fixed_cues = [dict(cue or {}) for cue in cues]
+        minimum_visible = 0.35
+        preferred_duration = 0.6
+
+        for idx, cue in enumerate(fixed_cues):
+            start = float(cue.get('start', 0.0) or 0.0)
+            end = float(cue.get('end', 0.0) or 0.0)
+            if end - start >= 0.05:
+                continue
+
+            if idx > 0:
+                prev = fixed_cues[idx - 1]
+                prev_start = float(prev.get('start', 0.0) or 0.0)
+                prev_end = float(prev.get('end', 0.0) or 0.0)
+                target_start = max(prev_start + minimum_visible, end - preferred_duration)
+                if target_start < end:
+                    prev['end'] = target_start
+                    cue['start'] = target_start
+                    cue['end'] = end
+                    continue
+
+            if idx + 1 < len(fixed_cues):
+                nxt = fixed_cues[idx + 1]
+                next_start = float(nxt.get('start', 0.0) or 0.0)
+                next_end = float(nxt.get('end', 0.0) or 0.0)
+                target_end = min(next_end - minimum_visible, start + preferred_duration)
+                if target_end > start:
+                    cue['start'] = start
+                    cue['end'] = target_end
+                    nxt['start'] = target_end
+
+        return fixed_cues
+
+    @classmethod
+    def _parse_subtitle_text_to_cues(cls, subtitle_text, video_width=None, video_height=None):
         from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
 
-        engine = SrtTransformEngine(SrtTransformConfig())
-        return engine.parse_srt(subtitle_text or '')
+        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
+        engine = SrtTransformEngine(
+            SrtTransformConfig(
+                max_line_length=max_line_length,
+                max_lines=max_lines,
+                normalize_punctuation=False,
+                filter_filler_words=False,
+            )
+        )
+        cues = engine.parse_srt(subtitle_text or '')
+        if not cues:
+            return []
+        processed = engine.apply_text_processing(cues)
+        return cls._rebalance_split_cue_durations(processed)
 
     @staticmethod
     def _normalize_font_match_name(font_name):
@@ -2953,7 +3101,12 @@ class TaskProcessor:
         ass_lines = []
         for cue in cues or []:
             cue_dict = cue or {}
-            text = cls._escape_ass_text(cue_dict.get('text', ''))
+            wrapped_text = cls._wrap_subtitle_text_for_ass(
+                cue_dict.get('text', ''),
+                video_width,
+                video_height,
+            )
+            text = cls._escape_ass_text(wrapped_text)
             if not text:
                 continue
             ass_lines.append(
@@ -2994,7 +3147,11 @@ class TaskProcessor:
             with open(source_path, 'r', encoding='utf-8-sig', errors='replace') as subtitle_file:
                 subtitle_content = subtitle_file.read()
 
-            cues = self._parse_subtitle_text_to_cues(subtitle_content)
+            cues = self._parse_subtitle_text_to_cues(
+                subtitle_content,
+                video_width=video_width,
+                video_height=video_height,
+            )
             if not cues:
                 task_logger.error(f"未解析出有效字幕条目，无法生成ASS: {os.path.basename(subtitle_path)}")
                 return False
