@@ -172,7 +172,7 @@ python app.py
   "SUBTITLE_TARGET_LANGUAGE": "zh",
   "SUBTITLE_FONT_NAME": "SourceHanSansHWSC-VF.otf",
   "SUBTITLE_QC_ENABLED": false,
-  "SUBTITLE_QC_THRESHOLD": 0.35,
+  "SUBTITLE_QC_THRESHOLD": 0.60,
   "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,
   "SUBTITLE_QC_MAX_CHARS": 9000,
   "YOUTUBE_API_KEY": "",
@@ -214,14 +214,16 @@ python app.py
 
 启用 `SUBTITLE_QC_ENABLED: true` 后，系统会对 ASR 生成的源字幕做预检：
 
-- `SUBTITLE_QC_THRESHOLD`：通过阈值（0~1）
+- `SUBTITLE_QC_THRESHOLD`：AI 复核分数下限（0~1，默认 0.60）
 - `SUBTITLE_QC_SAMPLE_MAX_ITEMS`：AI 抽样条目上限
 - `SUBTITLE_QC_MAX_CHARS`：AI 单次送检最大字符数上限
 - `SUBTITLE_QC_MODEL_NAME`：单独指定 QC 模型（留空则复用翻译模型）
 
-QC 会先用规则做廉价筛选，只有边界样本才会调用 AI 抽样复核，从而尽量降低成本。
+QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核。
 
-QC 失败时会跳过烧录字幕，但仍保留字幕文件并继续上传原视频，任务最终标记为完成（并显示字幕异常标记）。
+命中署名行、噪声提示、界面操作词、模板化重复句等明显低质量字幕时，会在规则层直接失败，不再进入宽松放行。
+
+可疑样本在 AI 不可用、返回异常或输出不合规时，默认按失败处理。QC 失败时会跳过烧录字幕，但仍保留字幕文件并继续上传原视频，任务最终标记为完成（并显示字幕异常标记）。
 
 ### 内置字幕字体
 

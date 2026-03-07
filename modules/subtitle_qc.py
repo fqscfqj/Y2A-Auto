@@ -9,12 +9,12 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .subtitle_translator import SubtitleReader
-from .utils import strip_reasoning_thoughts, openai_chat_create_with_thinking_control
-
 logger = logging.getLogger('subtitle_qc')
+
+QC_FINGERPRINT_VERSION = 'qc_v2'
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -61,9 +61,29 @@ class RuleCheckResult:
     boundary_level: str = 'boundary'
 
 
+@dataclass
+class QCSubtitleItem:
+    start_time: str
+    end_time: str
+    source_text: str
+
+
 _PLACEHOLDER_RE = re.compile(r'^[\s\.,，。．…\-—_·•]+$')
 _NON_CONTENT_RE = re.compile(r'[^\w\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', re.UNICODE)
 _REASON_TOKEN_RE = re.compile(r'[^a-z0-9]+')
+_SRT_TIMESTAMP_RE = re.compile(
+    r'^\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*$'
+)
+_WORD_RE = re.compile(r"[a-z0-9']+")
+_CREDIT_PATTERNS = [
+    re.compile(r'\b(?:transcription|transcribed|subtitled|subtitle|captioned|captions?)\s+by\b', re.IGNORECASE),
+    re.compile(r'\bcastingwords\b', re.IGNORECASE),
+]
+_NOISE_COMMAND_PATTERNS = [
+    re.compile(r'^\s*ignore noise[.!]?\s*$', re.IGNORECASE),
+    re.compile(r'^\s*click[.!]?\s*$', re.IGNORECASE),
+    re.compile(r'^\s*(?:tap|beep|mouse click|keyboard click|background noise|noise only)[.!]?\s*$', re.IGNORECASE),
+]
 
 
 def _normalize_line(text: str) -> str:
@@ -89,6 +109,69 @@ def _is_low_content(text: str) -> bool:
     return len(normalized) < 2
 
 
+def _read_srt_items(srt_path: str) -> List[QCSubtitleItem]:
+    text = Path(srt_path).read_text(encoding='utf-8', errors='replace')
+    blocks = [block.strip() for block in re.split(r'\r?\n\r?\n', text) if block.strip()]
+    items: List[QCSubtitleItem] = []
+
+    for block in blocks:
+        lines = [line.strip('\ufeff').strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+
+        timestamp_line_index = 1 if len(lines) >= 2 and _SRT_TIMESTAMP_RE.match(lines[1]) else 0
+        if timestamp_line_index >= len(lines):
+            continue
+
+        match = _SRT_TIMESTAMP_RE.match(lines[timestamp_line_index])
+        if not match:
+            continue
+
+        text_lines = lines[timestamp_line_index + 1:]
+        if not text_lines:
+            continue
+
+        items.append(
+            QCSubtitleItem(
+                start_time=match.group(1).replace('.', ','),
+                end_time=match.group(2).replace('.', ','),
+                source_text=' '.join(text_lines).strip(),
+            )
+        )
+
+    return items
+
+
+def _looks_like_repeated_clause(text: str) -> bool:
+    words = _WORD_RE.findall((text or '').lower())
+    if len(words) < 6 or len(words) % 2 != 0:
+        return False
+    half = len(words) // 2
+    return words[:half] == words[half:]
+
+
+def _classify_suspicious_text(text: str, normalized: str) -> Optional[str]:
+    raw = (text or '').strip()
+    if not raw:
+        return None
+
+    for pattern in _CREDIT_PATTERNS:
+        if pattern.search(raw):
+            return 'credit_like_phrase'
+
+    for pattern in _NOISE_COMMAND_PATTERNS:
+        if pattern.search(raw):
+            return 'noise_command_phrase'
+
+    if _looks_like_repeated_clause(raw):
+        return 'template_like_phrase'
+
+    if normalized and normalized in {'ignorenoise', 'click'}:
+        return 'noise_command_phrase'
+
+    return None
+
+
 def _build_openai_client(api_key: str, base_url: str):
     import openai
 
@@ -101,7 +184,12 @@ def _build_openai_client(api_key: str, base_url: str):
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
-    cleaned = strip_reasoning_thoughts(text).strip()
+    try:
+        from .utils import strip_reasoning_thoughts
+
+        cleaned = strip_reasoning_thoughts(text).strip()
+    except Exception:
+        cleaned = str(text).strip()
     try:
         return json.loads(cleaned)
     except Exception:
@@ -127,30 +215,38 @@ def compute_subtitle_qc_fingerprint(items: List[Any]) -> str:
             continue
         parts.append(f'{start_time}|{end_time}|{text}')
     payload = '\n'.join(parts).encode('utf-8')
-    return hashlib.sha1(payload).hexdigest()
+    return f'{QC_FINGERPRINT_VERSION}:{hashlib.sha1(payload).hexdigest()}'
 
 
 def build_subtitle_qc_fingerprint(srt_path: str) -> str:
-    items = SubtitleReader.read_srt(srt_path)
+    items = _read_srt_items(srt_path)
     return compute_subtitle_qc_fingerprint(items)
 
 
 def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     stats: List[Dict[str, Any]] = []
     usable_normalized: List[str] = []
+    suspicious_examples: List[str] = []
+    suspicious_counts = Counter()
 
     for idx, it in enumerate(items):
         text = (getattr(it, 'source_text', '') or '').strip()
         normalized = _normalize_line(text) if text else ''
         low_content = _is_low_content(text) if text else True
+        suspicious_kind = _classify_suspicious_text(text, normalized)
         if text and not low_content and normalized:
             usable_normalized.append(normalized)
+        if suspicious_kind:
+            suspicious_counts[suspicious_kind] += 1
+            if len(suspicious_examples) < 6:
+                suspicious_examples.append(text[:120])
         stats.append({
             'index': idx,
             'item': it,
             'text': text,
             'normalized': normalized,
             'low_content': low_content,
+            'suspicious_kind': suspicious_kind,
         })
 
     freq = Counter(usable_normalized)
@@ -165,11 +261,20 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
     top_frequency = max(freq.values()) if freq else 0
     top_ratio = (top_frequency / usable_count) if usable_count else 1.0
     unique_ratio = (len(freq) / usable_count) if usable_count else 0.0
+    repeat_mass_ratio = (
+        sum(count for count in freq.values() if count >= 2) / usable_count
+        if usable_count
+        else 1.0
+    )
     avg_len = (
         sum(len(normalized) for normalized in usable_normalized) / usable_count
         if usable_count
         else 0.0
     )
+    credit_like_count = int(suspicious_counts.get('credit_like_phrase', 0))
+    noise_command_count = int(suspicious_counts.get('noise_command_phrase', 0))
+    template_like_count = int(suspicious_counts.get('template_like_phrase', 0))
+    suspicious_phrase_count = credit_like_count + noise_command_count + template_like_count
 
     metrics = {
         'total_items': len(items),
@@ -180,7 +285,18 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
         'top_frequency': top_frequency,
         'top_ratio': top_ratio,
         'unique_ratio': unique_ratio,
+        'repeat_mass_ratio': repeat_mass_ratio,
         'avg_len': avg_len,
+        'credit_like_count': credit_like_count,
+        'noise_command_count': noise_command_count,
+        'template_like_count': template_like_count,
+        'suspicious_phrase_count': suspicious_phrase_count,
+        'suspicious_phrase_ratio': (
+            suspicious_phrase_count / max(1, non_empty_count)
+            if non_empty_count
+            else 0.0
+        ),
+        'suspicious_examples': suspicious_examples,
     }
     return stats, metrics
 
@@ -190,15 +306,25 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     low_content_ratio = float(metrics.get('low_content_ratio', 1.0) or 0.0)
     top_ratio = float(metrics.get('top_ratio', 1.0) or 0.0)
     unique_ratio = float(metrics.get('unique_ratio', 0.0) or 0.0)
+    repeat_mass_ratio = float(metrics.get('repeat_mass_ratio', 1.0) or 0.0)
     avg_len = float(metrics.get('avg_len', 0.0) or 0.0)
+    suspicious_phrase_ratio = float(metrics.get('suspicious_phrase_ratio', 0.0) or 0.0)
+    credit_like_count = int(metrics.get('credit_like_count', 0) or 0)
+    noise_command_count = int(metrics.get('noise_command_count', 0) or 0)
+    template_like_count = int(metrics.get('template_like_count', 0) or 0)
 
     score = 1.0
     if usable_count < 8:
         score -= min(0.25, (8 - usable_count) * 0.04)
     score -= min(0.35, max(0.0, low_content_ratio - 0.25) * 0.70)
     score -= min(0.35, max(0.0, top_ratio - 0.30) * 0.80)
+    score -= min(0.25, max(0.0, repeat_mass_ratio - 0.35) * 0.75)
     score -= min(0.25, max(0.0, 0.55 - unique_ratio) * 0.70)
     score -= min(0.20, max(0.0, 3.0 - avg_len) * 0.10)
+    score -= min(0.35, suspicious_phrase_ratio * 1.20)
+    score -= min(0.30, credit_like_count * 0.20)
+    score -= min(0.25, noise_command_count * 0.10)
+    score -= min(0.20, template_like_count * 0.08)
     return max(0.0, min(1.0, score))
 
 
@@ -214,7 +340,13 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
     low_content_ratio = float(metrics['low_content_ratio'])
     top_ratio = float(metrics['top_ratio'])
     unique_ratio = float(metrics['unique_ratio'])
+    repeat_mass_ratio = float(metrics['repeat_mass_ratio'])
     avg_len = float(metrics['avg_len'])
+    credit_like_count = int(metrics['credit_like_count'])
+    noise_command_count = int(metrics['noise_command_count'])
+    template_like_count = int(metrics['template_like_count'])
+    suspicious_phrase_count = int(metrics['suspicious_phrase_count'])
+    suspicious_phrase_ratio = float(metrics['suspicious_phrase_ratio'])
     rule_score = float(metrics['rule_score'])
 
     if non_empty_count == 0 or usable_count < 3:
@@ -231,6 +363,36 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
             decision='rule_fail',
             score=rule_score,
             reason='rule_fail:mostly_low_content',
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
+    if credit_like_count >= 1:
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason='rule_fail:credit_like_phrase',
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
+    if noise_command_count >= 2:
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason='rule_fail:noise_command_phrase',
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
+    if (
+        suspicious_phrase_count >= 2
+        and (top_ratio >= 0.30 or repeat_mass_ratio >= 0.45)
+    ):
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason='rule_fail:suspicious_repeat_mass',
             metrics=metrics,
             boundary_level='suspicious',
         )
@@ -268,6 +430,7 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
         and top_ratio <= 0.30
         and unique_ratio >= 0.55
         and avg_len >= 3.0
+        and suspicious_phrase_count == 0
     ):
         return RuleCheckResult(
             decision='rule_pass',
@@ -284,6 +447,10 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
         or top_ratio >= 0.50
         or unique_ratio <= 0.35
         or avg_len < 2.4
+        or suspicious_phrase_count > 0
+        or template_like_count > 0
+        or repeat_mass_ratio >= 0.40
+        or suspicious_phrase_ratio >= 0.12
     ):
         boundary_level = 'suspicious'
 
@@ -354,6 +521,14 @@ def _sample_items(
             return
         selected_keys.add(key)
         selected_indices.append(item_index)
+
+    suspicious_candidates = [
+        stat['index'] for stat in non_empty_stats if stat.get('suspicious_kind')
+    ]
+    for idx in suspicious_candidates:
+        append_index(idx)
+        if len(selected_indices) >= sample_limit_items:
+            break
 
     low_content_candidates = [stat['index'] for stat in non_empty_stats if stat['low_content']]
     for idx in low_content_candidates:
@@ -437,18 +612,22 @@ def _call_ai_judge(
         return None, None, None, 'missing_openai_api_key'
 
     client = _build_openai_client(api_key=api_key, base_url=base_url)
+    from .utils import openai_chat_create_with_thinking_control
 
     system = (
-        '你是字幕质检员。目标：判断转录字幕是否可用。\n'
-        '采用宽松标准：只要字幕整体有意义、不是明显的系统错误（如全是占位符、极端重复、完全乱码），就应判定为通过。\n'
-        '常见转录误差、少量重复、口语化表达都属于可接受范围。\n'
+        '你是严格的字幕质检员。目标：判断转录字幕是否足够可靠，可进入翻译和烧录流程。\n'
+        '如果字幕包含转录署名、字幕署名、噪声提示词、界面操作词、明显机器幻觉、长段机械重复或明显无语义模板句，必须判定为 failed。\n'
+        '只有当字幕主体看起来像真实人类说话、旁白或解说，且错误不影响整体理解时，才可判定为 passed。\n'
         '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
-        '{"passed": true, "score": 0.75, "reason": "ok"}'
+        '{"passed": false, "score": 0.10, "reason": "hallucination_meta"}'
     )
 
     user = {
         'task': 'subtitle_qc',
-        'rules': '仅在字幕明显不可用时判定 failed。少量错误或口语化都应放行。',
+        'rules': (
+            '若样本中出现署名行、Ignore noise、Click、机械重复句、明显无语义模板句，必须判 failed。'
+            'reason 建议使用 hallucination_meta、healthy_dialogue、borderline_repeat 等短标签。'
+        ),
         'metrics': metrics,
         'subtitle_sample': sample_text,
         'output_schema': {
@@ -493,6 +672,9 @@ def _call_ai_judge(
                 elif s in {'0', 'false', 'no', 'n', 'off'}:
                     passed_bool = False
 
+        if passed_bool is None:
+            return None, None, parsed, 'missing_passed_bool'
+
         score = parsed.get('score', None)
         try:
             score_f = float(score) if score is not None else None
@@ -501,6 +683,31 @@ def _call_ai_judge(
         return passed_bool, score_f, parsed, 'ok'
     except Exception as e:
         return None, None, None, f'ai_error:{normalize_qc_reason_token(str(e))}'
+
+
+def _resolve_ai_unavailable_result(
+    rule_result: RuleCheckResult,
+    metrics: Dict[str, Any],
+    rule_score: float,
+    reason_token: str,
+    sample_meta: Optional[Dict[str, Any]] = None,
+) -> SubtitleQCResult:
+    sample_meta = sample_meta or {}
+    is_suspicious = rule_result.boundary_level == 'suspicious'
+    passed = not is_suspicious
+    prefix = 'qc_skipped' if passed else 'ai_fail'
+    reason = f'{prefix}:{normalize_qc_reason_token(reason_token)}'
+    return SubtitleQCResult(
+        passed=passed,
+        score=float(rule_score),
+        reason=reason,
+        rule_score=float(rule_score),
+        ai_score=None,
+        raw_ai={'decision': 'needs_ai', 'ai_status': normalize_qc_reason_token(reason_token), **metrics},
+        decision='needs_ai',
+        sample_items=int(sample_meta.get('sample_items', 0) or 0),
+        sample_chars=int(sample_meta.get('sample_chars', 0) or 0),
+    )
 
 
 def run_subtitle_qc(
@@ -514,9 +721,9 @@ def run_subtitle_qc(
 
     threshold_val = threshold
     if threshold_val is None:
-        threshold_val = _to_float(config.get('SUBTITLE_QC_THRESHOLD', 0.35), 0.35)
+        threshold_val = _to_float(config.get('SUBTITLE_QC_THRESHOLD', 0.60), 0.60)
 
-    items = SubtitleReader.read_srt(srt_path)
+    items = _read_srt_items(srt_path)
     rule_result = _rule_check(items)
     item_stats = list(rule_result.metrics.get('item_stats') or [])
     rule_metrics = {k: v for k, v in rule_result.metrics.items() if k != 'item_stats'}
@@ -556,16 +763,11 @@ def run_subtitle_qc(
 
     provider = str(config.get('SUBTITLE_QC_PROVIDER', 'openai')).lower().strip()
     if provider != 'openai':
-        return SubtitleQCResult(
-            passed=True,
-            score=float(rule_result.score),
-            reason='qc_skipped:provider_disabled',
+        return _resolve_ai_unavailable_result(
+            rule_result=rule_result,
+            metrics=metrics,
             rule_score=float(rule_result.score),
-            ai_score=None,
-            raw_ai={'decision': 'needs_ai', 'ai_status': 'provider_disabled', **metrics},
-            decision='needs_ai',
-            sample_items=0,
-            sample_chars=0,
+            reason_token='provider_disabled',
         )
 
     sample_text, sample_meta = _sample_items(
@@ -578,45 +780,34 @@ def run_subtitle_qc(
     metrics.update(sample_meta)
 
     if not sample_text:
-        return SubtitleQCResult(
-            passed=True,
-            score=float(rule_result.score),
-            reason='qc_skipped:empty_sample',
+        return _resolve_ai_unavailable_result(
+            rule_result=rule_result,
+            metrics=metrics,
             rule_score=float(rule_result.score),
-            ai_score=None,
-            raw_ai={'decision': 'needs_ai', 'ai_status': 'empty_sample', **metrics},
-            decision='needs_ai',
-            sample_items=0,
-            sample_chars=0,
+            reason_token='empty_sample',
+            sample_meta=sample_meta,
         )
 
     ai_passed, ai_score, raw_ai, ai_status = _call_ai_judge(sample_text, metrics=metrics, config=config)
     if ai_status != 'ok':
-        return SubtitleQCResult(
-            passed=True,
-            score=float(rule_result.score),
-            reason=f'qc_skipped:{normalize_qc_reason_token(ai_status)}',
+        return _resolve_ai_unavailable_result(
+            rule_result=rule_result,
+            metrics=metrics,
             rule_score=float(rule_result.score),
-            ai_score=None,
-            raw_ai={'decision': 'needs_ai', 'ai_status': ai_status, **metrics},
-            decision='needs_ai',
-            sample_items=int(sample_meta.get('sample_items', 0) or 0),
-            sample_chars=int(sample_meta.get('sample_chars', 0) or 0),
+            reason_token=ai_status,
+            sample_meta=sample_meta,
         )
 
-    if ai_passed is not None:
-        passed = bool(ai_passed)
-    elif ai_score is not None:
-        passed = float(ai_score) >= float(threshold_val)
-    else:
-        passed = True
+    passed = bool(ai_passed)
+    if passed and ai_score is not None and float(ai_score) < float(threshold_val):
+        passed = False
 
     final_score = float(ai_score) if ai_score is not None else float(rule_result.score)
     raw_reason = ''
     if raw_ai and isinstance(raw_ai, dict):
         raw_reason = normalize_qc_reason_token(raw_ai.get('reason') or '')
     if not raw_reason:
-        raw_reason = 'ok' if passed else 'ai_fail'
+        raw_reason = 'ok' if passed else 'hallucination_meta'
 
     prefix = 'ai_pass' if passed else 'ai_fail'
     reason = f'{prefix}:{raw_reason}'
