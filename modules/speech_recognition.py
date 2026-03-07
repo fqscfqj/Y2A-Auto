@@ -314,14 +314,11 @@ class SpeechRecognizer:
                                 )
                                 cues = self._srt.calibrate_segments(asr_results)
                     else:
-                        if self.config.fallback_to_fixed_chunks:
-                            self.last_warning_message = (
-                                "VAD returned no segments – falling back to fixed chunks"
-                            )
-                            self.logger.warning(self.last_warning_message)
-                            force_fixed_chunks = True
-                        else:
-                            self.logger.warning("VAD returned no segments")
+                        self.last_warning_message = (
+                            "VAD returned no segments; assuming no speech and stopping ASR"
+                        )
+                        self.logger.warning(self.last_warning_message)
+                        return None
                 except VadFailure as exc:
                     self.last_warning_message = f"VAD failed, falling back: {exc}"
                     self.logger.warning(str(self.last_warning_message))
