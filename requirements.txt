@@ -1,21 +1,26 @@
-flask==3.1.3
-werkzeug==3.1.6
+# Keep yt-dlp rolling because extractor fixes are time-sensitive.
 yt-dlp
-Pillow==12.1.1
-openai
-ffmpeg-python
-numpy>=1.24.0
+
+# Web runtime: lock to the current compatible release line for stability.
+flask~=3.1.3
+flask-cors~=6.0
+requests~=2.32.4
+urllib3>=2.0,<3.0
+
+# AI and transcription stack: keep OpenAI/httpx within supported major lines.
+openai>=1.0,<3.0
+httpx>=0.27,<1.0
+numpy>=1.24,<3.0
+# silero-vad depends on torch/torchaudio; Dockerfile still installs CPU wheels explicitly.
+silero-vad~=6.2.1
+
+# Media/image helpers.
+Pillow~=12.1.1
+
+# Platform SDKs: stay on the verified release line unless tested otherwise.
 alibabacloud_green20220302==2.20.4
 alibabacloud_tea_openapi==0.3.15
 alibabacloud_tea_util==0.3.13
-APScheduler==3.11.0
-flask-cors
-requests==2.32.4
-urllib3>=1.26.0
-httpx>=0.27.0
-bilibili-api-python==17.4.1
-python-dotenv
-pytz
-google-api-python-client==2.116.0
-websockets
-silero-vad
+bilibili-api-python~=17.4.1
+google-api-python-client>=2.116,<3.0
+APScheduler~=3.11.0
