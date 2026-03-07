@@ -124,6 +124,8 @@ docker compose up -d
 
 默认会持久化目录：`config/`、`db/`、`downloads/`、`logs/`、`temp/`、`cookies/`。
 
+说明：`fonts/` 中的字体属于项目内置依赖，用于字幕烧录；许可证见 `fonts/LICENSE.txt`。
+
 ## 部署与运行
 
 ### 方案 A：Docker（推荐）
@@ -168,6 +170,7 @@ python app.py
   "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
   "SUBTITLE_TRANSLATION_ENABLED": true,
   "SUBTITLE_TARGET_LANGUAGE": "zh",
+  "SUBTITLE_FONT_NAME": "SourceHanSansHWSC-VF.otf",
   "SUBTITLE_QC_ENABLED": false,
   "SUBTITLE_QC_THRESHOLD": 0.6,
   "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,
@@ -211,6 +214,12 @@ python app.py
 - `SUBTITLE_QC_MODEL_NAME`：单独指定 QC 模型（留空则复用翻译模型）
 
 QC 失败时会跳过烧录字幕，但仍保留字幕文件并继续上传原视频，任务最终标记为完成（并显示字幕异常标记）。
+
+### 内置字幕字体
+
+- 项目默认内置 `SourceHanSansHWSC-VF.otf`，作为字幕烧录依赖随仓库一起分发。
+- 可通过 `SUBTITLE_FONT_NAME` 指定 `fonts/` 目录中的字体文件名；程序会读取该文件的真实字体名供 libass 使用。
+- 字体许可证位于 `fonts/LICENSE.txt`。
 
 ## 使用指南
 

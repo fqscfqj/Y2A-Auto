@@ -71,6 +71,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_TRANSLATION_ENABLED": False,  # 是否启用字幕翻译
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
     "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
+    "SUBTITLE_FONT_NAME": "SourceHanSansHWSC-VF.otf",  # 烧录字幕使用的内置字体文件名
     "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (仅支持openai)
     "SUBTITLE_BATCH_SIZE": 3,  # 批次大小
     "SUBTITLE_MAX_RETRIES": 3,  # 最大重试次数

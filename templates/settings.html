@@ -584,6 +584,16 @@
                                 </div>
 
                                 <div class="row g-3">
+                                    <div class="col-12">
+                                        <div class="form-group">
+                                            <label for="subtitle-font-name">字幕字体文件名:</label>
+                                            <input type="text" id="subtitle-font-name" name="SUBTITLE_FONT_NAME" value="{{ config.get('SUBTITLE_FONT_NAME', 'SourceHanSansHWSC-VF.otf') }}" class="form-control" placeholder="SourceHanSansHWSC-VF.otf">
+                                            <p class="help-text">默认使用项目内置字体。这里填写 `fonts/` 目录中的字体文件名；系统会匹配该文件并读取真实字体名供 libass 烧录使用。</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="row g-3">
                                     <div class="col-md-4">
                                         <div class="form-group">
                                             <label for="subtitle-batch-size">批次大小:</label>

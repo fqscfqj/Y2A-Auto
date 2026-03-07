@@ -1750,6 +1750,9 @@ def settings():
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+
+        if 'SUBTITLE_FONT_NAME' in form_data:
+            form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
         
         # 处理文件上传
         cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')

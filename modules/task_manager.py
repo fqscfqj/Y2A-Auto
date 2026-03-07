@@ -2356,6 +2356,7 @@ class TaskProcessor:
         'OutlineColour': '&H00000000',
         'BackColour': '&H64000000',
     }
+    _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
     @staticmethod
     def _short_error_text(error_output, limit=240):
@@ -2709,6 +2710,125 @@ class TaskProcessor:
         engine = SrtTransformEngine(SrtTransformConfig())
         return engine.parse_srt(subtitle_text or '')
 
+    @staticmethod
+    def _normalize_font_match_name(font_name):
+        return ' '.join(str(font_name or '').strip().split()).casefold()
+
+    @staticmethod
+    def _normalize_font_filename(font_name):
+        return os.path.basename(str(font_name or '').strip()).casefold()
+
+    @classmethod
+    def _iter_bundled_font_paths(cls):
+        fonts_dir = get_app_subdir('fonts')
+        if not os.path.isdir(fonts_dir):
+            return []
+        font_paths = []
+        for entry in os.listdir(fonts_dir):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in cls._BUNDLED_FONT_EXTENSIONS:
+                font_paths.append(os.path.join(fonts_dir, entry))
+        return sorted(font_paths)
+
+    @classmethod
+    def _read_font_display_names(cls, font_path):
+        from PIL import ImageFont
+
+        pil_font = ImageFont.truetype(font_path, size=18)
+        family_name, style_name = pil_font.getname()
+        family_name = str(family_name or '').strip()
+        style_name = str(style_name or '').strip()
+
+        candidates = []
+        if family_name and style_name:
+            candidates.append(f"{family_name} {style_name}")
+        if family_name:
+            candidates.append(family_name)
+        return tuple(dict.fromkeys(name for name in candidates if name))
+
+    @classmethod
+    def _find_bundled_font_by_name(cls, font_name, task_logger=None):
+        normalized_target = cls._normalize_font_match_name(font_name)
+        normalized_filename = cls._normalize_font_filename(font_name)
+        if not normalized_target:
+            return None
+
+        for font_path in cls._iter_bundled_font_paths():
+            if normalized_filename and os.path.basename(font_path).casefold() == normalized_filename:
+                try:
+                    display_names = cls._read_font_display_names(font_path)
+                except Exception as exc:
+                    if task_logger:
+                        task_logger.warning(f"读取内置字体信息失败，已跳过 {os.path.basename(font_path)}: {exc}")
+                    continue
+                primary_name = display_names[0] if display_names else os.path.basename(font_path)
+                family_name = display_names[1] if len(display_names) > 1 else primary_name
+                return {
+                    'font_path': font_path,
+                    'font_name': primary_name,
+                    'font_family': family_name,
+                }
+
+            try:
+                display_names = cls._read_font_display_names(font_path)
+            except Exception as exc:
+                if task_logger:
+                    task_logger.warning(f"读取内置字体信息失败，已跳过 {os.path.basename(font_path)}: {exc}")
+                continue
+
+            for display_name in display_names:
+                if cls._normalize_font_match_name(display_name) == normalized_target:
+                    primary_name = display_names[0] if display_names else str(font_name).strip()
+                    family_name = display_names[1] if len(display_names) > 1 else primary_name
+                    return {
+                        'font_path': font_path,
+                        'font_name': primary_name,
+                        'font_family': family_name,
+                    }
+        return None
+
+    def _resolve_subtitle_font(self, task_logger, temp_fonts_dir):
+        config = getattr(self, 'config', {}) or {}
+        configured_font_name = str(
+            config.get('SUBTITLE_FONT_NAME') or 'SourceHanSansHWSC-VF.otf'
+        ).strip()
+        if not configured_font_name:
+            configured_font_name = 'SourceHanSansHWSC-VF.otf'
+
+        resolved_font = {
+            'configured_font_name': configured_font_name,
+            'font_name': configured_font_name,
+            'font_family': configured_font_name,
+            'matched_font_name': None,
+            'font_path': None,
+            'temp_font_path': None,
+        }
+
+        matched_font = self._find_bundled_font_by_name(configured_font_name, task_logger)
+        if not matched_font:
+            if task_logger:
+                task_logger.warning(
+                    f"未在内置字体目录中找到匹配字体: {configured_font_name}，将继续使用系统字体解析"
+                )
+            return resolved_font
+
+        resolved_font['font_path'] = matched_font['font_path']
+        resolved_font['matched_font_name'] = matched_font['font_name']
+        resolved_font['font_family'] = matched_font['font_family']
+        try:
+            temp_font_path = os.path.join(temp_fonts_dir, os.path.basename(matched_font['font_path']))
+            shutil.copy2(matched_font['font_path'], temp_font_path)
+            resolved_font['temp_font_path'] = temp_font_path
+            if task_logger:
+                task_logger.debug(
+                    f"已将内置字幕字体复制到临时目录: {os.path.basename(matched_font['font_path'])}"
+                )
+        except Exception as exc:
+            if task_logger:
+                task_logger.warning(f"复制内置字幕字体失败: {exc}")
+
+        return resolved_font
+
     @classmethod
     def _build_default_ass_document(cls, cues, font_family, video_width, video_height):
         style = cls._build_streaming_ass_style(video_width, video_height)
@@ -2900,51 +3020,16 @@ class TaskProcessor:
                 except Exception as e:
                     task_logger.warning(f"清理旧临时输出文件失败: {e}")
                 
-                # 将默认字体复制到临时字体目录，确保libass可用
-                # Ensure temp_font_path is defined for static analyzers
-                temp_font_path = None
-                try:
-                    from .utils import get_app_subdir, get_app_root_dir
-                    search_paths = [
-                        os.path.join(get_app_subdir('fonts'), 'SourceHanSansHWSC-VF.otf'),
-                        os.path.join(get_app_root_dir(), 'SourceHanSansHWSC-VF.otf'),
-                    ]
-                    default_font_src = next((p for p in search_paths if os.path.exists(p)), None)
-                    temp_font_path = None
-                    if default_font_src:
-                        temp_font_path = os.path.join(temp_fonts_dir, os.path.basename(default_font_src))
-                        shutil.copy2(default_font_src, temp_font_path)
-                        task_logger.debug(f"已将默认字幕字体复制到临时目录: {os.path.basename(default_font_src)}")
-                    else:
-                        task_logger.warning("未找到默认字幕字体（fonts/ 或 根目录），将使用系统默认字体")
-                except Exception as e:
-                    task_logger.warning(f"复制默认字幕字体失败: {e}")
-                
-                # 使用libass渲染字幕，并通过fontsdir指定临时字体目录
-                # 为避免因字体家族名不匹配导致缺字（渲染为方框），动态读取字体家族名
-                font_family = None
-                try:
-                    from PIL import ImageFont  # Pillow 已在 requirements 中
-                    # 如果前面复制了字体，则尝试读取其家族名
-                    try_font_paths = []
-                    try:
-                        if 'temp_font_path' in locals() and temp_font_path and os.path.exists(temp_font_path):
-                            try_font_paths.append(temp_font_path)
-                    except Exception:
-                        pass
-                    try_font_paths.append(os.path.join(temp_fonts_dir, 'SourceHanSansHWSC-VF.otf'))
-                    for fpath in try_font_paths:
-                        if os.path.exists(fpath):
-                            try:
-                                pil_font = ImageFont.truetype(fpath, size=18)
-                                family_name, style_name = pil_font.getname()
-                                font_family = family_name
-                                task_logger.debug(f"检测到字幕字体: family={family_name}, style={style_name}")
-                                break
-                            except Exception as e:
-                                task_logger.warning(f"读取字体信息失败，尝试下一个：{e}")
-                except Exception as e:
-                    task_logger.warning(f"Pillow未能读取字体信息: {e}")
+                subtitle_font = self._resolve_subtitle_font(task_logger, temp_fonts_dir)
+                font_family = subtitle_font.get('configured_font_name')
+                if task_logger:
+                    task_logger.debug(
+                        f"当前字幕字体配置: {subtitle_font.get('configured_font_name')}"
+                    )
+                    if subtitle_font.get('matched_font_name'):
+                        task_logger.debug(
+                            f"匹配到内置字体: {subtitle_font.get('matched_font_name')}"
+                        )
 
                 if not font_family:
                     # 回退到常见的中文字体家族名称。优先使用你当前字体显示的家族名
