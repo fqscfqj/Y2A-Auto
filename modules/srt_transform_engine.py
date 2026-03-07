@@ -399,16 +399,14 @@ class SrtTransformEngine:
             cur_text = (c.get('text') or '').strip()
             prev_dur = float(prev['end']) - float(prev['start'])
             cur_dur = float(c['end']) - float(c['start'])
-            combined_dur = float(c['end']) - float(prev['start'])
 
             need_merge = False
             if gap <= merge_gap:
-                if combined_dur < 7.0:
+                if gap < 0.0:
                     need_merge = True
-                elif prev_dur < 1.0 or cur_dur < 1.0:
+                elif prev_dur < 0.9 or cur_dur < 0.9:
                     need_merge = True
-            elif len(prev_text) < min_text or len(cur_text) < min_text:
-                if gap <= merge_gap * 2:
+                elif len(prev_text) < min_text or len(cur_text) < min_text:
                     need_merge = True
 
             if need_merge:

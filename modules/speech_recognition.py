@@ -84,18 +84,19 @@ class SpeechRecognitionConfig:
     vad_provider: str = 'silero-vad'
     vad_threshold: float = 0.55
     vad_min_speech_ms: int = 220
-    vad_min_silence_ms: int = 500       # Broad: avoid mid-word cuts
+    vad_min_silence_ms: int = 320
     vad_max_speech_s: int = 120
-    vad_speech_pad_ms: int = 180        # Dynamic padding
+    vad_speech_pad_ms: int = 120
 
     # Audio chunking
-    chunk_window_s: float = 25.0
-    chunk_overlap_s: float = 0.2
+    chunk_window_s: float = 15.0
+    chunk_overlap_s: float = 0.4
 
     # VAD post-processing (broad)
-    vad_merge_gap_s: float = 1.0        # Merge gaps < 1 s
-    vad_min_segment_s: float = 1.0
-    vad_max_segment_s_for_split: float = 29.0
+    vad_merge_gap_s: float = 0.35
+    vad_min_segment_s: float = 0.8
+    vad_max_segment_s: float = 15.0
+    vad_max_segment_s_for_split: float = 15.0
 
     # Transcription
     language: str = ''
@@ -181,6 +182,7 @@ class SpeechRecognizer:
                 chunk_overlap_s=config.chunk_overlap_s,
                 merge_gap_s=config.vad_merge_gap_s,
                 min_segment_s=config.vad_min_segment_s,
+                max_segment_s=config.vad_max_segment_s,
                 max_segment_s_for_split=config.vad_max_segment_s_for_split,
             ),
             logger=self.logger,
@@ -717,15 +719,16 @@ def create_speech_recognizer_from_config(
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.55) or 0.55),
             vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 220) or 220),
-            vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 500) or 500),
+            vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 320) or 320),
             vad_max_speech_s=int(app_config.get('VAD_SILERO_MAX_SPEECH_S', 120) or 120),
-            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 180) or 180),
-            chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 25.0) or 25.0),
-            chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) or 0.2),
-            vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 1.0) or 1.0),
-            vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 1.0) or 1.0),
+            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 120) or 120),
+            chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 15.0) or 15.0),
+            chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) or 0.4),
+            vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.35) or 0.35),
+            vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 0.8) or 0.8),
+            vad_max_segment_s=float(app_config.get('VAD_MAX_SEGMENT_S', 15.0) or 15.0),
             vad_max_segment_s_for_split=float(
-                app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 29.0) or 29.0
+                app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0) or 15.0
             ),
             # Transcription
             language=asr_language,

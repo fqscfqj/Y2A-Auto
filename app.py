@@ -1692,10 +1692,10 @@ def settings():
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15,
                         'VAD_SILERO_MIN_SPEECH_MS': 220,
-                        'VAD_SILERO_MIN_SILENCE_MS': 500,
+                        'VAD_SILERO_MIN_SILENCE_MS': 320,
                         'VAD_SILERO_MAX_SPEECH_S': 120,
-                        'VAD_SILERO_SPEECH_PAD_MS': 180,
-                        'VAD_MAX_SEGMENT_S': 90,
+                        'VAD_SILERO_SPEECH_PAD_MS': 120,
+                        'VAD_MAX_SEGMENT_S': 15,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
                         'SUBTITLE_QC_MAX_CHARS': 9000,
                         'FIREREDASR_TIMEOUT': 300,
@@ -1729,7 +1729,16 @@ def settings():
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
                         'VAD_SILERO_THRESHOLD': 0.55,
+                        'SUBTITLE_TIME_OFFSET_S': 0.0,
+                        'SUBTITLE_MIN_CUE_DURATION_S': 0.6,
+                        'SUBTITLE_MERGE_GAP_S': 0.3,
                         'SUBTITLE_QC_THRESHOLD': 0.35,
+                        'WHISPER_RETRY_DELAY_S': 2.0,
+                        'AUDIO_CHUNK_WINDOW_S': 15.0,
+                        'AUDIO_CHUNK_OVERLAP_S': 0.4,
+                        'VAD_MERGE_GAP_S': 0.35,
+                        'VAD_MIN_SEGMENT_S': 0.8,
+                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
                     }
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")

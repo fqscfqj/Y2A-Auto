@@ -251,24 +251,6 @@ class SubtitleReader:
 
 class SubtitleWriter:
     """字幕文件输出器"""
-    
-    _TRAILING_PUNCTUATION = re.compile(r'[,.，。．]+$')
-
-    @classmethod
-    def _strip_trailing_punctuation(cls, text: str) -> str:
-        """移除行尾的逗号或句号，保留其他标点。"""
-        if not text:
-            return text
-        cleaned_lines: List[str] = []
-        for line in text.split('\n'):
-            stripped_line = line.rstrip()
-            if not stripped_line:
-                cleaned_lines.append(stripped_line)
-                continue
-            # 仅当去除逗号/句号后仍有内容时才执行，避免将省略号等特殊标记清空
-            candidate = cls._TRAILING_PUNCTUATION.sub('', stripped_line)
-            cleaned_lines.append(candidate if candidate.strip() else stripped_line)
-        return '\n'.join(cleaned_lines)
 
     @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
@@ -277,7 +259,6 @@ class SubtitleWriter:
             with open(output_path, 'w', encoding='utf-8') as f:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
-                    text = SubtitleWriter._strip_trailing_punctuation(text)
                     f.write(f"{item.index}\n")
                     f.write(f"{item.time_range}\n")
                     f.write(f"{text}\n\n")
@@ -293,7 +274,6 @@ class SubtitleWriter:
                 f.write("WEBVTT\n\n")
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
-                    text = SubtitleWriter._strip_trailing_punctuation(text)
                     start_time = item.start_time.replace(',', '.')
                     end_time = item.end_time.replace(',', '.')
                     f.write(f"{start_time} --> {end_time}\n")

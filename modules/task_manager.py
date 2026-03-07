@@ -2415,6 +2415,9 @@ class TaskProcessor:
     _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
     _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.11
     _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.68
+    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.86
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 28.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.95
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
@@ -2902,45 +2905,206 @@ class TaskProcessor:
         return 0.8
 
     @classmethod
+    def _estimate_subtitle_text_units(cls, text):
+        return sum(cls._estimate_subtitle_char_units(char) for char in str(text or ''))
+
+    @staticmethod
+    def _is_punctuation_only_text(text):
+        stripped = str(text or '').strip()
+        if not stripped:
+            return False
+        return all(
+            char.isspace() or unicodedata.category(char).startswith('P')
+            for char in stripped
+        )
+
+    @classmethod
+    def _is_short_orphan_tail(cls, text):
+        stripped = str(text or '').strip()
+        if not stripped:
+            return False
+        if cls._is_punctuation_only_text(stripped):
+            return True
+
+        tail_core = stripped.rstrip('.,!?;:，。！？；：、… ')
+        if not tail_core:
+            return True
+
+        tail_units = cls._estimate_subtitle_text_units(tail_core)
+        if tail_units <= 3.0:
+            return True
+
+        return tail_core in {'吗', '呢', '啊', '吧', '呀', '了', '嘛', '么', '呗', '哇', '哦', '喔'}
+
+    @classmethod
+    def _semantic_wrap_bonus(cls, text):
+        stripped = str(text or '').strip()
+        if not stripped:
+            return 0.0
+
+        strong_prefixes = (
+            '而不是', '而非', '并不是', '不是', '但是', '不过', '然而', '因此', '所以',
+            '因为', '如果', '虽然', '并且', '或者', '还是', '以及', '然后',
+            'rather than', 'instead of', 'because', 'however', 'therefore', 'although',
+        )
+        weak_prefixes = (
+            '而', '但', '却', '并', '或', '和', '与', '及',
+            'and', 'but', 'or', 'if', 'when', 'while', 'that', 'which',
+        )
+
+        lowered = stripped.lower()
+        if lowered.startswith(strong_prefixes):
+            return 18.0
+        if lowered.startswith(weak_prefixes):
+            return 8.0
+        return 0.0
+
+    @classmethod
+    def _is_broken_compound_wrap(cls, left_text, right_text):
+        left = str(left_text or '').strip().lower()
+        right = str(right_text or '').strip().lower()
+        if not left or not right:
+            return False
+
+        broken_pairs = (
+            ('而', '不是'),
+            ('并', '不是'),
+            ('rather', 'than'),
+            ('instead', 'of'),
+        )
+        return any(left.endswith(prefix) and right.startswith(suffix) for prefix, suffix in broken_pairs)
+
+    @classmethod
+    def _wrap_subtitle_segment_greedily(cls, segment, max_line_length):
+        wrapped_lines = []
+        chars = []
+        current_units = 0.0
+        idx = 0
+
+        while idx < len(segment):
+            char = segment[idx]
+            char_units = cls._estimate_subtitle_char_units(char)
+            if chars and current_units + char_units > max_line_length:
+                break_at = cls._find_wrap_boundary(chars)
+                if break_at >= 0:
+                    line_chars = chars[:break_at + 1]
+                    remainder = ''.join(chars[break_at + 1:]).strip()
+                else:
+                    line_chars = chars
+                    remainder = ''
+
+                line = ''.join(line_chars).strip()
+                if line:
+                    wrapped_lines.append(line)
+                chars = list(remainder)
+                current_units = cls._estimate_subtitle_text_units(remainder)
+                continue
+
+            chars.append(char)
+            current_units += char_units
+            idx += 1
+
+        line = ''.join(chars).strip()
+        if line:
+            wrapped_lines.append(line)
+        return wrapped_lines
+
+    @classmethod
+    def _find_balanced_wrap_index(cls, segment, max_line_length):
+        best_index = -1
+        best_score = None
+
+        for idx in range(1, len(segment)):
+            left = segment[:idx].strip()
+            right = segment[idx:].strip()
+            if not left or not right:
+                continue
+
+            left_units = cls._estimate_subtitle_text_units(left)
+            right_units = cls._estimate_subtitle_text_units(right)
+            boundary_char = segment[idx - 1]
+            overflow = max(0.0, left_units - max_line_length) + max(0.0, right_units - max_line_length)
+            score = abs(left_units - right_units) + overflow * 8.0
+
+            if not cls._is_preferred_wrap_boundary(boundary_char):
+                score += 2.5
+            if cls._is_short_orphan_tail(right):
+                score += 15.0
+            if cls._estimate_subtitle_text_units(left) <= 3.0:
+                score += 8.0
+            score -= cls._semantic_wrap_bonus(right)
+            if cls._is_broken_compound_wrap(left, right):
+                score += 12.0
+
+            if best_score is None or score < best_score:
+                best_score = score
+                best_index = idx
+
+        return best_index
+
+    @classmethod
+    def _wrap_landscape_segment_for_ass(cls, segment, single_line_limit, max_line_length):
+        total_units = cls._estimate_subtitle_text_units(segment)
+        if total_units <= single_line_limit:
+            return [segment]
+
+        split_index = cls._find_balanced_wrap_index(segment, max_line_length)
+        if split_index <= 0:
+            return cls._wrap_subtitle_segment_greedily(segment, max_line_length)
+
+        first_line = segment[:split_index].strip()
+        second_line = segment[split_index:].strip()
+        if not first_line or not second_line:
+            return cls._wrap_subtitle_segment_greedily(segment, max_line_length)
+
+        if cls._is_short_orphan_tail(second_line) and total_units <= single_line_limit + 2.0:
+            return [segment]
+
+        first_units = cls._estimate_subtitle_text_units(first_line)
+        second_units = cls._estimate_subtitle_text_units(second_line)
+        if first_units > max_line_length * 1.35 or second_units > max_line_length * 1.35:
+            fallback_lines = cls._wrap_subtitle_segment_greedily(segment, max_line_length)
+            if len(fallback_lines) == 2 and not cls._is_short_orphan_tail(fallback_lines[1]):
+                return fallback_lines
+            if total_units <= single_line_limit + 2.0:
+                return [segment]
+            return fallback_lines
+
+        return [first_line, second_line]
+
+    @classmethod
     def _wrap_subtitle_text_for_ass(cls, text, video_width, video_height):
         normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
         if not normalized:
             return ''
 
         max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
+        style = cls._build_streaming_ass_style(video_width, video_height)
+        is_portrait = float(style['PlayResY']) > float(style['PlayResX'])
+        usable_width = max(
+            120.0,
+            float(style['PlayResX']) - float(style['MarginL']) - float(style['MarginR']),
+        )
+        font_size = max(1.0, float(style['FontSize']))
+        single_line_limit = int(cls._clamp(
+            round(usable_width / font_size * cls._ASS_LANDSCAPE_SINGLE_LINE_DENSITY),
+            cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN,
+            cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
+        ))
         raw_segments = [segment.strip() for segment in normalized.split('\n') if segment.strip()]
         wrapped_lines = []
 
         for segment in raw_segments:
-            chars = []
-            current_units = 0.0
-            idx = 0
-            while idx < len(segment):
-                char = segment[idx]
-                char_units = cls._estimate_subtitle_char_units(char)
-                if chars and current_units + char_units > max_line_length:
-                    break_at = cls._find_wrap_boundary(chars)
-                    if break_at >= 0:
-                        line_chars = chars[:break_at + 1]
-                        remainder = ''.join(chars[break_at + 1:]).strip()
-                    else:
-                        line_chars = chars
-                        remainder = ''
-
-                    line = ''.join(line_chars).strip()
-                    if line:
-                        wrapped_lines.append(line)
-                    chars = list(remainder)
-                    current_units = sum(cls._estimate_subtitle_char_units(ch) for ch in chars)
-                    continue
-
-                chars.append(char)
-                current_units += char_units
-                idx += 1
-
-            line = ''.join(chars).strip()
-            if line:
-                wrapped_lines.append(line)
+            if is_portrait:
+                wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
+            else:
+                wrapped_lines.extend(
+                    cls._wrap_landscape_segment_for_ass(
+                        segment,
+                        single_line_limit=single_line_limit,
+                        max_line_length=max_line_length,
+                    )
+                )
 
         wrapped_lines = [line for line in wrapped_lines if line]
         if len(wrapped_lines) <= max_lines:

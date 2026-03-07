@@ -8,8 +8,8 @@ This module implements a lenient VAD strategy designed to produce "search window
 for the downstream ASR engine, **not** final subtitle boundaries.
 
 Key design decisions:
-  - Dynamic padding (default 180 ms) to avoid cutting mid-word.
-  - Aggressive gap merging (default 1 s) to keep semantic context intact.
+  - Conservative padding (default 120 ms) to avoid over-widening search windows.
+  - Tighter gap merging (default 0.35 s) to reduce cross-sentence swallowing.
   - Thread-safe, lazy-loaded Silero VAD model cached at class level.
 """
 
@@ -34,18 +34,19 @@ class VadConfig:
     provider: str = 'silero-vad'
     threshold: float = 0.55         # Speech probability threshold
     min_speech_ms: int = 220        # Ignore sounds shorter than this
-    min_silence_ms: int = 500       # Min silence to split (broad – avoid mid-word cuts)
+    min_silence_ms: int = 320       # Min silence to split (balanced for shorter search windows)
     max_speech_s: int = 120         # Max continuous speech before forced split
-    speech_pad_ms: int = 180        # Dynamic padding before/after speech
+    speech_pad_ms: int = 120        # Padding before/after speech
 
     # Audio chunking (for processing long files in manageable pieces)
-    chunk_window_s: float = 25.0
-    chunk_overlap_s: float = 0.2
+    chunk_window_s: float = 15.0
+    chunk_overlap_s: float = 0.4
 
     # Post-processing constraints (lenient, broad)
-    merge_gap_s: float = 1.0       # Merge segments if gap < 1 s
-    min_segment_s: float = 1.0     # Drop segments shorter than this
-    max_segment_s_for_split: float = 29.0  # Secondary split threshold
+    merge_gap_s: float = 0.35      # Merge segments if gap is still effectively continuous speech
+    min_segment_s: float = 0.8     # Drop segments shorter than this
+    max_segment_s: float = 15.0    # Hard cap for the VAD search window
+    max_segment_s_for_split: float = 15.0  # Secondary split threshold
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,15 @@ class VadProcessor:
             Sorted list of ``(start_s, end_s)`` tuples, or *None* on failure.
         """
         try:
-            if total_duration_s > self.config.chunk_window_s:
+            self.logger.info(
+                "VAD effective limits: cap %.2fs, chunk_window %.2fs, max_speech %.2fs, split %.2fs, merge_gap %.2fs",
+                self._effective_vad_cap_s(),
+                self._effective_chunk_window_s(),
+                self._effective_vad_max_speech_s(),
+                self._effective_split_limit_s(),
+                max(0.0, float(self.config.merge_gap_s or 0.0)),
+            )
+            if total_duration_s > self._effective_chunk_window_s():
                 return self._detect_chunked(wav_path, total_duration_s)
             else:
                 return self._run_vad_on_audio(wav_path, total_duration_s)
@@ -189,7 +198,7 @@ class VadProcessor:
                 min_speech_duration_ms=self.config.min_speech_ms,
                 min_silence_duration_ms=self.config.min_silence_ms,
                 speech_pad_ms=self.config.speech_pad_ms,
-                max_speech_duration_s=self.config.max_speech_s,
+                max_speech_duration_s=self._effective_vad_max_speech_s(),
                 sampling_rate=sample_rate,
                 return_seconds=True,
             )
@@ -227,7 +236,7 @@ class VadProcessor:
         chunks = self._create_chunks(total_duration_s)
         self.logger.info(
             f"VAD chunked processing: {total_duration_s:.1f}s, "
-            f"window {self.config.chunk_window_s}s, "
+            f"window {self._effective_chunk_window_s()}s, "
             f"overlap {self.config.chunk_overlap_s}s, {len(chunks)} chunks"
         )
 
@@ -268,8 +277,8 @@ class VadProcessor:
 
     def _create_chunks(self, total_duration_s: float) -> List[Tuple[float, float]]:
         """Create overlapping time windows for chunked processing."""
-        window = self.config.chunk_window_s
-        overlap = self.config.chunk_overlap_s
+        window = self._effective_chunk_window_s()
+        overlap = max(0.0, min(float(self.config.chunk_overlap_s or 0.0), max(window - 0.01, 0.0)))
         if total_duration_s <= window:
             return [(0.0, total_duration_s)]
 
@@ -325,7 +334,7 @@ class VadProcessor:
             return []
 
         segments = sorted(segments, key=lambda x: x[0])
-        max_dur = max(0.1, float(self.config.max_segment_s_for_split or 29.0))
+        max_dur = self._effective_split_limit_s()
 
         # 1. Merge gaps < merge_gap_s
         merge_gap = max(0.0, float(self.config.merge_gap_s or 0.0))
@@ -386,7 +395,49 @@ class VadProcessor:
             f"VAD constraints: {len(segments)} raw → {len(merged)} merged → "
             f"{len(filtered)} filtered → {len(final)} final"
         )
+        for idx, (start, end) in enumerate(final, start=1):
+            self.logger.info(
+                "VAD segment %02d: %.2fs -> %.2fs (%.2fs)",
+                idx,
+                start,
+                end,
+                end - start,
+            )
         return final
+
+    def _effective_vad_cap_s(self) -> float:
+        try:
+            cap = float(self.config.max_segment_s or 0.0)
+        except Exception:
+            cap = 0.0
+        return max(0.1, cap)
+
+    def _effective_chunk_window_s(self) -> float:
+        try:
+            window = float(self.config.chunk_window_s or 0.0)
+        except Exception:
+            window = 0.0
+        if window <= 0.0:
+            window = self._effective_vad_cap_s()
+        return min(window, self._effective_vad_cap_s())
+
+    def _effective_vad_max_speech_s(self) -> float:
+        try:
+            max_speech = float(self.config.max_speech_s or 0.0)
+        except Exception:
+            max_speech = 0.0
+        if max_speech <= 0.0:
+            max_speech = self._effective_vad_cap_s()
+        return min(max_speech, self._effective_vad_cap_s())
+
+    def _effective_split_limit_s(self) -> float:
+        try:
+            split_limit = float(self.config.max_segment_s_for_split or 0.0)
+        except Exception:
+            split_limit = 0.0
+        if split_limit <= 0.0:
+            split_limit = self._effective_vad_cap_s()
+        return min(max(0.1, split_limit), self._effective_vad_cap_s())
 
     # ------------------------------------------------------------------
     # Audio clip extraction helper
