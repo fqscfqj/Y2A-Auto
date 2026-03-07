@@ -2339,6 +2339,23 @@ class TaskProcessor:
         'frame dimension less than the minimum supported value',
         'invalid param (8)',
     )
+    _ASS_PLAY_RES_X = 1920
+    _ASS_PLAY_RES_Y = 1080
+    _ASS_STYLE_BASE = {
+        'FontSize': 42.0,
+        'Outline': 2.4,
+        'Shadow': 0.8,
+        'MarginV': 60.0,
+        'MarginL': 96.0,
+        'MarginR': 96.0,
+        'Alignment': 2,
+        'BorderStyle': 1,
+        'Bold': 0,
+        'PrimaryColour': '&H00FFFFFF',
+        'SecondaryColour': '&H00FFFFFF',
+        'OutlineColour': '&H00000000',
+        'BackColour': '&H64000000',
+    }
 
     @staticmethod
     def _short_error_text(error_output, limit=240):
@@ -2580,15 +2597,26 @@ class TaskProcessor:
                     
                 lines = block.strip().split('\n')
                 if len(lines) >= 2:
-                    # 第一行应该是时间戳
-                    time_line = lines[0]
+                    time_line_index = 0
+                    if '-->' not in lines[0] and len(lines) >= 3 and '-->' in lines[1]:
+                        time_line_index = 1
+                    time_line = lines[time_line_index]
                     if '-->' in time_line:
+                        time_match = re.search(
+                            r'(\d{2}:\d{2}:\d{2})[,.](\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2})[,.](\d{3})',
+                            time_line,
+                        )
+                        if not time_match:
+                            continue
                         # 添加序号
                         srt_content.append(str(subtitle_index))
                         # 添加时间戳（已转换格式）
-                        srt_content.append(time_line)
+                        srt_content.append(
+                            f"{time_match.group(1)},{time_match.group(2)} --> "
+                            f"{time_match.group(3)},{time_match.group(4)}"
+                        )
                         # 添加字幕文本
-                        srt_content.extend(lines[1:])
+                        srt_content.extend(lines[time_line_index + 1:])
                         srt_content.append('')  # 空行分隔
                         subtitle_index += 1
             
@@ -2603,64 +2631,185 @@ class TaskProcessor:
             task_logger.error(f"VTT转SRT转换失败: {str(e)}")
             return None
 
-    def _convert_srt_to_ass(self, srt_path, ass_path, task_logger):
-        """将SRT字幕文件转换为ASS格式（FFmpeg对ASS支持最好）"""
+    @staticmethod
+    def _clamp(value, minimum, maximum):
+        return max(minimum, min(maximum, value))
+
+    @staticmethod
+    def _format_ass_number(value):
         try:
-            import re
-            import os
-            
-            with open(srt_path, 'r', encoding='utf-8') as srt_file:
-                srt_content = srt_file.read()
-            
-            # ASS文件头部
-            ass_header = """[Script Info]
-Title: Subtitle
-ScriptType: v4.00+
+            value_f = float(value)
+        except Exception:
+            return str(value)
+        if value_f.is_integer():
+            return str(int(value_f))
+        return f"{value_f:.2f}".rstrip('0').rstrip('.')
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,20,&H00ffffff,&H000000ff,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+    @staticmethod
+    def _seconds_to_ass_timestamp(seconds):
+        try:
+            total_cs = max(0, int(round(float(seconds) * 100)))
+        except Exception:
+            total_cs = 0
+        hours = total_cs // 360000
+        total_cs %= 360000
+        minutes = total_cs // 6000
+        total_cs %= 6000
+        secs = total_cs // 100
+        centis = total_cs % 100
+        return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-            
-            # 解析SRT字幕
-            subtitle_blocks = re.split(r'\n\s*\n', srt_content.strip())
-            ass_lines = []
-            
-            for block in subtitle_blocks:
-                if not block.strip():
-                    continue
-                    
-                lines = block.strip().split('\n')
-                if len(lines) >= 3:  # 序号、时间戳、文本
-                    time_line = lines[1]
-                    text_lines = lines[2:]
-                    
-                    # 解析时间戳
-                    time_match = re.match(r'(\d{2}:\d{2}:\d{2}),(\d{3}) --> (\d{2}:\d{2}:\d{2}),(\d{3})', time_line)
-                    if time_match:
-                        start_time = f"{time_match.group(1)}.{time_match.group(2)[:2]}"  # ASS使用两位毫秒
-                        end_time = f"{time_match.group(3)}.{time_match.group(4)[:2]}"
-                        
-                        # 合并文本行
-                        text = '\\N'.join(text_lines)  # ASS使用\N作为换行符
-                        
-                        # 创建ASS事件行
-                        ass_line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}"
-                        ass_lines.append(ass_line)
-            
-            # 写入ASS文件
+    @staticmethod
+    def _escape_ass_text(text):
+        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
+        escaped_lines = []
+        for line in normalized.split('\n'):
+            escaped_lines.append(
+                line.replace('\\', r'\\').replace('{', r'\{').replace('}', r'\}')
+            )
+        return r'\N'.join(escaped_lines)
+
+    @classmethod
+    def _build_streaming_ass_style(cls, video_width, video_height):
+        try:
+            width = int(video_width)
+        except Exception:
+            width = 0
+        try:
+            height = int(video_height)
+        except Exception:
+            height = 0
+
+        if width <= 0:
+            width = cls._ASS_PLAY_RES_X
+        if height <= 0:
+            height = cls._ASS_PLAY_RES_Y
+
+        scale = min(width / cls._ASS_PLAY_RES_X, height / cls._ASS_PLAY_RES_Y)
+        if scale <= 0:
+            scale = 1.0
+
+        style = dict(cls._ASS_STYLE_BASE)
+        style.update({
+            'PlayResX': width,
+            'PlayResY': height,
+            'FontSize': cls._clamp(cls._ASS_STYLE_BASE['FontSize'] * scale, 28.0, 72.0),
+            'Outline': cls._clamp(cls._ASS_STYLE_BASE['Outline'] * scale, 1.4, 3.6),
+            'Shadow': cls._clamp(cls._ASS_STYLE_BASE['Shadow'] * scale, 0.6, 1.4),
+            'MarginV': cls._clamp(cls._ASS_STYLE_BASE['MarginV'] * scale, 34.0, 108.0),
+            'MarginL': cls._clamp(cls._ASS_STYLE_BASE['MarginL'] * scale, 40.0, 160.0),
+            'MarginR': cls._clamp(cls._ASS_STYLE_BASE['MarginR'] * scale, 40.0, 160.0),
+        })
+        return style
+
+    @classmethod
+    def _parse_subtitle_text_to_cues(cls, subtitle_text):
+        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+
+        engine = SrtTransformEngine(SrtTransformConfig())
+        return engine.parse_srt(subtitle_text or '')
+
+    @classmethod
+    def _build_default_ass_document(cls, cues, font_family, video_width, video_height):
+        style = cls._build_streaming_ass_style(video_width, video_height)
+        font_name = str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ')
+        ass_header = (
+            "[Script Info]\n"
+            "Title: Streaming Subtitle\n"
+            "ScriptType: v4.00+\n"
+            f"PlayResX: {style['PlayResX']}\n"
+            f"PlayResY: {style['PlayResY']}\n"
+            "WrapStyle: 0\n"
+            "ScaledBorderAndShadow: yes\n"
+            "Collisions: Normal\n"
+            "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Default,"
+            f"{font_name},"
+            f"{cls._format_ass_number(style['FontSize'])},"
+            f"{style['PrimaryColour']},"
+            f"{style['SecondaryColour']},"
+            f"{style['OutlineColour']},"
+            f"{style['BackColour']},"
+            f"{style['Bold']},0,0,0,100,100,0,0,"
+            f"{style['BorderStyle']},"
+            f"{cls._format_ass_number(style['Outline'])},"
+            f"{cls._format_ass_number(style['Shadow'])},"
+            f"{style['Alignment']},"
+            f"{int(round(style['MarginL']))},"
+            f"{int(round(style['MarginR']))},"
+            f"{int(round(style['MarginV']))},1\n"
+            "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+
+        ass_lines = []
+        for cue in cues or []:
+            cue_dict = cue or {}
+            text = cls._escape_ass_text(cue_dict.get('text', ''))
+            if not text:
+                continue
+            ass_lines.append(
+                "Dialogue: 0,"
+                f"{cls._seconds_to_ass_timestamp(cue_dict.get('start', 0.0))},"
+                f"{cls._seconds_to_ass_timestamp(cue_dict.get('end', 0.0))},"
+                "Default,,0,0,0,,"
+                f"{text}"
+            )
+
+        body = '\n'.join(ass_lines)
+        if body:
+            body += '\n'
+        return ass_header + body
+
+    def _convert_srt_to_ass(
+        self,
+        subtitle_path,
+        ass_path,
+        task_logger,
+        *,
+        video_width=None,
+        video_height=None,
+        font_family=None,
+    ):
+        """将SRT/VTT字幕转换为带默认流媒体样式的ASS格式。"""
+        try:
+            source_path = subtitle_path
+            subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
+
+            if subtitle_ext == '.vtt':
+                converted_srt = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                if not converted_srt or not os.path.exists(converted_srt):
+                    task_logger.error("VTT转SRT失败，无法生成ASS字幕")
+                    return False
+                source_path = converted_srt
+
+            with open(source_path, 'r', encoding='utf-8-sig', errors='replace') as subtitle_file:
+                subtitle_content = subtitle_file.read()
+
+            cues = self._parse_subtitle_text_to_cues(subtitle_content)
+            if not cues:
+                task_logger.error(f"未解析出有效字幕条目，无法生成ASS: {os.path.basename(subtitle_path)}")
+                return False
+
+            ass_content = self._build_default_ass_document(
+                cues,
+                font_family=font_family,
+                video_width=video_width,
+                video_height=video_height,
+            )
             with open(ass_path, 'w', encoding='utf-8') as ass_file:
-                ass_file.write(ass_header)
-                ass_file.write('\n'.join(ass_lines))
-            
-            task_logger.info(f"SRT转换为ASS成功: {ass_path}")
+                ass_file.write(ass_content)
+
+            task_logger.info(f"字幕转换为ASS成功: {ass_path}")
             return True
-            
+
         except Exception as e:
-            task_logger.error(f"SRT转ASS转换失败: {str(e)}")
+            task_logger.error(f"SRT/VTT转ASS转换失败: {str(e)}")
             return False
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
@@ -2733,26 +2882,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             # 先规范字幕格式，再创建临时目录
             subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
-
-            # FFmpeg 的 subtitles 过滤器不支持直接渲染 VTT，因此先转换为 SRT
-            if subtitle_ext == '.vtt':
-                task_logger.info("检测到VTT字幕，转换为SRT以兼容FFmpeg")
-                converted_subtitle = self._convert_vtt_to_srt(subtitle_path, task_logger)
-                if converted_subtitle and os.path.exists(converted_subtitle):
-                    subtitle_path = converted_subtitle
-                    subtitle_ext = '.srt'
-                else:
-                    task_logger.error("VTT字幕转换失败，无法继续嵌入字幕流程")
-                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
-                    return None
-
             if subtitle_ext not in ('.srt', '.ass', '.ssa', '.vtt'):
                 task_logger.warning(f"未知字幕扩展名 {subtitle_ext}，默认按srt处理")
                 subtitle_ext = '.srt'
             temp_dir = tempfile.mkdtemp(prefix='subtitle_embed_')
             simple_video = os.path.abspath(video_path)
-            simple_subtitle_name = f"sub{subtitle_ext}"
-            simple_subtitle = os.path.join(temp_dir, simple_subtitle_name)
             simple_output = os.path.join(video_dir, f".{video_name}_with_subtitle.tmp.mp4")
             # 字体目录（在临时目录内放置一份，避免Windows路径转义问题）
             temp_fonts_dir = os.path.join(temp_dir, "fonts")
@@ -2765,7 +2899,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         os.remove(simple_output)
                 except Exception as e:
                     task_logger.warning(f"清理旧临时输出文件失败: {e}")
-                shutil.copy2(subtitle_path, simple_subtitle)
                 
                 # 将默认字体复制到临时字体目录，确保libass可用
                 # Ensure temp_font_path is defined for static analyzers
@@ -2827,21 +2960,56 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     font_family = fallback_families[0]
                     task_logger.debug(f"使用回退字体家族名称: {font_family}")
 
-                # 在参数中对空格进行转义，避免被解析为分隔符，并强制使用 UTF-8 字符集
-                font_family_escaped = font_family.replace(' ', '\\ ')
-                # 构建滤镜链：字幕 + 需要时的降分辨率
-                vf_filter = f"subtitles={simple_subtitle_name}:fontsdir=fonts:charenc=UTF-8:force_style=FontName={font_family_escaped}"
+                render_subtitle_ext = subtitle_ext
+                render_subtitle_name = f"sub{render_subtitle_ext}"
+                render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
+                use_force_style_fallback = False
+
+                if subtitle_ext in ('.ass', '.ssa'):
+                    shutil.copy2(subtitle_path, render_subtitle_path)
+                    task_logger.info(f"保留源{subtitle_ext.upper()}样式进行烧录")
+                else:
+                    render_subtitle_ext = '.ass'
+                    render_subtitle_name = "sub.ass"
+                    render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
+                    if self._convert_srt_to_ass(
+                        subtitle_path,
+                        render_subtitle_path,
+                        task_logger,
+                        video_width=input_width,
+                        video_height=input_height,
+                        font_family=font_family,
+                    ):
+                        task_logger.info("已为非ASS字幕生成统一流媒体样式的ASS临时文件")
+                    else:
+                        task_logger.warning("生成默认ASS样式失败，回退到直接烧录原始字幕")
+                        if subtitle_ext == '.vtt':
+                            converted_subtitle = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                            if not converted_subtitle or not os.path.exists(converted_subtitle):
+                                task_logger.error("VTT字幕转换失败，无法继续嵌入字幕流程")
+                                update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                                return None
+                            subtitle_path = converted_subtitle
+                            subtitle_ext = '.srt'
+                        render_subtitle_ext = subtitle_ext
+                        render_subtitle_name = f"sub{render_subtitle_ext}"
+                        render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
+                        shutil.copy2(subtitle_path, render_subtitle_path)
+                        use_force_style_fallback = True
+
+                filter_segments = [
+                    f"subtitles={render_subtitle_name}",
+                    "fontsdir=fonts",
+                    "charenc=UTF-8",
+                ]
+                if use_force_style_fallback:
+                    font_family_escaped = font_family.replace(' ', '\\ ')
+                    filter_segments.append(f"force_style=FontName={font_family_escaped}")
+                vf_filter = ':'.join(filter_segments)
 
                 # 若字幕滤镜不可用，提前报错并放弃嵌入
                 if not _ffmpeg_has_filter('subtitles'):
                     task_logger.error("当前FFmpeg不包含 'subtitles' 滤镜（需要libass支持），无法嵌入字幕")
-                    if subtitle_ext == '.vtt':
-                        task_logger.warning("使用VTT字幕嵌入失败，尝试转换为SRT后重试")
-                        converted_srt = self._convert_vtt_to_srt(subtitle_path, task_logger)
-                        if converted_srt and os.path.exists(converted_srt) and converted_srt != subtitle_path:
-                            task_logger.info(f"改用转换后的SRT字幕再次尝试: {os.path.basename(converted_srt)}")
-                            return self._embed_subtitle_in_video(task_id, video_path, converted_srt, task_logger)
-
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return None
 
