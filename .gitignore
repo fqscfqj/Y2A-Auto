@@ -56,10 +56,6 @@ desktop.ini
 *.backup
 *~
 
-# Test files
-test_*.py
-*_test.py
-tests/
 # Documentation build
 docs/_build/
 site/ 

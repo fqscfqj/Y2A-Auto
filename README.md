@@ -207,6 +207,7 @@ python app.py
 注意：`VAD_ENABLED=true` 时，Voxtral 会先走与 Whisper 相同的 VAD 分段流程，再逐段转写。
 注意：`VAD_ENABLED=false` 时，Voxtral 默认整段发送；仅当音频超过 `VOXTRAL_MAX_AUDIO_DURATION_S` 时，系统才会自动分割为多个片段以满足单请求上限。
 注意：`WHISPER_FALLBACK_TO_FIXED_CHUNKS` 沿用旧配置键名，但现在同时用于控制 Whisper / Voxtral 在 VAD 失败或无结果时是否回退到固定分片。
+注意：ASR 只要成功生成合法 SRT 就会保留字幕，不再因为字幕条数较少而丢弃结果。
 
 ### 字幕 QC 说明
 

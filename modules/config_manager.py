@@ -9,6 +9,11 @@ from .utils import get_app_subdir
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
 
+DEPRECATED_CONFIG_KEYS = {
+    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED",
+    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES",
+}
+
 # 默认配置
 DEFAULT_CONFIG = {
     "AUTO_MODE_ENABLED": False, # 无人值守自动投稿总开关
@@ -97,9 +102,6 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
-    # 语音识别结果质量门槛（开关+阈值）：少于最小条目数则视为无字幕
-    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED": True,
-    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES": 5,
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
@@ -223,6 +225,12 @@ def load_config():
                     upload_target_normalized = 'acfun'
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
+
+                deprecated_keys_removed = False
+                for deprecated_key in DEPRECATED_CONFIG_KEYS:
+                    if deprecated_key in config:
+                        config.pop(deprecated_key, None)
+                        deprecated_keys_removed = True
                 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
                 voxtral_model_before = config.get('VOXTRAL_MODEL_NAME')
@@ -231,7 +239,13 @@ def load_config():
                 )
                 voxtral_model_changed = config['VOXTRAL_MODEL_NAME'] != voxtral_model_before
 
-                if missing_keys or encoder_changed or voxtral_model_changed or upload_target_changed:
+                if (
+                    missing_keys
+                    or encoder_changed
+                    or voxtral_model_changed
+                    or upload_target_changed
+                    or deprecated_keys_removed
+                ):
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:

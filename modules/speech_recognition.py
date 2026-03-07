@@ -79,10 +79,6 @@ class SpeechRecognitionConfig:
     detect_api_key: str = ''
     detect_base_url: str = ''
     detect_model_name: str = ''
-    # Quality gate
-    min_lines_enabled: bool = True
-    min_lines_threshold: int = 5
-
     # VAD settings (broad / lenient)
     vad_enabled: bool = False
     vad_provider: str = 'silero-vad'
@@ -378,23 +374,6 @@ class SpeechRecognizer:
 
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(srt_text)
-
-            # Quality gate
-            if self.config.min_lines_enabled:
-                cue_count = SrtTransformEngine.count_cues(output_path)
-                self.logger.info(f"Subtitle cue count: {cue_count}")
-                if isinstance(cue_count, int) and cue_count < max(0, self.config.min_lines_threshold):
-                    try:
-                        os.remove(output_path)
-                    except Exception as cleanup_exc:
-                        self.logger.warning(
-                            f"Failed to remove low-quality subtitle file '{output_path}': {cleanup_exc}"
-                        )
-                    self.logger.info(
-                        f"Subtitle count ({cue_count}) below threshold "
-                        f"({self.config.min_lines_threshold}) – discarded"
-                    )
-                    return None
 
             self.logger.info(f"✓ Transcription complete: {output_path}")
             return output_path
@@ -736,12 +715,6 @@ def create_speech_recognizer_from_config(
             api_key=asr_api_key,
             base_url=asr_base_url,
             model_name=asr_model,
-            min_lines_enabled=app_config.get(
-                'SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED', True,
-            ),
-            min_lines_threshold=int(
-                app_config.get('SPEECH_RECOGNITION_MIN_SUBTITLE_LINES', 5) or 0
-            ),
             # VAD
             vad_enabled=_to_bool(app_config.get('VAD_ENABLED', False)),
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
