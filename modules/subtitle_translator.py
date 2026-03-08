@@ -167,7 +167,7 @@ class SubtitleReader:
                 
                 # CJK 字符之间不需要空格
                 if (SubtitleReader._is_cjk_char(prev_char)
-                        or SubtitleReader._is_cjk_char(curr_char)):
+                        and SubtitleReader._is_cjk_char(curr_char)):
                     merged_text += line
                 # 标点符号附近直接连接
                 elif (prev_char in SubtitleReader._TRAILING_PUNCT
