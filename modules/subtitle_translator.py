@@ -464,6 +464,7 @@ class LLMRequester:
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
         """构建结构化系统提示词 - 优化版：精简规则，减少token消耗"""
+        target_language = str(target_language).lower().strip()
         target_lang_map = {
             "zh": "中文",
             "en": "English",
@@ -472,7 +473,8 @@ class LLMRequester:
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
 
-        return f"""你是字幕翻译器。将每条字幕翻译成{target_lang_name}，返回JSON。
+        if target_language != "zh":
+            return f"""你是字幕翻译器。将每条字幕翻译成{target_lang_name}，返回JSON。
 
 核心规则：
 1. 等价翻译：不解释、不扩写、不改写，保持原意
@@ -484,8 +486,22 @@ class LLMRequester:
 仅返回JSON：
 {{"translations":["译文1","译文2",...]}}"""
 
+        return f"""你是字幕翻译器。将每条字幕翻译成简体中文，返回JSON。
+
+核心规则：
+1. 等价翻译：不解释、不扩写、不改写，保持原意
+2. 一一对应：输入N条，输出N条，顺序不变
+3. 中文优先：普通叙述、动作、关系、评价、说明性语句尽量译成自然简体中文，不要整句保留原文
+4. 仅少量保留原样：数字/代码/命令/占位符/配置键/URL/邮箱/账号标签/型号参数，以及品牌名、产品名、组织名或无公认译法的行业术语
+5. 中英混排时，能翻译的部分必须翻译，不能因为句中有术语就整句保留英文
+6. 自然表达：用适合字幕阅读的简体中文口语，不要生硬直译
+
+仅返回JSON：
+{{"translations":["译文1","译文2",...]}}"""
+
     def _build_strict_structured_system_prompt(self, target_language: str) -> str:
         """严格模式提示词：强制完整翻译，用于补救未译条目"""
+        target_language = str(target_language).lower().strip()
         target_lang_map = {
             "zh": "中文",
             "en": "English",
@@ -493,13 +509,25 @@ class LLMRequester:
             "ko": "한국어",
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
-        
-        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}，返回JSON格式。
+
+        if target_language != "zh":
+            return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}，返回JSON格式。
 
 强制要求：
 1. 每条必须完整翻译，禁止保留原文
 2. 一一对应：输入N条输出N条
 3. 仅保留数字和代码占位符
+
+仅返回JSON格式：{{"translations":["译文1","译文2",...]}}"""
+        
+        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成简体中文，返回JSON格式。
+
+强制要求：
+1. 每条必须尽量完整翻译成自然简体中文，禁止整句保留原文
+2. 一一对应：输入N条输出N条
+3. 普通英文短语、句子、口语表达、说明文字都要译成简体中文
+4. 仅允许保留数字、代码、命令、占位符、配置键、URL、邮箱、账号标签、型号参数，以及品牌名、产品名、组织名或无公认译法的行业缩写
+5. 若句子中同时包含可翻译内容和少量术语，只保留术语，其余内容必须翻译
 
 仅返回JSON格式：{{"translations":["译文1","译文2",...]}}"""
     
