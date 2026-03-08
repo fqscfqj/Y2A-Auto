@@ -47,8 +47,9 @@ def _parse_cookies_text(content: str) -> Dict[str, str]:
     data = json.loads(content)
     if isinstance(data, dict):
         # 兼容 {"cookies": [{"name":"...","value":"..."}]} 结构
-        if isinstance(data.get("cookies"), list):
-            for item in data.get("cookies"):
+        cookies_list = data.get("cookies")
+        if isinstance(cookies_list, list):
+            for item in cookies_list:
                 if not isinstance(item, dict):
                     continue
                 name = item.get("name")
