@@ -134,14 +134,14 @@ class SubtitleReader:
         if len(lines) <= 1:
             return text
         
-        # 合并多行，智能处理标点符号和CJK文字
+        # 合并多行，智能处理标点符号和中文字符
         merged_text = ""
         for i, line in enumerate(lines):
             if i == 0:
                 merged_text = line
             else:
                 # 如果前一行以标点符号结尾，或当前行以标点符号开始，直接连接
-                # 如果前后任一侧为CJK字符，也直接连接（中文无需词间空格）
+                # 如果前后任一侧为中文字符（汉字），也直接连接（中文无需词间空格）
                 # 否则添加空格
                 prev_char = merged_text[-1] if merged_text else ""
                 curr_char = line[0] if line else ""

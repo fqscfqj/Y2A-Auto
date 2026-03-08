@@ -28,8 +28,21 @@ _BLOCK_SPLIT_RE = re.compile(r'\n\s*\n')
 _PUNCTUATION_SPACE_RE = re.compile(r'([.!?,:;])(?=\S)')
 # Remove stray spaces before punctuation (e.g. "word ," → "word,")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r'\s+([.!?,:;。！？，；：])')
-# CJK Unified Ideographs (covers common Chinese/Japanese/Korean characters)
-_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
+# CJK characters: Han ideographs, Japanese kana, and Korean Hangul
+_CJK_RE = re.compile(
+    r'['
+    r'\u4e00-\u9fff'   # CJK Unified Ideographs
+    r'\u3400-\u4dbf'   # CJK Unified Ideographs Extension A
+    r'\uf900-\ufaff'   # CJK Compatibility Ideographs
+    r'\u3040-\u309f'   # Hiragana
+    r'\u30a0-\u30ff'   # Katakana
+    r'\u31f0-\u31ff'   # Katakana Phonetic Extensions
+    r'\uff65-\uff9f'   # Halfwidth Katakana
+    r'\u1100-\u11ff'   # Hangul Jamo
+    r'\u3130-\u318f'   # Hangul Compatibility Jamo
+    r'\uac00-\ud7af'   # Hangul Syllables
+    r']'
+)
 # Sentence-ending punctuation (used to avoid merging complete sentences)
 _SENTENCE_END_RE = re.compile(r'[.!?。！？;；]\s*$')
 _FILLER_PATTERNS = [
@@ -222,6 +235,10 @@ class SrtTransformEngine:
         if not cues:
             return []
 
+        # Sort by start time so the 5 s duplicate window is always a
+        # forward-looking positive delta (guards against out-of-order input).
+        cues = sorted(cues, key=lambda c: (float(c.get('start', 0)), float(c.get('end', 0))))
+
         cleaned: List[Dict[str, Any]] = []
         seen_texts: Dict[str, float] = {}  # text -> last seen start_time
 
@@ -238,11 +255,11 @@ class SrtTransformEngine:
                 if not text:
                     continue
 
-            # b) Exact duplicate within 5 s window (compare against start time,
-            #    not end time, so short cues don't create an artificially wide window)
+            # b) Exact duplicate within 5 s window.  After sorting, delta is
+            #    always non-negative; guard with max(0, ...) for safety.
             key = _WHITESPACE_RE.sub(' ', text.lower()).strip()
             prev_start = seen_texts.get(key)
-            if prev_start is not None and (cue['start'] - prev_start) < 5.0:
+            if prev_start is not None and max(0.0, cue['start'] - prev_start) < 5.0:
                 self.logger.debug(f"Duplicate cue removed: '{text[:40]}'")
                 continue
 
@@ -544,13 +561,14 @@ class SrtTransformEngine:
 
         has_cjk = bool(_CJK_RE.search(text))
 
-        best_pos = ideal
+        best_pos: Optional[int] = None
         best_score = float('inf')
 
         for i in range(lo, hi + 1):
             prev_ch = text[i - 1]
 
-            # For non-CJK text avoid splitting inside a word
+            # For non-CJK text avoid splitting inside a word; skip this
+            # candidate so we never produce a mid-word break.
             if not has_cjk:
                 if prev_ch.isalpha() and i < total and text[i].isalpha():
                     continue
@@ -567,6 +585,12 @@ class SrtTransformEngine:
             if score < best_score:
                 best_score = score
                 best_pos = i
+
+        # If no acceptable split point was found (e.g. a single long word/URL
+        # with no spaces), return the text unchanged rather than forcing a
+        # mid-word break.
+        if best_pos is None:
+            return text
 
         line1 = text[:best_pos].rstrip()
         line2 = text[best_pos:].lstrip()
