@@ -76,6 +76,20 @@ class AsrConfig:
     voxtral_enforce_max_duration: bool = True
 
 
+@dataclass
+class _AsrCapabilityCache:
+    transcription_format: Optional[str] = None
+    language_detection_format: Optional[str] = None
+
+
+@dataclass
+class _AsrCapabilityProbeResult:
+    transcription_format: Optional[str] = None
+    language_detection_format: Optional[str] = None
+    srt_text: Optional[str] = None
+    language_data: Optional[Dict[str, Any]] = None
+
+
 # ---------------------------------------------------------------------------
 # AsrApiClient
 # ---------------------------------------------------------------------------
@@ -96,11 +110,12 @@ class AsrApiClient:
         self.logger = logger or logging.getLogger(__name__)
         self.client: Any = None
         self._language_hint: str = ''
-        self._supported_format: Optional[str] = None  # Cache supported format
-        self._format_probe_condition = threading.Condition()
-        self._format_probe_in_progress = False
-        self._format_probe_incompatible = False
+        self._capability_cache = _AsrCapabilityCache()
+        self._capability_probe_condition = threading.Condition()
+        self._capability_probe_in_progress = False
+        self._capability_probe_incompatible = False
         self._fallback_warning_logged = False
+        self._logged_capability_signature: Optional[Tuple[str, str]] = None
         self._init_client()
 
     # ------------------------------------------------------------------
@@ -163,7 +178,7 @@ class AsrApiClient:
         )
 
     def _log_fallback_warning_once(self, exc: Exception):
-        with self._format_probe_condition:
+        with self._capability_probe_condition:
             if self._fallback_warning_logged:
                 return
             self._fallback_warning_logged = True
@@ -173,26 +188,83 @@ class AsrApiClient:
             exc,
         )
 
-    def _mark_supported_format(self, fmt: str):
-        should_log = False
-        with self._format_probe_condition:
-            if self._supported_format != fmt:
-                should_log = self._supported_format is None
-                self._supported_format = fmt
-            self._format_probe_incompatible = False
-        if should_log:
-            self.logger.info(f"Successfully using {fmt} format")
+    @staticmethod
+    def _derive_language_detection_format(transcription_fmt: str) -> str:
+        return 'verbose_json' if transcription_fmt == 'verbose_json' else 'json'
 
-    def _invalidate_supported_format(self, expected_fmt: Optional[str] = None):
-        with self._format_probe_condition:
-            if expected_fmt is not None and self._supported_format != expected_fmt:
+    def _cache_capabilities(
+        self,
+        transcription_fmt: Optional[str] = None,
+        language_detection_fmt: Optional[str] = None,
+        force_log_transcription: bool = False,
+    ):
+        should_log_transcription = False
+        capability_signature: Optional[Tuple[str, str]] = None
+
+        with self._capability_probe_condition:
+            if transcription_fmt and self._capability_cache.transcription_format != transcription_fmt:
+                should_log_transcription = self._capability_cache.transcription_format is None
+                self._capability_cache.transcription_format = transcription_fmt
+            elif transcription_fmt and force_log_transcription:
+                should_log_transcription = True
+
+            if language_detection_fmt:
+                self._capability_cache.language_detection_format = language_detection_fmt
+            elif transcription_fmt and not self._capability_cache.language_detection_format:
+                self._capability_cache.language_detection_format = self._derive_language_detection_format(
+                    transcription_fmt
+                )
+
+            if self._capability_cache.transcription_format:
+                self._capability_probe_incompatible = False
+
+            if (
+                self._capability_cache.transcription_format
+                and self._capability_cache.language_detection_format
+            ):
+                signature = (
+                    self._capability_cache.transcription_format,
+                    self._capability_cache.language_detection_format,
+                )
+                if signature != self._logged_capability_signature:
+                    self._logged_capability_signature = signature
+                    capability_signature = signature
+
+        if should_log_transcription and transcription_fmt:
+            self.logger.info(f"Successfully using {transcription_fmt} format")
+        if capability_signature:
+            self.logger.info(
+                "Cached ASR response formats: transcription=%s, language_detection=%s",
+                capability_signature[0],
+                capability_signature[1],
+            )
+
+    def _invalidate_capabilities(
+        self,
+        expected_transcription_fmt: Optional[str] = None,
+        expected_language_detection_fmt: Optional[str] = None,
+    ):
+        with self._capability_probe_condition:
+            if (
+                expected_transcription_fmt is not None
+                and self._capability_cache.transcription_format != expected_transcription_fmt
+            ):
                 return
-            self._supported_format = None
-            self._format_probe_incompatible = False
+            if (
+                expected_language_detection_fmt is not None
+                and self._capability_cache.language_detection_format != expected_language_detection_fmt
+            ):
+                return
+            self._capability_cache = _AsrCapabilityCache()
+            self._capability_probe_incompatible = False
+            self._logged_capability_signature = None
 
     def _needs_serial_format_probe(self) -> bool:
-        with self._format_probe_condition:
-            return not self._supported_format and not self._format_probe_incompatible
+        with self._capability_probe_condition:
+            return (
+                not self._capability_cache.transcription_format
+                and not self._capability_probe_incompatible
+            )
 
     def _build_incompatible_error(self) -> RuntimeError:
         return AsrFormatIncompatibleError(
@@ -200,20 +272,51 @@ class AsrApiClient:
             "Cannot proceed with transcription."
         )
 
-    def _probe_supported_format(self, wav_path: str, model: str) -> Tuple[Optional[str], Optional[str]]:
+    def _probe_capabilities(
+        self,
+        wav_path: str,
+        model: str,
+    ) -> _AsrCapabilityProbeResult:
         format_errors: List[Tuple[str, Exception]] = []
+        verbose_json_data: Optional[Dict[str, Any]] = None
 
-        for fmt in _SUPPORTED_FORMATS:
-            try:
-                srt_text = self._try_format(wav_path, fmt, model)
-                if srt_text:
-                    if fmt == 'srt' and format_errors:
-                        self._log_fallback_warning_once(format_errors[-1][1])
-                    return fmt, srt_text
-            except Exception as exc:
-                if self._is_format_error(exc):
-                    format_errors.append((fmt, exc))
-                    continue
+        try:
+            verbose_resp = self._request_transcription_response(
+                wav_path,
+                model,
+                'verbose_json',
+            )
+            verbose_json_data = self._as_dict(verbose_resp) or {}
+            srt_text = self._verbose_json_to_srt(verbose_resp)
+            if srt_text:
+                return _AsrCapabilityProbeResult(
+                    transcription_format='verbose_json',
+                    language_detection_format='verbose_json',
+                    srt_text=srt_text,
+                    language_data=verbose_json_data,
+                )
+        except Exception as exc:
+            if self._is_format_error(exc):
+                format_errors.append(('verbose_json', exc))
+            else:
+                raise
+
+        try:
+            srt_text = self._try_format(wav_path, 'srt', model)
+            if srt_text:
+                if format_errors:
+                    self._log_fallback_warning_once(format_errors[-1][1])
+                language_fmt = 'verbose_json' if verbose_json_data else 'json'
+                return _AsrCapabilityProbeResult(
+                    transcription_format='srt',
+                    language_detection_format=language_fmt,
+                    srt_text=srt_text,
+                    language_data=verbose_json_data,
+                )
+        except Exception as exc:
+            if self._is_format_error(exc):
+                format_errors.append(('srt', exc))
+            else:
                 raise
 
         if len(format_errors) == len(_SUPPORTED_FORMATS):
@@ -225,50 +328,61 @@ class AsrApiClient:
             )
             raise self._build_incompatible_error()
 
-        return None, None
+        return _AsrCapabilityProbeResult()
 
-    def _get_or_probe_supported_format(
+    def _get_or_probe_capabilities(
         self,
         wav_path: str,
         model: str,
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> _AsrCapabilityProbeResult:
         while True:
-            with self._format_probe_condition:
-                if self._supported_format:
-                    return self._supported_format, None
-                if self._format_probe_incompatible:
+            with self._capability_probe_condition:
+                if (
+                    self._capability_cache.transcription_format
+                    and self._capability_cache.language_detection_format
+                ):
+                    return _AsrCapabilityProbeResult(
+                        transcription_format=self._capability_cache.transcription_format,
+                        language_detection_format=self._capability_cache.language_detection_format,
+                    )
+                if self._capability_probe_incompatible:
                     raise self._build_incompatible_error()
-                if self._format_probe_in_progress:
-                    self._format_probe_condition.wait()
+                if self._capability_probe_in_progress:
+                    self._capability_probe_condition.wait()
                     continue
-                self._format_probe_in_progress = True
+                self._capability_probe_in_progress = True
                 break
 
         try:
-            fmt, srt_text = self._probe_supported_format(wav_path, model)
+            probe_result = self._probe_capabilities(wav_path, model)
         except AsrFormatIncompatibleError:
-            with self._format_probe_condition:
-                self._format_probe_in_progress = False
-                self._format_probe_incompatible = True
-                self._format_probe_condition.notify_all()
+            with self._capability_probe_condition:
+                self._capability_probe_in_progress = False
+                self._capability_probe_incompatible = True
+                self._capability_probe_condition.notify_all()
             raise
         except Exception:
-            with self._format_probe_condition:
-                self._format_probe_in_progress = False
-                self._format_probe_condition.notify_all()
+            with self._capability_probe_condition:
+                self._capability_probe_in_progress = False
+                self._capability_probe_condition.notify_all()
             raise
 
-        with self._format_probe_condition:
-            self._format_probe_in_progress = False
-            if fmt:
-                self._supported_format = fmt
-                self._format_probe_incompatible = False
-            self._format_probe_condition.notify_all()
+        with self._capability_probe_condition:
+            self._capability_probe_in_progress = False
+            if probe_result.transcription_format:
+                self._capability_cache.transcription_format = probe_result.transcription_format
+            if probe_result.language_detection_format:
+                self._capability_cache.language_detection_format = probe_result.language_detection_format
+            if self._capability_cache.transcription_format:
+                self._capability_probe_incompatible = False
+            self._capability_probe_condition.notify_all()
 
-        if fmt and self._supported_format == fmt:
-            self.logger.info(f"Successfully using {fmt} format")
-
-        return fmt, srt_text
+        self._cache_capabilities(
+            transcription_fmt=probe_result.transcription_format,
+            language_detection_fmt=probe_result.language_detection_format,
+            force_log_transcription=bool(probe_result.transcription_format),
+        )
+        return probe_result
 
     def _transcribe_with_negotiated_format(
         self,
@@ -277,22 +391,23 @@ class AsrApiClient:
         segment_desc: str,
         allow_reprobe: bool = True,
     ) -> Optional[str]:
-        fmt, srt_text = self._get_or_probe_supported_format(wav_path, model)
-        if srt_text:
-            return srt_text
+        probe_result = self._get_or_probe_capabilities(wav_path, model)
+        if probe_result.srt_text:
+            return probe_result.srt_text
+
+        fmt = probe_result.transcription_format
         if not fmt:
             return None
 
         try:
             srt_text = self._try_format(wav_path, fmt, model)
             if srt_text:
-                self._mark_supported_format(fmt)
                 return srt_text
             self.logger.warning(
                 f"Cached format '{fmt}' returned empty result for segment [{segment_desc}], clearing cache"
             )
             if allow_reprobe:
-                self._invalidate_supported_format(expected_fmt=fmt)
+                self._invalidate_capabilities(expected_transcription_fmt=fmt)
                 return self._transcribe_with_negotiated_format(
                     wav_path, model, segment_desc, allow_reprobe=False,
                 )
@@ -305,11 +420,48 @@ class AsrApiClient:
                 f"clearing cache: {exc}"
             )
             if allow_reprobe:
-                self._invalidate_supported_format(expected_fmt=fmt)
+                self._invalidate_capabilities(expected_transcription_fmt=fmt)
                 return self._transcribe_with_negotiated_format(
                     wav_path, model, segment_desc, allow_reprobe=False,
                 )
             raise
+
+    def _request_transcription_response(
+        self,
+        wav_path: str,
+        model: str,
+        fmt: str,
+        *,
+        temperature: Optional[float] = None,
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
+        use_translation_endpoint: Optional[bool] = None,
+    ):
+        with open(wav_path, 'rb') as f:
+            params: Dict[str, Any] = {
+                'model': model,
+                'file': f,
+                'response_format': fmt,
+            }
+            if temperature is not None:
+                params['temperature'] = temperature
+
+            if include_language_hint:
+                lang = self._language_hint or self.config.language
+                if lang and lang.lower() != 'unknown':
+                    params['language'] = lang
+
+            if include_prompt:
+                prompt = (self.config.prompt or '').strip()
+                if prompt:
+                    params['prompt'] = prompt
+
+            if use_translation_endpoint is None:
+                use_translation_endpoint = bool(self.config.translate)
+
+            if use_translation_endpoint:
+                return self.client.audio.translations.create(**params)
+            return self.client.audio.transcriptions.create(**params)
 
     def _try_format(self, wav_path: str, fmt: str, model: str) -> Optional[str]:
         """Try transcribing with a specific format.
@@ -322,24 +474,7 @@ class AsrApiClient:
         Returns:
             SRT text if successful, None otherwise
         """
-        with open(wav_path, 'rb') as f:
-            params: Dict[str, Any] = {
-                'model': model,
-                'file': f,
-                'response_format': fmt,
-            }
-            lang = self._language_hint or self.config.language
-            if lang and lang.lower() != 'unknown':
-                params['language'] = lang
-
-            prompt = (self.config.prompt or '').strip()
-            if prompt:
-                params['prompt'] = prompt
-
-            if self.config.translate:
-                resp = self.client.audio.translations.create(**params)
-            else:
-                resp = self.client.audio.transcriptions.create(**params)
+        resp = self._request_transcription_response(wav_path, model, fmt)
 
         # Extract or convert to SRT
         if fmt == 'verbose_json':
@@ -669,34 +804,74 @@ class AsrApiClient:
             return self._detect_language_voxtral(wav_path)
         try:
             model = self.config.model_name or 'whisper-1'
-            with open(wav_path, 'rb') as f:
-                params: Dict[str, Any] = {
-                    'model': model,
-                    'file': f,
-                    'response_format': 'verbose_json',
-                    'temperature': 0,
-                }
-                try:
-                    resp = self.client.audio.transcriptions.create(**params)
-                except Exception as exc:
-                    err_str = str(exc).lower()
-                    if 'response_format' in err_str:
-                        params['response_format'] = 'json'
-                        resp = self.client.audio.transcriptions.create(**params)
-                    else:
-                        raise
-
-            data = self._as_dict(resp) or {}
-            lang = data.get('language', '')
-            if lang:
-                return str(lang).strip()
-            segs = data.get('segments') or []
-            if segs and isinstance(segs, list):
-                return str(segs[0].get('language', '')).strip()
-            return ''
+            return self._detect_language_with_negotiated_format(wav_path, model)
         except Exception as exc:
             self.logger.warning(f"Language detection failed: {exc}")
             return ''
+
+    def _detect_language_with_negotiated_format(
+        self,
+        wav_path: str,
+        model: str,
+        allow_reprobe: bool = True,
+    ) -> str:
+        probe_result = self._get_or_probe_capabilities(wav_path, model)
+        if probe_result.language_data:
+            lang = self._extract_language_from_data(probe_result.language_data)
+            if lang:
+                return lang
+
+        fmt = probe_result.language_detection_format
+        if not fmt:
+            return ''
+
+        try:
+            data = self._request_language_detection_payload(wav_path, model, fmt)
+        except Exception as exc:
+            if not self._is_format_error(exc):
+                raise
+            self.logger.warning(
+                "Cached language-detection format '%s' is no longer supported; clearing cache: %s",
+                fmt,
+                exc,
+            )
+            if allow_reprobe:
+                self._invalidate_capabilities(
+                    expected_language_detection_fmt=fmt,
+                )
+                return self._detect_language_with_negotiated_format(
+                    wav_path, model, allow_reprobe=False,
+                )
+            raise
+
+        return self._extract_language_from_data(data)
+
+    def _request_language_detection_payload(
+        self,
+        wav_path: str,
+        model: str,
+        fmt: str,
+    ) -> Dict[str, Any]:
+        resp = self._request_transcription_response(
+            wav_path,
+            model,
+            fmt,
+            temperature=0,
+            include_language_hint=False,
+            include_prompt=False,
+            use_translation_endpoint=False,
+        )
+        return self._as_dict(resp) or {}
+
+    @staticmethod
+    def _extract_language_from_data(data: Dict[str, Any]) -> str:
+        lang = data.get('language', '')
+        if lang:
+            return str(lang).strip()
+        segs = data.get('segments') or []
+        if segs and isinstance(segs, list):
+            return str(segs[0].get('language', '')).strip()
+        return ''
 
     def _detect_language_voxtral(self, wav_path: str) -> str:
         endpoint_url = self._build_voxtral_transcriptions_url(self.config.base_url)
