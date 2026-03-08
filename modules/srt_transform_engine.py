@@ -373,6 +373,7 @@ class SrtTransformEngine:
         merge_gap = max(0.0, self.config.merge_gap_s)
         min_text = max(0, self.config.min_text_length)
         min_dur = max(0.05, self.config.min_cue_duration_s)
+        total_duration_s = max(0.0, float(total_duration_s))
 
         # Sort
         cues = sorted(cues, key=lambda c: float(c.get('start', 0)))
@@ -423,25 +424,31 @@ class SrtTransformEngine:
             dur = end - start
             if dur < min_dur:
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
-                gap_to_next = next_start - start
+                gap_to_next = max(0.0, next_start - start)
                 if gap_to_next > min_dur + _MIN_GAP_S:
-                    target_end = start + min_dur
+                    target_end = min(start + min_dur, total_duration_s)
                 elif gap_to_next > _MIN_VISIBLE_DUR_S:
-                    target_end = next_start - _MIN_GAP_S
+                    target_end = min(next_start - _MIN_GAP_S, total_duration_s)
                 else:
-                    target_end = next_start
+                    target_end = min(next_start, total_duration_s)
                 if target_end > end:
                     c['end'] = target_end
                 else:
                     # Can't extend to minimum duration – merge with adjacent cue
                     if i + 1 < len(merged):
                         merged[i + 1]['start'] = start
-                        merged[i + 1]['text'] = (c['text'].strip() + ' ' + merged[i + 1]['text'].strip()).strip()
+                        merged[i + 1]['text'] = _WHITESPACE_RE.sub(
+                            ' ', f"{c['text'].strip()} {merged[i + 1]['text'].strip()}".strip()
+                        )
                         continue
                     elif finalized:
-                        finalized[-1]['end'] = max(finalized[-1]['end'], end)
-                        finalized[-1]['text'] = (finalized[-1]['text'].strip() + ' ' + c['text'].strip()).strip()
+                        finalized[-1]['end'] = min(total_duration_s, max(finalized[-1]['end'], end))
+                        finalized[-1]['text'] = _WHITESPACE_RE.sub(
+                            ' ', f"{finalized[-1]['text'].strip()} {c['text'].strip()}".strip()
+                        )
                         continue
+            c['start'] = max(0.0, min(total_duration_s, start))
+            c['end'] = max(c['start'] + _MIN_VISIBLE_DUR_S, min(total_duration_s, c['end']))
             finalized.append(c)
 
         # Drop ultra-short / invisible fragments
@@ -449,6 +456,8 @@ class SrtTransformEngine:
         for c in finalized:
             text = (c.get('text') or '').strip()
             dur = float(c['end']) - float(c['start'])
+            if not text:
+                continue
             if dur < _MIN_VISIBLE_DUR_S:
                 self.logger.debug(f"Dropping invisible cue: '{text[:30]}' ({dur:.3f}s)")
                 continue

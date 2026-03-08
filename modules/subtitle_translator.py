@@ -253,12 +253,51 @@ class SubtitleWriter:
     """字幕文件输出器"""
 
     @staticmethod
+    def _normalize_spaces(text: str) -> str:
+        try:
+            return re.sub(r'\s+', ' ', str(text or '')).strip()
+        except Exception:
+            return str(text or '').strip()
+
+    @staticmethod
+    def _wrap_text(text: str, max_line_length: int = 42, max_lines: int = 2) -> str:
+        """将字幕文本按行宽拆成最多两行，优先在空格/标点处分行。"""
+        normalized = SubtitleWriter._normalize_spaces(text)
+        if not normalized:
+            return ''
+        if max_lines <= 1 or len(normalized) <= max_line_length:
+            return normalized
+
+        def _find_break(s: str, limit: int) -> int:
+            if len(s) <= limit:
+                return len(s)
+            preferred = ' .,，。!！?？；;、'
+            candidates = [i for i, ch in enumerate(s[: limit + 12], 1) if ch in preferred]
+            # 找到最接近行宽且不超过行宽的断点
+            for idx in reversed(candidates):
+                if idx <= limit:
+                    return idx
+            return limit
+
+        lines: List[str] = []
+        remaining = normalized
+        while remaining and len(lines) < max_lines - 1 and len(remaining) > max_line_length:
+            cut = _find_break(remaining, max_line_length)
+            lines.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            lines.append(remaining)
+
+        return '\n'.join(lines[:max_lines]).strip()
+
+    @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
         """写入SRT字幕文件"""
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    text = SubtitleWriter._wrap_text(text)
                     f.write(f"{item.index}\n")
                     f.write(f"{item.time_range}\n")
                     f.write(f"{text}\n\n")
@@ -274,6 +313,7 @@ class SubtitleWriter:
                 f.write("WEBVTT\n\n")
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    text = SubtitleWriter._wrap_text(text)
                     start_time = item.start_time.replace(',', '.')
                     end_time = item.end_time.replace(',', '.')
                     f.write(f"{start_time} --> {end_time}\n")
@@ -978,7 +1018,10 @@ class SubtitleTranslator:
                 seen.add(key)
                 cleaned_lines.append(line)
 
-            return '\n'.join(cleaned_lines).strip()
+            cleaned = '\n'.join(cleaned_lines).strip()
+            # 归一化空格，避免中英混排出现多余空格
+            cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+            return cleaned
         except Exception:
             return text.strip()
     
