@@ -282,7 +282,13 @@ class SrtTransformEngine:
         return text
 
     def split_long_cue(self, cue: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Split a cue whose text exceeds line-length limits."""
+        """Split a cue whose text exceeds line-length limits.
+
+        Single-line priority: if the text fits on a single line it is never
+        split, even when the total character count exceeds max_line * max_lines.
+        This avoids unnecessary temporal fragmentation for text that can be
+        comfortably displayed on one line.
+        """
         text = cue.get('text', '')
         if not text:
             return [cue]
@@ -290,6 +296,10 @@ class SrtTransformEngine:
         max_line = self.config.max_line_length
         max_lines = self.config.max_lines
         max_total = max_line * max_lines
+
+        # Single-line priority: text that fits one line is never split
+        if len(text) <= max_line:
+            return [cue]
 
         if len(text) <= max_total:
             return [cue]
@@ -388,6 +398,7 @@ class SrtTransformEngine:
                 continue
 
         # Merge adjacent short/close cues
+        max_merge_chars = self.config.max_line_length * self.config.max_lines
         merged: List[Dict[str, Any]] = []
         for c in cues:
             if not merged:
@@ -408,6 +419,12 @@ class SrtTransformEngine:
                     need_merge = True
                 elif len(prev_text) < min_text or len(cur_text) < min_text:
                     need_merge = True
+
+            # Prevent over-merging: skip merge if result would be too long
+            if need_merge and max_merge_chars > 0:
+                combined_len = len(prev_text) + 1 + len(cur_text)
+                if combined_len > max_merge_chars:
+                    need_merge = False
 
             if need_merge:
                 prev['text'] = _WHITESPACE_RE.sub(' ', (prev_text + ' ' + cur_text).strip())
