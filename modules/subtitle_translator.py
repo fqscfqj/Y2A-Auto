@@ -109,7 +109,29 @@ class TranslationConfig:
 
 class SubtitleReader:
     """字幕文件读取器"""
+
+    # Punctuation sets used when merging multi-line subtitles into one line.
+    _TRAILING_PUNCT = frozenset(".,!?;:)]}，。！？；：）】》」』")
+    _LEADING_PUNCT = frozenset(".,!?;:([{，。！？；：（【《「『")
     
+    @staticmethod
+    def _is_cjk_char(char: str) -> bool:
+        """Check if a character is CJK (Chinese/Japanese/Korean)."""
+        if not char:
+            return False
+        cp = ord(char)
+        return (
+            0x4E00 <= cp <= 0x9FFF        # CJK Unified Ideographs
+            or 0x3400 <= cp <= 0x4DBF     # CJK Extension A
+            or 0x3000 <= cp <= 0x303F     # CJK Symbols and Punctuation
+            or 0x3040 <= cp <= 0x309F     # Hiragana
+            or 0x30A0 <= cp <= 0x30FF     # Katakana
+            or 0xAC00 <= cp <= 0xD7AF     # Hangul Syllables
+            or 0xFF00 <= cp <= 0xFFEF     # Fullwidth Forms
+            or 0xFE30 <= cp <= 0xFE4F     # CJK Compatibility Forms
+            or 0x20000 <= cp <= 0x2A6DF   # CJK Extension B
+        )
+
     @staticmethod
     def _preprocess_subtitle_text(text: str) -> str:
         """
@@ -134,18 +156,22 @@ class SubtitleReader:
         if len(lines) <= 1:
             return text
         
-        # 合并多行，智能处理标点符号
+        # 合并多行，智能处理标点符号和 CJK 字符
         merged_text = ""
         for i, line in enumerate(lines):
             if i == 0:
                 merged_text = line
             else:
-                # 如果前一行以标点符号结尾，或当前行以标点符号开始，直接连接
-                # 否则添加空格
                 prev_char = merged_text[-1] if merged_text else ""
                 curr_char = line[0] if line else ""
                 
-                if prev_char in ".,!?;:)]}" or curr_char in ".,!?;:([{":
+                # CJK 字符之间不需要空格
+                if (SubtitleReader._is_cjk_char(prev_char)
+                        and SubtitleReader._is_cjk_char(curr_char)):
+                    merged_text += line
+                # 标点符号附近直接连接
+                elif (prev_char in SubtitleReader._TRAILING_PUNCT
+                        or curr_char in SubtitleReader._LEADING_PUNCT):
                     merged_text += line
                 else:
                     merged_text += " " + line

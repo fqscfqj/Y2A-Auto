@@ -2417,7 +2417,7 @@ class TaskProcessor:
     _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.68
     _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.86
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 28.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 30.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.95
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
@@ -3030,8 +3030,13 @@ class TaskProcessor:
                 score += 2.5
             if cls._is_short_orphan_tail(right):
                 score += 15.0
-            if cls._estimate_subtitle_text_units(left) <= 3.0:
+            if left_units <= 3.0:
                 score += 8.0
+            # Penalise severely unbalanced splits (ratio > 3:1)
+            shorter = min(left_units, right_units)
+            longer = max(left_units, right_units)
+            if shorter > 0 and longer / shorter > 3.0:
+                score += 6.0
             score -= cls._semantic_wrap_bonus(right)
             if cls._is_broken_compound_wrap(left, right):
                 score += 12.0
@@ -3042,31 +3047,50 @@ class TaskProcessor:
 
         return best_index
 
+    # Tolerance (in visual units) above single_line_limit where we still
+    # prefer keeping the text on one line rather than splitting.
+    _SINGLE_LINE_TOLERANCE = 3.5
+
     @classmethod
     def _wrap_landscape_segment_for_ass(cls, segment, single_line_limit, max_line_length):
         total_units = cls._estimate_subtitle_text_units(segment)
         if total_units <= single_line_limit:
             return [segment]
 
+        tolerance = cls._SINGLE_LINE_TOLERANCE
+
         split_index = cls._find_balanced_wrap_index(segment, max_line_length)
         if split_index <= 0:
+            # No viable balanced split – keep single if within tolerance
+            if total_units <= single_line_limit + tolerance:
+                return [segment]
             return cls._wrap_subtitle_segment_greedily(segment, max_line_length)
 
         first_line = segment[:split_index].strip()
         second_line = segment[split_index:].strip()
         if not first_line or not second_line:
+            if total_units <= single_line_limit + tolerance:
+                return [segment]
             return cls._wrap_subtitle_segment_greedily(segment, max_line_length)
 
-        if cls._is_short_orphan_tail(second_line) and total_units <= single_line_limit + 2.0:
+        # Orphan tail: second line is too short to justify a split
+        if cls._is_short_orphan_tail(second_line) and total_units <= single_line_limit + tolerance:
             return [segment]
 
         first_units = cls._estimate_subtitle_text_units(first_line)
         second_units = cls._estimate_subtitle_text_units(second_line)
+
+        # Severely unbalanced split (ratio > 3:1): prefer single line if within tolerance
+        shorter = min(first_units, second_units)
+        longer = max(first_units, second_units)
+        if shorter > 0 and longer / shorter > 3.0 and total_units <= single_line_limit + tolerance:
+            return [segment]
+
         if first_units > max_line_length * 1.35 or second_units > max_line_length * 1.35:
             fallback_lines = cls._wrap_subtitle_segment_greedily(segment, max_line_length)
             if len(fallback_lines) == 2 and not cls._is_short_orphan_tail(fallback_lines[1]):
                 return fallback_lines
-            if total_units <= single_line_limit + 2.0:
+            if total_units <= single_line_limit + tolerance:
                 return [segment]
             return fallback_lines
 
