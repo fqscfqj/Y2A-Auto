@@ -421,6 +421,7 @@ class SrtTransformEngine:
                     need_merge = True
 
             # Prevent over-merging: skip merge if result would be too long
+            # (+1 accounts for the joining space between prev_text and cur_text)
             if need_merge and max_merge_chars > 0:
                 combined_len = len(prev_text) + 1 + len(cur_text)
                 if combined_len > max_merge_chars:

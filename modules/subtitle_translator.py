@@ -109,6 +109,10 @@ class TranslationConfig:
 
 class SubtitleReader:
     """字幕文件读取器"""
+
+    # Punctuation sets used when merging multi-line subtitles into one line.
+    _TRAILING_PUNCT = frozenset(".,!?;:)]}，。！？；：）】》」』")
+    _LEADING_PUNCT = frozenset(".,!?;:([{，。！？；：（【《「『")
     
     @staticmethod
     def _is_cjk_char(char: str) -> bool:
@@ -166,8 +170,8 @@ class SubtitleReader:
                         or SubtitleReader._is_cjk_char(curr_char)):
                     merged_text += line
                 # 标点符号附近直接连接
-                elif prev_char in ".,!?;:)]}，。！？；：）】》」』"  \
-                        or curr_char in ".,!?;:([{，。！？；：（【《「『":
+                elif (prev_char in SubtitleReader._TRAILING_PUNCT
+                        or curr_char in SubtitleReader._LEADING_PUNCT):
                     merged_text += line
                 else:
                     merged_text += " " + line
