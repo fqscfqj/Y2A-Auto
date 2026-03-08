@@ -26,6 +26,12 @@ from typing import Any, Dict, List, Optional
 _WHITESPACE_RE = re.compile(r'\s+')
 _BLOCK_SPLIT_RE = re.compile(r'\n\s*\n')
 _PUNCTUATION_SPACE_RE = re.compile(r'([.!?,:;])(?=\S)')
+# Remove stray spaces before punctuation (e.g. "word ," → "word,")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r'\s+([.!?,:;。！？，；：])')
+# CJK Unified Ideographs (covers common Chinese/Japanese/Korean characters)
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
+# Sentence-ending punctuation (used to avoid merging complete sentences)
+_SENTENCE_END_RE = re.compile(r'[.!?。！？;；]\s*$')
 _FILLER_PATTERNS = [
     re.compile(r'\b(um|uh|er|ah|hmm|like|you know)\b', re.IGNORECASE),
     re.compile(r'[嗯啊呃哦唔]+'),
@@ -49,6 +55,29 @@ _HALLUCINATION_RE = re.compile(r'(.{2,30}?)(?:\s*\1){2,}', re.IGNORECASE)
 _MIN_GAP_S = 0.01          # Minimum gap between adjacent cues
 _MIN_VISIBLE_DUR_S = 0.05  # Minimum duration for a cue to be visible
 _INVALID_TS_FALLBACK_S = 0.5  # Fallback duration when parsed end <= start
+
+# Merge heuristics
+# Cues shorter than this that do *not* end a sentence are merged with their
+# neighbour, treating them as part of the same thought.
+_SHORT_CUE_MERGE_THRESHOLD_S = 0.9
+
+# Two-line wrap tuning: search radius expressed as a fraction of total length
+_WRAP_RADIUS_DIVISOR = 3   # search window = total_length // _WRAP_RADIUS_DIVISOR
+_WRAP_RADIUS_MIN = 4       # minimum search radius in characters
+
+
+def _join_subtitle_texts(t1: str, t2: str) -> str:
+    """Join two subtitle text fragments, omitting the space separator for CJK content."""
+    a = t1.strip()
+    b = t2.strip()
+    if not a:
+        return b
+    if not b:
+        return a
+    # No inter-word space needed when either boundary character is CJK
+    if _CJK_RE.search(a[-1]) or _CJK_RE.search(b[0]):
+        return a + b
+    return a + ' ' + b
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +223,7 @@ class SrtTransformEngine:
             return []
 
         cleaned: List[Dict[str, Any]] = []
-        seen_texts: Dict[str, float] = {}  # text -> last end_time
+        seen_texts: Dict[str, float] = {}  # text -> last seen start_time
 
         for cue in cues:
             text = cue.get('text', '').strip()
@@ -209,14 +238,15 @@ class SrtTransformEngine:
                 if not text:
                     continue
 
-            # b) Exact duplicate within 5 s window
+            # b) Exact duplicate within 5 s window (compare against start time,
+            #    not end time, so short cues don't create an artificially wide window)
             key = _WHITESPACE_RE.sub(' ', text.lower()).strip()
-            prev_end = seen_texts.get(key)
-            if prev_end is not None and abs(cue['start'] - prev_end) < 5.0:
+            prev_start = seen_texts.get(key)
+            if prev_start is not None and (cue['start'] - prev_start) < 5.0:
                 self.logger.debug(f"Duplicate cue removed: '{text[:40]}'")
                 continue
 
-            seen_texts[key] = cue['end']
+            seen_texts[key] = cue['start']
             cue['text'] = text
             cleaned.append(cue)
 
@@ -271,6 +301,7 @@ class SrtTransformEngine:
 
         if self.config.normalize_punctuation:
             text = _PUNCTUATION_SPACE_RE.sub(r'\1 ', text)
+            text = _SPACE_BEFORE_PUNCT_RE.sub(r'\1', text)
             text = _WHITESPACE_RE.sub(' ', text).strip()
 
         if self.config.filter_filler_words:
@@ -397,20 +428,27 @@ class SrtTransformEngine:
             gap = float(c['start']) - float(prev['end'])
             prev_text = (prev.get('text') or '').strip()
             cur_text = (c.get('text') or '').strip()
-            prev_dur = float(prev['end']) - float(prev['start'])
-            cur_dur = float(c['end']) - float(c['start'])
+            # Round to microsecond precision to avoid float subtraction artifacts
+            # (e.g. 6.8 - 6.2 = 0.5999...996, not 0.6)
+            prev_dur = round(float(prev['end']) - float(prev['start']), 6)
+            cur_dur = round(float(c['end']) - float(c['start']), 6)
 
             need_merge = False
             if gap <= merge_gap:
                 if gap < 0.0:
                     need_merge = True
-                elif prev_dur < 0.9 or cur_dur < 0.9:
+                elif prev_dur < min_dur or cur_dur < min_dur:
+                    # Cue is below minimum display duration; merge with neighbour
                     need_merge = True
                 elif len(prev_text) < min_text or len(cur_text) < min_text:
+                    # Text is too short to stand alone
+                    need_merge = True
+                elif (prev_dur < _SHORT_CUE_MERGE_THRESHOLD_S or cur_dur < _SHORT_CUE_MERGE_THRESHOLD_S) and not _SENTENCE_END_RE.search(prev_text):
+                    # Short cue that doesn't close a sentence → likely same thought
                     need_merge = True
 
             if need_merge:
-                prev['text'] = _WHITESPACE_RE.sub(' ', (prev_text + ' ' + cur_text).strip())
+                prev['text'] = _join_subtitle_texts(prev_text, cur_text)
                 prev['end'] = max(prev['end'], c['end'])
             else:
                 merged.append(c)
@@ -420,7 +458,8 @@ class SrtTransformEngine:
         for i, c in enumerate(merged):
             start = float(c['start'])
             end = float(c['end'])
-            dur = end - start
+            # Round to microsecond precision to avoid float subtraction artifacts
+            dur = round(end - start, 6)
             if dur < min_dur:
                 next_start = float(merged[i + 1]['start']) if i + 1 < len(merged) else total_duration_s
                 gap_to_next = next_start - start
@@ -436,11 +475,11 @@ class SrtTransformEngine:
                     # Can't extend to minimum duration – merge with adjacent cue
                     if i + 1 < len(merged):
                         merged[i + 1]['start'] = start
-                        merged[i + 1]['text'] = (c['text'].strip() + ' ' + merged[i + 1]['text'].strip()).strip()
+                        merged[i + 1]['text'] = _join_subtitle_texts(c['text'], merged[i + 1]['text'])
                         continue
                     elif finalized:
                         finalized[-1]['end'] = max(finalized[-1]['end'], end)
-                        finalized[-1]['text'] = (finalized[-1]['text'].strip() + ' ' + c['text'].strip()).strip()
+                        finalized[-1]['text'] = _join_subtitle_texts(finalized[-1]['text'], c['text'])
                         continue
             finalized.append(c)
 
@@ -475,13 +514,65 @@ class SrtTransformEngine:
             lines.append(
                 f"{self._format_timestamp(c['start'])} --> {self._format_timestamp(c['end'])}"
             )
-            lines.append((c['text'] or '').strip())
+            lines.append(self._wrap_text_two_lines((c['text'] or '').strip()))
             lines.append('')
         return '\n'.join(lines).strip() + '\n'
 
     # ==================================================================
     # Utility helpers
     # ==================================================================
+
+    def _wrap_text_two_lines(self, text: str) -> str:
+        """Wrap a single-line cue text into at most two balanced display lines.
+
+        Applied only when the text exceeds the configured ``max_line_length``
+        but has not already been wrapped (no embedded newline).  The split
+        point is chosen near the mid-point of the string, with a preference
+        for natural break positions (sentence/clause punctuation, spaces).
+        """
+        if not text or '\n' in text:
+            return text
+        max_line = self.config.max_line_length
+        if len(text) <= max_line:
+            return text  # Already fits in one line
+
+        total = len(text)
+        ideal = total // 2
+        radius = max(_WRAP_RADIUS_MIN, total // _WRAP_RADIUS_DIVISOR)
+        lo = max(1, ideal - radius)
+        hi = min(total - 1, ideal + radius)
+
+        has_cjk = bool(_CJK_RE.search(text))
+
+        best_pos = ideal
+        best_score = float('inf')
+
+        for i in range(lo, hi + 1):
+            prev_ch = text[i - 1]
+
+            # For non-CJK text avoid splitting inside a word
+            if not has_cjk:
+                if prev_ch.isalpha() and i < total and text[i].isalpha():
+                    continue
+
+            score = float(abs(i - ideal))
+            # Prefer natural break points (lower score = better)
+            if prev_ch in '.!?。！？':
+                score -= 10.0
+            elif prev_ch in ',，;；:：':
+                score -= 5.0
+            elif prev_ch == ' ':
+                score -= 2.0
+
+            if score < best_score:
+                best_score = score
+                best_pos = i
+
+        line1 = text[:best_pos].rstrip()
+        line2 = text[best_pos:].lstrip()
+        if line1 and line2 and len(line1) >= 2 and len(line2) >= 2:
+            return line1 + '\n' + line2
+        return text
 
     @staticmethod
     def _srt_time_to_seconds(time_str: str) -> float:

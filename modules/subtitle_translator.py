@@ -134,18 +134,21 @@ class SubtitleReader:
         if len(lines) <= 1:
             return text
         
-        # 合并多行，智能处理标点符号
+        # 合并多行，智能处理标点符号和CJK文字
         merged_text = ""
         for i, line in enumerate(lines):
             if i == 0:
                 merged_text = line
             else:
                 # 如果前一行以标点符号结尾，或当前行以标点符号开始，直接连接
+                # 如果前后任一侧为CJK字符，也直接连接（中文无需词间空格）
                 # 否则添加空格
                 prev_char = merged_text[-1] if merged_text else ""
                 curr_char = line[0] if line else ""
-                
+
                 if prev_char in ".,!?;:)]}" or curr_char in ".,!?;:([{":
+                    merged_text += line
+                elif _CHINESE_CHAR_RE.search(prev_char) or _CHINESE_CHAR_RE.search(curr_char):
                     merged_text += line
                 else:
                     merged_text += " " + line
@@ -878,7 +881,7 @@ class SubtitleTranslator:
                 code = ord(ch)
                 if 0x4E00 <= code <= 0x9FFF:
                     chinese += 1
-                elif re.match(r"[A-Za-z0-9]", ch):
+                elif ch.isascii() and ch.isalnum():
                     non_chinese += 1
                 else:
                     # 忽略标点/符号/表情，不计入分母
