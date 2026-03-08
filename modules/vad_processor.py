@@ -70,6 +70,10 @@ class VadProcessor:
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self._temp_dirs: List[str] = []
+        self.last_result_state: str = 'unknown'
+        self.last_failure_reason: str = ''
+        self._last_run_failed: bool = False
+        self._last_run_failure_reason: str = ''
 
     # ------------------------------------------------------------------
     # Public API
@@ -89,6 +93,8 @@ class VadProcessor:
             Sorted list of ``(start_s, end_s)`` tuples, or *None* on failure.
         """
         try:
+            self.last_result_state = 'unknown'
+            self.last_failure_reason = ''
             self.logger.info(
                 "VAD effective limits: cap %.2fs, chunk_window %.2fs, max_speech %.2fs, split %.2fs, merge_gap %.2fs",
                 self._effective_vad_cap_s(),
@@ -99,9 +105,18 @@ class VadProcessor:
             )
             if total_duration_s > self._effective_chunk_window_s():
                 return self._detect_chunked(wav_path, total_duration_s)
+            segments = self._run_vad_on_audio(wav_path, total_duration_s)
+            if segments:
+                self.last_result_state = 'success'
+            elif self._last_run_failed:
+                self.last_result_state = 'failure'
+                self.last_failure_reason = self._last_run_failure_reason
             else:
-                return self._run_vad_on_audio(wav_path, total_duration_s)
+                self.last_result_state = 'no_speech'
+            return segments
         except Exception as exc:
+            self.last_result_state = 'failure'
+            self.last_failure_reason = str(exc)
             self.logger.warning(f"VAD processing failed: {exc}")
             return None
 
@@ -151,6 +166,7 @@ class VadProcessor:
     ) -> Optional[List[Tuple[float, float]]]:
         """Run Silero VAD on a single WAV file and return constrained segments."""
         try:
+            self._set_run_state(False)
             import torch
             import numpy as np
 
@@ -167,6 +183,7 @@ class VadProcessor:
                     self.logger.warning(
                         f"VAD requires 16 kHz mono; got {sample_rate} Hz {channels}-ch – skipping"
                     )
+                    self._set_run_state(True, f"unsupported audio format: {sample_rate} Hz {channels}-ch")
                     return None
 
                 audio_bytes = wf.readframes(total_frames)
@@ -174,6 +191,7 @@ class VadProcessor:
             duration_from_wav = total_frames / float(sample_rate)
             if duration_from_wav < 0.5:
                 self.logger.warning(f"Audio too short ({duration_from_wav:.3f}s) – skipping VAD")
+                self._set_run_state(True, f"audio too short: {duration_from_wav:.3f}s")
                 return None
 
             if sample_width == 2:
@@ -182,6 +200,7 @@ class VadProcessor:
                 audio_array = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32) / 2147483648.0
             else:
                 self.logger.warning(f"Unsupported sample width: {sample_width} bytes")
+                self._set_run_state(True, f"unsupported sample width: {sample_width} bytes")
                 return None
 
             audio_tensor = torch.from_numpy(audio_array)
@@ -205,6 +224,7 @@ class VadProcessor:
 
             if not speech_timestamps:
                 self.logger.debug("VAD detected no speech segments")
+                self._set_run_state(False)
                 return None
 
             raw_pairs: List[Tuple[float, float]] = [
@@ -214,15 +234,19 @@ class VadProcessor:
             ]
 
             if not raw_pairs:
+                self._set_run_state(False)
                 return None
 
             self.logger.info(f"VAD detected {len(raw_pairs)} raw segments")
+            self._set_run_state(False)
             return self._apply_constraints(raw_pairs)
         except ImportError:
             self.logger.error("VAD requires silero-vad + torch – pip install silero-vad torch")
+            self._set_run_state(True, "missing silero-vad or torch dependency")
             return None
         except Exception as exc:
             self.logger.warning(f"VAD exception: {exc}")
+            self._set_run_state(True, str(exc))
             return None
 
     # ------------------------------------------------------------------
@@ -247,6 +271,28 @@ class VadProcessor:
         for chunk_index, (chunk_start, chunk_end) in enumerate(chunks):
             chunk_wav = self._extract_audio_clip(wav_path, chunk_start, chunk_end)
             if not chunk_wav:
+                self._set_run_state(True, "audio clip extraction failed")
+                consecutive_failures += 1
+                self.logger.warning(
+                    "VAD chunk failed (%d/3, %.2fs-%.2fs): %s",
+                    consecutive_failures,
+                    chunk_start,
+                    chunk_end,
+                    self._last_run_failure_reason,
+                )
+                if consecutive_failures >= 3:
+                    if all_segments:
+                        self.logger.error(
+                            "VAD aborted after consecutive chunk failures; keeping %d accumulated segments",
+                            len(all_segments),
+                        )
+                        self.last_result_state = 'partial'
+                        self.last_failure_reason = self._last_run_failure_reason
+                        return self._apply_constraints(all_segments, allow_gap_merge=False)
+                    self.logger.error("VAD failed on 3 consecutive chunks – aborting")
+                    self.last_result_state = 'failure'
+                    self.last_failure_reason = self._last_run_failure_reason
+                    return None
                 continue
 
             chunk_duration = chunk_end - chunk_start
@@ -264,16 +310,46 @@ class VadProcessor:
                 all_segments.extend(adjusted)
                 consecutive_failures = 0
             else:
-                consecutive_failures += 1
-                self.logger.warning(f"VAD chunk failed ({consecutive_failures}/3)")
-                if consecutive_failures >= 3:
-                    self.logger.error("VAD failed on 3 consecutive chunks – aborting")
-                    return None
+                if self._last_run_failed:
+                    consecutive_failures += 1
+                    self.logger.warning(
+                        "VAD chunk failed (%d/3, %.2fs-%.2fs): %s",
+                        consecutive_failures,
+                        chunk_start,
+                        chunk_end,
+                        self._last_run_failure_reason or 'unknown error',
+                    )
+                    if consecutive_failures >= 3:
+                        if all_segments:
+                            self.logger.error(
+                                "VAD aborted after consecutive chunk failures; keeping %d accumulated segments",
+                                len(all_segments),
+                            )
+                            self.last_result_state = 'partial'
+                            self.last_failure_reason = self._last_run_failure_reason
+                            return self._apply_constraints(all_segments, allow_gap_merge=False)
+                        self.logger.error("VAD failed on 3 consecutive chunks – aborting")
+                        self.last_result_state = 'failure'
+                        self.last_failure_reason = self._last_run_failure_reason
+                        return None
+                else:
+                    consecutive_failures = 0
+                    self.logger.info(
+                        "VAD chunk contained no speech (%.2fs-%.2fs); continuing scan",
+                        chunk_start,
+                        chunk_end,
+                    )
 
         if not all_segments:
+            self.last_result_state = 'no_speech'
             return None
 
+        self.last_result_state = 'success'
         return self._apply_constraints(all_segments, allow_gap_merge=False)
+
+    def _set_run_state(self, failed: bool, reason: str = ''):
+        self._last_run_failed = failed
+        self._last_run_failure_reason = reason
 
     def _create_chunks(self, total_duration_s: float) -> List[Tuple[float, float]]:
         """Create overlapping time windows for chunked processing."""

@@ -274,7 +274,14 @@ class SpeechRecognizer:
                     vad_segments = self._vad.detect_speech_segments(
                         audio_wav, total_duration,
                     )
+                    vad_state = getattr(self._vad, 'last_result_state', 'unknown')
+                    vad_reason = getattr(self._vad, 'last_failure_reason', '')
                     if vad_segments:
+                        if vad_state == 'partial':
+                            self.logger.warning(
+                                "VAD returned partial results after chunk failures; continuing with %d search windows",
+                                len(vad_segments),
+                            )
                         self.logger.info(
                             f"VAD produced {len(vad_segments)} search windows"
                         )
@@ -316,11 +323,18 @@ class SpeechRecognizer:
                                 )
                                 cues = self._srt.calibrate_segments(asr_results)
                     else:
+                        if vad_state == 'no_speech':
+                            self.last_warning_message = (
+                                "VAD detected no speech; stopping ASR"
+                            )
+                            self.logger.warning(self.last_warning_message)
+                            return None
+
                         self.last_warning_message = (
-                            "VAD returned no segments; assuming no speech and stopping ASR"
+                            f"VAD failed, falling back: {vad_reason or 'unknown error'}"
                         )
                         self.logger.warning(self.last_warning_message)
-                        return None
+                        force_fixed_chunks = True
                 except VadFailure as exc:
                     self.last_warning_message = f"VAD failed, falling back: {exc}"
                     self.logger.warning(str(self.last_warning_message))
