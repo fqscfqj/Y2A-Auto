@@ -598,7 +598,7 @@ body {
         overflow-x: auto;
         padding-bottom: 0.35rem;
         gap: 0.5rem;
-        scrollbar-width: thin;
+        /* Cross-browser fallback: WebKit-based browsers use pseudo-elements below. */
     }
     .settings-page-header {
         flex-direction: column;
@@ -617,6 +617,21 @@ body {
 
     .settings-card-header {
         min-height: 0;
+    }
+}
+
+@media (max-width: 991.98px) {
+    .settings-nav::-webkit-scrollbar {
+        height: 6px;
+    }
+
+    .settings-nav::-webkit-scrollbar-thumb {
+        background-color: rgba(108, 117, 125, 0.45);
+        border-radius: 999px;
+    }
+
+    .settings-nav::-webkit-scrollbar-track {
+        background: transparent;
     }
 }
 

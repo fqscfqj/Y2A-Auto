@@ -3777,13 +3777,20 @@ class TaskProcessor:
         font_override_count = 0
         overflow_warning_count = 0
         for cue in cues or []:
-            cue_dict = cue or {}
-            text, wrap_meta = cls._wrap_subtitle_text_for_ass(
+            cue_dict = cue if isinstance(cue, dict) else {}
+            wrapped_result = cls._wrap_subtitle_text_for_ass(
                 cue_dict.get('text', ''),
                 video_width,
                 video_height,
                 return_meta=True,
             )
+            # `return_meta=True` is expected to return a tuple, but keep a safe fallback
+            # to satisfy static analysis and guard unexpected call-path changes.
+            if isinstance(wrapped_result, tuple):
+                text, wrap_meta = wrapped_result
+            else:
+                text = wrapped_result
+                wrap_meta = {}
             if not text:
                 continue
             if wrap_meta.get('forced_wrap'):
