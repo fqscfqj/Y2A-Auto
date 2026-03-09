@@ -484,7 +484,9 @@ body {
 
 /* QR码图片统一样式（避免模板中内联样式） */
 .qrcode-img {
-    max-width: 220px;
+    width: 220px;
+    height: 220px;
+    object-fit: contain;
     border: 1px solid #eee;
     border-radius: 8px;
     padding: 8px;

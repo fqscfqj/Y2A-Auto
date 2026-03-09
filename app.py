@@ -1890,8 +1890,9 @@ def acfun_qrcode_status(session_id):
     try:
         status_data = qr_session.check_status(cookie_file=cookie_path)
         status = status_data.get('status')
-        # done 状态保留到 TTL 自动清理，避免前端再次检查时立刻报“会话过期”
-        if status in ('timeout', 'failed'):
+        # done/failed 状态保留到 TTL 自动清理，避免前端再次检查时立刻报“会话过期”
+        # 仅 timeout（QR码确实过期）时立即移除
+        if status == 'timeout':
             with _ACFUN_QR_SESSION_LOCK:
                 _ACFUN_QR_SESSIONS.pop(session_id, None)
         return jsonify({'success': True, **status_data})

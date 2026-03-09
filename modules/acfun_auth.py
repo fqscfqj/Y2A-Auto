@@ -74,8 +74,8 @@ class AcfunQrLoginSession:
     START_URL = "https://scan.acfun.cn/rest/pc-direct/qr/start"
     SCAN_URL = "https://scan.acfun.cn/rest/pc-direct/qr/scanResult"
     ACCEPT_URL = "https://scan.acfun.cn/rest/pc-direct/qr/acceptResult"
-    SCAN_TIMEOUT_SECONDS = 6
-    ACCEPT_TIMEOUT_SECONDS = 6
+    SCAN_TIMEOUT_SECONDS = 15
+    ACCEPT_TIMEOUT_SECONDS = 15
 
     def __init__(self):
         self.created_at = int(time.time())
@@ -85,6 +85,7 @@ class AcfunQrLoginSession:
         self.qr_login_signature = ""
         self.qr_expire_ms = 120000
         self.done_payload: Optional[Dict[str, object]] = None
+        self._transient_errors = 0
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -149,9 +150,14 @@ class AcfunQrLoginSession:
         except requests.exceptions.ReadTimeout:
             return {"status": "wait_scan", "message": "等待扫码"}
         except Exception as e:
-            self.phase = "failed"
-            return {"status": "failed", "message": f"查询扫码状态失败: {e}"}
+            self._transient_errors += 1
+            logger.warning("查询扫码状态暂时失败 (%d): %s", self._transient_errors, e)
+            if self._transient_errors >= 3:
+                self.phase = "failed"
+                return {"status": "failed", "message": f"查询扫码状态失败: {e}"}
+            return {"status": "wait_scan", "message": "等待扫码"}
 
+        self._transient_errors = 0
         code = _safe_result_code(data.get("result"))
         if code == 0:
             next_signature = str(data.get("qrLoginSignature") or "").strip()
@@ -189,10 +195,16 @@ class AcfunQrLoginSession:
         except requests.exceptions.ReadTimeout:
             return {"status": "confirm", "message": "等待手机端确认登录"}
         except Exception as e:
-            self.phase = "failed"
-            return {"status": "failed", "message": f"确认登录状态失败: {e}"}
+            self._transient_errors += 1
+            logger.warning("确认登录状态暂时失败 (%d): %s", self._transient_errors, e)
+            if self._transient_errors >= 3:
+                self.phase = "failed"
+                return {"status": "failed", "message": f"确认登录状态失败: {e}"}
+            return {"status": "confirm", "message": "等待手机端确认登录"}
 
+        self._transient_errors = 0
         code = _safe_result_code(data.get("result"))
+        logger.debug("acceptResult response: %s", data)
         if code == 0:
             payload: Dict[str, object] = {"status": "done", "message": "登录成功"}
             if cookie_file:
@@ -232,7 +244,11 @@ class AcfunQrLoginSession:
             return {"status": "failed", "message": "登录失败，请重新获取二维码"}
 
         if self.phase == "scan":
-            return self._check_scan()
+            scan_result = self._check_scan()
+            if self.phase == "accept":
+                # 扫码成功后立即检查确认状态，消除轮询间隔造成的竞态
+                return self._check_accept(cookie_file=cookie_file)
+            return scan_result
         if self.phase == "accept":
             return self._check_accept(cookie_file=cookie_file)
 

@@ -1731,7 +1731,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     setAcfunStatus('二维码已生成，请扫码登录', 'neutral');
                     stopAcfunPolling();
-                    acfunTimer = setInterval(checkAcfunStatus, 2500);
+                    acfunTimer = setInterval(checkAcfunStatus, 2000);
                     checkAcfunStatus();
                 })
                 .catch(function (err) {
