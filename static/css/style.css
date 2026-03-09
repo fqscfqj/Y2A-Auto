@@ -118,18 +118,10 @@ body {
 
 /* 设置页面特定样式 */
 .settings-container {
-    background-color: white;
-    border-radius: 8px;
-    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-    padding: 20px;
-}
-
-/* QR码图片统一样式（避免模板中内联样式） */
-.qrcode-img {
-    max-width: 220px;
-    border: 1px solid #eee;
-    border-radius: 8px;
-    padding: 8px;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+    padding: 24px;
 }
 
 .settings-container h2 {
@@ -138,16 +130,10 @@ body {
 }
 
 .settings-section {
-    margin-bottom: 30px;
-    padding: 20px;
-    background-color: #f8f9fa;
-    border-radius: 5px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-}
-
-/* 隐藏默认的自定义转码参数区域（由 JS 控制显示） */
-#custom-params-section {
-    display: none;
+    margin-bottom: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .settings-section h3 {
@@ -156,85 +142,92 @@ body {
     font-size: 1.2em;
 }
 
+.settings-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.settings-summary-card {
+    width: 100%;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #ffffff, #f8fbff);
+    padding: 1rem 1.1rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+    text-align: left;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.settings-summary-card:hover {
+    transform: translateY(-2px);
+    border-color: #bfd6ff;
+    box-shadow: 0 14px 28px rgba(13, 110, 253, 0.12);
+}
+
+.settings-summary-icon {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13, 110, 253, 0.12);
+    color: #0d6efd;
+    font-size: 1.15rem;
+    flex-shrink: 0;
+}
+
+.settings-summary-label {
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-bottom: 0.2rem;
+}
+
+.settings-summary-value {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 0.45rem;
+}
+
 .settings-nav {
     position: sticky;
     top: 80px;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-}
-
-.settings-nav-folder {
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    background-color: #fff;
-    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
-    overflow: hidden;
-}
-
-.settings-folder-toggle {
-    width: 100%;
-    border: none;
-    background: transparent;
-    padding: 0.75rem 1rem;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 600;
-    color: #0d6efd;
-    cursor: pointer;
-}
-
-.settings-folder-icon {
-    width: 1.3rem;
-    text-align: center;
-}
-
-.settings-folder-toggle:focus-visible {
-    outline: 2px solid #0d6efd;
-    outline-offset: 2px;
-}
-
-.folder-caret {
-    transition: transform 0.2s ease;
-}
-
-.settings-nav-folder:not(.open) .folder-caret {
-    transform: rotate(180deg);
-}
-
-.settings-folder-body {
-    padding: 0 0.75rem 0.75rem;
-    display: none;
-    gap: 0.25rem;
-}
-
-.settings-folder-body.show {
-    display: flex;
-    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.6rem;
+    border-radius: 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
 }
 
 .settings-layout .settings-nav .nav-link {
-    border-radius: 6px;
-    margin-bottom: 4px;
+    border-radius: 10px;
+    margin-bottom: 0;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.45rem 0.6rem;
-}
-
-.settings-layout .settings-nav .nav-link:last-child {
-    margin-bottom: 0;
+    padding: 0.7rem 0.8rem;
+    color: #334155;
+    font-weight: 600;
 }
 
 .settings-layout .settings-nav .nav-link i {
     font-size: 1rem;
+    width: 1rem;
+    text-align: center;
 }
 
-.settings-layout .settings-nav .nav-link .settings-item-icon {
-    width: 1.2rem;
-    text-align: center;
-    opacity: 0.9;
+.settings-layout .settings-nav .nav-link.active {
+    background: linear-gradient(135deg, #0d6efd, #3b82f6);
+    color: #fff;
+    box-shadow: 0 10px 22px rgba(13, 110, 253, 0.24);
 }
 
 .settings-page-header {
@@ -265,14 +258,62 @@ body {
     font-size: 0.95rem;
 }
 
+.settings-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+    overflow: hidden;
+}
+
+.settings-card-header {
+    padding: 1rem 1.15rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    border-bottom: 1px solid #edf2f7;
+}
+
+.settings-card-header h4 {
+    margin: 0.15rem 0 0;
+    font-size: 1.05rem;
+    color: #0f172a;
+}
+
+.settings-card-body {
+    padding: 1rem 1.15rem 1.1rem;
+}
+
+.settings-subcard {
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 1rem;
+    background: #fbfdff;
+}
+
+.settings-subcard + .settings-subcard {
+    margin-top: 1rem;
+}
+
+.settings-subcard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+}
+
+.settings-subcard-header h5 {
+    margin: 0;
+    font-size: 0.98rem;
+    color: #1e3a8a;
+}
+
 .settings-stack {
     display: flex;
     flex-direction: column;
     gap: 24px;
-}
-
-.settings-stack .settings-section {
-    margin-bottom: 0;
 }
 
 .settings-section-header {
@@ -302,9 +343,78 @@ body {
     letter-spacing: 0.02em;
 }
 
+.settings-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    background: #eef2f7;
+    color: #526071;
+}
+
+.settings-status-badge.is-success {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.settings-status-badge.is-warning {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.settings-status-badge.is-info {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.settings-status-badge.is-neutral {
+    background: #eef2f7;
+    color: #526071;
+}
+
 .settings-pill-neutral {
     background: #eef2f7;
     color: #526071;
+}
+
+.settings-field {
+    padding-bottom: 0.8rem;
+    margin-bottom: 0.9rem;
+    border-bottom: 1px solid #edf2f7;
+}
+
+.settings-field:last-child {
+    padding-bottom: 0;
+    margin-bottom: 0;
+    border-bottom: 0;
+}
+
+.settings-inline-options,
+.settings-inline-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem 1.2rem;
+    align-items: center;
+}
+
+.settings-qrcode-panel {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-radius: 12px;
+    border: 1px dashed #cbd5e1;
+    background: #f8fafc;
+}
+
+/* QR码图片统一样式（避免模板中内联样式） */
+.qrcode-img {
+    max-width: 220px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px;
+    background: #fff;
 }
 
 .vad-overview-card {
@@ -356,14 +466,18 @@ body {
     font-size: 1rem;
 }
 
+#custom-params-section {
+    display: none;
+}
+
 .settings-actions-bar {
     position: sticky;
     bottom: 0;
     background: #fff;
-    padding-top: 12px;
+    padding-top: 14px;
     padding-bottom: 12px;
-    margin-top: 8px;
-    border-top: 1px solid #eee;
+    margin-top: 12px;
+    border-top: 1px solid #e5e7eb;
     z-index: 5;
 }
 
@@ -379,9 +493,15 @@ body {
 }
 
 @media (max-width: 991.98px) {
+    .settings-summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     .settings-nav {
         position: static;
         margin-bottom: 1rem;
+        flex-direction: row;
+        overflow-x: auto;
+        padding-bottom: 0.35rem;
     }
     .settings-page-header {
         flex-direction: column;
@@ -392,6 +512,24 @@ body {
     }
     .settings-inline-badges {
         justify-content: flex-start;
+    }
+    .settings-layout .settings-nav .nav-link {
+        white-space: nowrap;
+        flex: 0 0 auto;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .settings-container {
+        padding: 18px;
+    }
+    .settings-summary-grid {
+        grid-template-columns: 1fr;
+    }
+    .settings-card-header,
+    .settings-subcard-header {
+        flex-direction: column;
+        align-items: flex-start;
     }
 }
 
