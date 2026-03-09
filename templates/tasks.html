@@ -58,6 +58,52 @@
                     <tbody>
                         {% for task in tasks %}
                         <tr data-task-id="{{ task.id }}" class="status-{{ task.status }}">
+                            {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35) %}
+                            {% set qc_score = task.subtitle_qc_score %}
+                            {% set qc_reason_raw = (task.subtitle_qc_reason or '字幕质检失败') %}
+                            {% set qc_reason_parts = qc_reason_raw.split(':', 1) %}
+                            {% set qc_reason_prefix = qc_reason_parts[0] if qc_reason_parts|length > 1 else '' %}
+                            {% set qc_reason_token = qc_reason_parts[1] if qc_reason_parts|length > 1 else qc_reason_raw %}
+                            {% if qc_reason_prefix == 'ai_fail' %}
+                                {% set qc_reason_prefix_zh = 'AI复核未通过' %}
+                            {% elif qc_reason_prefix == 'ai_pass' %}
+                                {% set qc_reason_prefix_zh = 'AI复核通过' %}
+                            {% elif qc_reason_prefix == 'rule_fail' %}
+                                {% set qc_reason_prefix_zh = '规则拦截失败' %}
+                            {% elif qc_reason_prefix == 'rule_pass' %}
+                                {% set qc_reason_prefix_zh = '规则直接通过' %}
+                            {% elif qc_reason_prefix == 'qc_skipped' %}
+                                {% set qc_reason_prefix_zh = 'AI不可用，按规则结果处理' %}
+                            {% else %}
+                                {% set qc_reason_prefix_zh = '' %}
+                            {% endif %}
+                            {% if qc_reason_token == 'hallucination_meta' %}
+                                {% set qc_reason_token_zh = '疑似幻觉/元信息污染' %}
+                            {% elif qc_reason_token == 'healthy_dialogue' %}
+                                {% set qc_reason_token_zh = '内容正常' %}
+                            {% elif qc_reason_token == 'borderline_repeat' %}
+                                {% set qc_reason_token_zh = '疑似重复模板' %}
+                            {% elif qc_reason_token == 'provider_disabled' %}
+                                {% set qc_reason_token_zh = '未启用AI复核提供商' %}
+                            {% elif qc_reason_token == 'empty_sample' %}
+                                {% set qc_reason_token_zh = '抽样为空' %}
+                            {% elif qc_reason_token.startswith('ai_error') %}
+                                {% set qc_reason_token_zh = 'AI调用异常' %}
+                            {% elif qc_reason_token == '字幕质检失败' %}
+                                {% set qc_reason_token_zh = qc_reason_token %}
+                            {% else %}
+                                {% set qc_reason_token_zh = qc_reason_token %}
+                            {% endif %}
+                            {% if qc_reason_prefix_zh %}
+                                {% set qc_reason = qc_reason_prefix_zh ~ '（' ~ qc_reason_token_zh ~ '）' %}
+                            {% else %}
+                                {% set qc_reason = qc_reason_token_zh %}
+                            {% endif %}
+                            {% if qc_score is not none %}
+                                {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                            {% else %}
+                                {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                            {% endif %}
                             <td>
                                 <div class="id-cell d-flex align-items-center gap-1">
                                     <span class="text-monospace" title="{{ task.id }}">{{ task.id[:8] }}...</span>
@@ -95,7 +141,7 @@
                                         <small class="text-muted mt-1">{{ task.upload_progress }}</small>
                                     {% endif %}
                                     {% if task.subtitle_qc_failed %}
-                                        <span class="badge bg-warning text-dark mt-1" title="{{ task.subtitle_qc_reason or '字幕质检失败' }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                                        <span class="badge bg-warning text-dark mt-1" title="{{ qc_tooltip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
                                     {% endif %}
                                 </div>
                             </td>
@@ -289,6 +335,52 @@
             <div class="task-cards">
                 {% for task in tasks %}
                 {% set display_title = task.video_title_translated or task.video_title_original or '未获取标题' %}
+                {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35) %}
+                {% set qc_score = task.subtitle_qc_score %}
+                {% set qc_reason_raw = (task.subtitle_qc_reason or '字幕质检失败') %}
+                {% set qc_reason_parts = qc_reason_raw.split(':', 1) %}
+                {% set qc_reason_prefix = qc_reason_parts[0] if qc_reason_parts|length > 1 else '' %}
+                {% set qc_reason_token = qc_reason_parts[1] if qc_reason_parts|length > 1 else qc_reason_raw %}
+                {% if qc_reason_prefix == 'ai_fail' %}
+                    {% set qc_reason_prefix_zh = 'AI复核未通过' %}
+                {% elif qc_reason_prefix == 'ai_pass' %}
+                    {% set qc_reason_prefix_zh = 'AI复核通过' %}
+                {% elif qc_reason_prefix == 'rule_fail' %}
+                    {% set qc_reason_prefix_zh = '规则拦截失败' %}
+                {% elif qc_reason_prefix == 'rule_pass' %}
+                    {% set qc_reason_prefix_zh = '规则直接通过' %}
+                {% elif qc_reason_prefix == 'qc_skipped' %}
+                    {% set qc_reason_prefix_zh = 'AI不可用，按规则结果处理' %}
+                {% else %}
+                    {% set qc_reason_prefix_zh = '' %}
+                {% endif %}
+                {% if qc_reason_token == 'hallucination_meta' %}
+                    {% set qc_reason_token_zh = '疑似幻觉/元信息污染' %}
+                {% elif qc_reason_token == 'healthy_dialogue' %}
+                    {% set qc_reason_token_zh = '内容正常' %}
+                {% elif qc_reason_token == 'borderline_repeat' %}
+                    {% set qc_reason_token_zh = '疑似重复模板' %}
+                {% elif qc_reason_token == 'provider_disabled' %}
+                    {% set qc_reason_token_zh = '未启用AI复核提供商' %}
+                {% elif qc_reason_token == 'empty_sample' %}
+                    {% set qc_reason_token_zh = '抽样为空' %}
+                {% elif qc_reason_token.startswith('ai_error') %}
+                    {% set qc_reason_token_zh = 'AI调用异常' %}
+                {% elif qc_reason_token == '字幕质检失败' %}
+                    {% set qc_reason_token_zh = qc_reason_token %}
+                {% else %}
+                    {% set qc_reason_token_zh = qc_reason_token %}
+                {% endif %}
+                {% if qc_reason_prefix_zh %}
+                    {% set qc_reason = qc_reason_prefix_zh ~ '（' ~ qc_reason_token_zh ~ '）' %}
+                {% else %}
+                    {% set qc_reason = qc_reason_token_zh %}
+                {% endif %}
+                {% if qc_score is not none %}
+                    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                {% else %}
+                    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                {% endif %}
                 <div class="card task-card mb-3" data-task-id="{{ task.id }}">
                     <div class="card-body p-3">
                         <div class="d-flex align-items-start justify-content-between gap-2">
@@ -325,7 +417,7 @@
                                 {% endif %}
                                 {% if task.subtitle_qc_failed %}
                                     <div class="mt-1">
-                                        <span class="badge bg-warning text-dark" title="{{ task.subtitle_qc_reason or '字幕质检失败' }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                                        <span class="badge bg-warning text-dark" title="{{ qc_tooltip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
                                     </div>
                                 {% endif %}
                             </div>
