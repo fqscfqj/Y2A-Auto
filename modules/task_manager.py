@@ -4004,7 +4004,7 @@ class TaskProcessor:
                     render_subtitle_ext = '.srt'
                     render_subtitle_name = "sub.srt"
                     render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
-                    if self._build_streaming_srt_file(
+                    if not self._build_streaming_srt_file(
                         subtitle_path,
                         render_subtitle_path,
                         task_logger,
