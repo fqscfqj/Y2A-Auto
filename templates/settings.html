@@ -57,10 +57,10 @@
                 <span class="settings-status-badge is-info">集中管理</span>
             </div>
         </button>
-        <button type="button" class="settings-summary-card" data-settings-target="#vtab-ai">
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-ai-models">
             <span class="settings-summary-icon"><i class="bi bi-cpu"></i></span>
             <div>
-                <div class="settings-summary-label">AI 接入状态</div>
+                <div class="settings-summary-label">AI 服务状态</div>
                 <div class="settings-summary-value">{{ '已接入模型服务' if ai_ready else '待配置模型服务' }}</div>
                 <span class="settings-status-badge {{ 'is-success' if ai_ready else 'is-warning' }}">
                     {{ '可用' if ai_ready else '未配置' }}
@@ -80,9 +80,21 @@
                     <i class="bi bi-person-vcard"></i>
                     <span>账号与网络</span>
                 </a>
-                <a class="nav-link" id="vtab-ai-tab" data-bs-toggle="pill" href="#vtab-ai" role="tab" aria-controls="vtab-ai" aria-selected="false">
+                <a class="nav-link" id="vtab-ai-models-tab" data-bs-toggle="pill" href="#vtab-ai-models" role="tab" aria-controls="vtab-ai-models" aria-selected="false">
                     <i class="bi bi-robot"></i>
-                    <span>AI 与字幕</span>
+                    <span>AI 模型</span>
+                </a>
+                <a class="nav-link" id="vtab-subtitles-tab" data-bs-toggle="pill" href="#vtab-subtitles" role="tab" aria-controls="vtab-subtitles" aria-selected="false">
+                    <i class="bi bi-badge-cc"></i>
+                    <span>字幕处理</span>
+                </a>
+                <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
+                    <i class="bi bi-mic"></i>
+                    <span>语音识别</span>
+                </a>
+                <a class="nav-link" id="vtab-transcode-tab" data-bs-toggle="pill" href="#vtab-transcode" role="tab" aria-controls="vtab-transcode" aria-selected="false">
+                    <i class="bi bi-film"></i>
+                    <span>视频转码</span>
                 </a>
                 <a class="nav-link" id="vtab-maintenance-tab" data-bs-toggle="pill" href="#vtab-maintenance" role="tab" aria-controls="vtab-maintenance" aria-selected="false">
                     <i class="bi bi-tools"></i>
@@ -107,12 +119,12 @@
                                         <p class="section-lead mb-0">把最常改的自动化、投稿和审核设置集中在一页，减少来回切换。</p>
                                     </div>
                                 </div>
-                                <div class="row g-4">
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-xl-6">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Workflow</span>
+                                                    <span class="section-eyebrow">常用流程</span>
                                                     <h4>自动化流程</h4>
                                                 </div>
                                                 <span class="settings-status-badge {{ 'is-success' if config.AUTO_MODE_ENABLED else 'is-neutral' }}">
@@ -151,7 +163,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Publish</span>
+                                                    <span class="section-eyebrow">投稿设置</span>
                                                     <h4>投稿策略</h4>
                                                 </div>
                                                 <span class="settings-status-badge is-info">{{ default_target_label }}</span>
@@ -246,7 +258,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Moderation</span>
+                                                    <span class="section-eyebrow">内容审核</span>
                                                     <h4>内容审核与阿里云凭证</h4>
                                                 </div>
                                                 <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
@@ -304,15 +316,15 @@
                                 <div class="settings-section-header">
                                     <div>
                                         <h3 class="mb-1">账号与网络</h3>
-                                        <p class="section-lead mb-0">平台登录、下载访问和 FFmpeg 环境集中维护，方便快速排查接入问题。</p>
+                                        <p class="section-lead mb-0">平台登录、下载访问、YouTube 监控接入和 FFmpeg 环境集中维护，方便快速排查接入问题。</p>
                                     </div>
                                 </div>
-                                <div class="row g-4">
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-xl-6">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">AcFun</span>
+                                                    <span class="section-eyebrow">平台账号</span>
                                                     <h4>AcFun 账号</h4>
                                                 </div>
                                             </div>
@@ -349,7 +361,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">bilibili</span>
+                                                    <span class="section-eyebrow">平台账号</span>
                                                     <h4>bilibili 账号</h4>
                                                 </div>
                                             </div>
@@ -386,7 +398,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Network</span>
+                                                    <span class="section-eyebrow">下载与代理</span>
                                                     <h4>YouTube 下载与代理</h4>
                                                 </div>
                                             </div>
@@ -449,7 +461,37 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Runtime</span>
+                                                    <span class="section-eyebrow">监控接入</span>
+                                                    <h4>YouTube 监控 API</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if config.YOUTUBE_API_KEY else 'is-warning' }}">
+                                                    {{ '已配置' if config.YOUTUBE_API_KEY else '未配置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="form-group mb-0">
+                                                    <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
+                                                    <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
+                                                    <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
+                                                </div>
+                                                {% if config.YOUTUBE_API_KEY %}
+                                                <div class="alert alert-success mt-3 mb-0">
+                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置，监控功能可正常使用。
+                                                </div>
+                                                {% else %}
+                                                <div class="alert alert-warning mt-3 mb-0">
+                                                    <i class="bi bi-exclamation-triangle"></i> 尚未配置 YouTube API 密钥，请先完成接入。
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">运行环境</span>
                                                     <h4>FFmpeg 环境</h4>
                                                 </div>
                                             </div>
@@ -469,21 +511,21 @@
                             </section>
                         </div>
                     </div>
-                    <div class="tab-pane fade" id="vtab-ai" role="tabpanel" aria-labelledby="vtab-ai-tab">
+                    <div class="tab-pane fade" id="vtab-ai-models" role="tabpanel" aria-labelledby="vtab-ai-models-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
                                 <div class="settings-section-header">
                                     <div>
-                                        <h3 class="mb-1">AI 与字幕</h3>
-                                        <p class="section-lead mb-0">统一管理模型入口、字幕链路、转写提供商与转码策略。</p>
+                                        <h3 class="mb-1">AI 模型</h3>
+                                        <p class="section-lead mb-0">集中管理全局模型接入和字幕专用覆盖，留空项默认继承全局配置。</p>
                                     </div>
                                 </div>
-                                <div class="row g-4">
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-12">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">LLM</span>
+                                                    <span class="section-eyebrow">模型接入</span>
                                                     <h4>OpenAI 与字幕专用覆盖</h4>
                                                 </div>
                                             </div>
@@ -498,7 +540,7 @@
                                                     <div class="row g-3">
                                                         <div class="col-md-6">
                                                             <div class="form-group">
-                                                                <label for="openai-key" class="form-label">OpenAI API Key</label>
+                                                                <label for="openai-key" class="form-label">OpenAI API 密钥</label>
                                                                 <input type="password" id="openai-key" name="OPENAI_API_KEY" value="{{ config.OPENAI_API_KEY }}" class="form-control">
                                                             </div>
                                                         </div>
@@ -510,14 +552,14 @@
                                                         </div>
                                                         <div class="col-12">
                                                             <div class="form-group">
-                                                                <label for="openai-url" class="form-label">Base URL</label>
+                                                                <label for="openai-url" class="form-label">接口地址</label>
                                                                 <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="openai-thinking-enabled">通用 LLM 启用思考</label>
+                                                                <label class="form-check-label" for="openai-thinking-enabled">通用模型启用思考模式</label>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -533,13 +575,13 @@
                                                     <div class="row g-3">
                                                         <div class="col-12">
                                                             <div class="form-group">
-                                                                <label for="subtitle-openai-url" class="form-label">字幕专用 Base URL</label>
+                                                                <label for="subtitle-openai-url" class="form-label">字幕专用接口地址</label>
                                                                 <input type="text" id="subtitle-openai-url" name="SUBTITLE_OPENAI_BASE_URL" value="{{ config.get('SUBTITLE_OPENAI_BASE_URL', '') }}" class="form-control" placeholder="留空则沿用全局">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
                                                             <div class="form-group">
-                                                                <label for="subtitle-openai-key" class="form-label">字幕专用 API Key</label>
+                                                                <label for="subtitle-openai-key" class="form-label">字幕专用 API 密钥</label>
                                                                 <input type="password" id="subtitle-openai-key" name="SUBTITLE_OPENAI_API_KEY" value="{{ config.get('SUBTITLE_OPENAI_API_KEY', '') }}" class="form-control" placeholder="留空则沿用全局">
                                                             </div>
                                                         </div>
@@ -552,7 +594,7 @@
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="subtitle-openai-thinking-enabled" name="SUBTITLE_OPENAI_THINKING_ENABLED" {% if config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">字幕 LLM 启用思考</label>
+                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">字幕模型启用思考模式</label>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -560,12 +602,26 @@
                                             </div>
                                         </article>
                                     </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
 
+                    <div class="tab-pane fade" id="vtab-subtitles" role="tabpanel" aria-labelledby="vtab-subtitles-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">字幕处理</h3>
+                                        <p class="section-lead mb-0">把字幕翻译、质检和后处理单独展开，减少和模型、语音识别参数混排。</p>
+                                    </div>
+                                </div>
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-12">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Subtitle</span>
+                                                    <span class="section-eyebrow">翻译与质检</span>
                                                     <h4>字幕翻译与质检</h4>
                                                 </div>
                                             </div>
@@ -693,12 +749,26 @@
                                             </div>
                                         </article>
                                     </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
 
+                    <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">语音识别</h3>
+                                        <p class="section-lead mb-0">按服务类型拆开展示 ASR 参数、Whisper 扩展项和共享 VAD 控制。</p>
+                                    </div>
+                                </div>
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-12">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">ASR</span>
+                                                    <span class="section-eyebrow">服务选择</span>
                                                     <h4>语音识别提供商</h4>
                                                 </div>
                                             </div>
@@ -728,7 +798,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Whisper</span>
+                                                    <span class="section-eyebrow">Whisper 服务</span>
                                                     <h4>Whisper 配置</h4>
                                                 </div>
                                             </div>
@@ -736,8 +806,8 @@
                                                 <div class="row g-3">
                                                     <div class="col-md-6">
                                                         <div class="form-group">
-                                                            <label for="whisper-api-key" class="form-label">Whisper API Key</label>
-                                                            <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用 OpenAI Key">
+                                                            <label for="whisper-api-key" class="form-label">Whisper API 密钥</label>
+                                                            <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用 OpenAI 密钥">
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
@@ -748,8 +818,8 @@
                                                     </div>
                                                     <div class="col-12">
                                                         <div class="form-group">
-                                                            <label for="whisper-base-url" class="form-label">Whisper Base URL</label>
-                                                            <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI Base URL">
+                                                            <label for="whisper-base-url" class="form-label">Whisper 接口地址</label>
+                                                            <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI 接口地址">
                                                         </div>
                                                     </div>
                                                 </div>
@@ -867,7 +937,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Voxtral</span>
+                                                    <span class="section-eyebrow">Voxtral 服务</span>
                                                     <h4>Voxtral 配置</h4>
                                                 </div>
                                             </div>
@@ -877,7 +947,7 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="voxtral-api-key" class="form-label">Voxtral API 密钥</label>
-                                                            <input type="password" id="voxtral-api-key" name="VOXTRAL_API_KEY" value="{{ config.get('VOXTRAL_API_KEY', '') }}" class="form-control" placeholder="Mistral API Key">
+                                                            <input type="password" id="voxtral-api-key" name="VOXTRAL_API_KEY" value="{{ config.get('VOXTRAL_API_KEY', '') }}" class="form-control" placeholder="Mistral API 密钥">
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
@@ -948,12 +1018,12 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Shared VAD</span>
+                                                    <span class="section-eyebrow">共享控制</span>
                                                     <h4>VAD、分片与回退</h4>
                                                 </div>
                                                 <div class="settings-inline-badges">
                                                     <span class="settings-pill" id="shared-vad-provider-pill">Whisper</span>
-                                                    <span class="settings-pill settings-pill-neutral">Shared Controls</span>
+                                                    <span class="settings-pill settings-pill-neutral">共用参数</span>
                                                 </div>
                                             </div>
                                             <div class="settings-card-body">
@@ -1045,7 +1115,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">FireRedASR2S</span>
+                                                    <span class="section-eyebrow">FireRedASR2S 服务</span>
                                                     <h4>FireRedASR2S 配置</h4>
                                                 </div>
                                             </div>
@@ -1053,7 +1123,7 @@
                                                 <div class="row g-3">
                                                     <div class="col-md-8">
                                                         <div class="form-group">
-                                                            <label for="fireredasr-base-url" class="form-label">基础地址</label>
+                                                            <label for="fireredasr-base-url" class="form-label">接口地址</label>
                                                             <input type="text" id="fireredasr-base-url" name="FIREREDASR_BASE_URL" value="{{ config.get('FIREREDASR_BASE_URL', 'http://localhost:8000') }}" class="form-control" placeholder="http://localhost:8000">
                                                         </div>
                                                     </div>
@@ -1065,7 +1135,7 @@
                                                     </div>
                                                     <div class="col-md-6">
                                                         <div class="form-group">
-                                                            <label for="fireredasr-api-key" class="form-label">API Key</label>
+                                                            <label for="fireredasr-api-key" class="form-label">API 密钥</label>
                                                             <input type="password" id="fireredasr-api-key" name="FIREREDASR_API_KEY" value="{{ config.get('FIREREDASR_API_KEY', '') }}" class="form-control" placeholder="如果服务需要鉴权">
                                                         </div>
                                                     </div>
@@ -1079,12 +1149,26 @@
                                             </div>
                                         </article>
                                     </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
 
+                    <div class="tab-pane fade" id="vtab-transcode" role="tabpanel" aria-labelledby="vtab-transcode-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">视频转码</h3>
+                                        <p class="section-lead mb-0">单独管理编码器和自定义参数，避免和字幕、ASR 参数挤在同一页。</p>
+                                    </div>
+                                </div>
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-12">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Transcode</span>
+                                                    <span class="section-eyebrow">转码策略</span>
                                                     <h4>视频转码</h4>
                                                 </div>
                                             </div>
@@ -1095,10 +1179,10 @@
                                                             <label for="video-encoder" class="form-label">视频编码器</label>
                                                             <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
                                                                 <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
-                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU (libx264)</option>
-                                                                <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA (NVENC)</option>
-                                                                <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel (QSV)</option>
-                                                                <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD (AMF/VAAPI)</option>
+                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（libx264）</option>
+                                                                <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA（NVENC）</option>
+                                                                <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel（QSV）</option>
+                                                                <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD（AMF/VAAPI）</option>
                                                             </select>
                                                         </div>
                                                     </div>
@@ -1130,42 +1214,15 @@
                                 <div class="settings-section-header">
                                     <div>
                                         <h3 class="mb-1">监控与维护</h3>
-                                        <p class="section-lead mb-0">集中处理监控接入、并发策略与日志/下载清理动作。</p>
+                                        <p class="section-lead mb-0">集中处理并发策略、日志清理和下载目录维护动作。</p>
                                     </div>
                                 </div>
-                                <div class="row g-4">
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">YouTube Monitor</span>
-                                                    <h4>YouTube 监控 API</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="form-group mb-3">
-                                                    <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
-                                                    <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
-                                                    <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
-                                                </div>
-                                                {% if config.YOUTUBE_API_KEY %}
-                                                <div class="alert alert-success mb-0">
-                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置，监控功能可正常使用。
-                                                </div>
-                                                {% else %}
-                                                <div class="alert alert-warning mb-0">
-                                                    <i class="bi bi-exclamation-triangle"></i> 尚未配置 YouTube API 密钥，请先完成接入。
-                                                </div>
-                                                {% endif %}
-                                            </div>
-                                        </article>
-                                    </div>
-
+                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-md-6">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Concurrency</span>
+                                                    <span class="section-eyebrow">运行控制</span>
                                                     <h4>任务并发</h4>
                                                 </div>
                                             </div>
@@ -1186,7 +1243,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Logs</span>
+                                                    <span class="section-eyebrow">日志管理</span>
                                                     <h4>日志清理</h4>
                                                 </div>
                                             </div>
@@ -1237,7 +1294,7 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">Downloads</span>
+                                                    <span class="section-eyebrow">文件维护</span>
                                                     <h4>下载内容清理</h4>
                                                 </div>
                                             </div>
@@ -1286,7 +1343,7 @@
                                 <article class="settings-card">
                                     <div class="settings-card-header">
                                         <div>
-                                            <span class="section-eyebrow">Access Control</span>
+                                            <span class="section-eyebrow">访问控制</span>
                                             <h4>密码保护</h4>
                                         </div>
                                     </div>
