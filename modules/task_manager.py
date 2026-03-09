@@ -2392,9 +2392,9 @@ class TaskProcessor:
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
         (720.0, 44.0),
-        (1080.0, 56.0),
-        (1440.0, 64.0),
-        (2160.0, 76.0),
+        (1080.0, 61.0),
+        (1440.0, 76.0),
+        (2160.0, 132.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
         (1280.0, 70.0),
@@ -2403,9 +2403,9 @@ class TaskProcessor:
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
         (720.0, 34.0),
-        (1080.0, 40.0),
-        (1440.0, 48.0),
-        (2160.0, 64.0),
+        (1080.0, 46.0),
+        (1440.0, 58.0),
+        (2160.0, 102.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
         (1280.0, 120.0),
@@ -2419,6 +2419,45 @@ class TaskProcessor:
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 30.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.95
+    _ASS_SAFE_WIDTH_RATIO = 0.94
+    _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.82
+    _ASS_OVERRIDE_FONT_SIZE_MIN = 38.0
+    _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
+    _STREAMING_SRT_TEMPLATE_HEIGHTS = (720, 1080, 1440, 2160)
+    _STREAMING_SRT_STYLE_TEMPLATES = {
+        720: {
+            'FontSize': 18.0,
+            'Outline': 1.2,
+            'Shadow': 0.8,
+            'MarginL': 60,
+            'MarginR': 60,
+            'MarginV': 26,
+        },
+        1080: {
+            'FontSize': 18.0,
+            'Outline': 1.2,
+            'Shadow': 0.8,
+            'MarginL': 60,
+            'MarginR': 60,
+            'MarginV': 26,
+        },
+        1440: {
+            'FontSize': 18.0,
+            'Outline': 1.2,
+            'Shadow': 0.8,
+            'MarginL': 60,
+            'MarginR': 60,
+            'MarginV': 26,
+        },
+        2160: {
+            'FontSize': 18.0,
+            'Outline': 1.2,
+            'Shadow': 0.8,
+            'MarginL': 60,
+            'MarginR': 60,
+            'MarginV': 26,
+        },
+    }
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
     @staticmethod
@@ -2768,14 +2807,36 @@ class TaskProcessor:
         return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
     @staticmethod
+    def _escape_ass_text_line(text):
+        return str(text or '').replace('\\', r'\\').replace('{', r'\{').replace('}', r'\}')
+
+    @staticmethod
     def _escape_ass_text(text):
         normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
         escaped_lines = []
         for line in normalized.split('\n'):
-            escaped_lines.append(
-                line.replace('\\', r'\\').replace('{', r'\{').replace('}', r'\}')
-            )
+            escaped_lines.append(TaskProcessor._escape_ass_text_line(line))
         return r'\N'.join(escaped_lines)
+
+    @classmethod
+    def _compose_ass_dialogue_text(cls, lines, override_font_size=None):
+        escaped_lines = [
+            cls._escape_ass_text_line(line)
+            for line in (lines or [])
+            if str(line or '').strip()
+        ]
+        if not escaped_lines:
+            return ''
+        payload = r'\N'.join(escaped_lines)
+        if override_font_size is None:
+            return payload
+        try:
+            override_font_size = int(round(float(override_font_size)))
+        except Exception:
+            override_font_size = 0
+        if override_font_size <= 0:
+            return payload
+        return f"{{\\fs{override_font_size}}}{payload}"
 
     @classmethod
     def _build_streaming_ass_style(cls, video_width, video_height):
@@ -2804,12 +2865,12 @@ class TaskProcessor:
             font_size = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_FONT_SIZE_ANCHORS),
                 38.0,
-                80.0,
+                132.0,
             )
             margin_v = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_MARGIN_V_ANCHORS),
                 30.0,
-                72.0,
+                102.0,
             )
             side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 48.0, 160.0)
 
@@ -2826,6 +2887,129 @@ class TaskProcessor:
     @staticmethod
     def _sanitize_ass_font_name(font_family):
         return str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ').strip() or 'Arial'
+
+    @classmethod
+    def _resolve_streaming_srt_template_height(cls, video_width, video_height):
+        _, height = cls._resolve_ass_dimensions(video_width, video_height)
+        for template_height in cls._STREAMING_SRT_TEMPLATE_HEIGHTS:
+            if height <= template_height:
+                return template_height
+        return cls._STREAMING_SRT_TEMPLATE_HEIGHTS[-1]
+
+    @classmethod
+    def _build_streaming_srt_style_description(cls, font_family, video_width, video_height):
+        width, height = cls._resolve_ass_dimensions(video_width, video_height)
+        template_height = cls._resolve_streaming_srt_template_height(width, height)
+        template = dict(cls._STREAMING_SRT_STYLE_TEMPLATES[template_height])
+        template.update({
+            'FontName': cls._sanitize_ass_font_name(font_family),
+            'Alignment': 2,
+            'BorderStyle': 1,
+            'OriginalSize': f"{width}x{height}",
+            'TemplateHeight': template_height,
+        })
+        return template
+
+    @classmethod
+    def _build_streaming_srt_force_style(cls, font_family, video_width, video_height):
+        style = cls._build_streaming_srt_style_description(font_family, video_width, video_height)
+        entries = [
+            f"FontName={style['FontName']}",
+            f"FontSize={cls._format_ass_number(style['FontSize'])}",
+            f"Outline={cls._format_ass_number(style['Outline'])}",
+            f"Shadow={cls._format_ass_number(style['Shadow'])}",
+            f"MarginL={int(style['MarginL'])}",
+            f"MarginR={int(style['MarginR'])}",
+            f"MarginV={int(style['MarginV'])}",
+            f"Alignment={style['Alignment']}",
+            f"BorderStyle={style['BorderStyle']}",
+        ]
+        payload = ','.join(entries).replace("'", r"\'")
+        return f"force_style='{payload}'"
+
+    @classmethod
+    def _build_streaming_srt_filter(cls, render_subtitle_name, font_family, video_width, video_height):
+        style = cls._build_streaming_srt_style_description(font_family, video_width, video_height)
+        filter_segments = [
+            f"subtitles={render_subtitle_name}",
+            f"original_size={style['OriginalSize']}",
+            "wrap_unicode=1",
+            "fontsdir=fonts",
+            "charenc=UTF-8",
+            cls._build_streaming_srt_force_style(font_family, video_width, video_height),
+        ]
+        return ':'.join(filter_segments)
+
+    @classmethod
+    def _create_streaming_srt_engine(cls):
+        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+
+        return SrtTransformEngine(
+            SrtTransformConfig(
+                max_line_length=42,
+                max_lines=2,
+                split_long_cues=False,
+                preserve_line_breaks=True,
+                normalize_punctuation=False,
+                filter_filler_words=False,
+            ),
+            logger=logger,
+        )
+
+    @classmethod
+    def _prepare_streaming_srt_cues(cls, subtitle_text):
+        engine = cls._create_streaming_srt_engine()
+        cues = engine.parse_srt(subtitle_text or '')
+        if not cues:
+            return []
+        total_duration = max(float(cue.get('end', 0.0) or 0.0) for cue in cues)
+        cues = engine.clean_hallucinations(cues)
+        cues = engine.resolve_overlaps(cues, total_duration)
+        cues = engine.apply_text_processing(cues)
+        cues = engine.finalize_cues(cues, total_duration)
+        return cues
+
+    def _build_streaming_srt_file(
+        self,
+        subtitle_path,
+        srt_output_path,
+        task_logger,
+        *,
+        video_width=None,
+        video_height=None,
+    ):
+        try:
+            source_path = subtitle_path
+            subtitle_ext = os.path.splitext(subtitle_path)[1].lower()
+
+            if subtitle_ext == '.vtt':
+                converted_srt = self._convert_vtt_to_srt(subtitle_path, task_logger)
+                if not converted_srt or not os.path.exists(converted_srt):
+                    task_logger.error("VTT转SRT失败，无法生成流媒体SRT字幕")
+                    return False
+                source_path = converted_srt
+
+            with open(source_path, 'r', encoding='utf-8-sig', errors='replace') as subtitle_file:
+                subtitle_content = subtitle_file.read()
+
+            cues = self._prepare_streaming_srt_cues(subtitle_content)
+            if not cues:
+                task_logger.error(f"未解析出有效字幕条目，无法生成SRT: {os.path.basename(subtitle_path)}")
+                return False
+
+            srt_text = self._create_streaming_srt_engine().render_srt(cues)
+            if not srt_text:
+                task_logger.error(f"字幕渲染为SRT失败: {os.path.basename(subtitle_path)}")
+                return False
+
+            with open(srt_output_path, 'w', encoding='utf-8') as srt_file:
+                srt_file.write(srt_text)
+
+            task_logger.info(f"字幕转换为流媒体SRT成功: {srt_output_path}")
+            return True
+        except Exception as e:
+            task_logger.error(f"生成流媒体SRT失败: {str(e)}")
+            return False
 
     @classmethod
     def _build_subtitle_style_description(cls, font_family, video_width, video_height):
@@ -2870,6 +3054,199 @@ class TaskProcessor:
         else:
             max_line_length = int(cls._clamp(max_line_length, 16.0, 20.0))
         return max_line_length, 2
+
+    @staticmethod
+    def _is_cjk_like_char(char):
+        if not char:
+            return False
+        return unicodedata.east_asian_width(char) in {'W', 'F'}
+
+    @classmethod
+    def _merge_subtitle_text_parts(cls, parts):
+        merged = ''
+        trailing_no_space = '([{\u3008\u300a\u300c\u300e\u3010'
+        leading_no_space = '.,!?;:)]}，。！？；：、…】）》」』'
+
+        for part in parts or []:
+            piece = str(part or '').strip()
+            if not piece:
+                continue
+            if not merged:
+                merged = piece
+                continue
+
+            prev_char = merged[-1]
+            curr_char = piece[0]
+            if (
+                prev_char.isspace()
+                or curr_char.isspace()
+                or prev_char in trailing_no_space
+                or curr_char in leading_no_space
+                or (cls._is_cjk_like_char(prev_char) and cls._is_cjk_like_char(curr_char))
+            ):
+                merged += piece
+            else:
+                merged += f" {piece}"
+
+        return merged.strip()
+
+    @classmethod
+    def _limit_wrapped_lines(cls, lines, max_lines):
+        filtered_lines = [str(line or '').strip() for line in (lines or []) if str(line or '').strip()]
+        if len(filtered_lines) <= max_lines:
+            return filtered_lines
+
+        visible_lines = filtered_lines[:max_lines - 1]
+        remainder = cls._merge_subtitle_text_parts(filtered_lines[max_lines - 1:])
+        if remainder:
+            visible_lines.append(remainder)
+        return [line for line in visible_lines if line]
+
+    @classmethod
+    def _build_wrapped_lines_for_ass(
+        cls,
+        normalized,
+        *,
+        is_portrait,
+        max_line_length,
+        max_lines,
+        single_line_limit,
+        aggressive=False,
+    ):
+        raw_segments = [segment.strip() for segment in str(normalized or '').split('\n') if segment.strip()]
+        wrapped_lines = []
+
+        for segment in raw_segments:
+            if is_portrait or aggressive:
+                wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
+            else:
+                wrapped_lines.extend(
+                    cls._wrap_landscape_segment_for_ass(
+                        segment,
+                        single_line_limit=single_line_limit,
+                        max_line_length=max_line_length,
+                    )
+                )
+
+        return cls._limit_wrapped_lines(wrapped_lines, max_lines)
+
+    @classmethod
+    def _estimate_ass_line_render_width(cls, line, font_size, outline, shadow):
+        text_units = cls._estimate_subtitle_text_units(str(line or ''))
+        if text_units <= 0:
+            return 0.0
+        padding = max(6.0, float(outline) * 4.0 + float(shadow) * 2.0 + float(font_size) * 0.08)
+        return text_units * float(font_size) + padding
+
+    @classmethod
+    def _check_ass_lines_width_safety(cls, lines, usable_width, font_size, outline, shadow):
+        safe_width = max(1.0, float(usable_width) * cls._ASS_SAFE_WIDTH_RATIO)
+        line_widths = [
+            cls._estimate_ass_line_render_width(line, font_size, outline, shadow)
+            for line in (lines or [])
+            if str(line or '').strip()
+        ]
+        if not line_widths:
+            return True, 0.0, safe_width, []
+        max_width = max(line_widths)
+        return max_width <= safe_width, max_width, safe_width, line_widths
+
+    @classmethod
+    def _find_safe_hard_wrap_lines(
+        cls,
+        normalized,
+        *,
+        max_line_length,
+        max_lines,
+        usable_width,
+        font_size,
+        outline,
+        shadow,
+    ):
+        best_lines = []
+        best_width = None
+
+        for line_limit in range(
+            int(max_line_length),
+            int(cls._ASS_HARD_WRAP_MIN_LINE_LENGTH) - 1,
+            -1,
+        ):
+            candidate_lines = cls._build_aggressive_two_line_candidate(
+                normalized,
+                max_line_length=line_limit,
+                max_lines=max_lines,
+            )
+            fits, max_width, _, _ = cls._check_ass_lines_width_safety(
+                candidate_lines,
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            )
+            if best_width is None or max_width < best_width:
+                best_lines = candidate_lines
+                best_width = max_width
+            if fits:
+                return candidate_lines, True
+
+        return best_lines, False
+
+    @classmethod
+    def _build_aggressive_two_line_candidate(cls, normalized, *, max_line_length, max_lines):
+        raw_segments = [segment.strip() for segment in str(normalized or '').split('\n') if segment.strip()]
+        merged_text = cls._merge_subtitle_text_parts(raw_segments)
+        if not merged_text:
+            return []
+        if max_lines <= 1 or cls._estimate_subtitle_text_units(merged_text) <= max_line_length:
+            return [merged_text]
+
+        split_index = cls._find_balanced_wrap_index(merged_text, max_line_length)
+        if split_index > 0:
+            return cls._limit_wrapped_lines(
+                [merged_text[:split_index].strip(), merged_text[split_index:].strip()],
+                max_lines,
+            )
+
+        return cls._limit_wrapped_lines(
+            cls._wrap_subtitle_segment_greedily(merged_text, max_line_length),
+            max_lines,
+        )
+
+    @classmethod
+    def _resolve_safe_override_font_size(cls, lines, usable_width, font_size, outline, shadow):
+        fits, max_width, safe_width, _ = cls._check_ass_lines_width_safety(
+            lines,
+            usable_width,
+            font_size,
+            outline,
+            shadow,
+        )
+        if fits or max_width <= 0:
+            return None, True
+
+        min_font_size = max(
+            float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
+            float(font_size) * float(cls._ASS_OVERRIDE_FONT_SIZE_RATIO_MIN),
+        )
+        target_font_size = max(
+            min_font_size,
+            float(font_size) * (safe_width / max_width),
+        )
+        target_font_size = min(float(font_size), target_font_size)
+        target_font_size = float(int(max(1, round(target_font_size))))
+        if target_font_size >= float(font_size):
+            return None, False
+
+        adjusted_outline = cls._clamp(target_font_size * 0.036, 1.8, 3.0)
+        adjusted_shadow = cls._clamp(target_font_size * 0.018, 0.8, 1.5)
+        adjusted_fits, _, _, _ = cls._check_ass_lines_width_safety(
+            lines,
+            usable_width,
+            target_font_size,
+            adjusted_outline,
+            adjusted_shadow,
+        )
+        return target_font_size, adjusted_fits
 
     @staticmethod
     def _is_preferred_wrap_boundary(char):
@@ -3097,10 +3474,15 @@ class TaskProcessor:
         return [first_line, second_line]
 
     @classmethod
-    def _wrap_subtitle_text_for_ass(cls, text, video_width, video_height):
+    def _wrap_subtitle_text_for_ass(cls, text, video_width, video_height, return_meta=False):
         normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        wrap_meta = {
+            'forced_wrap': False,
+            'font_override': None,
+            'overflow_warning': False,
+        }
         if not normalized:
-            return ''
+            return ('', wrap_meta) if return_meta else ''
 
         max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
         style = cls._build_streaming_ass_style(video_width, video_height)
@@ -3110,33 +3492,67 @@ class TaskProcessor:
             float(style['PlayResX']) - float(style['MarginL']) - float(style['MarginR']),
         )
         font_size = max(1.0, float(style['FontSize']))
+        outline = float(style['Outline'])
+        shadow = float(style['Shadow'])
         single_line_limit = int(cls._clamp(
             round(usable_width / font_size * cls._ASS_LANDSCAPE_SINGLE_LINE_DENSITY),
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN,
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
         ))
-        raw_segments = [segment.strip() for segment in normalized.split('\n') if segment.strip()]
-        wrapped_lines = []
+        wrapped_lines = cls._build_wrapped_lines_for_ass(
+            normalized,
+            is_portrait=is_portrait,
+            max_line_length=max_line_length,
+            max_lines=max_lines,
+            single_line_limit=single_line_limit,
+            aggressive=False,
+        )
 
-        for segment in raw_segments:
-            if is_portrait:
-                wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
-            else:
-                wrapped_lines.extend(
-                    cls._wrap_landscape_segment_for_ass(
-                        segment,
-                        single_line_limit=single_line_limit,
-                        max_line_length=max_line_length,
-                    )
-                )
+        if is_portrait:
+            ass_text = cls._compose_ass_dialogue_text(wrapped_lines)
+            return (ass_text, wrap_meta) if return_meta else ass_text
 
-        wrapped_lines = [line for line in wrapped_lines if line]
-        if len(wrapped_lines) <= max_lines:
-            return '\n'.join(wrapped_lines)
+        fits, _, _, _ = cls._check_ass_lines_width_safety(
+            wrapped_lines,
+            usable_width,
+            font_size,
+            outline,
+            shadow,
+        )
+        candidate_lines = wrapped_lines
+        if not fits:
+            hard_wrap_lines, hard_wrap_fits = cls._find_safe_hard_wrap_lines(
+                normalized,
+                max_line_length=max_line_length,
+                max_lines=max_lines,
+                usable_width=usable_width,
+                font_size=font_size,
+                outline=outline,
+                shadow=shadow,
+            )
+            if hard_wrap_lines:
+                candidate_lines = hard_wrap_lines
+                wrap_meta['forced_wrap'] = candidate_lines != wrapped_lines
+            fits = hard_wrap_fits
 
-        visible_lines = wrapped_lines[:max_lines - 1]
-        visible_lines.append(''.join(wrapped_lines[max_lines - 1:]).strip())
-        return '\n'.join(line for line in visible_lines if line)
+        override_font_size = None
+        if not fits and candidate_lines:
+            override_font_size, override_fits = cls._resolve_safe_override_font_size(
+                candidate_lines,
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            )
+            if override_font_size is not None:
+                wrap_meta['font_override'] = int(round(override_font_size))
+                fits = override_fits
+
+        if not fits and candidate_lines:
+            wrap_meta['overflow_warning'] = True
+
+        ass_text = cls._compose_ass_dialogue_text(candidate_lines, override_font_size=override_font_size)
+        return (ass_text, wrap_meta) if return_meta else ass_text
 
     @classmethod
     def _rebalance_split_cue_durations(cls, cues):
@@ -3357,16 +3773,25 @@ class TaskProcessor:
         )
 
         ass_lines = []
+        forced_wrap_count = 0
+        font_override_count = 0
+        overflow_warning_count = 0
         for cue in cues or []:
             cue_dict = cue or {}
-            wrapped_text = cls._wrap_subtitle_text_for_ass(
+            text, wrap_meta = cls._wrap_subtitle_text_for_ass(
                 cue_dict.get('text', ''),
                 video_width,
                 video_height,
+                return_meta=True,
             )
-            text = cls._escape_ass_text(wrapped_text)
             if not text:
                 continue
+            if wrap_meta.get('forced_wrap'):
+                forced_wrap_count += 1
+            if wrap_meta.get('font_override'):
+                font_override_count += 1
+            if wrap_meta.get('overflow_warning'):
+                overflow_warning_count += 1
             ass_lines.append(
                 "Dialogue: 0,"
                 f"{cls._seconds_to_ass_timestamp(cue_dict.get('start', 0.0))},"
@@ -3378,6 +3803,19 @@ class TaskProcessor:
         body = '\n'.join(ass_lines)
         if body:
             body += '\n'
+        if forced_wrap_count or font_override_count or overflow_warning_count:
+            logger.debug(
+                "ASS overflow guard summary: forced_wrap=%s, font_override=%s, overflow_warning=%s, cues=%s",
+                forced_wrap_count,
+                font_override_count,
+                overflow_warning_count,
+                len(ass_lines),
+            )
+        if overflow_warning_count:
+            logger.warning(
+                "ASS overflow guard hit minimum per-cue font size but still detected %s potentially risky cue(s)",
+                overflow_warning_count,
+            )
         return ass_header + body
 
     def _convert_srt_to_ass(
@@ -3546,53 +3984,38 @@ class TaskProcessor:
                 render_subtitle_ext = subtitle_ext
                 render_subtitle_name = f"sub{render_subtitle_ext}"
                 render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
-                use_force_style_fallback = False
 
                 if subtitle_ext in ('.ass', '.ssa'):
                     shutil.copy2(subtitle_path, render_subtitle_path)
                     task_logger.info(f"保留源{subtitle_ext.upper()}样式进行烧录")
+                    filter_segments = [
+                        f"subtitles={render_subtitle_name}",
+                        "fontsdir=fonts",
+                        "charenc=UTF-8",
+                    ]
                 else:
-                    render_subtitle_ext = '.ass'
-                    render_subtitle_name = "sub.ass"
+                    render_subtitle_ext = '.srt'
+                    render_subtitle_name = "sub.srt"
                     render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
-                    if self._convert_srt_to_ass(
+                    if self._build_streaming_srt_file(
                         subtitle_path,
                         render_subtitle_path,
                         task_logger,
                         video_width=input_width,
                         video_height=input_height,
-                        font_family=font_family,
                     ):
-                        task_logger.info("已为非ASS字幕生成统一流媒体样式的ASS临时文件")
-                    else:
-                        task_logger.warning("生成默认ASS样式失败，回退到直接烧录原始字幕")
-                        if subtitle_ext == '.vtt':
-                            converted_subtitle = self._convert_vtt_to_srt(subtitle_path, task_logger)
-                            if not converted_subtitle or not os.path.exists(converted_subtitle):
-                                task_logger.error("VTT字幕转换失败，无法继续嵌入字幕流程")
-                                update_task(task_id, upload_progress=None, status=previous_status, silent=True)
-                                return None
-                            subtitle_path = converted_subtitle
-                            subtitle_ext = '.srt'
-                        render_subtitle_ext = subtitle_ext
-                        render_subtitle_name = f"sub{render_subtitle_ext}"
-                        render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
-                        shutil.copy2(subtitle_path, render_subtitle_path)
-                        use_force_style_fallback = True
-
-                filter_segments = [
-                    f"subtitles={render_subtitle_name}",
-                    "fontsdir=fonts",
-                    "charenc=UTF-8",
-                ]
-                if use_force_style_fallback:
-                    filter_segments.append(
-                        self._build_subtitle_force_style(
+                        task_logger.error("生成流媒体SRT样式失败，无法继续嵌入字幕流程")
+                        update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                        return None
+                    task_logger.info("已为非ASS字幕生成统一流媒体样式的SRT临时文件")
+                    filter_segments = [
+                        self._build_streaming_srt_filter(
+                            render_subtitle_name,
                             font_family,
                             input_width,
                             input_height,
                         )
-                    )
+                    ]
                 vf_filter = ':'.join(filter_segments)
 
                 # 若字幕滤镜不可用，提前报错并放弃嵌入

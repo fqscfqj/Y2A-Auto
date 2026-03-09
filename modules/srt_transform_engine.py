@@ -61,6 +61,8 @@ class SrtTransformConfig:
     # Text normalisation
     max_line_length: int = 42
     max_lines: int = 2
+    split_long_cues: bool = True
+    preserve_line_breaks: bool = False
     normalize_punctuation: bool = True
     filter_filler_words: bool = True
 
@@ -262,11 +264,7 @@ class SrtTransformEngine:
     # 5. Text Normalisation & Splitting
     # ==================================================================
 
-    def normalize_text(self, text: str) -> str:
-        """Clean up subtitle text (whitespace, punctuation, fillers)."""
-        if not text:
-            return ''
-
+    def _normalize_text_line(self, text: str) -> str:
         text = _WHITESPACE_RE.sub(' ', text).strip()
 
         if self.config.normalize_punctuation:
@@ -281,6 +279,23 @@ class SrtTransformEngine:
 
         return text
 
+    def normalize_text(self, text: str) -> str:
+        """Clean up subtitle text (whitespace, punctuation, fillers)."""
+        if not text:
+            return ''
+
+        normalized = str(text)
+        if not self.config.preserve_line_breaks:
+            return self._normalize_text_line(normalized)
+
+        normalized = normalized.replace('\r\n', '\n').replace('\r', '\n')
+        lines = []
+        for raw_line in normalized.split('\n'):
+            cleaned = self._normalize_text_line(raw_line)
+            if cleaned:
+                lines.append(cleaned)
+        return '\n'.join(lines).strip()
+
     def split_long_cue(self, cue: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Split a cue whose text exceeds line-length limits.
 
@@ -291,6 +306,8 @@ class SrtTransformEngine:
         """
         text = cue.get('text', '')
         if not text:
+            return [cue]
+        if not self.config.split_long_cues:
             return [cue]
 
         max_line = self.config.max_line_length
