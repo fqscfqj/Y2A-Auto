@@ -58,8 +58,9 @@
                     <tbody>
                         {% for task in tasks %}
                         <tr data-task-id="{{ task.id }}" class="status-{{ task.status }}">
-                            {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35) %}
+                            {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35)|float %}
                             {% set qc_score = task.subtitle_qc_score %}
+                            {% set qc_score_value = qc_score|float if qc_score is not none and qc_score != '' else none %}
                             {% set qc_reason_raw = (task.subtitle_qc_reason or '字幕质检失败') %}
                             {% set qc_reason_parts = qc_reason_raw.split(':', 1) %}
                             {% set qc_reason_prefix = qc_reason_parts[0] if qc_reason_parts|length > 1 else '' %}
@@ -99,8 +100,8 @@
                             {% else %}
                                 {% set qc_reason = qc_reason_token_zh %}
                             {% endif %}
-                            {% if qc_score is not none %}
-                                {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                            {% if qc_score_value is not none %}
+                                {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score_value)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                             {% else %}
                                 {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                             {% endif %}
@@ -335,8 +336,9 @@
             <div class="task-cards">
                 {% for task in tasks %}
                 {% set display_title = task.video_title_translated or task.video_title_original or '未获取标题' %}
-                {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35) %}
+                {% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35)|float %}
                 {% set qc_score = task.subtitle_qc_score %}
+                {% set qc_score_value = qc_score|float if qc_score is not none and qc_score != '' else none %}
                 {% set qc_reason_raw = (task.subtitle_qc_reason or '字幕质检失败') %}
                 {% set qc_reason_parts = qc_reason_raw.split(':', 1) %}
                 {% set qc_reason_prefix = qc_reason_parts[0] if qc_reason_parts|length > 1 else '' %}
@@ -376,8 +378,8 @@
                 {% else %}
                     {% set qc_reason = qc_reason_token_zh %}
                 {% endif %}
-                {% if qc_score is not none %}
-                    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                {% if qc_score_value is not none %}
+                    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score_value)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                 {% else %}
                     {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                 {% endif %}
