@@ -830,70 +830,74 @@
                                                     </div>
                                                     <div class="row g-3">
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_TIME_OFFSET_ENABLED" id="subtitle-time-offset-enabled" {% if config.get('SUBTITLE_TIME_OFFSET_ENABLED', False) %}checked{% endif %}>
                                                                     时间偏移
                                                                 </label>
+                                                                <input type="number" step="0.1" id="subtitle-time-offset" name="SUBTITLE_TIME_OFFSET_S" value="{{ config.get('SUBTITLE_TIME_OFFSET_S', 0.0) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                             </div>
-                                                            <input type="number" step="0.1" id="subtitle-time-offset" name="SUBTITLE_TIME_OFFSET_S" value="{{ config.get('SUBTITLE_TIME_OFFSET_S', 0.0) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_MIN_CUE_DURATION_ENABLED" id="subtitle-min-cue-dur-enabled" {% if config.get('SUBTITLE_MIN_CUE_DURATION_ENABLED', False) %}checked{% endif %}>
                                                                     最短时长
                                                                 </label>
+                                                                <input type="number" step="0.1" min="0" id="subtitle-min-cue-dur" name="SUBTITLE_MIN_CUE_DURATION_S" value="{{ config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                             </div>
-                                                            <input type="number" step="0.1" min="0" id="subtitle-min-cue-dur" name="SUBTITLE_MIN_CUE_DURATION_S" value="{{ config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_MERGE_GAP_ENABLED" id="subtitle-merge-gap-enabled" {% if config.get('SUBTITLE_MERGE_GAP_ENABLED', False) %}checked{% endif %}>
                                                                     合并间隙
                                                                 </label>
+                                                                <input type="number" step="0.05" min="0" id="subtitle-merge-gap" name="SUBTITLE_MERGE_GAP_S" value="{{ config.get('SUBTITLE_MERGE_GAP_S', 0.3) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                             </div>
-                                                            <input type="number" step="0.05" min="0" id="subtitle-merge-gap" name="SUBTITLE_MERGE_GAP_S" value="{{ config.get('SUBTITLE_MERGE_GAP_S', 0.3) }}" class="form-control form-control-sm" disabled placeholder="秒">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_MIN_TEXT_LENGTH_ENABLED" id="subtitle-min-text-len-enabled" {% if config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False) %}checked{% endif %}>
                                                                     最小文本长度
                                                                 </label>
+                                                                <input type="number" min="0" step="1" id="subtitle-min-text-len" name="SUBTITLE_MIN_TEXT_LENGTH" value="{{ config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) }}" class="form-control form-control-sm" disabled placeholder="字符">
                                                             </div>
-                                                            <input type="number" min="0" step="1" id="subtitle-min-text-len" name="SUBTITLE_MIN_TEXT_LENGTH" value="{{ config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) }}" class="form-control form-control-sm" disabled placeholder="字符">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" id="subtitle-max-line-length-enabled" {% if config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False) %}checked{% endif %}>
                                                                     每行最大字符数
                                                                 </label>
+                                                                <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control form-control-sm" disabled placeholder="字符">
                                                             </div>
-                                                            <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control form-control-sm" disabled placeholder="字符">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <div class="form-group mb-2">
-                                                                <label class="checkbox-label">
+                                                            <div class="settings-toggle-field">
+                                                                <label class="checkbox-label settings-toggle-label">
                                                                     <input type="checkbox" name="SUBTITLE_MAX_LINES_ENABLED" id="subtitle-max-lines-enabled" {% if config.get('SUBTITLE_MAX_LINES_ENABLED', False) %}checked{% endif %}>
                                                                     最大行数
                                                                 </label>
+                                                                <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control form-control-sm" disabled placeholder="行">
                                                             </div>
-                                                            <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control form-control-sm" disabled placeholder="行">
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <label class="checkbox-label">
-                                                                <input type="checkbox" name="SUBTITLE_NORMALIZE_PUNCTUATION" {% if config.get('SUBTITLE_NORMALIZE_PUNCTUATION', False) %}checked{% endif %}>
-                                                                标准化标点与空白
-                                                            </label>
+                                                            <div class="settings-toggle-field settings-toggle-field-static">
+                                                                <label class="checkbox-label settings-toggle-label">
+                                                                    <input type="checkbox" name="SUBTITLE_NORMALIZE_PUNCTUATION" {% if config.get('SUBTITLE_NORMALIZE_PUNCTUATION', False) %}checked{% endif %}>
+                                                                    标准化标点与空白
+                                                                </label>
+                                                            </div>
                                                         </div>
                                                         <div class="col-md-6">
-                                                            <label class="checkbox-label">
-                                                                <input type="checkbox" name="SUBTITLE_FILTER_FILLER_WORDS" {% if config.get('SUBTITLE_FILTER_FILLER_WORDS', False) %}checked{% endif %}>
-                                                                过滤填充词
-                                                            </label>
+                                                            <div class="settings-toggle-field settings-toggle-field-static">
+                                                                <label class="checkbox-label settings-toggle-label">
+                                                                    <input type="checkbox" name="SUBTITLE_FILTER_FILLER_WORDS" {% if config.get('SUBTITLE_FILTER_FILLER_WORDS', False) %}checked{% endif %}>
+                                                                    过滤填充词
+                                                                </label>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </div>
