@@ -154,6 +154,10 @@
                                                         <input type="checkbox" name="GENERATE_TAGS" {% if config.GENERATE_TAGS %}checked{% endif %}>
                                                         自动生成标签
                                                     </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
+                                                        自动推荐分区
+                                                    </label>
                                                 </div>
                                             </div>
                                         </article>
@@ -191,10 +195,6 @@
                                                     </div>
                                                     <div class="col-12">
                                                         <div class="settings-inline-options">
-                                                            <label class="checkbox-label">
-                                                                <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
-                                                                自动推荐分区
-                                                            </label>
                                                             <label class="checkbox-label">
                                                                 <input type="checkbox" name="UPLOAD_APPEND_REPOST_NOTICE" {% if config.get('UPLOAD_APPEND_REPOST_NOTICE', True) %}checked{% endif %}>
                                                                 自动追加转载声明
