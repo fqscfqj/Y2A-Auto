@@ -15,6 +15,13 @@ logger = logging.getLogger('subtitle_qc')
 SHORT_LINE_NORMALIZED_LEN = 8
 MAX_REPEATED_SAMPLE_PER_TEXT = 3
 TOP_REPEATED_TEXT_LIMIT = 5
+HIGH_CONFIDENCE_RULE_SCORE_THRESHOLD = 0.85
+ADVISORY_MODE_HARD_FAIL_REASONS = {
+    'hallucination_meta',
+    'credit_like_phrase',
+    'noise_command_phrase',
+    'template_like_phrase',
+}
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -550,6 +557,20 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
     )
 
 
+def _is_high_rule_score_clean_boundary_sample(rule_result: RuleCheckResult) -> bool:
+    metrics = rule_result.metrics or {}
+    return (
+        rule_result.boundary_level == 'boundary'
+        and float(rule_result.score) >= HIGH_CONFIDENCE_RULE_SCORE_THRESHOLD
+        and int(metrics.get('suspicious_phrase_count', 0) or 0) == 0
+        and float(metrics.get('top_ratio', 1.0) or 0.0) <= 0.30
+        and float(metrics.get('repeat_mass_ratio', 1.0) or 0.0) <= 0.15
+        and int(metrics.get('max_repeat_run', 0) or 0) <= 1
+        and float(metrics.get('short_line_ratio', 1.0) or 0.0) <= 0.50
+        and int(metrics.get('total_text_chars', 0) or 0) >= 40
+    )
+
+
 def _pick_segment(start: int, end: int, k: int) -> List[int]:
     if k <= 0 or end <= start:
         return []
@@ -709,6 +730,7 @@ def _call_ai_judge(
         '你是严格的字幕质检员。目标：判断转录字幕是否足够可靠，可进入翻译和烧录流程。\n'
         '如果字幕包含转录署名、字幕署名、噪声提示词、界面操作词、明显机器幻觉、长段机械重复或明显无语义模板句，必须判定为 failed。\n'
         '若字幕极短、重复且信息量极低，即使句子本身语法正确，也必须判定为 failed。\n'
+        '短时长、术语密集、教学演示或名词解释类字幕中重复出现领域词，不等于机械重复。\n'
         '只有当字幕主体看起来像真实人类说话、旁白或解说，且错误不影响整体理解时，才可判定为 passed。\n'
         '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
         '{"passed": false, "score": 0.10, "reason": "hallucination_meta"}'
@@ -718,6 +740,7 @@ def _call_ai_judge(
         'task': 'subtitle_qc',
         'rules': (
             '若样本中出现署名行、Ignore noise、Click、机械重复句、明显无语义模板句，或超短重复且信息量极低，必须判 failed。'
+            '短视频教程、术语讲解、软件名词罗列中出现 Adobe、Flash、CS6 之类领域词重复，不应直接视为机械重复。'
             'reason 建议使用 hallucination_meta、healthy_dialogue、borderline_repeat 等短标签。'
         ),
         'metrics': metrics,
@@ -890,18 +913,41 @@ def run_subtitle_qc(
             sample_meta=sample_meta,
         )
 
-    final_score = float(rule_result.score)
-    if ai_score is not None:
-        final_score = min(float(rule_result.score), float(ai_score))
-
-    passed = bool(ai_passed) and float(final_score) >= float(threshold_val)
     raw_reason = ''
     if raw_ai and isinstance(raw_ai, dict):
         raw_reason = normalize_qc_reason_token(raw_ai.get('reason') or '')
-    if not raw_reason:
-        raw_reason = 'ok' if passed else 'hallucination_meta'
+    advisory_mode = _is_high_rule_score_clean_boundary_sample(rule_result)
+    ai_override = False
 
-    prefix = 'ai_pass' if passed else 'ai_fail'
+    if advisory_mode:
+        final_score = float(rule_result.score)
+        if not raw_reason:
+            raw_reason = 'ok' if ai_passed else 'unknown'
+
+        if bool(ai_passed):
+            passed = float(final_score) >= float(threshold_val)
+            prefix = 'ai_pass'
+        elif raw_reason in ADVISORY_MODE_HARD_FAIL_REASONS:
+            final_score = (
+                min(float(rule_result.score), float(ai_score))
+                if ai_score is not None
+                else float(rule_result.score)
+            )
+            passed = False
+            prefix = 'ai_fail'
+        else:
+            passed = float(final_score) >= float(threshold_val)
+            prefix = 'ai_warn'
+            ai_override = True
+    else:
+        final_score = float(rule_result.score)
+        if ai_score is not None:
+            final_score = min(float(rule_result.score), float(ai_score))
+        passed = bool(ai_passed) and float(final_score) >= float(threshold_val)
+        if not raw_reason:
+            raw_reason = 'ok' if passed else 'hallucination_meta'
+        prefix = 'ai_pass' if passed else 'ai_fail'
+
     reason = f'{prefix}:{raw_reason}'
 
     return SubtitleQCResult(
@@ -915,6 +961,9 @@ def run_subtitle_qc(
                 **(raw_ai or {}),
                 'decision': 'needs_ai',
                 'ai_status': 'ok',
+                'ai_mode': 'advisory_only' if advisory_mode else 'strict',
+                'ai_override': ai_override,
+                'ai_override_reason': raw_reason if ai_override else '',
                 **metrics,
             }
         ),

@@ -2227,25 +2227,31 @@ class TaskProcessor:
             )
 
             if result.passed:
+                raw_ai = result.raw_ai if isinstance(result.raw_ai, dict) else {}
                 task_logger.info(
-                    "字幕质检通过: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, sample_items=%s, sample_chars=%s",
+                    "字幕质检通过: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s",
                     result.decision or 'unknown',
                     result.reason,
                     float(result.score),
                     float(result.rule_score),
                     f"{float(result.ai_score):.3f}" if result.ai_score is not None else 'n/a',
+                    str(raw_ai.get('ai_mode') or 'n/a'),
+                    bool(raw_ai.get('ai_override')),
                     result.sample_items,
                     result.sample_chars,
                 )
                 return True
 
+            raw_ai = result.raw_ai if isinstance(result.raw_ai, dict) else {}
             task_logger.warning(
-                "字幕质检失败: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, sample_items=%s, sample_chars=%s",
+                "字幕质检失败: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s",
                 result.decision or 'unknown',
                 result.reason,
                 float(result.score),
                 float(result.rule_score),
                 f"{float(result.ai_score):.3f}" if result.ai_score is not None else 'n/a',
+                str(raw_ai.get('ai_mode') or 'n/a'),
+                bool(raw_ai.get('ai_override')),
                 result.sample_items,
                 result.sample_chars,
             )

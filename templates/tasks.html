@@ -69,6 +69,8 @@
                                 {% set qc_reason_prefix_zh = 'AI复核未通过' %}
                             {% elif qc_reason_prefix == 'ai_pass' %}
                                 {% set qc_reason_prefix_zh = 'AI复核通过' %}
+                            {% elif qc_reason_prefix == 'ai_warn' %}
+                                {% set qc_reason_prefix_zh = 'AI提示但规则放行' %}
                             {% elif qc_reason_prefix == 'rule_fail' %}
                                 {% set qc_reason_prefix_zh = '规则拦截失败' %}
                             {% elif qc_reason_prefix == 'rule_pass' %}
@@ -351,6 +353,8 @@
                     {% set qc_reason_prefix_zh = 'AI复核未通过' %}
                 {% elif qc_reason_prefix == 'ai_pass' %}
                     {% set qc_reason_prefix_zh = 'AI复核通过' %}
+                {% elif qc_reason_prefix == 'ai_warn' %}
+                    {% set qc_reason_prefix_zh = 'AI提示但规则放行' %}
                 {% elif qc_reason_prefix == 'rule_fail' %}
                     {% set qc_reason_prefix_zh = '规则拦截失败' %}
                 {% elif qc_reason_prefix == 'rule_pass' %}
