@@ -27,8 +27,8 @@ def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | Non
     """将 cookies_file_path 解析为安全的绝对路径。
 
     使用 realpath 解析符号链接后，通过 commonpath 校验路径仍在项目根目录内，
-    防止目录遍历及通过 symlink 越界访问。支持相对路径和位于项目根目录内的绝
-    对路径，返回安全的绝对路径，或在路径无效/文件不存在时返回 None。
+    防止目录遍历及通过 symlink 越界访问。支持相对路径和位于项目根目录内的绝对路径，
+    返回安全的绝对路径，或在路径无效/文件不存在时返回 None。
     """
     _log = log or logger
     if os.path.isabs(cookies_file_path):
@@ -42,8 +42,8 @@ def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | Non
     if common != _BASE_DIR:
         _log.warning(f"检测到位于受信任根目录之外的cookies文件路径，已拒绝: {cookies_file_path}")
         return None
-    if not os.path.exists(resolved):
-        _log.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
+    if not os.path.isfile(resolved):
+        _log.warning(f"cookies文件不存在或不是普通文件，已忽略: {cookies_file_path}")
         return None
     return resolved
 
