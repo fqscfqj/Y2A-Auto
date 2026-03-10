@@ -2402,10 +2402,10 @@ class TaskProcessor:
         (2560.0, 84.0),
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
-        (720.0, 34.0),
-        (1080.0, 46.0),
-        (1440.0, 58.0),
-        (2160.0, 102.0),
+        (720.0, 24.0),
+        (1080.0, 24.0),
+        (1440.0, 26.0),
+        (2160.0, 28.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
         (1280.0, 120.0),
@@ -2427,35 +2427,35 @@ class TaskProcessor:
     _STREAMING_SRT_STYLE_TEMPLATES = {
         720: {
             'FontSize': 18.0,
-            'Outline': 1.2,
-            'Shadow': 0.8,
+            'Outline': 1.0,
+            'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
-            'MarginV': 26,
+            'MarginV': 16,
         },
         1080: {
             'FontSize': 18.0,
-            'Outline': 1.2,
-            'Shadow': 0.8,
+            'Outline': 1.0,
+            'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
-            'MarginV': 26,
+            'MarginV': 16,
         },
         1440: {
             'FontSize': 18.0,
-            'Outline': 1.2,
-            'Shadow': 0.8,
+            'Outline': 1.0,
+            'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
-            'MarginV': 26,
+            'MarginV': 16,
         },
         2160: {
             'FontSize': 18.0,
-            'Outline': 1.2,
-            'Shadow': 0.8,
+            'Outline': 1.0,
+            'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
-            'MarginV': 26,
+            'MarginV': 16,
         },
     }
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
@@ -2876,8 +2876,8 @@ class TaskProcessor:
 
         style.update({
             'FontSize': font_size,
-            'Outline': cls._clamp(font_size * 0.036, 1.8, 3.0),
-            'Shadow': cls._clamp(font_size * 0.018, 0.8, 1.5),
+            'Outline': cls._clamp(font_size * 0.031, 1.5, 2.6),
+            'Shadow': cls._clamp(font_size * 0.014, 0.5, 1.1),
             'MarginV': margin_v,
             'MarginL': side_margin,
             'MarginR': side_margin,
