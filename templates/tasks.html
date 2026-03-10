@@ -94,6 +94,8 @@
                                 {% set qc_reason_token_zh = '未启用AI复核提供商' %}
                             {% elif qc_reason_token == 'empty_sample' %}
                                 {% set qc_reason_token_zh = '抽样为空' %}
+                            {% elif qc_reason_token == 'asr_no_subtitle' %}
+                                {% set qc_reason_token_zh = '语音识别未能生成字幕，已跳过字幕流程' %}
                             {% elif qc_reason_token.startswith('ai_error') %}
                                 {% set qc_reason_token_zh = 'AI调用异常' %}
                             {% elif qc_reason_token == '字幕质检失败' %}
@@ -108,6 +110,8 @@
                             {% endif %}
                             {% if qc_score_value is not none %}
                                 {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score_value)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                            {% elif qc_reason_token == 'asr_no_subtitle' %}
+                                {% set qc_tooltip = '原因: ' ~ qc_reason %}
                             {% else %}
                                 {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                             {% endif %}
@@ -378,6 +382,8 @@
                     {% set qc_reason_token_zh = '未启用AI复核提供商' %}
                 {% elif qc_reason_token == 'empty_sample' %}
                     {% set qc_reason_token_zh = '抽样为空' %}
+                {% elif qc_reason_token == 'asr_no_subtitle' %}
+                    {% set qc_reason_token_zh = '语音识别未能生成字幕，已跳过字幕流程' %}
                 {% elif qc_reason_token.startswith('ai_error') %}
                     {% set qc_reason_token_zh = 'AI调用异常' %}
                 {% elif qc_reason_token == '字幕质检失败' %}
@@ -392,6 +398,8 @@
                 {% endif %}
                 {% if qc_score_value is not none %}
                     {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score_value)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+                {% elif qc_reason_token == 'asr_no_subtitle' %}
+                    {% set qc_tooltip = '原因: ' ~ qc_reason %}
                 {% else %}
                     {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
                 {% endif %}

@@ -2036,6 +2036,7 @@ class TaskProcessor:
                                     f"{prev_error}\n{recognizer.last_error_message}" if prev_error else recognizer.last_error_message
                                 )
                                 update_task(task_id, error_message=merged_error)
+                            self._mark_subtitle_issue(task_id, 'asr_no_subtitle')
                             task_logger.warning("语音识别未能生成字幕，跳过字幕流程")
                             return True
                     else:
@@ -2263,6 +2264,16 @@ class TaskProcessor:
             except Exception:
                 pass
             return True
+
+    def _mark_subtitle_issue(self, task_id: str, reason: str, score=None):
+        """将字幕异常写入任务表，复用前端现有“字幕异常”展示。"""
+        update_task(
+            task_id,
+            subtitle_qc_failed=1,
+            subtitle_qc_reason=reason,
+            subtitle_qc_score=score,
+            subtitle_qc_checked_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        )
     
     def _detect_subtitle_language(self, subtitle_path):
         """更稳健的字幕语言检测：按字符占比与数量判定，避免少量混入的误判"""
@@ -5392,6 +5403,7 @@ class TaskProcessor:
                                 )
                                 task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
                             else:
+                                self._mark_subtitle_issue(task_id, 'asr_no_subtitle')
                                 task_logger.warning("ASR 未能生成字幕，继续上传流程")
                     else:
                         task_logger.info("已存在字幕文件，跳过ASR 生成")
