@@ -76,6 +76,7 @@ body {
         justify-self: end;
         visibility: hidden;
         pointer-events: none;
+        -webkit-user-select: none;
         user-select: none;
         font-weight: 700;
         font-size: 1.4rem;
