@@ -14,7 +14,7 @@ from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import re
 
 # 其他导入和常量定义
@@ -804,7 +804,9 @@ def _is_safe_playlist_url(raw_url, logger):
     if len(raw_url) > 2048:
         logger.warning(f"播放列表URL过长，已拒绝: 长度={len(raw_url)}")
         return None
-    normalized_url = raw_url
+    normalized_url = raw_url.strip()
+    if not normalized_url:
+        return None
     # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
     if normalized_url and not urlparse(normalized_url).scheme:
         if normalized_url.startswith("//"):
@@ -823,16 +825,16 @@ def _is_safe_playlist_url(raw_url, logger):
         logger.warning(f"无效的播放列表URL协议: {normalized_url}")
         return None
     hostname = (parsed.hostname or "").rstrip('.').lower()
-    # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
+    # 仅允许 YouTube 官方域名及其子域
     is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
-    is_short_youtube = hostname == "youtu.be"
-    if not (is_youtube_domain or is_short_youtube):
+    if not is_youtube_domain:
         logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {raw_url}, 规范化URL: {normalized_url})")
         return None
     # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
     path = parsed.path or ""
-    query = parsed.query or ""
-    if "/playlist" not in path and "list=" not in query:
+    query = parse_qs(parsed.query or "", keep_blank_values=False)
+    list_ids = [item for item in query.get("list", []) if item]
+    if "/playlist" not in path and not list_ids:
         logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
         return None
     return normalized_url
