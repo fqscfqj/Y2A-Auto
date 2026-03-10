@@ -837,8 +837,7 @@ def _is_safe_playlist_url(raw_url, logger):
     if not (is_youtube_domain or is_short_youtube):
         logger.warning("不受信任的播放列表URL主机名: %r (原始URL: %r, 规范化URL: %r)", hostname, raw_url, normalized_url)
         return None
-    # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
-    path = parsed.path or ""
+    # 额外检查其看起来像播放列表链接（查询参数中包含合法list）
     query = parse_qs(parsed.query or "")
     list_ids = query.get("list", [])
     valid_list_ids = []
