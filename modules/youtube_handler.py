@@ -19,30 +19,28 @@ from urllib.parse import urlparse
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
 
-# 项目根目录（模块所在目录的上两级），使用 realpath 解析符号链接
-_BASE_DIR = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
+_BASE_DIR = os.path.realpath(get_app_root_dir())
 
 
 def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
     """将 cookies_file_path 解析为安全的绝对路径。
 
     使用 realpath 解析符号链接后，通过 commonpath 校验路径仍在项目根目录内，
-    防止目录遍历及通过 symlink 越界访问。返回安全的绝对路径，或在路径无效/
-    文件不存在时返回 None。
+    防止目录遍历及通过 symlink 越界访问。支持相对路径和位于项目根目录内的绝
+    对路径，返回安全的绝对路径，或在路径无效/文件不存在时返回 None。
     """
     _log = log or logger
-    # 拒绝绝对路径输入：os.path.join 遇到绝对路径会忽略 _BASE_DIR，直接传递外部路径
     if os.path.isabs(cookies_file_path):
-        _log.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
-        return None
-    raw = os.path.join(_BASE_DIR, cookies_file_path)
-    resolved = os.path.realpath(raw)
+        resolved = os.path.realpath(cookies_file_path)
+    else:
+        resolved = os.path.realpath(os.path.join(_BASE_DIR, cookies_file_path))
     try:
         common = os.path.commonpath([_BASE_DIR, resolved])
     except ValueError:
         common = ""
     if common != _BASE_DIR:
-        _log.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
+        _log.warning(f"检测到位于受信任根目录之外的cookies文件路径，已拒绝: {cookies_file_path}")
         return None
     if not os.path.exists(resolved):
         _log.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
