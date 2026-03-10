@@ -777,7 +777,6 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         list: 视频URL列表
     """
     import subprocess
-    import sys
     video_urls = []
     try:
         # 验证播放列表URL，避免将任意用户输入传递给外部命令
