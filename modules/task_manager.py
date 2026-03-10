@@ -646,7 +646,6 @@ def init_db():
         subtitle_qc_reason TEXT,  -- 字幕质检失败原因（可选）
         subtitle_qc_score REAL,  -- 字幕质检评分（可选）
         subtitle_qc_checked_at TIMESTAMP,  -- 最近一次实际执行字幕质检的时间（可选）
-        subtitle_qc_fingerprint TEXT,  -- 历史保留字段，当前未使用
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
@@ -687,11 +686,6 @@ def init_db():
         if 'subtitle_qc_checked_at' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_checked_at TIMESTAMP")
             logger.info("数据库升级：添加subtitle_qc_checked_at字段")
-            conn.commit()
-
-        if 'subtitle_qc_fingerprint' not in columns:
-            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_qc_fingerprint TEXT")
-            logger.info("数据库升级：添加subtitle_qc_fingerprint字段")
             conn.commit()
 
         if 'pipeline_checkpoint' not in columns:
@@ -2230,7 +2224,6 @@ class TaskProcessor:
                 subtitle_qc_reason=result.reason,
                 subtitle_qc_score=float(result.score),
                 subtitle_qc_checked_at=checked_at,
-                subtitle_qc_fingerprint='',
             )
 
             if result.passed:
