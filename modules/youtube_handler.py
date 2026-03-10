@@ -19,6 +19,8 @@ import re
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
+# YouTube playlist ID 仅允许字母、数字、下划线和连字符
+_YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
@@ -835,12 +837,11 @@ def _is_safe_playlist_url(raw_url, logger):
     path = parsed.path or ""
     query = parse_qs(parsed.query or "")
     list_ids = query.get("list", [])
-    valid_list_ids = [
-        value_stripped
-        for value in list_ids
-        for value_stripped in [value.strip()]
-        if value_stripped and re.fullmatch(r"[A-Za-z0-9_-]+", value_stripped)
-    ]
+    valid_list_ids = []
+    for value in list_ids:
+        value_stripped = value.strip()
+        if value_stripped and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value_stripped):
+            valid_list_ids.append(value_stripped)
     if "/playlist" not in path and not valid_list_ids:
         logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
         return None
