@@ -307,8 +307,7 @@ def _build_prompt(cleaned_source_text: str, target_language: str, content_type: 
             "输出自然的简体中文标题，信息优先，不要标题党。",
             "保留核心含义，但避免机械直译和原词序复刻。",
             "严禁补充原文没有的新事实。",
-            "普通词句尽量翻译成简体中文，不要整句保留英文或大段原文。",
-            "仅对品牌名、产品名、组织名、无公认译法的术语缩写、代码命令、型号参数等少量内容保留原文。",
+            "使用自然、完整的简体中文表达，避免生硬直译和明显的中英混排。",
             "移除广告、导流、站外平台和互动引导。",
             "仅输出单行标题。"
         ]
@@ -316,8 +315,7 @@ def _build_prompt(cleaned_source_text: str, target_language: str, content_type: 
         base_rules = [
             "输出1-2段完整简体中文简介，风格像站内UP主直接发布。",
             "只能重组原文已有事实，严禁补充新事实。",
-            "普通叙述内容尽量翻译成简体中文，不要保留大段英文原文。",
-            "仅对品牌名、产品名、组织名、无公认译法的术语缩写、代码命令、配置键、型号参数等少量内容保留原文。",
+            "使用自然、连贯的简体中文重述内容，避免生硬直译和明显的中英混排。",
             "移除URL/邮箱/@/#/播放列表/站外平台/赞助/联系方式/关注订阅点赞分享等导流信息。",
             "不要清单格式、不要箭头、不要“以下是译文/已移除”等提示语。",
             "保留必要数字与专有名词。"
@@ -325,7 +323,7 @@ def _build_prompt(cleaned_source_text: str, target_language: str, content_type: 
 
     if strict:
         if target_language == "zh":
-            base_rules.append("若输出与原文高度相似、仍保留大段原文，或仍含导流痕迹，必须重写为更完整的简体中文后再输出。")
+            base_rules.append("若输出与原文高度相似、中文表达不自然，或仍含导流痕迹，必须重写为更自然的简体中文后再输出。")
 
     rules = '\n'.join(f"{idx + 1}. {rule}" for idx, rule in enumerate(base_rules))
     purpose = "标题" if ct_lower == "title" else "简介"
