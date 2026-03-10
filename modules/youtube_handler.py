@@ -781,21 +781,24 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     video_urls = []
     try:
         # 验证播放列表URL，避免将任意用户输入传递给外部命令
-        # 若URL缺少协议头，则默认补全 https://
+        # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
         normalized_url = playlist_url or ""
         if normalized_url and not urlparse(normalized_url).scheme:
-            normalized_url = "https://" + normalized_url
+            if normalized_url.startswith("//"):
+                normalized_url = "https:" + normalized_url
+            else:
+                normalized_url = "https://" + normalized_url
         parsed = urlparse(normalized_url)
         allowed_schemes = {"http", "https"}
         if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
             logger.warning(f"无效的播放列表URL协议: {normalized_url}")
             return video_urls
-        hostname = (parsed.hostname or "").lower()
+        hostname = (parsed.hostname or "").rstrip('.').lower()
         # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
         is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
         is_short_youtube = hostname == "youtu.be"
         if not (is_youtube_domain or is_short_youtube):
-            logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {playlist_url})")
+            logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {playlist_url}, 规范化URL: {normalized_url})")
             return video_urls
         # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
         if "/playlist" not in (parsed.path or "") and "list=" not in (parsed.query or ""):
