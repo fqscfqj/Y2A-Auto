@@ -337,15 +337,25 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             except:
                 pass
         
-        # 处理cookies路径
+        # 处理cookies路径，仅允许在项目根目录下的文件
         cookies_path = None
         if cookies_file_path:
-            cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cookies_file_path)
-            if os.path.exists(cookies_path):
-                logger.info(f"使用cookies文件: {cookies_path}")
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            raw_cookies_path = os.path.join(base_dir, cookies_file_path)
+            abs_cookies_path = os.path.abspath(raw_cookies_path)
+            # 确保cookies文件仍在base_dir之下，防止目录遍历
+            try:
+                common = os.path.commonpath([base_dir, abs_cookies_path])
+            except ValueError:
+                common = ""
+            if common == base_dir:
+                if os.path.exists(abs_cookies_path):
+                    cookies_path = abs_cookies_path
+                    logger.info(f"使用cookies文件: {cookies_path}")
+                else:
+                    logger.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
             else:
-                logger.warning(f"指定的YouTube Cookies文件不存在: {cookies_path}")
-                cookies_path = None
+                logger.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
         
         # 验证yt-dlp路径有效性
         logger.info(f"最终确定的yt-dlp路径: {yt_dlp_path}")
@@ -815,15 +825,17 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
             raw_cookies_path = os.path.join(base_dir, cookies_file_path)
             abs_cookies_path = os.path.abspath(raw_cookies_path)
             # 确保cookies文件仍在base_dir之下，防止目录遍历
-            base_dir_common = os.path.commonpath([base_dir])
             try:
-                common = os.path.commonpath([base_dir_common, abs_cookies_path])
+                common = os.path.commonpath([base_dir, abs_cookies_path])
             except ValueError:
                 common = ""
-            if common == base_dir_common and os.path.exists(abs_cookies_path):
-                cookies_path = abs_cookies_path
+            if common == base_dir:
+                if os.path.exists(abs_cookies_path):
+                    cookies_path = abs_cookies_path
+                else:
+                    logger.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
             else:
-                logger.warning(f"无效的cookies文件路径，已忽略: {cookies_file_path}")
+                logger.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
         cmd = [
             yt_dlp_path,
             '--flat-playlist',
