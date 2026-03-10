@@ -835,7 +835,13 @@ def _is_safe_playlist_url(raw_url, logger):
     path = parsed.path or ""
     query = parse_qs(parsed.query or "")
     list_ids = query.get("list", [])
-    if "/playlist" not in path and not list_ids:
+    valid_list_ids = [
+        value_stripped
+        for value in list_ids
+        for value_stripped in [value.strip()]
+        if value_stripped and re.fullmatch(r"[A-Za-z0-9_-]+", value_stripped)
+    ]
+    if "/playlist" not in path and not valid_list_ids:
         logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
         return None
     return normalized_url
