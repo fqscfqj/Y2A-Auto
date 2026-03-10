@@ -825,15 +825,16 @@ def _is_safe_playlist_url(raw_url, logger):
         logger.warning(f"无效的播放列表URL协议: {normalized_url}")
         return None
     hostname = (parsed.hostname or "").rstrip('.').lower()
-    # 仅允许 YouTube 官方域名及其子域
+    # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
     is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
-    if not is_youtube_domain:
+    is_short_youtube = hostname == "youtu.be"
+    if not (is_youtube_domain or is_short_youtube):
         logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {raw_url}, 规范化URL: {normalized_url})")
         return None
     # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
     path = parsed.path or ""
-    query = parse_qs(parsed.query or "", keep_blank_values=False)
-    list_ids = [item for item in query.get("list", []) if item]
+    query = parse_qs(parsed.query or "")
+    list_ids = query.get("list", [])
     if "/playlist" not in path and not list_ids:
         logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
         return None
