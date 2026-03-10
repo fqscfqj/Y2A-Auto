@@ -108,7 +108,7 @@
         </div>
 
         <div class="col-lg-9">
-            <form method="post" enctype="multipart/form-data">
+            <form method="post" enctype="multipart/form-data" id="settings-form">
                 <div class="tab-content" id="settings-tabContent">
                     <div class="tab-pane fade show active" id="vtab-overview" role="tabpanel" aria-labelledby="vtab-overview-tab">
                         <div class="settings-stack">
@@ -1403,7 +1403,7 @@
                 <div class="settings-actions-bar">
                     <div class="d-flex justify-content-end gap-2">
                         <button type="button" id="reset-settings-btn" class="btn btn-outline-secondary">重置当前分组</button>
-                        <button type="submit" class="btn btn-primary">保存设置</button>
+                        <button type="submit" id="save-settings-btn" class="btn btn-primary">保存设置</button>
                     </div>
                 </div>
             </form>
@@ -1421,6 +1421,23 @@
     </form>
 
     <div class="toast-container position-fixed top-0 end-0 p-3" id="settings-toast-container"></div>
+
+    <div class="modal fade" id="settings-save-progress-modal" tabindex="-1" aria-labelledby="settings-save-progress-title" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="settings-save-progress-title">正在保存设置</h5>
+                </div>
+                <div class="modal-body">
+                    <div class="fw-semibold" id="settings-save-progress-message">准备中...</div>
+                    <div class="small text-muted mt-2" id="settings-save-progress-detail">正在创建保存任务。</div>
+                    <div class="progress mt-3" role="progressbar" aria-label="设置保存进度" aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="settings-save-progress-bar" style="width: 100%">等待中</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -1604,7 +1621,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!text || !settingsToastContainer || typeof bootstrap === 'undefined') {
             return;
         }
-        const tone = type === 'success' ? 'success' : (type === 'error' ? 'danger' : 'secondary');
+        const tone = type === 'success'
+            ? 'success'
+            : (type === 'warning' ? 'warning' : (type === 'error' ? 'danger' : 'secondary'));
         const toastEl = document.createElement('div');
         toastEl.className = 'toast align-items-center text-bg-' + tone + ' border-0';
         toastEl.setAttribute('role', 'alert');
@@ -1630,6 +1649,238 @@ document.addEventListener('DOMContentLoaded', function () {
         }, { once: true });
         bootstrap.Toast.getOrCreateInstance(toastEl, { delay: 4500 }).show();
     };
+
+    const settingsForm = document.getElementById('settings-form');
+    const saveSettingsBtn = document.getElementById('save-settings-btn');
+    const saveProgressModalEl = document.getElementById('settings-save-progress-modal');
+    const saveProgressTitle = document.getElementById('settings-save-progress-title');
+    const saveProgressMessage = document.getElementById('settings-save-progress-message');
+    const saveProgressDetail = document.getElementById('settings-save-progress-detail');
+    const saveProgressBar = document.getElementById('settings-save-progress-bar');
+    const saveProgressEndpointTemplate = '{{ url_for("settings_save_progress", operation_id="__operation_id__") }}';
+    const saveProgressModal = (saveProgressModalEl && typeof bootstrap !== 'undefined')
+        ? bootstrap.Modal.getOrCreateInstance(saveProgressModalEl, { backdrop: 'static', keyboard: false })
+        : null;
+    let saveProgressPollTimer = null;
+
+    const formatProgressBytes = function (bytes) {
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value < 0) {
+            return '';
+        }
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let size = value;
+        let unitIndex = 0;
+        while (size >= 1024 && unitIndex < units.length - 1) {
+            size = size / 1024;
+            unitIndex += 1;
+        }
+        const precision = unitIndex === 0 ? 0 : 1;
+        return size.toFixed(precision) + ' ' + units[unitIndex];
+    };
+
+    const toggleSettingsSaveBusy = function (isBusy) {
+        [saveSettingsBtn, resetBtn].forEach(function (button) {
+            if (!button) {
+                return;
+            }
+            button.disabled = !!isBusy;
+        });
+    };
+
+    const stopSettingsSavePolling = function () {
+        if (saveProgressPollTimer) {
+            clearInterval(saveProgressPollTimer);
+            saveProgressPollTimer = null;
+        }
+    };
+
+    const setSettingsSaveProgressUi = function (data) {
+        if (!saveProgressTitle || !saveProgressMessage || !saveProgressDetail || !saveProgressBar) {
+            return;
+        }
+
+        const isDone = !!(data && data.done);
+        const level = data && data.level ? data.level : 'info';
+        const titleMap = {
+            success: '保存完成',
+            warning: '保存完成，但有提醒',
+            error: '保存失败',
+            info: '正在保存设置'
+        };
+        const titleTone = titleMap[level] || (isDone ? '保存完成' : '正在保存设置');
+        saveProgressTitle.textContent = titleTone;
+        saveProgressMessage.textContent = (data && data.message) ? data.message : '正在处理，请稍候。';
+
+        let detailText = (data && data.detail) ? data.detail : '';
+        const downloadedBytes = data ? data.downloaded_bytes : null;
+        const totalBytes = data ? data.total_bytes : null;
+        if (!detailText && downloadedBytes) {
+            const downloadedText = formatProgressBytes(downloadedBytes);
+            const totalText = formatProgressBytes(totalBytes);
+            detailText = totalText ? ('已下载 ' + downloadedText + ' / ' + totalText) : ('已下载 ' + downloadedText);
+        }
+        saveProgressDetail.textContent = detailText || '请不要关闭当前页面。';
+
+        saveProgressBar.classList.remove('bg-success', 'bg-warning', 'bg-danger', 'progress-bar-striped', 'progress-bar-animated');
+        const numericPercent = Number(data && data.percent);
+        if (Number.isFinite(numericPercent)) {
+            const bounded = Math.max(0, Math.min(100, numericPercent));
+            saveProgressBar.style.width = bounded + '%';
+            saveProgressBar.setAttribute('aria-valuenow', String(bounded));
+            saveProgressBar.textContent = bounded.toFixed(1) + '%';
+            if (!isDone && bounded < 100) {
+                saveProgressBar.classList.add('progress-bar-striped', 'progress-bar-animated');
+            }
+        } else {
+            saveProgressBar.style.width = '100%';
+            saveProgressBar.removeAttribute('aria-valuenow');
+            saveProgressBar.textContent = '处理中';
+            saveProgressBar.classList.add('progress-bar-striped', 'progress-bar-animated');
+        }
+
+        if (level === 'success') {
+            saveProgressBar.classList.add('bg-success');
+        } else if (level === 'warning') {
+            saveProgressBar.classList.add('bg-warning');
+        } else if (level === 'error') {
+            saveProgressBar.classList.add('bg-danger');
+        }
+    };
+
+    const finishSettingsSaveOperation = function (data) {
+        stopSettingsSavePolling();
+        setSettingsSaveProgressUi(data || {});
+        toggleSettingsSaveBusy(false);
+
+        const messages = Array.isArray(data && data.messages) ? data.messages : [];
+        if (messages.length) {
+            messages.forEach(function (item) {
+                const category = item && item.category ? item.category : 'info';
+                const text = item && item.text ? item.text : '';
+                if (category === 'success') {
+                    showSettingsToast('success', text);
+                } else if (category === 'warning') {
+                    showSettingsToast('warning', text);
+                } else {
+                    showSettingsToast('error', text);
+                }
+            });
+        } else if (data && data.success === false) {
+            showSettingsToast('error', data.message || '保存设置失败');
+        }
+
+        window.setTimeout(function () {
+            if (saveProgressModal) {
+                saveProgressModal.hide();
+            }
+        }, 500);
+    };
+
+    const pollSettingsSaveProgress = function (operationId) {
+        const requestUrl = saveProgressEndpointTemplate.replace('__operation_id__', encodeURIComponent(operationId));
+        fetch(requestUrl, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json'
+            }
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('状态查询失败: HTTP ' + response.status);
+                }
+                return response.json();
+            })
+            .then(function (data) {
+                if (!data || data.found === false) {
+                    return;
+                }
+                setSettingsSaveProgressUi(data);
+                if (data.done) {
+                    finishSettingsSaveOperation(data);
+                }
+            })
+            .catch(function (error) {
+                stopSettingsSavePolling();
+                toggleSettingsSaveBusy(false);
+                if (saveProgressModal) {
+                    saveProgressModal.hide();
+                }
+                showSettingsToast('error', '获取保存进度失败: ' + error.message);
+            });
+    };
+
+    if (settingsForm && saveProgressModal) {
+        settingsForm.addEventListener('submit', function (event) {
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            const newPasswordField = document.getElementById('new_password');
+            const confirmPasswordField = document.getElementById('confirm_password');
+            if (
+                newPasswordField
+                && confirmPasswordField
+                && newPasswordField.value !== confirmPasswordField.value
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            if (saveSettingsBtn && saveSettingsBtn.disabled) {
+                return;
+            }
+
+            const operationId = (window.crypto && typeof window.crypto.randomUUID === 'function')
+                ? window.crypto.randomUUID()
+                : ('settings-save-' + Date.now());
+            const formData = new FormData(settingsForm);
+            formData.set('save_operation_id', operationId);
+
+            stopSettingsSavePolling();
+            toggleSettingsSaveBusy(true);
+            setSettingsSaveProgressUi({
+                done: false,
+                level: 'info',
+                message: '正在提交保存请求',
+                detail: '如果缺少 FFmpeg，这里会显示下载进度。',
+                percent: null
+            });
+            saveProgressModal.show();
+
+            fetch(settingsForm.action || window.location.pathname, {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            })
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('保存请求失败: HTTP ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function (data) {
+                    if (!data || !data.success || !data.operation_id) {
+                        throw new Error((data && data.message) ? data.message : '保存任务未成功创建');
+                    }
+                    pollSettingsSaveProgress(data.operation_id);
+                    saveProgressPollTimer = window.setInterval(function () {
+                        pollSettingsSaveProgress(data.operation_id);
+                    }, 500);
+                })
+                .catch(function (error) {
+                    stopSettingsSavePolling();
+                    toggleSettingsSaveBusy(false);
+                    if (saveProgressModal) {
+                        saveProgressModal.hide();
+                    }
+                    showSettingsToast('error', '保存设置失败: ' + error.message);
+                });
+        });
+    }
 
     const applyStatusTone = function (el, tone) {
         if (!el) return;

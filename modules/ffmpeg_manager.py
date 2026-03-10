@@ -14,6 +14,7 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 import zipfile
 from dataclasses import dataclass
 from typing import Optional
@@ -131,7 +132,36 @@ def _windows_ffmpeg_download_url() -> tuple[str, str]:
     return arch_tag, url
 
 
-def download_ffmpeg_bundled(logger: Optional[logging.Logger] = None) -> Optional[str]:
+def _dispatch_progress(progress_callback, payload, state, *, force=False):
+    if not progress_callback:
+        return
+
+    now = time.monotonic()
+    stage = payload.get('stage')
+    percent = payload.get('percent')
+    last_stage = state.get('stage')
+    last_percent = state.get('percent')
+    last_time = state.get('time', 0.0)
+
+    percent_advanced = False
+    if isinstance(percent, (int, float)) and isinstance(last_percent, (int, float)):
+        percent_advanced = (percent - last_percent) >= 1.0
+    elif isinstance(percent, (int, float)) and last_percent is None:
+        percent_advanced = True
+
+    if not force and stage == last_stage and not percent_advanced and (now - last_time) < 0.25:
+        return
+
+    state['stage'] = stage
+    state['percent'] = percent
+    state['time'] = now
+    progress_callback(payload)
+
+
+def download_ffmpeg_bundled(
+    logger: Optional[logging.Logger] = None,
+    progress_callback=None
+) -> Optional[str]:
     """Download the official Windows build into ffmpeg/ when missing."""
     log_obj = logger or log
     if os.name != 'nt':
@@ -161,15 +191,70 @@ def download_ffmpeg_bundled(logger: Optional[logging.Logger] = None) -> Optional
 
     arch_tag, url = _windows_ffmpeg_download_url()
     zip_path = os.path.join(target_dir, 'ffmpeg.zip')
+    progress_state = {'stage': None, 'percent': None, 'time': 0.0}
 
     try:
         log_obj.info("Downloading bundled ffmpeg for Windows (%s): %s", arch_tag, url)
+        _dispatch_progress(
+            progress_callback,
+            {
+                'stage': 'downloading_ffmpeg',
+                'message': '正在下载 FFmpeg',
+                'detail': f'正在获取 Windows {arch_tag} 版本。',
+                'percent': None,
+                'downloaded_bytes': 0,
+                'total_bytes': None,
+                'level': 'info'
+            },
+            progress_state,
+            force=True
+        )
         with requests.get(url, stream=True, timeout=120) as response:
             response.raise_for_status()
+            total_bytes = None
+            total_header = response.headers.get('Content-Length')
+            try:
+                if total_header:
+                    total_bytes = max(int(total_header), 0)
+            except (TypeError, ValueError):
+                total_bytes = None
             with open(zip_path, 'wb') as archive:
+                downloaded_bytes = 0
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         archive.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        percent = None
+                        if total_bytes:
+                            percent = round(min((downloaded_bytes / total_bytes) * 100, 100), 1)
+                        _dispatch_progress(
+                            progress_callback,
+                            {
+                                'stage': 'downloading_ffmpeg',
+                                'message': '正在下载 FFmpeg',
+                                'detail': '正在拉取压缩包，请稍候。',
+                                'percent': percent,
+                                'downloaded_bytes': downloaded_bytes,
+                                'total_bytes': total_bytes,
+                                'level': 'info'
+                            },
+                            progress_state
+                        )
+
+        _dispatch_progress(
+            progress_callback,
+            {
+                'stage': 'extracting_ffmpeg',
+                'message': '正在解压 FFmpeg',
+                'detail': '下载完成，正在展开压缩包并复制可执行文件。',
+                'percent': None,
+                'downloaded_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
+                'total_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
+                'level': 'info'
+            },
+            progress_state,
+            force=True
+        )
 
         extract_dir = os.path.join(target_dir, 'tmp_extract')
         os.makedirs(extract_dir, exist_ok=True)
@@ -193,10 +278,38 @@ def download_ffmpeg_bundled(logger: Optional[logging.Logger] = None) -> Optional
         if ffprobe_path:
             shutil.copy2(ffprobe_path, os.path.join(target_dir, 'ffprobe.exe'))
 
-        return ffmpeg_exe
+        _dispatch_progress(
+            progress_callback,
+            {
+                'stage': 'completed',
+                'message': 'FFmpeg 下载完成',
+                'detail': ffmpeg_exe,
+                'percent': 100.0,
+                'downloaded_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
+                'total_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
+                'level': 'success'
+            },
+            progress_state,
+            force=True
+        )
         log_obj.info("Bundled ffmpeg (%s) downloaded to %s", arch_tag, ffmpeg_exe)
+        return ffmpeg_exe
     except Exception as exc:
         log_obj.warning("Failed to download bundled ffmpeg (%s): %s", arch_tag, exc)
+        _dispatch_progress(
+            progress_callback,
+            {
+                'stage': 'failed',
+                'message': 'FFmpeg 下载失败',
+                'detail': str(exc),
+                'percent': None,
+                'downloaded_bytes': None,
+                'total_bytes': None,
+                'level': 'error'
+            },
+            progress_state,
+            force=True
+        )
         return None
     finally:
         try:
@@ -238,7 +351,8 @@ def is_ffmpeg_usable(path: Optional[str], logger: Optional[logging.Logger] = Non
 def _resolve_ffmpeg_path(
     *,
     allow_system: bool,
-    logger: Optional[logging.Logger]
+    logger: Optional[logging.Logger],
+    progress_callback=None
 ) -> Optional[str]:
     log_obj = logger or log
     log_obj.debug("Resolving ffmpeg for platform %s", _platform_signature())
@@ -259,7 +373,7 @@ def _resolve_ffmpeg_path(
 
     auto_download = config.get('FFMPEG_AUTO_DOWNLOAD', True)
     if os.name == 'nt' and auto_download:
-        downloaded = download_ffmpeg_bundled(log_obj)
+        downloaded = download_ffmpeg_bundled(log_obj, progress_callback=progress_callback)
         if downloaded:
             search_order.append(('downloaded', downloaded))
 
@@ -288,12 +402,17 @@ def get_ffmpeg_path(
     *,
     allow_system: bool = True,
     force_refresh: bool = False,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    progress_callback=None
 ) -> Optional[str]:
     if not force_refresh and _BINARY_CACHE['ffmpeg']:
         return _BINARY_CACHE['ffmpeg']
 
-    path = _resolve_ffmpeg_path(allow_system=allow_system, logger=logger)
+    path = _resolve_ffmpeg_path(
+        allow_system=allow_system,
+        logger=logger,
+        progress_callback=progress_callback
+    )
     _BINARY_CACHE['ffmpeg'] = path
     return path
 

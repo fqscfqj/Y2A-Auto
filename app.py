@@ -149,6 +149,372 @@ def _get_acfun_qr_session(session_id: str):
     return item.get('session')
 
 
+_SETTINGS_SAVE_OPERATIONS = {}
+_SETTINGS_SAVE_LOCK = threading.Lock()
+_SETTINGS_SAVE_TTL_SECONDS = 600
+
+
+def _new_settings_save_state(operation_id: str) -> dict:
+    now_ts = time.time()
+    return {
+        'operation_id': operation_id,
+        'stage': 'saving_config',
+        'message': '正在准备保存设置',
+        'detail': '正在提交保存任务，请稍候。',
+        'percent': None,
+        'downloaded_bytes': None,
+        'total_bytes': None,
+        'done': False,
+        'level': 'info',
+        'success': None,
+        'messages': [],
+        'created_at': now_ts,
+        'updated_at': now_ts,
+        'expires_at': None,
+    }
+
+
+def _cleanup_settings_save_operations():
+    now_ts = time.time()
+    with _SETTINGS_SAVE_LOCK:
+        stale_ids = []
+        for operation_id, state in _SETTINGS_SAVE_OPERATIONS.items():
+            expires_at = state.get('expires_at')
+            if expires_at and now_ts >= float(expires_at):
+                stale_ids.append(operation_id)
+        for operation_id in stale_ids:
+            _SETTINGS_SAVE_OPERATIONS.pop(operation_id, None)
+
+
+def _update_settings_save_progress(operation_id: str, **fields) -> dict:
+    _cleanup_settings_save_operations()
+    with _SETTINGS_SAVE_LOCK:
+        state = dict(_SETTINGS_SAVE_OPERATIONS.get(operation_id) or _new_settings_save_state(operation_id))
+        state.update(fields)
+        state['updated_at'] = time.time()
+        if state.get('done'):
+            state['expires_at'] = state['updated_at'] + _SETTINGS_SAVE_TTL_SECONDS
+        _SETTINGS_SAVE_OPERATIONS[operation_id] = state
+        return dict(state)
+
+
+def _get_settings_save_progress(operation_id: str):
+    _cleanup_settings_save_operations()
+    with _SETTINGS_SAVE_LOCK:
+        state = _SETTINGS_SAVE_OPERATIONS.get(operation_id)
+        return dict(state) if state else None
+
+
+def _append_settings_message(messages: list, category: str, text: str):
+    clean_text = str(text or '').strip()
+    if not clean_text:
+        return
+    messages.append({'category': category, 'text': clean_text})
+
+
+def _is_ajax_request() -> bool:
+    requested_with = request.headers.get('X-Requested-With', '')
+    accept_header = request.headers.get('Accept', '')
+    return requested_with == 'XMLHttpRequest' or 'application/json' in accept_header
+
+
+def _extract_settings_uploads(files_storage) -> dict:
+    uploads = {}
+    for field_name in ('youtube_cookies_file', 'acfun_cookies_file', 'bilibili_cookies_file'):
+        file_storage = files_storage.get(field_name)
+        if not file_storage or not getattr(file_storage, 'filename', ''):
+            continue
+        uploads[field_name] = {
+            'filename': file_storage.filename,
+            'content': file_storage.read()
+        }
+    return uploads
+
+
+def _persist_settings_uploads(form_data: dict, uploads: dict):
+    cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
+    os.makedirs(cookies_dir, exist_ok=True)
+
+    file_specs = {
+        'youtube_cookies_file': ('yt_cookies.txt', 'YOUTUBE_COOKIES_PATH', 'cookies/yt_cookies.txt', 'YouTube'),
+        'acfun_cookies_file': ('ac_cookies.json', 'ACFUN_COOKIES_PATH', 'cookies/ac_cookies.json', 'AcFun'),
+        'bilibili_cookies_file': ('bili_cookies.json', 'BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json', 'Bilibili'),
+    }
+
+    for field_name, payload in uploads.items():
+        spec = file_specs.get(field_name)
+        if not spec or not payload.get('filename'):
+            continue
+        save_name, config_key, relative_path, service_name = spec
+        target_path = os.path.join(cookies_dir, save_name)
+        with open(target_path, 'wb') as target_file:
+            target_file.write(payload.get('content') or b'')
+        form_data[config_key] = relative_path
+        logger.info(f"{service_name} cookies文件已上传并保存到: {target_path}")
+
+
+def _build_settings_progress_reporter(operation_id: str):
+    if not operation_id:
+        return None
+
+    def _report(payload: dict):
+        _update_settings_save_progress(
+            operation_id,
+            stage=payload.get('stage', 'saving_config'),
+            message=payload.get('message', ''),
+            detail=payload.get('detail', ''),
+            percent=payload.get('percent'),
+            downloaded_bytes=payload.get('downloaded_bytes'),
+            total_bytes=payload.get('total_bytes'),
+            level=payload.get('level', 'info')
+        )
+
+    return _report
+
+
+def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | None = None) -> dict:
+    form_data = dict(form_data or {})
+    uploads = uploads or {}
+    messages = []
+    progress_reporter = _build_settings_progress_reporter(operation_id)
+
+    def report(stage: str, message: str, detail: str = '', percent=None, level: str = 'info', downloaded_bytes=None, total_bytes=None):
+        if not progress_reporter:
+            return
+        progress_reporter({
+            'stage': stage,
+            'message': message,
+            'detail': detail,
+            'percent': percent,
+            'downloaded_bytes': downloaded_bytes,
+            'total_bytes': total_bytes,
+            'level': level,
+        })
+
+    try:
+        report('saving_config', '正在保存配置', '正在校验并写入设置。')
+        form_data.pop('save_operation_id', None)
+
+        new_password = form_data.get('new_password')
+        confirm_password = form_data.get('confirm_password')
+        if new_password:
+            if new_password == confirm_password:
+                form_data['password'] = new_password
+            else:
+                _append_settings_message(messages, 'danger', '新密码两次输入不一致，密码未更新。')
+
+        form_data.pop('new_password', None)
+        form_data.pop('confirm_password', None)
+
+        checkboxes = [
+            'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
+            'UPLOAD_APPEND_REPOST_NOTICE',
+            'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
+            'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED',
+            'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
+            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
+            'SPEECH_RECOGNITION_ENABLED',
+            'VAD_ENABLED',
+            'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
+            'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
+            'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
+            'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
+            'SUBTITLE_QC_ENABLED',
+            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
+            'VIDEO_CUSTOM_PARAMS_ENABLED',
+            'FIREREDASR_ENABLED',
+            'VOXTRAL_DIARIZE'
+        ]
+        for checkbox in checkboxes:
+            if checkbox not in form_data:
+                form_data[checkbox] = 'off'
+
+        numeric_fields = [
+            'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
+            'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
+            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
+            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
+            'VAD_SILERO_MIN_SPEECH_MS',
+            'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
+            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
+            'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
+            'SUBTITLE_MIN_TEXT_LENGTH',
+            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
+            'FIREREDASR_TIMEOUT', 'FIREREDASR_MAX_RETRIES'
+        ]
+        for field in numeric_fields:
+            if field in form_data:
+                try:
+                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    original_value = form_data[field]
+                    form_data[field] = str(int(form_data[field]))
+                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    defaults = {
+                        'MAX_CONCURRENT_TASKS': 3,
+                        'MAX_CONCURRENT_UPLOADS': 1,
+                        'LOG_CLEANUP_HOURS': 168,
+                        'LOG_CLEANUP_INTERVAL': 24,
+                        'SUBTITLE_BATCH_SIZE': 5,
+                        'SUBTITLE_MAX_RETRIES': 3,
+                        'SUBTITLE_RETRY_DELAY': 5,
+                        'SUBTITLE_MAX_WORKERS': 0,
+                        'YOUTUBE_DOWNLOAD_THREADS': 4,
+                        'LOGIN_MAX_FAILED_ATTEMPTS': 5,
+                        'LOGIN_LOCKOUT_MINUTES': 15,
+                        'VAD_SILERO_MIN_SPEECH_MS': 220,
+                        'VAD_SILERO_MIN_SILENCE_MS': 320,
+                        'VAD_SILERO_MAX_SPEECH_S': 120,
+                        'VAD_SILERO_SPEECH_PAD_MS': 120,
+                        'VAD_MAX_SEGMENT_S': 15,
+                        'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
+                        'SUBTITLE_QC_MAX_CHARS': 9000,
+                        'FIREREDASR_TIMEOUT': 300,
+                        'FIREREDASR_MAX_RETRIES': 3
+                    }
+                    form_data[field] = str(defaults.get(field, 1))
+                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+
+        float_fields = [
+            'VAD_SILERO_THRESHOLD',
+            'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
+            'SUBTITLE_QC_THRESHOLD',
+            'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
+            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
+        ]
+        for field in float_fields:
+            if field in form_data:
+                try:
+                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    original_value = form_data[field]
+                    if str(original_value).strip() == '':
+                        raise ValueError('empty string')
+                    form_data[field] = str(float(original_value))
+                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    float_defaults = {
+                        'VAD_SILERO_THRESHOLD': 0.55,
+                        'SUBTITLE_TIME_OFFSET_S': 0.0,
+                        'SUBTITLE_MIN_CUE_DURATION_S': 0.6,
+                        'SUBTITLE_MERGE_GAP_S': 0.3,
+                        'SUBTITLE_QC_THRESHOLD': 0.35,
+                        'WHISPER_RETRY_DELAY_S': 2.0,
+                        'AUDIO_CHUNK_WINDOW_S': 15.0,
+                        'AUDIO_CHUNK_OVERLAP_S': 0.4,
+                        'VAD_MERGE_GAP_S': 0.35,
+                        'VAD_MIN_SEGMENT_S': 0.8,
+                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
+                    }
+                    form_data[field] = str(float_defaults.get(field, 0.0))
+                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+
+        if 'SUBTITLE_FONT_NAME' in form_data:
+            form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
+
+        _persist_settings_uploads(form_data, uploads)
+        updated_config = update_config(form_data)
+
+        try:
+            from modules.task_manager import get_global_task_processor
+            app.config['Y2A_SETTINGS'] = updated_config
+            get_global_task_processor(updated_config)
+            logger.info("配置已更新并同步到任务处理器")
+        except Exception as e:
+            logger.warning(f"同步任务处理器配置失败: {e}")
+
+        try:
+            need_ffmpeg = False
+            if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
+            if str(updated_config.get('FIREREDASR_ENABLED', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
+            if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
+                need_ffmpeg = True
+
+            if need_ffmpeg:
+                from modules.youtube_handler import get_ffmpeg_path
+                report('checking_ffmpeg', '正在检查 FFmpeg', '已启用依赖 FFmpeg 的功能，正在检查本地环境。')
+                ff_path = get_ffmpeg_path(
+                    logger=logger,
+                    force_refresh=True,
+                    progress_callback=progress_reporter
+                )
+                if ff_path and os.path.exists(ff_path):
+                    logger.info(f"FFmpeg 已就绪: {ff_path}")
+                    report('completed', 'FFmpeg 已就绪', ff_path, percent=100.0, level='success')
+                else:
+                    warning_msg = '已启用依赖FFmpeg的功能，但未检测到内置 FFmpeg，请确认项目根目录 ffmpeg/ 目录完整。'
+                    logger.warning(warning_msg)
+                    _append_settings_message(messages, 'warning', warning_msg)
+                    report('warning', 'FFmpeg 未就绪', warning_msg, level='warning')
+            else:
+                report('completed', '配置已保存', '当前设置不需要额外下载 FFmpeg。', percent=100.0, level='success')
+        except Exception as e:
+            warning_msg = f'检查内置 FFmpeg 状态失败: {e}'
+            logger.warning(warning_msg)
+            _append_settings_message(messages, 'warning', warning_msg)
+            report('warning', 'FFmpeg 检查失败', warning_msg, level='warning')
+
+        if 'YOUTUBE_API_KEY' in form_data:
+            api_key = form_data['YOUTUBE_API_KEY']
+            if api_key:
+                youtube_monitor.set_api_key(api_key)
+                logger.info("YouTube API密钥已更新并同步到监控系统")
+
+        _append_settings_message(messages, 'success', '配置已成功保存')
+        final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'
+        final_stage = 'warning' if final_level == 'warning' else 'completed'
+        final_message = '配置已保存，但有提醒需要处理。' if final_level == 'warning' else '配置已成功保存'
+        final_detail = next((msg['text'] for msg in messages if msg['category'] in ('warning', 'danger')), '设置已生效。')
+        return {
+            'success': True,
+            'messages': messages,
+            'updated_config': updated_config,
+            'final_stage': final_stage,
+            'final_message': final_message,
+            'final_detail': final_detail,
+            'final_level': final_level,
+        }
+    except Exception as e:
+        logger.exception("保存设置失败: %s", e)
+        _append_settings_message(messages, 'danger', f'保存设置失败: {e}')
+        return {
+            'success': False,
+            'messages': messages,
+            'updated_config': None,
+            'final_stage': 'failed',
+            'final_message': '保存设置失败',
+            'final_detail': str(e),
+            'final_level': 'error',
+        }
+
+
+def _finalize_settings_save_operation(operation_id: str, result: dict):
+    current_state = _get_settings_save_progress(operation_id) or _new_settings_save_state(operation_id)
+    percent = current_state.get('percent')
+    if result.get('success') and percent is None:
+        percent = 100.0
+
+    _update_settings_save_progress(
+        operation_id,
+        stage=result.get('final_stage', 'completed'),
+        message=result.get('final_message', ''),
+        detail=result.get('final_detail', ''),
+        percent=percent,
+        done=True,
+        level=result.get('final_level', 'success'),
+        success=result.get('success'),
+        messages=result.get('messages', []),
+    )
+
+
+def _run_settings_save_operation(operation_id: str, form_data: dict, uploads: dict):
+    result = _perform_settings_save(form_data, uploads, operation_id=operation_id)
+    _finalize_settings_save_operation(operation_id, result)
+
+
 def _is_safe_redirect_url(target):
     """Validate that a redirect target is safe (same origin, not external)."""
     if not target:
@@ -1602,231 +1968,38 @@ def system_health():
 def settings():
     """设置页面，用于管理配置"""
     if request.method == 'POST':
-        # 处理表单提交
         form_data = request.form.to_dict()
-        
-        # --- 密码保护 ---
-        # 处理密码更新
-        new_password = form_data.get('new_password')
-        confirm_password = form_data.get('confirm_password')
+        uploads = _extract_settings_uploads(request.files)
+        operation_id = str(form_data.get('save_operation_id') or uuid.uuid4())
 
-        if new_password:
-            if new_password == confirm_password:
-                form_data['password'] = new_password
-            else:
-                flash('新密码两次输入不一致，密码未更新。', 'danger')
-        
-        # 从字典中移除密码字段，防止重复保存
-        form_data.pop('new_password', None)
-        form_data.pop('confirm_password', None)
+        if _is_ajax_request():
+            _update_settings_save_progress(
+                operation_id,
+                stage='saving_config',
+                message='正在准备保存设置',
+                detail='保存任务已创建，正在后台执行。',
+                percent=None,
+                done=False,
+                level='info',
+                success=None,
+                messages=[]
+            )
+            save_thread = threading.Thread(
+                target=_run_settings_save_operation,
+                args=(operation_id, form_data, uploads),
+                daemon=True,
+                name=f'settings-save-{operation_id[:8]}'
+            )
+            save_thread.start()
+            return jsonify({
+                'success': True,
+                'messages': [],
+                'operation_id': operation_id
+            })
 
-        # 处理复选框（未选中时不会提交）
-        checkboxes = [
-            'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
-            'UPLOAD_APPEND_REPOST_NOTICE',
-            'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION', 'CONTENT_MODERATION_ENABLED',
-            'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED',
-            'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
-            'SPEECH_RECOGNITION_ENABLED',
-            'VAD_ENABLED',
-            # 新增：字幕后处理布尔项
-            'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
-            # 新增：字幕后处理启用开关
-            'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
-            'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
-            'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
-            # 新增：字幕最终质检（QC）
-            'SUBTITLE_QC_ENABLED',
-            # 新增：FFmpeg 缺失兜底下载、Whisper翻译、Whisper回退
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
-            # 新增：视频转码自定义参数开关
-            'VIDEO_CUSTOM_PARAMS_ENABLED',
-            # FireRedASR2S
-            'FIREREDASR_ENABLED',
-            # Voxtral
-            'VOXTRAL_DIARIZE'
-        ]
-        for checkbox in checkboxes:
-            if checkbox not in form_data:
-                form_data[checkbox] = 'off'  # 未选中的复选框
-        
-        # 处理数字类型的配置项
-        numeric_fields = [
-            'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
-            'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
-            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
-            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
-            'VAD_SILERO_MIN_SPEECH_MS',
-            'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
-            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
-            # 新增：字幕QC
-            'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
-            # 新增：字幕后处理 - 最小文本长度
-            'SUBTITLE_MIN_TEXT_LENGTH',
-            # 新增：Whisper 并发与重试
-            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
-            # FireRedASR2S
-            'FIREREDASR_TIMEOUT', 'FIREREDASR_MAX_RETRIES'
-        ]
-        for field in numeric_fields:
-            if field in form_data:
-                try:
-                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-                    original_value = form_data[field]
-                    form_data[field] = str(int(form_data[field]))  # 转换为int再转回str以满足类型要求
-                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-                except (ValueError, TypeError) as e:
-                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    # 如果转换失败，使用默认值
-                    defaults = {
-                        'MAX_CONCURRENT_TASKS': 3,
-                        'MAX_CONCURRENT_UPLOADS': 1,
-                        'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 24,
-                        'SUBTITLE_BATCH_SIZE': 5,
-                        'SUBTITLE_MAX_RETRIES': 3,
-                        'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 0,
-                        'YOUTUBE_DOWNLOAD_THREADS': 4,
-                        'LOGIN_MAX_FAILED_ATTEMPTS': 5,
-                        'LOGIN_LOCKOUT_MINUTES': 15,
-                        'VAD_SILERO_MIN_SPEECH_MS': 220,
-                        'VAD_SILERO_MIN_SILENCE_MS': 320,
-                        'VAD_SILERO_MAX_SPEECH_S': 120,
-                        'VAD_SILERO_SPEECH_PAD_MS': 120,
-                        'VAD_MAX_SEGMENT_S': 15,
-                        'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000,
-                        'FIREREDASR_TIMEOUT': 300,
-                        'FIREREDASR_MAX_RETRIES': 3
-                    }
-                    form_data[field] = str(defaults.get(field, 1))  # 转换为str以满足类型要求
-                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-
-        # 处理浮点类型的配置项
-        float_fields = [
-            'VAD_SILERO_THRESHOLD',
-            # 字幕后处理
-            'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
-            # 新增：字幕QC
-            'SUBTITLE_QC_THRESHOLD',
-            # Whisper 高级参数：重试延迟、分片窗口/重叠
-            'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
-            # VAD 约束参数
-            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
-        ]
-        for field in float_fields:
-            if field in form_data:
-                try:
-                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-                    original_value = form_data[field]
-                    if str(original_value).strip() == '':
-                        raise ValueError('empty string')
-                    form_data[field] = str(float(original_value))
-                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-                except (ValueError, TypeError) as e:
-                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.55,
-                        'SUBTITLE_TIME_OFFSET_S': 0.0,
-                        'SUBTITLE_MIN_CUE_DURATION_S': 0.6,
-                        'SUBTITLE_MERGE_GAP_S': 0.3,
-                        'SUBTITLE_QC_THRESHOLD': 0.35,
-                        'WHISPER_RETRY_DELAY_S': 2.0,
-                        'AUDIO_CHUNK_WINDOW_S': 15.0,
-                        'AUDIO_CHUNK_OVERLAP_S': 0.4,
-                        'VAD_MERGE_GAP_S': 0.35,
-                        'VAD_MIN_SEGMENT_S': 0.8,
-                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
-                    }
-                    form_data[field] = str(float_defaults.get(field, 0.0))
-                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
-
-        if 'SUBTITLE_FONT_NAME' in form_data:
-            form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
-        
-        # 处理文件上传
-        cookies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
-        os.makedirs(cookies_dir, exist_ok=True)
-        
-        # 处理YouTube Cookies文件上传
-        if 'youtube_cookies_file' in request.files:
-            cookies_file = request.files['youtube_cookies_file']
-            if cookies_file.filename:
-                # 保存到cookies目录
-                yt_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
-                cookies_file.save(yt_cookies_path)
-                
-                # 更新配置中的路径
-                form_data['YOUTUBE_COOKIES_PATH'] = 'cookies/yt_cookies.txt'
-                
-                logger.info(f"YouTube cookies文件已上传并保存到: {yt_cookies_path}")
-        
-        # 处理AcFun Cookies文件上传
-        if 'acfun_cookies_file' in request.files:
-            cookies_file = request.files['acfun_cookies_file']
-            if cookies_file.filename:
-                # 保存到cookies目录
-                ac_cookies_path = os.path.join(cookies_dir, 'ac_cookies.json')
-                cookies_file.save(ac_cookies_path)
-                
-                # 更新配置中的路径
-                form_data['ACFUN_COOKIES_PATH'] = 'cookies/ac_cookies.json'
-                
-                logger.info(f"AcFun cookies文件已上传并保存到: {ac_cookies_path}")
-
-        # 处理Bilibili Cookies文件上传
-        if 'bilibili_cookies_file' in request.files:
-            cookies_file = request.files['bilibili_cookies_file']
-            if cookies_file.filename:
-                bili_cookies_path = os.path.join(cookies_dir, 'bili_cookies.json')
-                cookies_file.save(bili_cookies_path)
-                form_data['BILIBILI_COOKIES_PATH'] = 'cookies/bili_cookies.json'
-                logger.info(f"Bilibili cookies文件已上传并保存到: {bili_cookies_path}")
-        
-        # 更新配置
-        updated_config = update_config(form_data)
-        
-        # 始终同步到应用配置并刷新任务处理器配置（若配置变更则内部会安全重建）
-        try:
-            from modules.task_manager import get_global_task_processor
-            app.config['Y2A_SETTINGS'] = updated_config
-            # 防御：即使配置中的数字字段是字符串也不致崩溃
-            get_global_task_processor(updated_config)
-            logger.info("配置已更新并同步到任务处理器")
-        except Exception as e:
-            logger.warning(f"同步任务处理器配置失败: {e}")
-
-        # 若启用依赖 FFmpeg 的功能（ASR提取音频、字幕嵌入），确保项目内置 ffmpeg 可用
-        try:
-            need_ffmpeg = False
-            if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
-                need_ffmpeg = True
-            if str(updated_config.get('FIREREDASR_ENABLED', False)).lower() in ['true', '1', 'on']:
-                need_ffmpeg = True
-            if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
-                need_ffmpeg = True
-            if need_ffmpeg:
-                from modules.youtube_handler import get_ffmpeg_path
-                ff_path = get_ffmpeg_path(logger=logger)
-                if ff_path and os.path.exists(ff_path):
-                    logger.info(f"FFmpeg 已就绪: {ff_path}")
-                else:
-                    warning_msg = '已启用依赖FFmpeg的功能，但未检测到内置 FFmpeg，请确认项目根目录 ffmpeg/ 目录完整。'
-                    logger.warning(warning_msg)
-                    flash(warning_msg, 'warning')
-        except Exception as e:
-            logger.warning(f"检查内置 FFmpeg 状态失败: {e}")
-        
-        # 如果YouTube API密钥有更新，同步到监控系统
-        if 'YOUTUBE_API_KEY' in form_data:
-            api_key = form_data['YOUTUBE_API_KEY']
-            if api_key:
-                youtube_monitor.set_api_key(api_key)
-                logger.info("YouTube API密钥已更新并同步到监控系统")
-        
-        flash('配置已成功保存', 'success')
+        result = _perform_settings_save(form_data, uploads)
+        for item in result.get('messages', []):
+            flash(item.get('text', ''), item.get('category', 'info'))
         return redirect(url_for('settings'))
     
     # GET请求，显示设置页面
@@ -1840,6 +2013,40 @@ def settings():
         acfun_partition_mapping=acfun_partition_mapping,
         bilibili_partition_mapping=bilibili_partition_mapping
     )
+
+
+@app.route('/settings/save-progress/<operation_id>', methods=['GET'])
+@login_required
+def settings_save_progress(operation_id):
+    progress = _get_settings_save_progress(operation_id)
+    if not progress:
+        return jsonify({
+            'found': False,
+            'stage': None,
+            'message': '',
+            'detail': '',
+            'percent': None,
+            'downloaded_bytes': None,
+            'total_bytes': None,
+            'done': True,
+            'level': 'error',
+            'success': False,
+            'messages': []
+        })
+
+    return jsonify({
+        'found': True,
+        'stage': progress.get('stage'),
+        'message': progress.get('message'),
+        'detail': progress.get('detail'),
+        'percent': progress.get('percent'),
+        'downloaded_bytes': progress.get('downloaded_bytes'),
+        'total_bytes': progress.get('total_bytes'),
+        'done': progress.get('done', False),
+        'level': progress.get('level', 'info'),
+        'success': progress.get('success'),
+        'messages': progress.get('messages', [])
+    })
 
 @app.route('/settings/acfun/qrcode/start', methods=['POST'])
 @login_required
