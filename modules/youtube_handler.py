@@ -14,6 +14,7 @@ from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
+from urllib.parse import urlparse
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
@@ -779,6 +780,27 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     import sys
     video_urls = []
     try:
+        # 验证播放列表URL，避免将任意用户输入传递给外部命令
+        parsed = urlparse(playlist_url or "")
+        allowed_schemes = {"http", "https"}
+        allowed_hosts = {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+        }
+        if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
+            logger.warning(f"无效的播放列表URL协议: {playlist_url}")
+            return video_urls
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in allowed_hosts:
+            logger.warning(f"不受信任的播放列表URL主机名: {playlist_url}")
+            return video_urls
+        # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
+        if "/playlist" not in (parsed.path or "") and "list=" not in (parsed.query or ""):
+            logger.warning(f"URL似乎不是播放列表链接: {playlist_url}")
+            return video_urls
+
         yt_dlp_path = 'yt-dlp'
         # 处理cookies路径
         cookies_path = None
