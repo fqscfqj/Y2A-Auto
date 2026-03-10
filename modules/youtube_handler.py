@@ -19,6 +19,36 @@ from urllib.parse import urlparse
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
 
+# 项目根目录（模块所在目录的上两级），使用 realpath 解析符号链接
+_BASE_DIR = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
+    """将 cookies_file_path 解析为安全的绝对路径。
+
+    使用 realpath 解析符号链接后，通过 commonpath 校验路径仍在项目根目录内，
+    防止目录遍历及通过 symlink 越界访问。返回安全的绝对路径，或在路径无效/
+    文件不存在时返回 None。
+    """
+    _log = log or logger
+    # 拒绝绝对路径输入：os.path.join 遇到绝对路径会忽略 _BASE_DIR，直接传递外部路径
+    if os.path.isabs(cookies_file_path):
+        _log.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
+        return None
+    raw = os.path.join(_BASE_DIR, cookies_file_path)
+    resolved = os.path.realpath(raw)
+    try:
+        common = os.path.commonpath([_BASE_DIR, resolved])
+    except ValueError:
+        common = ""
+    if common != _BASE_DIR:
+        _log.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
+        return None
+    if not os.path.exists(resolved):
+        _log.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
+        return None
+    return resolved
+
 
 def is_docker_env() -> bool:
     """粗略判断是否运行在 Docker 中"""
@@ -337,25 +367,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             except:
                 pass
         
-        # 处理cookies路径，仅允许在项目根目录下的文件
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
         if cookies_file_path:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            raw_cookies_path = os.path.join(base_dir, cookies_file_path)
-            abs_cookies_path = os.path.abspath(raw_cookies_path)
-            # 确保cookies文件仍在base_dir之下，防止目录遍历
-            try:
-                common = os.path.commonpath([base_dir, abs_cookies_path])
-            except ValueError:
-                common = ""
-            if common == base_dir:
-                if os.path.exists(abs_cookies_path):
-                    cookies_path = abs_cookies_path
-                    logger.info(f"使用cookies文件: {cookies_path}")
-                else:
-                    logger.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
-            else:
-                logger.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
+            if cookies_path:
+                logger.info(f"使用cookies文件: {cookies_path}")
         
         # 验证yt-dlp路径有效性
         logger.info(f"最终确定的yt-dlp路径: {yt_dlp_path}")
@@ -818,24 +835,10 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
             return video_urls
 
         yt_dlp_path = 'yt-dlp'
-        # 处理cookies路径，仅允许在项目根目录下的文件
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
         if cookies_file_path:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            raw_cookies_path = os.path.join(base_dir, cookies_file_path)
-            abs_cookies_path = os.path.abspath(raw_cookies_path)
-            # 确保cookies文件仍在base_dir之下，防止目录遍历
-            try:
-                common = os.path.commonpath([base_dir, abs_cookies_path])
-            except ValueError:
-                common = ""
-            if common == base_dir:
-                if os.path.exists(abs_cookies_path):
-                    cookies_path = abs_cookies_path
-                else:
-                    logger.warning(f"cookies文件不存在，已忽略: {cookies_file_path}")
-            else:
-                logger.warning(f"检测到潜在的目录遍历或越界cookies文件路径，已拒绝: {cookies_file_path}")
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
         cmd = [
             yt_dlp_path,
             '--flat-playlist',
