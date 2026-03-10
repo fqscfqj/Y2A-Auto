@@ -1435,6 +1435,9 @@
                         <div class="progress-bar progress-bar-striped progress-bar-animated settings-save-progress-bar" id="settings-save-progress-bar">等待中</div>
                     </div>
                 </div>
+                <div class="modal-footer d-none" id="settings-save-progress-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" id="settings-save-progress-close-btn">关闭</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1657,6 +1660,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const saveProgressMessage = document.getElementById('settings-save-progress-message');
     const saveProgressDetail = document.getElementById('settings-save-progress-detail');
     const saveProgressBar = document.getElementById('settings-save-progress-bar');
+    const saveProgressFooter = document.getElementById('settings-save-progress-footer');
     const saveProgressEndpointTemplate = '{{ url_for("settings_save_progress", operation_id="__operation_id__") }}';
     const saveProgressModal = (saveProgressModalEl && typeof bootstrap !== 'undefined')
         ? bootstrap.Modal.getOrCreateInstance(saveProgressModalEl, { backdrop: 'static', keyboard: false })
@@ -1695,12 +1699,20 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     };
 
+    const setSettingsSaveModalClosable = function (isClosable) {
+        if (!saveProgressFooter) {
+            return;
+        }
+        saveProgressFooter.classList.toggle('d-none', !isClosable);
+    };
+
     const setSettingsSaveProgressUi = function (data) {
         if (!saveProgressTitle || !saveProgressMessage || !saveProgressDetail || !saveProgressBar) {
             return;
         }
 
         const isDone = !!(data && data.done);
+        const stage = data && data.stage ? data.stage : '';
         const level = data && data.level ? data.level : 'info';
         const titleMap = {
             success: '保存完成',
@@ -1708,7 +1720,10 @@ document.addEventListener('DOMContentLoaded', function () {
             error: '保存失败',
             info: '正在保存设置'
         };
-        const titleTone = titleMap[level] || (isDone ? '保存完成' : '正在保存设置');
+        let titleTone = titleMap[level] || (isDone ? '保存完成' : '正在保存设置');
+        if (!isDone && (stage === 'downloaded_ffmpeg' || stage === 'verifying_ffmpeg')) {
+            titleTone = '正在验证 FFmpeg';
+        }
         saveProgressTitle.textContent = titleTone;
         saveProgressMessage.textContent = (data && data.message) ? data.message : '正在处理，请稍候。';
 
@@ -1746,6 +1761,8 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (level === 'error') {
             saveProgressBar.classList.add('bg-danger');
         }
+
+        setSettingsSaveModalClosable(isDone && level !== 'success');
     };
 
     const finishSettingsSaveOperation = function (data) {
@@ -1770,11 +1787,14 @@ document.addEventListener('DOMContentLoaded', function () {
             showSettingsToast('error', data.message || '保存设置失败');
         }
 
-        window.setTimeout(function () {
-            if (saveProgressModal) {
-                saveProgressModal.hide();
-            }
-        }, 500);
+        const level = data && data.level ? data.level : 'info';
+        if (level === 'success') {
+            window.setTimeout(function () {
+                if (saveProgressModal) {
+                    saveProgressModal.hide();
+                }
+            }, 100);
+        }
     };
 
     const pollSettingsSaveProgress = function (operationId) {
@@ -1839,6 +1859,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             stopSettingsSavePolling();
             toggleSettingsSaveBusy(true);
+            setSettingsSaveModalClosable(false);
             setSettingsSaveProgressUi({
                 done: false,
                 level: 'info',

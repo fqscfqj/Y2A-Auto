@@ -132,6 +132,18 @@ def _windows_ffmpeg_download_url() -> tuple[str, str]:
     return arch_tag, url
 
 
+def get_windows_ffmpeg_manual_setup_message(app_root: Optional[str] = None) -> str:
+    root_dir = app_root or get_app_root_dir()
+    ffmpeg_dir = os.path.join(root_dir, 'ffmpeg')
+    ffmpeg_exe = os.path.join(ffmpeg_dir, 'ffmpeg.exe')
+    ffprobe_exe = os.path.join(ffmpeg_dir, 'ffprobe.exe')
+    return (
+        '请手动下载 Windows 版 FFmpeg，并将 ffmpeg.exe 和 ffprobe.exe 放到项目根目录 '
+        f'ffmpeg/ 下。目标路径示例：{ffmpeg_exe}；{ffprobe_exe}。'
+        ' 也可以在设置页填写 FFMPEG_LOCATION 指向本地 ffmpeg.exe。'
+    )
+
+
 def _dispatch_progress(progress_callback, payload, state, *, force=False):
     if not progress_callback:
         return
@@ -281,13 +293,13 @@ def download_ffmpeg_bundled(
         _dispatch_progress(
             progress_callback,
             {
-                'stage': 'completed',
-                'message': 'FFmpeg 下载完成',
-                'detail': ffmpeg_exe,
+                'stage': 'downloaded_ffmpeg',
+                'message': 'FFmpeg 已下载',
+                'detail': '压缩包已解压，正在验证 ffmpeg.exe 是否可用。',
                 'percent': 100.0,
                 'downloaded_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
                 'total_bytes': os.path.getsize(zip_path) if os.path.exists(zip_path) else None,
-                'level': 'success'
+                'level': 'info'
             },
             progress_state,
             force=True
@@ -295,13 +307,14 @@ def download_ffmpeg_bundled(
         log_obj.info("Bundled ffmpeg (%s) downloaded to %s", arch_tag, ffmpeg_exe)
         return ffmpeg_exe
     except Exception as exc:
-        log_obj.warning("Failed to download bundled ffmpeg (%s): %s", arch_tag, exc)
+        manual_setup_message = get_windows_ffmpeg_manual_setup_message(app_root)
+        log_obj.warning("Failed to download bundled ffmpeg (%s): %s. %s", arch_tag, exc, manual_setup_message)
         _dispatch_progress(
             progress_callback,
             {
                 'stage': 'failed',
                 'message': 'FFmpeg 下载失败',
-                'detail': str(exc),
+                'detail': f'{manual_setup_message} 下载失败原因：{exc}',
                 'percent': None,
                 'downloaded_bytes': None,
                 'total_bytes': None,
@@ -388,6 +401,16 @@ def _resolve_ffmpeg_path(
             continue
         if source != 'system' and not os.path.exists(candidate):
             continue
+        if progress_callback and source in ('downloaded', 'bundled', 'config'):
+            progress_callback({
+                'stage': 'verifying_ffmpeg',
+                'message': '正在验证 FFmpeg',
+                'detail': f'正在检查可执行文件：{candidate}',
+                'percent': 100.0 if source == 'downloaded' else None,
+                'downloaded_bytes': None,
+                'total_bytes': None,
+                'level': 'info'
+            })
         if is_ffmpeg_usable(candidate, log_obj):
             _META_CACHE['source'] = source
             _META_CACHE['platform'] = platform.platform()

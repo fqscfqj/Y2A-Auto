@@ -434,6 +434,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                 need_ffmpeg = True
 
             if need_ffmpeg:
+                from modules.ffmpeg_manager import get_windows_ffmpeg_manual_setup_message
                 from modules.youtube_handler import get_ffmpeg_path
                 report('checking_ffmpeg', '正在检查 FFmpeg', '已启用依赖 FFmpeg 的功能，正在检查本地环境。')
                 ff_path = get_ffmpeg_path(
@@ -445,14 +446,15 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     logger.info(f"FFmpeg 已就绪: {ff_path}")
                     report('completed', 'FFmpeg 已就绪', ff_path, percent=100.0, level='success')
                 else:
-                    warning_msg = '已启用依赖FFmpeg的功能，但未检测到内置 FFmpeg，请确认项目根目录 ffmpeg/ 目录完整。'
+                    warning_msg = get_windows_ffmpeg_manual_setup_message()
                     logger.warning(warning_msg)
                     _append_settings_message(messages, 'warning', warning_msg)
                     report('warning', 'FFmpeg 未就绪', warning_msg, level='warning')
             else:
                 report('completed', '配置已保存', '当前设置不需要额外下载 FFmpeg。', percent=100.0, level='success')
         except Exception as e:
-            warning_msg = f'检查内置 FFmpeg 状态失败: {e}'
+            from modules.ffmpeg_manager import get_windows_ffmpeg_manual_setup_message
+            warning_msg = f'检查内置 FFmpeg 状态失败: {e}。{get_windows_ffmpeg_manual_setup_message()}'
             logger.warning(warning_msg)
             _append_settings_message(messages, 'warning', warning_msg)
             report('warning', 'FFmpeg 检查失败', warning_msg, level='warning')
