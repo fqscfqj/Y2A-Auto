@@ -45,6 +45,43 @@ body {
     transform: none;
 }
 
+@media (min-width: 992px) {
+    .navbar-shell {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+    }
+
+    .navbar-shell .navbar-brand {
+        margin-right: 0;
+    }
+
+    .navbar-shell .navbar-collapse {
+        grid-column: 2;
+        display: flex !important;
+        justify-content: center;
+    }
+
+    .navbar-shell .navbar-nav {
+        margin-right: 0;
+        margin-left: 0;
+    }
+
+    .navbar-shell .navbar-nav .nav-link {
+        justify-content: center;
+    }
+
+    .navbar-balance {
+        grid-column: 3;
+        justify-self: end;
+        visibility: hidden;
+        pointer-events: none;
+        user-select: none;
+        font-weight: 700;
+        font-size: 1.4rem;
+    }
+}
+
 /* 卡片样式增强 */
 .card {
     box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
@@ -561,6 +598,19 @@ body {
     margin-bottom: 0;
 }
 
+.settings-container .form-control:not(.form-control-sm),
+.settings-container .form-select:not(.form-select-sm) {
+    min-height: calc(2.75rem + 2px);
+    padding: 0.62rem 0.78rem;
+    font-size: 1rem;
+}
+
+.settings-container .form-control::placeholder,
+.settings-container textarea.form-control::placeholder {
+    color: #9ca3af;
+    opacity: 1;
+}
+
 .settings-card-body .row {
     --bs-gutter-y: 1rem;
 }
@@ -571,6 +621,17 @@ body {
     flex-direction: column;
     gap: 0.35rem;
     height: 100%;
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.settings-card-body .form-group .form-control,
+.settings-card-body .form-group .form-select,
+.settings-option-card .form-group .form-control,
+.settings-option-card .form-group .form-select {
+    width: 100%;
+    min-width: 0;
 }
 
 .settings-card-body .form-label {

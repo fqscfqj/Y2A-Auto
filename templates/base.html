@@ -17,7 +17,7 @@
 <body>
     <header>
         <nav class="navbar navbar-expand-lg navbar-dark">
-            <div class="container">
+            <div class="container navbar-shell">
                 <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
                     <span>Y2A-Auto</span>
                 </a>
@@ -52,6 +52,9 @@
                             </a>
                         </li>
                     </ul>
+                </div>
+                <div class="navbar-balance d-none d-lg-flex align-items-center" aria-hidden="true">
+                    <span>Y2A-Auto</span>
                 </div>
             </div>
         </nav>

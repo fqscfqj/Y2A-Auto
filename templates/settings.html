@@ -538,6 +538,12 @@
                                                         </span>
                                                     </div>
                                                     <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="openai-url" class="form-label">接口地址</label>
+                                                                <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control" placeholder="如 https://api.openai.com/v1">
+                                                            </div>
+                                                        </div>
                                                         <div class="col-md-6">
                                                             <div class="form-group">
                                                                 <label for="openai-key" class="form-label">OpenAI API 密钥</label>
@@ -548,12 +554,6 @@
                                                             <div class="form-group">
                                                                 <label for="openai-model" class="form-label">默认模型</label>
                                                                 <input type="text" id="openai-model" name="OPENAI_MODEL_NAME" value="{{ config.OPENAI_MODEL_NAME }}" class="form-control" placeholder="如 gpt-4 / gpt-4o-mini">
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-12">
-                                                            <div class="form-group">
-                                                                <label for="openai-url" class="form-label">接口地址</label>
-                                                                <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-12">
