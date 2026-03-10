@@ -9,6 +9,7 @@ import shutil
 import logging
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from modules.config_manager import load_config
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
@@ -881,7 +882,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         if cookies_path:
             logger.info("播放列表提取使用cookies文件: %s", cookies_path)
 
-        ydl_opts = {
+        ydl_opts: dict[str, Any] = {
             'extract_flat': True,
             'skip_download': True,
             'quiet': True,
@@ -890,7 +891,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         if cookies_path:
             ydl_opts['cookiefile'] = cookies_path
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             data = ydl.extract_info(normalized_url, download=False)
 
         if not isinstance(data, dict):
