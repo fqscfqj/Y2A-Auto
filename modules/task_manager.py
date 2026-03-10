@@ -2333,7 +2333,9 @@ class TaskProcessor:
         'GPU is not in the list',
         # QSV (Intel)
         'Unknown encoder "h264_qsv"',
+        'Unknown encoder "hevc_qsv"',
         "Unknown encoder 'h264_qsv'",
+        "Unknown encoder 'hevc_qsv'",
         'MFXInit',
         'Error initializing an internal MFX session',
         'Error creating a MFX session',
@@ -2345,14 +2347,18 @@ class TaskProcessor:
         'i965_drv_video.so',
         # AMF (AMD Windows)
         'Unknown encoder "h264_amf"',
+        'Unknown encoder "hevc_amf"',
         "Unknown encoder 'h264_amf'",
+        "Unknown encoder 'hevc_amf'",
         'AMF initialization failed',
         'AMFContext',
         'AMF failed',
         'amfrt64.dll',
         # VAAPI (AMD/Intel Linux)
         'Unknown encoder "h264_vaapi"',
+        'Unknown encoder "hevc_vaapi"',
         "Unknown encoder 'h264_vaapi'",
+        "Unknown encoder 'hevc_vaapi'",
         'Error creating a VAAPI device',
         'Failed to create VAAPI device',
         'Failed to initialise VAAPI connection',
@@ -2505,6 +2511,16 @@ class TaskProcessor:
                 '-c:v', 'h264_vaapi',
                 '-qp', '23',
             ])
+        elif encoder_name_lower == 'hevc_vaapi':
+            test_cmd.extend([
+                '-vaapi_device', '/dev/dri/renderD128',
+                '-f', 'lavfi', '-i', color_src,
+                '-vf', 'format=nv12,hwupload',
+                '-frames:v', '1',
+                '-c:v', 'hevc_vaapi',
+                '-qp', '23',
+                '-profile:v', 'main',
+            ])
         elif encoder_name_lower == 'h264_qsv':
             test_cmd.extend([
                 '-f', 'lavfi', '-i', color_src,
@@ -2514,7 +2530,17 @@ class TaskProcessor:
                 '-look_ahead', '0',
                 '-pix_fmt', 'nv12',
             ])
-        elif 'amf' in encoder_name_lower:
+        elif encoder_name_lower == 'hevc_qsv':
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', 'hevc_qsv',
+                '-global_quality', '23',
+                '-look_ahead', '0',
+                '-profile:v', 'main',
+                '-pix_fmt', 'nv12',
+            ])
+        elif encoder_name_lower == 'h264_amf':
             test_cmd.extend([
                 '-f', 'lavfi', '-i', color_src,
                 '-frames:v', '1',
@@ -2525,6 +2551,27 @@ class TaskProcessor:
                 '-qp_i', '23',
                 '-qp_p', '23',
                 '-qp_b', '23',
+            ])
+        elif encoder_name_lower == 'hevc_amf':
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', encoder_name,
+                '-usage', 'transcoding',
+                '-quality', 'balanced',
+                '-rc', 'qvbr',
+                '-qvbr_quality_level', '24',
+                '-profile:v', 'main',
+            ])
+        elif encoder_name_lower == 'hevc_nvenc':
+            test_cmd.extend([
+                '-f', 'lavfi', '-i', color_src,
+                '-frames:v', '1',
+                '-c:v', encoder_name,
+                '-preset', 'p4',
+                '-rc:v', 'vbr',
+                '-cq:v', '23',
+                '-profile:v', 'main',
             ])
         elif 'nvenc' in encoder_name_lower:
             test_cmd.extend([
@@ -2611,9 +2658,45 @@ class TaskProcessor:
             return None
 
     @staticmethod
-    def _build_audio_transcode_params(input_sample_rate):
-        """统一音频转码参数，优先沿用原视频采样率。"""
-        aparams = ['-c:a', 'aac', '-b:a', '320k', '-ac', '2']
+    def _coerce_int(value):
+        try:
+            if value is None or value == '':
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _select_audio_target_bitrate(cls, input_bit_rate):
+        bit_rate = cls._coerce_int(input_bit_rate)
+        if bit_rate is None or bit_rate <= 0:
+            return '128k'
+        if bit_rate >= 192000:
+            return '192k'
+        if bit_rate >= 160000:
+            return '160k'
+        if bit_rate >= 128000:
+            return '128k'
+        if bit_rate >= 96000:
+            return '96k'
+        return '64k'
+
+    @classmethod
+    def _build_audio_transcode_params(cls, audio_info):
+        """统一音频转码参数，AAC 优先直拷，其他编码按源码率上限转 AAC。"""
+        info = audio_info if isinstance(audio_info, dict) else {}
+        codec_name = str(info.get('codec_name') or '').strip().lower()
+        if codec_name == 'aac':
+            return ['-c:a', 'copy']
+
+        aparams = ['-c:a', 'aac', '-b:a', cls._select_audio_target_bitrate(info.get('bit_rate'))]
+        channels = cls._coerce_int(info.get('channels'))
+        if channels == 1:
+            aparams += ['-ac', '1']
+        else:
+            aparams += ['-ac', '2']
+
+        input_sample_rate = cls._coerce_int(info.get('sample_rate'))
         if input_sample_rate:
             try:
                 aparams += ['-ar', str(int(input_sample_rate))]
@@ -3917,19 +4000,71 @@ class TaskProcessor:
             update_task(task_id, status=TASK_STATES['ENCODING_VIDEO'])
             _raise_if_cancelled(task_id, task_logger)
             
+            def _format_bitrate_for_log(bit_rate):
+                bit_rate_int = self._coerce_int(bit_rate)
+                if bit_rate_int is None or bit_rate_int <= 0:
+                    return 'unknown'
+                if bit_rate_int >= 1000000:
+                    return f"{bit_rate_int / 1000000:.2f}Mbps"
+                return f"{bit_rate_int / 1000:.0f}kbps"
+
+            def _format_size_for_log(size_bytes):
+                if not isinstance(size_bytes, int) or size_bytes < 0:
+                    return 'unknown'
+                if size_bytes >= 1024 ** 3:
+                    return f"{size_bytes / (1024 ** 3):.2f}GB"
+                return f"{size_bytes / (1024 ** 2):.2f}MB"
+
+            def _log_output_media_summary(output_path):
+                try:
+                    output_video_info = self._get_video_stream_info(output_path, task_logger)
+                    output_audio_info = self._get_audio_stream_info(output_path, task_logger)
+                    output_size_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else None
+                    size_ratio_text = 'unknown'
+                    if (
+                        isinstance(output_size_bytes, int)
+                        and isinstance(input_size_bytes, int)
+                        and input_size_bytes > 0
+                    ):
+                        size_ratio_text = f"{output_size_bytes / input_size_bytes:.2f}x"
+                    task_logger.info(
+                        "输出媒体摘要: video_codec=%s, video_bitrate=%s, audio_codec=%s, audio_bitrate=%s, "
+                        "file_size=%s, size_ratio=%s",
+                        output_video_info.get('codec_name') or 'unknown',
+                        _format_bitrate_for_log(output_video_info.get('bit_rate')),
+                        output_audio_info.get('codec_name') or 'unknown',
+                        _format_bitrate_for_log(output_audio_info.get('bit_rate')),
+                        _format_size_for_log(output_size_bytes),
+                        size_ratio_text,
+                    )
+                except Exception as e:
+                    task_logger.warning(f"记录输出媒体摘要失败: {e}")
+
             # 获取视频时长和流信息用于计算进度与参数
             video_duration = self._get_video_duration(video_path, task_logger)
             stream_info = self._get_video_stream_info(video_path, task_logger)
             input_width = stream_info.get('width') or 0
             input_height = stream_info.get('height') or 0
             input_fps = stream_info.get('fps') or 30
+            input_video_codec = str(stream_info.get('codec_name') or '').strip().lower()
+            input_video_bit_rate = self._coerce_int(stream_info.get('bit_rate'))
             input_pix_fmt = stream_info.get('pix_fmt') if isinstance(stream_info, dict) else None
-            # 探测音频采样率（用于跟随原视频）
+            input_size_bytes = os.path.getsize(video_path) if os.path.exists(video_path) else None
+            # 探测音频信息（用于跟随原视频）
             audio_info = self._get_audio_stream_info(video_path, task_logger)
-            input_sample_rate = audio_info.get('sample_rate') if isinstance(audio_info, dict) else None
+            input_audio_codec = str(audio_info.get('codec_name') or '').strip().lower()
+            input_audio_bit_rate = self._coerce_int(audio_info.get('bit_rate'))
             # GOP 取 2 秒一关键帧
             gop = max(24, int(round(2 * input_fps)))
-            
+            task_logger.info(
+                "输入媒体摘要: video_codec=%s, video_bitrate=%s, audio_codec=%s, audio_bitrate=%s, file_size=%s",
+                input_video_codec or 'unknown',
+                _format_bitrate_for_log(input_video_bit_rate),
+                input_audio_codec or 'unknown',
+                _format_bitrate_for_log(input_audio_bit_rate),
+                _format_size_for_log(input_size_bytes),
+            )
+
             def _ffmpeg_has_filter(filter_name: str) -> bool:
                 try:
                     # subprocess imported at module level
@@ -4135,36 +4270,36 @@ class TaskProcessor:
                     nonlocal amd_backend_cache
                     if amd_backend_cache is not None:
                         return amd_backend_cache
-                    if _detect_hw_encoder('h264_amf'):
+                    if _detect_hw_encoder('hevc_amf'):
                         amd_backend_cache = 'amf'
-                    elif _detect_hw_encoder('h264_vaapi'):
+                    elif _detect_hw_encoder('hevc_vaapi'):
                         amd_backend_cache = 'vaapi'
                     else:
                         amd_backend_cache = 'none'
                     return amd_backend_cache
 
                 def _detect_nvidia() -> bool:
-                    """检测 NVIDIA NVENC 是否可用"""
-                    return _detect_hw_encoder('h264_nvenc')
+                    """检测 NVIDIA HEVC NVENC 是否可用"""
+                    return _detect_hw_encoder('hevc_nvenc')
 
                 def _detect_intel() -> bool:
-                    """检测 Intel QSV 是否可用"""
-                    return _detect_hw_encoder('h264_qsv')
+                    """检测 Intel HEVC QSV 是否可用"""
+                    return _detect_hw_encoder('hevc_qsv')
 
                 def _detect_amd() -> bool:
-                    """检测 AMD AMF/VAAPI 是否可用"""
+                    """检测 AMD HEVC AMF/VAAPI 是否可用"""
                     return _detect_amd_backend() != 'none'
 
                 def _get_best_encoder() -> str:
                     """自动检测最佳可用编码器，返回: nvidia/intel/amd/cpu"""
                     if _detect_nvidia():
-                        task_logger.info("检测到 NVIDIA GPU，使用 NVENC 硬件编码")
+                        task_logger.info("检测到 NVIDIA GPU，使用 NVENC HEVC 硬件编码")
                         return 'nvidia'
                     if _detect_intel():
-                        task_logger.info("检测到 Intel GPU，使用 QSV 硬件编码")
+                        task_logger.info("检测到 Intel GPU，使用 QSV HEVC 硬件编码")
                         return 'intel'
                     if _detect_amd():
-                        task_logger.info("检测到 AMD GPU，使用 AMF/VAAPI 硬件编码")
+                        task_logger.info("检测到 AMD GPU，使用 AMF/VAAPI HEVC 硬件编码")
                         return 'amd'
                     task_logger.info("未检测到可用的硬件编码器，使用 CPU 软编码")
                     return 'cpu'
@@ -4211,40 +4346,40 @@ class TaskProcessor:
                     ]
 
                 def build_nvidia_params():
-                    """生成 NVIDIA NVENC 编码参数"""
+                    """生成 NVIDIA NVENC HEVC 编码参数"""
                     if custom_video_params:
                         return list(custom_video_params)
                     return [
-                        '-c:v', 'h264_nvenc',
+                        '-c:v', 'hevc_nvenc',
                         '-preset', 'p7',
                         '-tune', 'hq',
                         '-rc:v', 'vbr',
                         '-cq:v', target_quality_str,
                         '-vsync', 'cfr',
-                        '-profile:v', 'high',
+                        '-profile:v', 'main',
                         '-bf', '2',
                         '-g', str(gop),
                         '-pix_fmt', 'yuv420p'
                     ]
 
                 def build_intel_params():
-                    """生成 Intel QSV 编码参数"""
+                    """生成 Intel QSV HEVC 编码参数"""
                     if custom_video_params:
                         return list(custom_video_params)
                     return [
-                        '-c:v', 'h264_qsv',
+                        '-c:v', 'hevc_qsv',
                         '-preset', 'veryslow',
                         '-global_quality', str(target_quality_int),
                         '-look_ahead', '0',
                         '-vsync', 'cfr',
-                        '-profile:v', 'high',
+                        '-profile:v', 'main',
                         '-bf', '2',
                         '-g', str(gop),
                         '-pix_fmt', 'nv12'
                     ]
 
                 def build_amd_params():
-                    """生成 AMD AMF/VAAPI 编码参数"""
+                    """生成 AMD AMF/VAAPI HEVC 编码参数"""
                     if custom_video_params:
                         return list(custom_video_params)
                     amd_backend = _detect_amd_backend()
@@ -4252,16 +4387,13 @@ class TaskProcessor:
                     if amd_backend == 'amf':
                         # AMF (Windows)
                         return [
-                            '-c:v', 'h264_amf',
+                            '-c:v', 'hevc_amf',
                             '-usage', 'transcoding',
-                            '-quality', 'quality',
-                            '-rc', 'cqp',
-                            '-qp_i', str(target_quality_int),
-                            '-qp_p', str(target_quality_int),
-                            '-qp_b', str(target_quality_int),
+                            '-quality', 'balanced',
+                            '-rc', 'qvbr',
+                            '-qvbr_quality_level', str(target_quality_int),
                             '-vsync', 'cfr',
-                            '-profile:v', 'high',
-                            '-bf', '2',
+                            '-profile:v', 'main',
                             '-g', str(gop),
                             '-pix_fmt', 'yuv420p'
                         ]
@@ -4269,11 +4401,10 @@ class TaskProcessor:
                         # VAAPI (Linux)
                         return [
                             '-vaapi_device', '/dev/dri/renderD128',
-                            '-c:v', 'h264_vaapi',
+                            '-c:v', 'hevc_vaapi',
                             '-qp', str(target_quality_int),
                             '-vsync', 'cfr',
-                            '-profile:v', 'high',
-                            '-bf', '2',
+                            '-profile:v', 'main',
                             '-g', str(gop)
                         ]
 
@@ -4289,26 +4420,26 @@ class TaskProcessor:
                     actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'nvidia':
                     if not _detect_nvidia():
-                        nvenc_listed = _is_encoder_listed('h264_nvenc')
+                        nvenc_listed = _is_encoder_listed('hevc_nvenc')
                         nvidia_device_visible = any(
                             os.path.exists(path)
                             for path in ('/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-modeset')
                         )
-                        nvenc_reason_raw = _hw_encoder_error_cache.get('h264_nvenc') or '未知'
+                        nvenc_reason_raw = _hw_encoder_error_cache.get('hevc_nvenc') or '未知'
                         nvenc_reason = nvenc_reason_raw.replace('\n', ' ')
-                        nvenc_probe_meta = _hw_encoder_probe_meta_cache.get('h264_nvenc') or {}
+                        nvenc_probe_meta = _hw_encoder_probe_meta_cache.get('hevc_nvenc') or {}
                         nvenc_probe_size = nvenc_probe_meta.get('probe_size', 'unknown')
                         nvenc_probe_retry = nvenc_probe_meta.get('probe_retry', False)
                         nvenc_probe_error_short = nvenc_probe_meta.get('probe_error_short', '')
                         nvenc_probe_cmd_summary = nvenc_probe_meta.get('probe_cmd_summary', '')
                         task_logger.warning(
-                            f"NVENC诊断信息: ffmpeg={ffmpeg_bin}, h264_nvenc_listed={nvenc_listed}, "
+                            f"NVENC HEVC诊断信息: ffmpeg={ffmpeg_bin}, hevc_nvenc_listed={nvenc_listed}, "
                             f"nvidia_device_visible={nvidia_device_visible}, detect_error={nvenc_reason[:240]}, "
                             f"probe_size={nvenc_probe_size}, probe_retry={nvenc_probe_retry}, "
                             f"probe_error_short={nvenc_probe_error_short}"
                         )
                         if nvenc_probe_cmd_summary:
-                            task_logger.debug(f"NVENC探测命令摘要: {nvenc_probe_cmd_summary}")
+                            task_logger.debug(f"NVENC HEVC探测命令摘要: {nvenc_probe_cmd_summary}")
 
                         if self._should_keep_nvidia_preference_on_probe_failure(
                             nvenc_listed=nvenc_listed,
@@ -4316,11 +4447,11 @@ class TaskProcessor:
                             detect_error=nvenc_reason_raw,
                         ):
                             task_logger.warning(
-                                "NVENC 预检命中分辨率限制类错误，保留 NVIDIA 编码偏好并尝试真实转码"
+                                "NVENC HEVC 预检命中分辨率限制类错误，保留 NVIDIA 编码偏好并尝试真实转码"
                             )
                             actual_encoder = 'nvidia'
                         else:
-                            task_logger.warning("配置使用 NVIDIA 编码但未检测到 NVENC，回退到自动检测")
+                            task_logger.warning("配置使用 NVIDIA HEVC 编码但未检测到 NVENC，回退到自动检测")
                             task_logger.warning(
                                 "NVENC 不可用常见原因：Docker 未启用 GPU 透传（gpus: all）、"
                                 "主机未安装 nvidia-container-toolkit、"
@@ -4329,36 +4460,38 @@ class TaskProcessor:
                             actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'intel':
                     if not _detect_intel():
-                        task_logger.warning("配置使用 Intel 编码但未检测到 QSV，回退到自动检测")
+                        task_logger.warning("配置使用 Intel HEVC 编码但未检测到 QSV，回退到自动检测")
                         actual_encoder = _get_best_encoder()
                 elif encoder_pref == 'amd':
                     if not _detect_amd():
-                        task_logger.warning("配置使用 AMD 编码但未检测到 AMF/VAAPI，回退到自动检测")
+                        task_logger.warning("配置使用 AMD HEVC 编码但未检测到 AMF/VAAPI，回退到自动检测")
                         actual_encoder = _get_best_encoder()
 
                 # 根据编码器生成参数
                 if actual_encoder == 'nvidia':
                     vparams = build_nvidia_params()
-                    task_logger.info("使用 NVIDIA NVENC 硬件编码")
+                    task_logger.info("使用 NVIDIA NVENC HEVC 硬件编码")
                 elif actual_encoder == 'intel':
                     vparams = build_intel_params()
-                    task_logger.info("使用 Intel QSV 硬件编码")
+                    task_logger.info("使用 Intel QSV HEVC 硬件编码")
                 elif actual_encoder == 'amd':
                     amd_backend = _detect_amd_backend()
                     if amd_backend == 'none':
-                        task_logger.warning("AMD 编码已选中，但未检测到可用 AMF/VAAPI 后端，回退到 CPU 软编码")
+                        task_logger.warning("AMD HEVC 编码已选中，但未检测到可用 AMF/VAAPI 后端，回退到 CPU 软编码")
                         actual_encoder = 'cpu'
                         vparams = build_cpu_params()
                     else:
                         vparams = build_amd_params()
                         encoder_name = 'AMF' if amd_backend == 'amf' else 'VAAPI'
-                        task_logger.info(f"使用 AMD {encoder_name} 硬件编码（backend={amd_backend}）")
+                        task_logger.info(f"使用 AMD {encoder_name} HEVC 硬件编码（backend={amd_backend}）")
                 else:
                     vparams = build_cpu_params()
                     task_logger.info("使用 CPU 软编码 (libx264)")
 
-                # 音频统一转 AAC 320k 双声道，采样率跟随原视频
-                aparams = self._build_audio_transcode_params(input_sample_rate)
+                # 音频优先直拷 AAC，非 AAC 再按源码率上限转 AAC
+                aparams = self._build_audio_transcode_params(audio_info)
+                task_logger.info(f"视频编码参数: {' '.join(vparams)}")
+                task_logger.info(f"音频编码参数: {' '.join(aparams)}")
 
                 # 构建视频滤镜链
                 # VAAPI 编码器需要特殊处理：在字幕滤镜后添加格式转换和硬件上传
@@ -4510,6 +4643,7 @@ class TaskProcessor:
                 if process.returncode == 0 and os.path.exists(simple_output):
                     # 成功：优先原子替换，避免重复复制大文件
                     self._finalize_embedded_video_output(simple_output, embedded_video_path)
+                    _log_output_media_summary(embedded_video_path)
                     # 结束日志：成功
                     task_logger.info(f"字幕嵌入完成: {embedded_video_path}")
                     
@@ -4579,6 +4713,7 @@ class TaskProcessor:
 
                         if process2.returncode == 0 and os.path.exists(simple_output):
                             self._finalize_embedded_video_output(simple_output, embedded_video_path)
+                            _log_output_media_summary(embedded_video_path)
                             # 结束日志：成功（CPU回退）
                             task_logger.info(f"字幕嵌入完成: {embedded_video_path}（CPU回退）")
                             update_task(task_id, upload_progress=None, status=previous_status, silent=True)
@@ -4656,9 +4791,16 @@ class TaskProcessor:
             return None
 
     def _get_video_stream_info(self, video_path, task_logger):
-        """获取视频流分辨率/帧率/像素格式等信息"""
+        """获取视频流分辨率/帧率/像素格式/编码信息。"""
         # 使用类型注解明确字典值的类型
-        info: dict[str, float | int | str | None] = {"width": None, "height": None, "fps": None, "pix_fmt": None}
+        info: dict[str, float | int | str | None] = {
+            "width": None,
+            "height": None,
+            "fps": None,
+            "pix_fmt": None,
+            "codec_name": None,
+            "bit_rate": None,
+        }
         try:
             # subprocess/json handled at module level where needed
             ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
@@ -4689,6 +4831,13 @@ class TaskProcessor:
                         info['width'] = s.get('width')
                         info['height'] = s.get('height')
                         info['pix_fmt'] = s.get('pix_fmt')
+                        info['codec_name'] = s.get('codec_name')
+                        bit_rate = s.get('bit_rate')
+                        if bit_rate:
+                            try:
+                                info['bit_rate'] = int(bit_rate)
+                            except Exception:
+                                pass
                         r = s.get('avg_frame_rate') or s.get('r_frame_rate')
                         if r and r != '0/0':
                             try:
@@ -4707,8 +4856,14 @@ class TaskProcessor:
         return info
 
     def _get_audio_stream_info(self, video_path, task_logger):
-        """获取音频流信息（采样率等），用于音频参数设置"""
-        info: dict[str, int | str | None] = {"sample_rate": None, "channels": None, "sample_fmt": None}
+        """获取音频流信息（编码/码率/采样率等），用于音频参数设置。"""
+        info: dict[str, int | str | None] = {
+            "codec_name": None,
+            "bit_rate": None,
+            "sample_rate": None,
+            "channels": None,
+            "sample_fmt": None,
+        }
         try:
             # subprocess/json handled at module level where needed
             ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
@@ -4734,6 +4889,13 @@ class TaskProcessor:
                 streams = data.get('streams', [])
                 if streams:
                     s = streams[0]
+                    info['codec_name'] = s.get('codec_name')
+                    bit_rate = s.get('bit_rate')
+                    try:
+                        if bit_rate:
+                            info['bit_rate'] = int(bit_rate)
+                    except Exception:
+                        pass
                     sr = s.get('sample_rate')
                     try:
                         if sr:

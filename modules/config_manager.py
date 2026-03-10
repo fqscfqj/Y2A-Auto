@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
-    # 视频转码相关（支持硬件编码加速）
+    # 视频转码相关（硬编默认输出 HEVC/H.265，CPU 保持 H.264）
     "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd - 自动检测或指定编码器
     "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
     "VIDEO_CUSTOM_PARAMS": "",  # 自定义 FFmpeg 视频编码参数（启用自定义参数时使用）
