@@ -789,6 +789,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
                 normalized_url = "https://" + normalized_url
         parsed = urlparse(normalized_url)
         allowed_schemes = {"http", "https"}
+        # 仅允许 http/https 协议
         if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
             logger.warning(f"无效的播放列表URL协议: {normalized_url}")
             return video_urls
@@ -800,17 +801,29 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
             logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {playlist_url}, 规范化URL: {normalized_url})")
             return video_urls
         # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
-        if "/playlist" not in (parsed.path or "") and "list=" not in (parsed.query or ""):
+        path = parsed.path or ""
+        query = parsed.query or ""
+        if "/playlist" not in path and "list=" not in query:
             logger.warning(f"URL似乎不是播放列表链接: {playlist_url}")
             return video_urls
 
         yt_dlp_path = 'yt-dlp'
-        # 处理cookies路径
+        # 处理cookies路径，仅允许在项目根目录下的文件
         cookies_path = None
         if cookies_file_path:
-            cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cookies_file_path)
-            if not os.path.exists(cookies_path):
-                cookies_path = None
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            raw_cookies_path = os.path.join(base_dir, cookies_file_path)
+            abs_cookies_path = os.path.abspath(raw_cookies_path)
+            # 确保cookies文件仍在base_dir之下，防止目录遍历
+            base_dir_common = os.path.commonpath([base_dir])
+            try:
+                common = os.path.commonpath([base_dir_common, abs_cookies_path])
+            except ValueError:
+                common = ""
+            if common == base_dir_common and os.path.exists(abs_cookies_path):
+                cookies_path = abs_cookies_path
+            else:
+                logger.warning(f"无效的cookies文件路径，已忽略: {cookies_file_path}")
         cmd = [
             yt_dlp_path,
             '--flat-playlist',
@@ -819,6 +832,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         ]
         if cookies_path:
             cmd.extend(['--cookies', cookies_path])
+        # 使用参数列表形式且不启用shell，避免命令注入
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode == 0:
             data = json.loads(result.stdout)
