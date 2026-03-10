@@ -84,6 +84,10 @@
                                 {% set qc_reason_token_zh = '内容正常' %}
                             {% elif qc_reason_token == 'borderline_repeat' %}
                                 {% set qc_reason_token_zh = '疑似重复模板' %}
+                            {% elif qc_reason_token == 'ultra_short_repeat' %}
+                                {% set qc_reason_token_zh = '超短字幕重复' %}
+                            {% elif qc_reason_token == 'ultra_short_low_info' %}
+                                {% set qc_reason_token_zh = '超短字幕信息量过低' %}
                             {% elif qc_reason_token == 'provider_disabled' %}
                                 {% set qc_reason_token_zh = '未启用AI复核提供商' %}
                             {% elif qc_reason_token == 'empty_sample' %}
@@ -362,6 +366,10 @@
                     {% set qc_reason_token_zh = '内容正常' %}
                 {% elif qc_reason_token == 'borderline_repeat' %}
                     {% set qc_reason_token_zh = '疑似重复模板' %}
+                {% elif qc_reason_token == 'ultra_short_repeat' %}
+                    {% set qc_reason_token_zh = '超短字幕重复' %}
+                {% elif qc_reason_token == 'ultra_short_low_info' %}
+                    {% set qc_reason_token_zh = '超短字幕信息量过低' %}
                 {% elif qc_reason_token == 'provider_disabled' %}
                     {% set qc_reason_token_zh = '未启用AI复核提供商' %}
                 {% elif qc_reason_token == 'empty_sample' %}

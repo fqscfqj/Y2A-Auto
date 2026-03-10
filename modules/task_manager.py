@@ -645,8 +645,8 @@ def init_db():
         subtitle_qc_failed INTEGER DEFAULT 0,  -- 字幕质检是否失败（1=失败）
         subtitle_qc_reason TEXT,  -- 字幕质检失败原因（可选）
         subtitle_qc_score REAL,  -- 字幕质检评分（可选）
-        subtitle_qc_checked_at TIMESTAMP,  -- 字幕质检时间（可选）
-        subtitle_qc_fingerprint TEXT,  -- 字幕质检指纹（用于结果复用）
+        subtitle_qc_checked_at TIMESTAMP,  -- 最近一次实际执行字幕质检的时间（可选）
+        subtitle_qc_fingerprint TEXT,  -- 历史保留字段，当前未使用
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
@@ -2210,7 +2210,7 @@ class TaskProcessor:
             return False
 
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
-        """对 ASR 生成字幕执行预检，命中缓存时复用历史结果。"""
+        """对 ASR 生成字幕执行预检，每次都重新计算结果。"""
         try:
             enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', False)
             enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() in ['true', '1', 'on']
@@ -2220,20 +2220,7 @@ class TaskProcessor:
             if not srt_path or not os.path.exists(srt_path):
                 return True
 
-            from modules.subtitle_qc import build_subtitle_qc_fingerprint, run_subtitle_qc
-
-            task = get_task(task_id) or {}
-            fingerprint = build_subtitle_qc_fingerprint(srt_path)
-            cached_checked_at = str(task.get('subtitle_qc_checked_at') or '').strip()
-            cached_fingerprint = str(task.get('subtitle_qc_fingerprint') or '').strip()
-            if fingerprint and cached_checked_at and cached_fingerprint == fingerprint:
-                cached_failed = int(task.get('subtitle_qc_failed') or 0) == 1
-                cached_score = float(task.get('subtitle_qc_score') or 0.0)
-                cached_reason = str(task.get('subtitle_qc_reason') or 'reuse').strip()
-                task_logger.info(
-                    f"字幕质检命中缓存: reason=cached:{cached_reason}, score={cached_score:.3f}, passed={not cached_failed}"
-                )
-                return not cached_failed
+            from modules.subtitle_qc import run_subtitle_qc
 
             result = run_subtitle_qc(srt_path, self.config)
             checked_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -2243,25 +2230,29 @@ class TaskProcessor:
                 subtitle_qc_reason=result.reason,
                 subtitle_qc_score=float(result.score),
                 subtitle_qc_checked_at=checked_at,
-                subtitle_qc_fingerprint=fingerprint,
+                subtitle_qc_fingerprint='',
             )
 
             if result.passed:
                 task_logger.info(
-                    "字幕质检通过: decision=%s, reason=%s, score=%.3f, sample_items=%s, sample_chars=%s",
+                    "字幕质检通过: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, sample_items=%s, sample_chars=%s",
                     result.decision or 'unknown',
                     result.reason,
                     float(result.score),
+                    float(result.rule_score),
+                    f"{float(result.ai_score):.3f}" if result.ai_score is not None else 'n/a',
                     result.sample_items,
                     result.sample_chars,
                 )
                 return True
 
             task_logger.warning(
-                "字幕质检失败: decision=%s, reason=%s, score=%.3f, sample_items=%s, sample_chars=%s",
+                "字幕质检失败: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, sample_items=%s, sample_chars=%s",
                 result.decision or 'unknown',
                 result.reason,
                 float(result.score),
+                float(result.rule_score),
+                f"{float(result.ai_score):.3f}" if result.ai_score is not None else 'n/a',
                 result.sample_items,
                 result.sample_chars,
             )

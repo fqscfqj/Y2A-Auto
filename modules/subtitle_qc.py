@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import hashlib
 import json
 import logging
 import math
@@ -13,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger('subtitle_qc')
-
-QC_FINGERPRINT_VERSION = 'qc_v2'
+SHORT_LINE_NORMALIZED_LEN = 8
+MAX_REPEATED_SAMPLE_PER_TEXT = 3
+TOP_REPEATED_TEXT_LIMIT = 5
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -107,6 +107,22 @@ def _is_low_content(text: str) -> bool:
         return True
     normalized = _normalize_line(t)
     return len(normalized) < 2
+
+
+def _is_short_content_line(normalized: str) -> bool:
+    return 0 < len(normalized) <= SHORT_LINE_NORMALIZED_LEN
+
+
+def _parse_srt_timestamp_seconds(value: str) -> Optional[float]:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        hh, mm, rest = raw.replace('.', ',').split(':')
+        ss, ms = rest.split(',')
+        return (int(hh) * 3600) + (int(mm) * 60) + int(ss) + (int(ms) / 1000.0)
+    except Exception:
+        return None
 
 
 def _read_srt_items(srt_path: str) -> List[QCSubtitleItem]:
@@ -204,42 +220,50 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def compute_subtitle_qc_fingerprint(items: List[Any]) -> str:
-    parts: List[str] = []
-    for it in items:
-        try:
-            start_time = str(getattr(it, 'start_time', '') or '').strip()
-            end_time = str(getattr(it, 'end_time', '') or '').strip()
-            text = ' '.join(str(getattr(it, 'source_text', '') or '').split())
-        except Exception:
-            continue
-        parts.append(f'{start_time}|{end_time}|{text}')
-    payload = '\n'.join(parts).encode('utf-8')
-    return f'{QC_FINGERPRINT_VERSION}:{hashlib.sha1(payload).hexdigest()}'
-
-
-def build_subtitle_qc_fingerprint(srt_path: str) -> str:
-    items = _read_srt_items(srt_path)
-    return compute_subtitle_qc_fingerprint(items)
-
-
 def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     stats: List[Dict[str, Any]] = []
     usable_normalized: List[str] = []
     suspicious_examples: List[str] = []
     suspicious_counts = Counter()
+    normalized_examples: Dict[str, str] = {}
+    total_text_chars = 0
+    short_line_count = 0
+    max_repeat_run = 0
+    current_repeat_run = 0
+    previous_normalized = ''
+    earliest_start: Optional[float] = None
+    latest_end: Optional[float] = None
 
     for idx, it in enumerate(items):
         text = (getattr(it, 'source_text', '') or '').strip()
         normalized = _normalize_line(text) if text else ''
         low_content = _is_low_content(text) if text else True
         suspicious_kind = _classify_suspicious_text(text, normalized)
+        start_seconds = _parse_srt_timestamp_seconds(getattr(it, 'start_time', ''))
+        end_seconds = _parse_srt_timestamp_seconds(getattr(it, 'end_time', ''))
         if text and not low_content and normalized:
             usable_normalized.append(normalized)
+            normalized_examples.setdefault(normalized, text[:120])
+            total_text_chars += len(normalized)
+            if _is_short_content_line(normalized):
+                short_line_count += 1
+            if normalized == previous_normalized:
+                current_repeat_run += 1
+            else:
+                current_repeat_run = 1
+                previous_normalized = normalized
+            max_repeat_run = max(max_repeat_run, current_repeat_run)
+        else:
+            current_repeat_run = 0
+            previous_normalized = ''
         if suspicious_kind:
             suspicious_counts[suspicious_kind] += 1
             if len(suspicious_examples) < 6:
                 suspicious_examples.append(text[:120])
+        if start_seconds is not None:
+            earliest_start = start_seconds if earliest_start is None else min(earliest_start, start_seconds)
+        if end_seconds is not None:
+            latest_end = end_seconds if latest_end is None else max(latest_end, end_seconds)
         stats.append({
             'index': idx,
             'item': it,
@@ -275,6 +299,22 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
     noise_command_count = int(suspicious_counts.get('noise_command_phrase', 0))
     template_like_count = int(suspicious_counts.get('template_like_phrase', 0))
     suspicious_phrase_count = credit_like_count + noise_command_count + template_like_count
+    timeline_span_seconds = 0.0
+    if earliest_start is not None and latest_end is not None and latest_end >= earliest_start:
+        timeline_span_seconds = max(0.0, latest_end - earliest_start)
+    chars_per_minute = (
+        total_text_chars / max(timeline_span_seconds / 60.0, 1e-6)
+        if timeline_span_seconds > 0
+        else float(total_text_chars)
+    )
+    top_repeated_texts = [
+        {
+            'text': normalized_examples.get(normalized, normalized)[:120],
+            'count': int(count),
+        }
+        for normalized, count in freq.most_common(TOP_REPEATED_TEXT_LIMIT)
+        if count >= 2
+    ]
 
     metrics = {
         'total_items': len(items),
@@ -287,6 +327,13 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
         'unique_ratio': unique_ratio,
         'repeat_mass_ratio': repeat_mass_ratio,
         'avg_len': avg_len,
+        'total_text_chars': total_text_chars,
+        'short_line_count': short_line_count,
+        'short_line_ratio': (short_line_count / max(1, usable_count)) if usable_count else 0.0,
+        'max_repeat_run': max_repeat_run,
+        'timeline_span_seconds': timeline_span_seconds,
+        'chars_per_minute': chars_per_minute,
+        'top_repeated_texts': top_repeated_texts,
         'credit_like_count': credit_like_count,
         'noise_command_count': noise_command_count,
         'template_like_count': template_like_count,
@@ -308,6 +355,9 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     unique_ratio = float(metrics.get('unique_ratio', 0.0) or 0.0)
     repeat_mass_ratio = float(metrics.get('repeat_mass_ratio', 1.0) or 0.0)
     avg_len = float(metrics.get('avg_len', 0.0) or 0.0)
+    short_line_ratio = float(metrics.get('short_line_ratio', 0.0) or 0.0)
+    max_repeat_run = int(metrics.get('max_repeat_run', 0) or 0)
+    chars_per_minute = float(metrics.get('chars_per_minute', 0.0) or 0.0)
     suspicious_phrase_ratio = float(metrics.get('suspicious_phrase_ratio', 0.0) or 0.0)
     credit_like_count = int(metrics.get('credit_like_count', 0) or 0)
     noise_command_count = int(metrics.get('noise_command_count', 0) or 0)
@@ -321,6 +371,10 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     score -= min(0.25, max(0.0, repeat_mass_ratio - 0.35) * 0.75)
     score -= min(0.25, max(0.0, 0.55 - unique_ratio) * 0.70)
     score -= min(0.20, max(0.0, 3.0 - avg_len) * 0.10)
+    score -= min(0.22, max(0.0, short_line_ratio - 0.45) * 0.40)
+    score -= min(0.16, max(0, max_repeat_run - 2) * 0.08)
+    if chars_per_minute > 0:
+        score -= min(0.18, max(0.0, 35.0 - chars_per_minute) * 0.006)
     score -= min(0.35, suspicious_phrase_ratio * 1.20)
     score -= min(0.30, credit_like_count * 0.20)
     score -= min(0.25, noise_command_count * 0.10)
@@ -338,10 +392,15 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
     non_empty_count = int(metrics['non_empty_count'])
     usable_count = int(metrics['usable_count'])
     low_content_ratio = float(metrics['low_content_ratio'])
+    top_frequency = int(metrics.get('top_frequency', 0) or 0)
     top_ratio = float(metrics['top_ratio'])
     unique_ratio = float(metrics['unique_ratio'])
     repeat_mass_ratio = float(metrics['repeat_mass_ratio'])
     avg_len = float(metrics['avg_len'])
+    total_text_chars = int(metrics.get('total_text_chars', 0) or 0)
+    short_line_ratio = float(metrics.get('short_line_ratio', 0.0) or 0.0)
+    max_repeat_run = int(metrics.get('max_repeat_run', 0) or 0)
+    chars_per_minute = float(metrics.get('chars_per_minute', 0.0) or 0.0)
     credit_like_count = int(metrics['credit_like_count'])
     noise_command_count = int(metrics['noise_command_count'])
     template_like_count = int(metrics['template_like_count'])
@@ -363,6 +422,29 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
             decision='rule_fail',
             score=rule_score,
             reason='rule_fail:mostly_low_content',
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
+    if usable_count <= 4 and top_frequency >= 3 and unique_ratio <= 0.50:
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason='rule_fail:ultra_short_repeat',
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
+    if (
+        usable_count <= 5
+        and total_text_chars <= 40
+        and short_line_ratio >= 0.80
+        and repeat_mass_ratio >= 0.60
+    ):
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason='rule_fail:ultra_short_low_info',
             metrics=metrics,
             boundary_level='suspicious',
         )
@@ -447,6 +529,10 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
         or top_ratio >= 0.50
         or unique_ratio <= 0.35
         or avg_len < 2.4
+        or short_line_ratio >= 0.75
+        or max_repeat_run >= 3
+        or (total_text_chars <= 48 and usable_count <= 6)
+        or (chars_per_minute > 0 and chars_per_minute <= 25.0)
         or suspicious_phrase_count > 0
         or template_like_count > 0
         or repeat_mass_ratio >= 0.40
@@ -508,31 +594,35 @@ def _sample_items(
         sample_limit_chars = max(1, min(max_chars, 4500))
 
     selected_indices: List[int] = []
-    selected_keys = set()
+    selected_index_set = set()
+    selected_key_counts: Counter[str] = Counter()
 
-    def append_index(item_index: int):
+    def append_index(item_index: int, max_per_key: int = 1):
         if item_index < 0 or item_index >= len(item_stats):
             return
         stat = item_stats[item_index]
         if not stat['text']:
             return
-        key = stat['normalized'] or stat['text'].strip().lower()
-        if key in selected_keys:
+        if item_index in selected_index_set:
             return
-        selected_keys.add(key)
+        key = stat['normalized'] or stat['text'].strip().lower()
+        if selected_key_counts[key] >= max_per_key:
+            return
+        selected_key_counts[key] += 1
+        selected_index_set.add(item_index)
         selected_indices.append(item_index)
 
     suspicious_candidates = [
         stat['index'] for stat in non_empty_stats if stat.get('suspicious_kind')
     ]
     for idx in suspicious_candidates:
-        append_index(idx)
+        append_index(idx, max_per_key=MAX_REPEATED_SAMPLE_PER_TEXT)
         if len(selected_indices) >= sample_limit_items:
             break
 
     low_content_candidates = [stat['index'] for stat in non_empty_stats if stat['low_content']]
     for idx in low_content_candidates:
-        append_index(idx)
+        append_index(idx, max_per_key=MAX_REPEATED_SAMPLE_PER_TEXT)
         if len(selected_indices) >= sample_limit_items:
             break
 
@@ -544,7 +634,7 @@ def _sample_items(
         key=lambda stat: (-stat['frequency'], stat['index'])
     )
     for stat in repeated_candidates:
-        append_index(stat['index'])
+        append_index(stat['index'], max_per_key=MAX_REPEATED_SAMPLE_PER_TEXT)
         if len(selected_indices) >= sample_limit_items:
             break
 
@@ -566,6 +656,7 @@ def _sample_items(
         if len(selected_indices) >= sample_limit_items:
             break
 
+    selected_indices = sorted(selected_indices)
     rendered_lines: List[str] = []
     total_chars = 0
     actual_count = 0
@@ -617,6 +708,7 @@ def _call_ai_judge(
     system = (
         '你是严格的字幕质检员。目标：判断转录字幕是否足够可靠，可进入翻译和烧录流程。\n'
         '如果字幕包含转录署名、字幕署名、噪声提示词、界面操作词、明显机器幻觉、长段机械重复或明显无语义模板句，必须判定为 failed。\n'
+        '若字幕极短、重复且信息量极低，即使句子本身语法正确，也必须判定为 failed。\n'
         '只有当字幕主体看起来像真实人类说话、旁白或解说，且错误不影响整体理解时，才可判定为 passed。\n'
         '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
         '{"passed": false, "score": 0.10, "reason": "hallucination_meta"}'
@@ -625,7 +717,7 @@ def _call_ai_judge(
     user = {
         'task': 'subtitle_qc',
         'rules': (
-            '若样本中出现署名行、Ignore noise、Click、机械重复句、明显无语义模板句，必须判 failed。'
+            '若样本中出现署名行、Ignore noise、Click、机械重复句、明显无语义模板句，或超短重复且信息量极低，必须判 failed。'
             'reason 建议使用 hallucination_meta、healthy_dialogue、borderline_repeat 等短标签。'
         ),
         'metrics': metrics,
@@ -798,11 +890,11 @@ def run_subtitle_qc(
             sample_meta=sample_meta,
         )
 
-    passed = bool(ai_passed)
-    if passed and ai_score is not None and float(ai_score) < float(threshold_val):
-        passed = False
+    final_score = float(rule_result.score)
+    if ai_score is not None:
+        final_score = min(float(rule_result.score), float(ai_score))
 
-    final_score = float(ai_score) if ai_score is not None else float(rule_result.score)
+    passed = bool(ai_passed) and float(final_score) >= float(threshold_val)
     raw_reason = ''
     if raw_ai and isinstance(raw_ai, dict):
         raw_reason = normalize_qc_reason_token(raw_ai.get('reason') or '')
