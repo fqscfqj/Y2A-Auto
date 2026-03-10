@@ -824,18 +824,18 @@ def _is_safe_playlist_url(raw_url, logger):
     allowed_schemes = {"http", "https"}
     # 仅允许 http/https 协议
     if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
-        logger.warning(f"无效的播放列表URL协议: {normalized_url}")
+        logger.warning("无效的播放列表URL协议: %r", normalized_url)
         return None
     # 显式拒绝URL中的userinfo，避免混淆主机与日志污染风险
     if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
-        logger.warning(f"播放列表URL包含不允许的userinfo: {normalized_url}")
+        logger.warning("播放列表URL包含不允许的userinfo: %r", normalized_url)
         return None
     hostname = (parsed.hostname or "").rstrip('.').lower()
     # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
     is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
     is_short_youtube = hostname == "youtu.be"
     if not (is_youtube_domain or is_short_youtube):
-        logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {raw_url}, 规范化URL: {normalized_url})")
+        logger.warning("不受信任的播放列表URL主机名: %r (原始URL: %r, 规范化URL: %r)", hostname, raw_url, normalized_url)
         return None
     # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
     path = parsed.path or ""
@@ -848,7 +848,7 @@ def _is_safe_playlist_url(raw_url, logger):
             valid_list_ids.append(value_stripped)
     # 要求至少存在一个通过校验的 list 参数，避免仅凭 /playlist 路径就放行
     if not valid_list_ids:
-        logger.warning(f"URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: {raw_url}")
+        logger.warning("URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: %r", raw_url)
         return None
     return normalized_url
 
