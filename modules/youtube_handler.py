@@ -14,11 +14,13 @@ from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import re
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
+# YouTube playlist ID 仅允许字母、数字、下划线和连字符
+_YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
@@ -804,7 +806,9 @@ def _is_safe_playlist_url(raw_url, logger):
     if len(raw_url) > 2048:
         logger.warning(f"播放列表URL过长，已拒绝: 长度={len(raw_url)}")
         return None
-    normalized_url = raw_url
+    normalized_url = raw_url.strip()
+    if not normalized_url:
+        return None
     # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
     if normalized_url and not urlparse(normalized_url).scheme:
         if normalized_url.startswith("//"):
@@ -831,8 +835,14 @@ def _is_safe_playlist_url(raw_url, logger):
         return None
     # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
     path = parsed.path or ""
-    query = parsed.query or ""
-    if "/playlist" not in path and "list=" not in query:
+    query = parse_qs(parsed.query or "")
+    list_ids = query.get("list", [])
+    valid_list_ids = []
+    for value in list_ids:
+        value_stripped = value.strip()
+        if value_stripped and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value_stripped):
+            valid_list_ids.append(value_stripped)
+    if "/playlist" not in path and not valid_list_ids:
         logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
         return None
     return normalized_url
