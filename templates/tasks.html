@@ -1100,6 +1100,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             return;
         }
 
+        disposeTooltips();
         currentContent.innerHTML = html;
         bindTasksEvents();
         initTooltips();
@@ -1302,14 +1303,26 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         });
     }
 
-    function initTooltips() {
-        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        tooltipTriggerList.map(function(tooltipTriggerEl) {
+    function disposeTooltips() {
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(tooltipTriggerEl) {
             const existingTooltip = bootstrap.Tooltip.getInstance(tooltipTriggerEl);
-            if (existingTooltip) {
-                existingTooltip.dispose();
+            if (!existingTooltip) {
+                return;
             }
-            return new bootstrap.Tooltip(tooltipTriggerEl);
+            existingTooltip.hide();
+            existingTooltip.dispose();
+        });
+
+        // 防止旧 trigger 节点被替换后，遗留 tooltip 浮层无法自动消失
+        document.querySelectorAll('.tooltip').forEach(function(tooltipEl) {
+            tooltipEl.remove();
+        });
+    }
+
+    function initTooltips() {
+        disposeTooltips();
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(tooltipTriggerEl) {
+            new bootstrap.Tooltip(tooltipTriggerEl);
         });
     }
 
