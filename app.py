@@ -253,7 +253,7 @@ def _persist_settings_uploads(form_data: dict, uploads: dict):
         logger.info(f"{service_name} cookies文件已上传并保存到: {target_path}")
 
 
-def _build_settings_progress_reporter(operation_id: str):
+def _build_settings_progress_reporter(operation_id: str | None):
     if not operation_id:
         return None
 
@@ -902,7 +902,8 @@ def login():
             _save_security_state(sec)
             flash('登录成功', 'success')
             next_url = request.args.get('next')
-            return redirect(next_url if _is_safe_redirect_url(next_url) else url_for('index'))
+            safe_next_url = next_url if _is_safe_redirect_url(next_url) else None
+            return redirect(safe_next_url or url_for('index'))
         else:
             # 密码错误，更新失败计数
             max_attempts = int(config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) or 5)
@@ -1536,8 +1537,9 @@ def force_upload_task_route(task_id):
     upload_thread.start()
 
     next_url = request.form.get('next') or request.args.get('next')
-    if _is_safe_redirect_url(next_url):
-        return redirect(next_url)
+    safe_next_url = next_url if _is_safe_redirect_url(next_url) else None
+    if safe_next_url:
+        return redirect(safe_next_url)
     return redirect(url_for('manual_review'))
 
 @app.route('/tasks/reset_stuck', methods=['POST'])

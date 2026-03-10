@@ -921,4 +921,8 @@ body.login-fullscreen {
 .btn-login{ background: linear-gradient(90deg,var(--accent), #0a58ca); border: none; color: #fff; font-weight:600; border-radius:10px; padding:.75rem 1rem; box-shadow: 0 8px 20px rgba(13,110,253,0.12); }
 .login-help{ text-align:center;color:#6c757d;font-size:.9rem;margin-top:.75rem }
 
+.settings-save-progress-bar {
+    width: 100%;
+}
+
 @media (max-width:420px){ .login-card .card-body{ padding:1.25rem } .login-brand img{ width:48px;height:48px } }
