@@ -860,38 +860,61 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     Returns:
         list: 视频URL列表
     """
-    import subprocess
     video_urls = []
     try:
         # 验证播放列表URL，避免将任意用户输入传递给外部命令
         normalized_url = _is_safe_playlist_url(playlist_url, logger)
         if not normalized_url:
+            logger.warning("播放列表URL未通过安全校验，已跳过提取: %r", playlist_url)
             return video_urls
 
-        yt_dlp_path = 'yt-dlp'
+        try:
+            import yt_dlp
+        except ImportError as exc:
+            logger.error("无法导入yt_dlp模块，无法提取播放列表: %s", exc)
+            return video_urls
+
         # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
         if cookies_file_path:
             cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
-        cmd = [
-            yt_dlp_path,
-            '--flat-playlist',
-            '--dump-single-json',
-            normalized_url
-        ]
         if cookies_path:
-            cmd.extend(['--cookies', cookies_path])
-        # 使用参数列表形式且不启用shell，避免命令注入
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            entries = data.get('entries', [])
-            for entry in entries:
-                video_id = entry.get('id')
-                if video_id:
-                    video_urls.append(f'https://www.youtube.com/watch?v={video_id}')
-        else:
-            logger.error(f"yt-dlp提取播放列表失败: {result.stderr}")
+            logger.info("播放列表提取使用cookies文件: %s", cookies_path)
+
+        ydl_opts = {
+            'extract_flat': True,
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        if cookies_path:
+            ydl_opts['cookiefile'] = cookies_path
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            data = ydl.extract_info(normalized_url, download=False)
+
+        if not isinstance(data, dict):
+            logger.error("yt_dlp返回了非预期的播放列表数据类型: %s", type(data).__name__)
+            return video_urls
+
+        entries = data.get('entries')
+        if entries is None:
+            logger.error("yt_dlp播放列表结果缺少entries字段")
+            return video_urls
+
+        try:
+            iterator = iter(entries)
+        except TypeError:
+            logger.error("yt_dlp播放列表entries不可迭代: %s", type(entries).__name__)
+            return video_urls
+
+        for entry in iterator:
+            if not isinstance(entry, dict):
+                logger.debug("跳过非字典类型的播放列表条目: %r", entry)
+                continue
+            video_id = entry.get('id')
+            if video_id:
+                video_urls.append(f'https://www.youtube.com/watch?v={video_id}')
     except Exception as e:
         logger.error(f"extract_video_urls_from_playlist异常: {str(e)}")
     return video_urls
