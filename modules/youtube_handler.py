@@ -15,6 +15,7 @@ from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
 from urllib.parse import urlparse
+import re
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
@@ -792,6 +793,50 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         logger.error(error_msg)
         return False, error_msg
 
+def _is_safe_playlist_url(raw_url, logger):
+    """
+    对用户提供的播放列表URL进行严格校验，确保仅为合理的YouTube播放列表链接。
+    """
+    if not raw_url:
+        return None
+    # 限制URL最大长度，避免异常长输入
+      # 使用2048作为常见浏览器URL长度上限
+    if len(raw_url) > 2048:
+        logger.warning(f"播放列表URL过长，已拒绝: 长度={len(raw_url)}")
+        return None
+    normalized_url = raw_url
+    # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
+    if normalized_url and not urlparse(normalized_url).scheme:
+        if normalized_url.startswith("//"):
+            normalized_url = "https:" + normalized_url
+        else:
+            normalized_url = "https://" + normalized_url
+    # 仅允许URL中出现常见安全字符，防止奇异控制字符或空白
+    # 允许: 字母数字和 -._~:/?#[]@!$&'()*+,;=%
+    if not re.fullmatch(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", normalized_url):
+        logger.warning(f"播放列表URL包含非法字符，已拒绝: {normalized_url}")
+        return None
+    parsed = urlparse(normalized_url)
+    allowed_schemes = {"http", "https"}
+    # 仅允许 http/https 协议
+    if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
+        logger.warning(f"无效的播放列表URL协议: {normalized_url}")
+        return None
+    hostname = (parsed.hostname or "").rstrip('.').lower()
+    # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
+    is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
+    is_short_youtube = hostname == "youtu.be"
+    if not (is_youtube_domain or is_short_youtube):
+        logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {raw_url}, 规范化URL: {normalized_url})")
+        return None
+    # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
+    path = parsed.path or ""
+    query = parsed.query or ""
+    if "/playlist" not in path and "list=" not in query:
+        logger.warning(f"URL似乎不是播放列表链接: {raw_url}")
+        return None
+    return normalized_url
+
 def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     """
     提取YouTube播放列表中的所有视频URL
@@ -805,31 +850,8 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     video_urls = []
     try:
         # 验证播放列表URL，避免将任意用户输入传递给外部命令
-        # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
-        normalized_url = playlist_url or ""
-        if normalized_url and not urlparse(normalized_url).scheme:
-            if normalized_url.startswith("//"):
-                normalized_url = "https:" + normalized_url
-            else:
-                normalized_url = "https://" + normalized_url
-        parsed = urlparse(normalized_url)
-        allowed_schemes = {"http", "https"}
-        # 仅允许 http/https 协议
-        if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
-            logger.warning(f"无效的播放列表URL协议: {normalized_url}")
-            return video_urls
-        hostname = (parsed.hostname or "").rstrip('.').lower()
-        # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
-        is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
-        is_short_youtube = hostname == "youtu.be"
-        if not (is_youtube_domain or is_short_youtube):
-            logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {playlist_url}, 规范化URL: {normalized_url})")
-            return video_urls
-        # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
-        path = parsed.path or ""
-        query = parsed.query or ""
-        if "/playlist" not in path and "list=" not in query:
-            logger.warning(f"URL似乎不是播放列表链接: {playlist_url}")
+        normalized_url = _is_safe_playlist_url(playlist_url, logger)
+        if not normalized_url:
             return video_urls
 
         yt_dlp_path = 'yt-dlp'
