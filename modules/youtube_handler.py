@@ -19,6 +19,34 @@ from urllib.parse import urlparse
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
 
+# 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
+_BASE_DIR = os.path.realpath(get_app_root_dir())
+
+
+def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
+    """将 cookies_file_path 解析为安全的绝对路径。
+
+    使用 realpath 解析符号链接后，通过 commonpath 校验路径仍在项目根目录内，
+    防止目录遍历及通过 symlink 越界访问。支持相对路径和位于项目根目录内的绝对路径，
+    返回安全的绝对路径，或在路径无效/文件不存在时返回 None。
+    """
+    _log = log or logger
+    if os.path.isabs(cookies_file_path):
+        resolved = os.path.realpath(cookies_file_path)
+    else:
+        resolved = os.path.realpath(os.path.join(_BASE_DIR, cookies_file_path))
+    try:
+        common = os.path.commonpath([_BASE_DIR, resolved])
+    except ValueError:
+        common = ""
+    if common != _BASE_DIR:
+        _log.warning(f"检测到位于受信任根目录之外的cookies文件路径，已拒绝: {cookies_file_path}")
+        return None
+    if not os.path.isfile(resolved):
+        _log.warning(f"cookies文件不存在或不是普通文件，已忽略: {cookies_file_path}")
+        return None
+    return resolved
+
 
 def is_docker_env() -> bool:
     """粗略判断是否运行在 Docker 中"""
@@ -337,15 +365,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             except:
                 pass
         
-        # 处理cookies路径
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
         if cookies_file_path:
-            cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cookies_file_path)
-            if os.path.exists(cookies_path):
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
+            if cookies_path:
                 logger.info(f"使用cookies文件: {cookies_path}")
-            else:
-                logger.warning(f"指定的YouTube Cookies文件不存在: {cookies_path}")
-                cookies_path = None
         
         # 验证yt-dlp路径有效性
         logger.info(f"最终确定的yt-dlp路径: {yt_dlp_path}")
@@ -789,6 +814,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
                 normalized_url = "https://" + normalized_url
         parsed = urlparse(normalized_url)
         allowed_schemes = {"http", "https"}
+        # 仅允许 http/https 协议
         if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
             logger.warning(f"无效的播放列表URL协议: {normalized_url}")
             return video_urls
@@ -800,17 +826,17 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
             logger.warning(f"不受信任的播放列表URL主机名: {hostname} (原始URL: {playlist_url}, 规范化URL: {normalized_url})")
             return video_urls
         # 额外检查其看起来像播放列表链接（路径或查询参数中包含list）
-        if "/playlist" not in (parsed.path or "") and "list=" not in (parsed.query or ""):
+        path = parsed.path or ""
+        query = parsed.query or ""
+        if "/playlist" not in path and "list=" not in query:
             logger.warning(f"URL似乎不是播放列表链接: {playlist_url}")
             return video_urls
 
         yt_dlp_path = 'yt-dlp'
-        # 处理cookies路径
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
         if cookies_file_path:
-            cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), cookies_file_path)
-            if not os.path.exists(cookies_path):
-                cookies_path = None
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
         cmd = [
             yt_dlp_path,
             '--flat-playlist',
@@ -819,6 +845,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         ]
         if cookies_path:
             cmd.extend(['--cookies', cookies_path])
+        # 使用参数列表形式且不启用shell，避免命令注入
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode == 0:
             data = json.loads(result.stdout)
