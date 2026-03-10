@@ -826,7 +826,7 @@ def _is_safe_playlist_url(raw_url, logger):
     if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
         logger.warning("无效的播放列表URL协议: %r", normalized_url)
         return None
-    # 显式拒绝URL中的userinfo，避免混淆主机与日志污染风险
+    # 显式拒绝URL中的userinfo（以及畸形netloc里残留的@），避免混淆主机与日志污染风险
     if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
         logger.warning("播放列表URL包含不允许的userinfo: %r", normalized_url)
         return None
@@ -847,7 +847,7 @@ def _is_safe_playlist_url(raw_url, logger):
             valid_list_ids.append(value_stripped)
     # 要求至少存在一个通过校验的 list 参数，避免仅凭 /playlist 路径就放行
     if not valid_list_ids:
-        logger.warning("URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: %r", raw_url)
+        logger.warning("URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: %r", normalized_url)
         return None
     return normalized_url
 
