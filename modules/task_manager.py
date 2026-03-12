@@ -650,6 +650,13 @@ def init_db():
     ''')
     
     conn.commit()
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        migration_key TEXT PRIMARY KEY,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
     
     # 检查并添加新字段（用于数据库升级）
     try:
@@ -719,108 +726,122 @@ def init_db():
         cursor.execute("PRAGMA table_info(tasks)")
         columns = [row[1] for row in cursor.fetchall()]
 
-        # 一次性回填历史任务分区字段，避免升级后旧任务缺少平台分区导致上传失败
-        try:
-            if 'selected_partition_id' in columns and 'selected_partition_id_acfun' in columns:
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET selected_partition_id_acfun = selected_partition_id
-                    WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
-                      AND (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
-                      AND selected_partition_id IS NOT NULL
-                      AND TRIM(selected_partition_id) <> ''
-                    """
-                )
+        # 历史任务分区字段回填迁移：仅执行一次，避免重复全表扫描
+        cursor.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
+            ('tasks_partition_backfill_v1',)
+        )
+        partition_backfill_done = cursor.fetchone() is not None
 
-            if 'recommended_partition_id' in columns and 'recommended_partition_id_acfun' in columns:
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET recommended_partition_id_acfun = recommended_partition_id
-                    WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
-                      AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
-                      AND recommended_partition_id IS NOT NULL
-                      AND TRIM(recommended_partition_id) <> ''
-                    """
-                )
-
-            if 'selected_partition_id' in columns and 'selected_partition_id_bilibili' in columns:
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET selected_partition_id_bilibili = selected_partition_id
-                    WHERE upload_target = 'bilibili'
-                      AND (selected_partition_id_bilibili IS NULL OR TRIM(selected_partition_id_bilibili) = '')
-                      AND selected_partition_id IS NOT NULL
-                      AND TRIM(selected_partition_id) <> ''
-                    """
-                )
-
-            if 'selected_partition_id' in columns:
-                if 'selected_partition_id_acfun' in columns:
+        if not partition_backfill_done:
+            try:
+                if 'selected_partition_id' in columns and 'selected_partition_id_acfun' in columns:
                     cursor.execute(
                         """
                         UPDATE tasks
                         SET selected_partition_id_acfun = selected_partition_id
-                        WHERE upload_target = 'both'
+                        WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
                           AND (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
                           AND selected_partition_id IS NOT NULL
                           AND TRIM(selected_partition_id) <> ''
                         """
                     )
-                if 'selected_partition_id_bilibili' in columns:
+
+                if 'recommended_partition_id' in columns and 'recommended_partition_id_acfun' in columns:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET recommended_partition_id_acfun = recommended_partition_id
+                        WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
+                          AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
+                          AND recommended_partition_id IS NOT NULL
+                          AND TRIM(recommended_partition_id) <> ''
+                        """
+                    )
+
+                if 'selected_partition_id' in columns and 'selected_partition_id_bilibili' in columns:
                     cursor.execute(
                         """
                         UPDATE tasks
                         SET selected_partition_id_bilibili = selected_partition_id
-                        WHERE upload_target = 'both'
+                        WHERE upload_target = 'bilibili'
                           AND (selected_partition_id_bilibili IS NULL OR TRIM(selected_partition_id_bilibili) = '')
                           AND selected_partition_id IS NOT NULL
                           AND TRIM(selected_partition_id) <> ''
                         """
                     )
 
-            if 'recommended_partition_id' in columns and 'recommended_partition_id_bilibili' in columns:
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET recommended_partition_id_bilibili = recommended_partition_id
-                    WHERE upload_target = 'bilibili'
-                      AND (recommended_partition_id_bilibili IS NULL OR TRIM(recommended_partition_id_bilibili) = '')
-                      AND recommended_partition_id IS NOT NULL
-                      AND TRIM(recommended_partition_id) <> ''
-                    """
-                )
+                if 'selected_partition_id' in columns:
+                    if 'selected_partition_id_acfun' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET selected_partition_id_acfun = selected_partition_id
+                            WHERE upload_target = 'both'
+                              AND (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
+                              AND selected_partition_id IS NOT NULL
+                              AND TRIM(selected_partition_id) <> ''
+                            """
+                        )
+                    if 'selected_partition_id_bilibili' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET selected_partition_id_bilibili = selected_partition_id
+                            WHERE upload_target = 'both'
+                              AND (selected_partition_id_bilibili IS NULL OR TRIM(selected_partition_id_bilibili) = '')
+                              AND selected_partition_id IS NOT NULL
+                              AND TRIM(selected_partition_id) <> ''
+                            """
+                        )
 
-            if 'recommended_partition_id' in columns:
-                if 'recommended_partition_id_acfun' in columns:
-                    cursor.execute(
-                        """
-                        UPDATE tasks
-                        SET recommended_partition_id_acfun = recommended_partition_id
-                        WHERE upload_target = 'both'
-                          AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
-                          AND recommended_partition_id IS NOT NULL
-                          AND TRIM(recommended_partition_id) <> ''
-                        """
-                    )
-                if 'recommended_partition_id_bilibili' in columns:
+                if 'recommended_partition_id' in columns and 'recommended_partition_id_bilibili' in columns:
                     cursor.execute(
                         """
                         UPDATE tasks
                         SET recommended_partition_id_bilibili = recommended_partition_id
-                        WHERE upload_target = 'both'
+                        WHERE upload_target = 'bilibili'
                           AND (recommended_partition_id_bilibili IS NULL OR TRIM(recommended_partition_id_bilibili) = '')
                           AND recommended_partition_id IS NOT NULL
                           AND TRIM(recommended_partition_id) <> ''
                         """
                     )
 
-            conn.commit()
-            logger.info("数据库升级：一次性回填历史任务分区字段完成")
-        except Exception as e2:
-            logger.warning(f"数据库升级：回填历史任务分区字段失败: {e2}")
+                if 'recommended_partition_id' in columns:
+                    if 'recommended_partition_id_acfun' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET recommended_partition_id_acfun = recommended_partition_id
+                            WHERE upload_target = 'both'
+                              AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
+                              AND recommended_partition_id IS NOT NULL
+                              AND TRIM(recommended_partition_id) <> ''
+                            """
+                        )
+                    if 'recommended_partition_id_bilibili' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET recommended_partition_id_bilibili = recommended_partition_id
+                            WHERE upload_target = 'both'
+                              AND (recommended_partition_id_bilibili IS NULL OR TRIM(recommended_partition_id_bilibili) = '')
+                              AND recommended_partition_id IS NOT NULL
+                              AND TRIM(recommended_partition_id) <> ''
+                            """
+                        )
+
+                cursor.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_key) VALUES (?)",
+                    ('tasks_partition_backfill_v1',)
+                )
+                conn.commit()
+                logger.info("数据库升级：历史任务分区字段回填迁移完成")
+            except Exception as e2:
+                conn.rollback()
+                logger.warning("数据库升级：历史任务分区字段回填迁移失败，将在下次启动重试: %s", e2)
+        else:
+            logger.info("数据库升级：历史任务分区字段回填迁移已执行，跳过")
 
         # 兼容历史任务：空 upload_target 默认回填 acfun
         cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
