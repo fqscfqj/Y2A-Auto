@@ -5428,11 +5428,10 @@ class TaskProcessor:
         task_logger.info(f"上传分发目标平台: {upload_target}")
 
         if upload_target == UPLOAD_TARGET_BOTH:
-            # 双平台仅做一次字幕预处理，避免重复消耗ASR/翻译资源
-            self._prepare_subtitle_for_upload(task_id, task_logger)
+            task_logger.info("双平台上传将字幕预处理延后到各平台上传阶段执行，确保视频已下载后再处理字幕")
             # 双平台投稿：按 AcFun -> bilibili 顺序执行，且对已成功的平台幂等跳过
             if not _task_has_platform_upload_response(task, UPLOAD_TARGET_ACFUN):
-                self._upload_to_acfun(task_id, task_logger, subtitle_prepared=True)
+                self._upload_to_acfun(task_id, task_logger, subtitle_prepared=False)
                 task = get_task(task_id)
                 if not task or task.get('status') == TASK_STATES['FAILED']:
                     return
@@ -5440,7 +5439,7 @@ class TaskProcessor:
                 task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
 
             if not _task_has_platform_upload_response(task, UPLOAD_TARGET_BILIBILI):
-                self._upload_to_bilibili(task_id, task_logger, subtitle_prepared=True)
+                self._upload_to_bilibili(task_id, task_logger, subtitle_prepared=False)
             else:
                 task_logger.info("检测到已有 bilibili 上传结果，跳过 bilibili 上传")
             return
