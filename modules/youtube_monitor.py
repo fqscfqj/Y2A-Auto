@@ -571,10 +571,17 @@ class YouTubeMonitor:
         try:
             config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
-            
-            if os.path.exists(config_file):
-                os.remove(config_file)
-                logger.info(f"配置文件已删除: {config_file}")
+
+            # 防止路径遍历攻击：验证路径在config目录内
+            config_file_real = os.path.realpath(config_file)
+            config_dir_real = os.path.realpath(config_dir)
+            if not config_file_real.startswith(config_dir_real + os.sep):
+                logger.error(f"配置文件路径不在config目录内，拒绝删除: {config_id}")
+                return
+
+            if os.path.exists(config_file_real):
+                os.remove(config_file_real)
+                logger.info(f"配置文件已删除: {config_file_real}")
         except Exception as e:
             logger.error(f"删除配置文件失败: {str(e)}")
     
