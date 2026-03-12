@@ -1136,9 +1136,18 @@ def edit_task(task_id):
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
+        legacy_partition_id = request.form.get('selected_partition_id', '')
         partition_id_acfun = request.form.get('selected_partition_id_acfun', '')
         partition_id_bilibili = request.form.get('selected_partition_id_bilibili', '')
         tags_json = request.form.get('tags_json', '[]')
+
+        if upload_target == 'both':
+            partition_id_acfun = partition_id_acfun or legacy_partition_id
+            partition_id_bilibili = partition_id_bilibili or legacy_partition_id
+        elif upload_target == 'bilibili':
+            partition_id_bilibili = partition_id_bilibili or legacy_partition_id
+        else:
+            partition_id_acfun = partition_id_acfun or legacy_partition_id
         # 更新任务信息
         update_data = {
             'video_title_translated': video_title,
