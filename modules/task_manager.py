@@ -270,7 +270,7 @@ def _get_partition_field_name(platform: str, field_type: str) -> str:
     return PARTITION_FIELD_MAP.get(p, PARTITION_FIELD_MAP[UPLOAD_TARGET_ACFUN]).get(field_type, '')
 
 
-def _get_task_partition_id(task, platform, prefer_selected=True, allow_legacy_fallback=True):
+def _get_task_partition_id(task, platform, prefer_selected=True):
     if not task:
         return ''
 
@@ -290,12 +290,7 @@ def _get_task_partition_id(task, platform, prefer_selected=True, allow_legacy_fa
         if selected_value:
             return selected_value
 
-    if not allow_legacy_fallback:
-        return ''
-
-    legacy_selected = str(task.get('selected_partition_id') or '').strip()
-    legacy_recommended = str(task.get('recommended_partition_id') or '').strip()
-    return legacy_selected or legacy_recommended
+    return ''
 
 
 def _safe_json_loads(value, default):
@@ -363,9 +358,7 @@ def _infer_completed_stages_from_task(task):
 
     # 分区推荐：有推荐或已选分区
     if (
-        task.get('recommended_partition_id')
-        or task.get('selected_partition_id')
-        or task.get('recommended_partition_id_acfun')
+        task.get('recommended_partition_id_acfun')
         or task.get('selected_partition_id_acfun')
         or task.get('recommended_partition_id_bilibili')
         or task.get('selected_partition_id_bilibili')
@@ -657,6 +650,13 @@ def init_db():
     ''')
     
     conn.commit()
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        migration_key TEXT PRIMARY KEY,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
     
     # 检查并添加新字段（用于数据库升级）
     try:
@@ -723,24 +723,125 @@ def init_db():
             logger.info("数据库升级：添加selected_partition_id_bilibili字段")
             conn.commit()
 
-        # 历史字段兼容：将旧字段回填到 AcFun 平台字段，避免升级后显示为空
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        # 历史任务分区字段回填迁移：仅执行一次，避免重复全表扫描
         cursor.execute(
-            """
-            UPDATE tasks
-               SET selected_partition_id_acfun = selected_partition_id
-             WHERE (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
-               AND selected_partition_id IS NOT NULL AND TRIM(selected_partition_id) <> ''
-            """
+            "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
+            ('tasks_partition_backfill_v1',)
         )
-        cursor.execute(
-            """
-            UPDATE tasks
-               SET recommended_partition_id_acfun = recommended_partition_id
-             WHERE (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
-               AND recommended_partition_id IS NOT NULL AND TRIM(recommended_partition_id) <> ''
-            """
-        )
-        conn.commit()
+        partition_backfill_done = cursor.fetchone() is not None
+
+        if not partition_backfill_done:
+            try:
+                if 'selected_partition_id' in columns and 'selected_partition_id_acfun' in columns:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET selected_partition_id_acfun = selected_partition_id
+                        WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
+                          AND (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
+                          AND selected_partition_id IS NOT NULL
+                          AND TRIM(selected_partition_id) <> ''
+                        """
+                    )
+
+                if 'recommended_partition_id' in columns and 'recommended_partition_id_acfun' in columns:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET recommended_partition_id_acfun = recommended_partition_id
+                        WHERE (upload_target = 'acfun' OR upload_target IS NULL OR TRIM(upload_target) = '')
+                          AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
+                          AND recommended_partition_id IS NOT NULL
+                          AND TRIM(recommended_partition_id) <> ''
+                        """
+                    )
+
+                if 'selected_partition_id' in columns and 'selected_partition_id_bilibili' in columns:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET selected_partition_id_bilibili = selected_partition_id
+                        WHERE upload_target = 'bilibili'
+                          AND (selected_partition_id_bilibili IS NULL OR TRIM(selected_partition_id_bilibili) = '')
+                          AND selected_partition_id IS NOT NULL
+                          AND TRIM(selected_partition_id) <> ''
+                        """
+                    )
+
+                if 'selected_partition_id' in columns:
+                    if 'selected_partition_id_acfun' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET selected_partition_id_acfun = selected_partition_id
+                            WHERE upload_target = 'both'
+                              AND (selected_partition_id_acfun IS NULL OR TRIM(selected_partition_id_acfun) = '')
+                              AND selected_partition_id IS NOT NULL
+                              AND TRIM(selected_partition_id) <> ''
+                            """
+                        )
+                    if 'selected_partition_id_bilibili' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET selected_partition_id_bilibili = selected_partition_id
+                            WHERE upload_target = 'both'
+                              AND (selected_partition_id_bilibili IS NULL OR TRIM(selected_partition_id_bilibili) = '')
+                              AND selected_partition_id IS NOT NULL
+                              AND TRIM(selected_partition_id) <> ''
+                            """
+                        )
+
+                if 'recommended_partition_id' in columns and 'recommended_partition_id_bilibili' in columns:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET recommended_partition_id_bilibili = recommended_partition_id
+                        WHERE upload_target = 'bilibili'
+                          AND (recommended_partition_id_bilibili IS NULL OR TRIM(recommended_partition_id_bilibili) = '')
+                          AND recommended_partition_id IS NOT NULL
+                          AND TRIM(recommended_partition_id) <> ''
+                        """
+                    )
+
+                if 'recommended_partition_id' in columns:
+                    if 'recommended_partition_id_acfun' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET recommended_partition_id_acfun = recommended_partition_id
+                            WHERE upload_target = 'both'
+                              AND (recommended_partition_id_acfun IS NULL OR TRIM(recommended_partition_id_acfun) = '')
+                              AND recommended_partition_id IS NOT NULL
+                              AND TRIM(recommended_partition_id) <> ''
+                            """
+                        )
+                    if 'recommended_partition_id_bilibili' in columns:
+                        cursor.execute(
+                            """
+                            UPDATE tasks
+                            SET recommended_partition_id_bilibili = recommended_partition_id
+                            WHERE upload_target = 'both'
+                              AND (recommended_partition_id_bilibili IS NULL OR TRIM(recommended_partition_id_bilibili) = '')
+                              AND recommended_partition_id IS NOT NULL
+                              AND TRIM(recommended_partition_id) <> ''
+                            """
+                        )
+
+                cursor.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_key) VALUES (?)",
+                    ('tasks_partition_backfill_v1',)
+                )
+                conn.commit()
+                logger.info("数据库升级：历史任务分区字段回填迁移完成")
+            except Exception as e2:
+                conn.rollback()
+                logger.warning("数据库升级：历史任务分区字段回填迁移失败，将在下次启动重试: %s", e2)
+        else:
+            logger.info("数据库升级：历史任务分区字段回填迁移已执行，跳过")
 
         # 兼容历史任务：空 upload_target 默认回填 acfun
         cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
@@ -5065,16 +5166,6 @@ class TaskProcessor:
                 if not str(latest_task.get(selected_field) or '').strip():
                     updates[selected_field] = recommended_partition_id
 
-                # 兼容旧字段：AcFun 始终同步；bilibili-only 任务同步到旧字段，便于旧页面展示
-                if platform == UPLOAD_TARGET_ACFUN:
-                    updates['recommended_partition_id'] = recommended_partition_id
-                    if not str(latest_task.get('selected_partition_id') or '').strip():
-                        updates['selected_partition_id'] = recommended_partition_id
-                elif upload_target == UPLOAD_TARGET_BILIBILI:
-                    updates['recommended_partition_id'] = recommended_partition_id
-                    if not str(latest_task.get('selected_partition_id') or '').strip():
-                        updates['selected_partition_id'] = recommended_partition_id
-
                 update_task(task_id, **updates)
                 task_logger.info(f"{platform} 获取到推荐分区ID: {recommended_partition_id}")
             else:
@@ -5536,7 +5627,7 @@ class TaskProcessor:
         cover_path = task.get('cover_path_local', '') if task else ''
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
-        partition_id = _get_task_partition_id(task, UPLOAD_TARGET_ACFUN, prefer_selected=True, allow_legacy_fallback=True) if task else ''
+        partition_id = _get_task_partition_id(task, UPLOAD_TARGET_ACFUN, prefer_selected=True) if task else ''
         fixed_acfun_pid = str(self.config.get('FIXED_PARTITION_ID', '') or '').strip()
         if fixed_acfun_pid:
             partition_id = fixed_acfun_pid
@@ -5826,13 +5917,10 @@ class TaskProcessor:
             bilibili_cookies_path = os.path.join(app_root, bilibili_cookies_path)
 
         # 固定 bilibili 分区优先；否则使用任务分区。并校验分区合法性
-        task_target = _get_task_upload_target(task)
-        allow_legacy_fallback = task_target != UPLOAD_TARGET_BOTH
         task_partition_id = _get_task_partition_id(
             task,
             UPLOAD_TARGET_BILIBILI,
             prefer_selected=True,
-            allow_legacy_fallback=allow_legacy_fallback
         ) if task else ''
         fixed_bili_pid = str(self.config.get('FIXED_PARTITION_ID_BILIBILI', '') or '').strip()
         partition_id = fixed_bili_pid or task_partition_id
