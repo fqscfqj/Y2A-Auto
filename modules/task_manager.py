@@ -26,7 +26,7 @@ import subprocess
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
 # from modules.youtube_handler import download_video_data
-# from modules.ai_enhancer import translate_text, generate_acfun_tags, recommend_acfun_partition
+# from modules.ai_enhancer import translate_video_metadata, generate_acfun_tags, recommend_acfun_partition
 # from modules.content_moderator import AlibabaCloudModerator
 # from modules.acfun_uploader import AcfunUploader
 
@@ -1878,7 +1878,7 @@ class TaskProcessor:
     
     def _translate_content(self, task_id, task_logger):
         """翻译视频标题和描述"""
-        from modules.ai_enhancer import translate_text
+        from modules.ai_enhancer import translate_video_metadata
         
         task = get_task(task_id)
         if not task:
@@ -1898,35 +1898,30 @@ class TaskProcessor:
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
-        # 翻译标题
-        task_logger.info("翻译视频标题")
-        if self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'):
-            title_translated = translate_text(
-                task['video_title_original'], 
-                target_language="zh-CN", 
-                openai_config=openai_config,
-                task_id=task_id,
-                content_type="title"
-            )
-            if title_translated:
-                update_task(task_id, video_title_translated=title_translated)
-            else:
-                task_logger.warning("标题翻译失败，将使用原始标题")
-        
-        # 翻译描述
-        task_logger.info("翻译视频描述")
-        if self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'):
-            description_translated = translate_text(
-                task['description_original'], 
-                target_language="zh-CN", 
-                openai_config=openai_config,
-                task_id=task_id,
-                content_type="description"
-            )
-            if description_translated:
-                update_task(task_id, description_translated=description_translated)
-            else:
-                task_logger.warning("描述翻译失败，将使用原始描述")
+        translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
+        translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
+
+        if not translate_title and not translate_description:
+            task_logger.info("标题和描述翻译均已禁用或缺少原文，跳过")
+            return True
+
+        translated = translate_video_metadata(
+            task.get('video_title_original', ''),
+            task.get('description_original', ''),
+            target_language="zh-CN",
+            openai_config=openai_config,
+            task_id=task_id,
+            translate_title=translate_title,
+            translate_description=translate_description,
+        )
+
+        updates = {}
+        if translate_title:
+            updates['video_title_translated'] = translated.get('title', '')
+        if translate_description:
+            updates['description_translated'] = translated.get('description', '')
+        if updates:
+            update_task(task_id, **updates)
         
         task_logger.info("翻译完成")
         return True
@@ -4924,11 +4919,10 @@ class TaskProcessor:
         task_logger.info("开始生成视频标签")
         update_task(task_id, status=TASK_STATES['TAGGING'])
         
-        # 优先使用原始视频信息进行AI标签生成，确保生成简体中文标签
-        # 防御性处理：确保 title/description 为字符串，避免传入 None 导致后续处理出错
+        # 优先使用翻译后的元数据，避免将原始导流文本继续送给标签模型
         from modules.utils import safe_str
-        title = safe_str(task.get('video_title_original') or task.get('video_title_translated'))
-        description = safe_str(task.get('description_original') or task.get('description_translated'))
+        title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
+        description = safe_str(task.get('description_translated') or task.get('description_original'))
         
         # 构建OpenAI配置
         openai_config = {
@@ -4972,8 +4966,8 @@ class TaskProcessor:
         task_logger.info("开始推荐视频分区")
         update_task(task_id, status=TASK_STATES['PARTITIONING'])
 
-        title = task.get('video_title_original', '') or task.get('video_title_translated', '')
-        description = task.get('description_original', '') or task.get('description_translated', '')
+        title = task.get('video_title_translated', '') or task.get('video_title_original', '')
+        description = task.get('description_translated', '') or task.get('description_original', '')
         upload_target = _get_task_upload_target(task)
 
         openai_config = {

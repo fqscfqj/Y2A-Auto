@@ -41,6 +41,8 @@ def get_app_subdir(subdir_name):
 
 import re
 import copy
+import json
+from typing import Any, Optional
 from urllib.parse import urlparse
 from PIL import Image
 
@@ -191,6 +193,7 @@ def process_cover(image_path, output_path=None, mode='crop'):
 # Pre-compiled regex patterns for strip_reasoning_thoughts (performance optimization)
 _THINK_TAG_RE = re.compile(r'<\s*think\s*>.*?<\s*/\s*think\s*>', re.IGNORECASE | re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r'```\s*think[^\n]*\n.*?```', re.IGNORECASE | re.DOTALL)
+_CODE_FENCE_RE = re.compile(r'^```[a-zA-Z0-9_-]*\s*|\s*```$', re.DOTALL)
 
 def strip_reasoning_thoughts(text):
     """
@@ -222,6 +225,19 @@ def strip_reasoning_thoughts(text):
     except Exception:
         return text
 
+
+def strip_code_fences(text):
+    """移除 Markdown 代码块围栏。"""
+    try:
+        if not isinstance(text, str):
+            return text
+        cleaned = text.strip()
+        if cleaned.startswith('```'):
+            cleaned = _CODE_FENCE_RE.sub('', cleaned)
+        return cleaned.strip()
+    except Exception:
+        return text
+
 def safe_str(value, default=''):
     """
     将任意值安全转换为字符串，如果为 None 则返回默认值（默认为空字符串）。
@@ -243,6 +259,94 @@ def safe_str(value, default=''):
         return str(value)
     except Exception:
         return default
+
+
+def _extract_balanced_json_block(text: str, start_char: str, end_char: str) -> Optional[str]:
+    start = text.find(start_char)
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == start_char:
+            depth += 1
+        elif char == end_char:
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return None
+
+
+def extract_json_from_text(text, expected_type=None):
+    """从文本中提取 JSON，兼容 reasoning/代码块/包裹文本。"""
+    raw = strip_code_fences(strip_reasoning_thoughts(safe_str(text))).strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    for start_char, end_char in (('{', '}'), ('[', ']')):
+        block = _extract_balanced_json_block(raw, start_char, end_char)
+        if block and block not in candidates:
+            candidates.append(block)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if expected_type is not None and not isinstance(parsed, expected_type):
+            continue
+        return parsed
+    return None
+
+
+def get_chat_message_text(message) -> str:
+    """提取 chat.completions message 的纯文本内容。"""
+    if message is None:
+        return ''
+
+    content = getattr(message, 'content', None)
+    if isinstance(content, list):
+        parts = []
+        for segment in content:
+            if isinstance(segment, dict):
+                parts.append(safe_str(segment.get('text')))
+            else:
+                parts.append(safe_str(getattr(segment, 'text', '')))
+        text = ''.join(parts)
+    else:
+        text = safe_str(content) or safe_str(getattr(message, 'reasoning_content', ''))
+
+    return strip_code_fences(strip_reasoning_thoughts(text)).strip()
+
+
+def extract_chat_message_json(message, expected_type=dict):
+    """优先读取 message.parsed，失败时从文本中提取 JSON。"""
+    parsed = getattr(message, 'parsed', None)
+    if expected_type is None:
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    elif isinstance(parsed, expected_type):
+        return parsed
+
+    return extract_json_from_text(
+        get_chat_message_text(message),
+        expected_type=expected_type,
+    )
 
 
 _THINKING_FALLBACK_WARNED_SCENES = set()

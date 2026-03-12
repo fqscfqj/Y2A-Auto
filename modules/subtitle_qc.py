@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from .utils import extract_chat_message_json, get_chat_message_text
 
 logger = logging.getLogger('subtitle_qc')
 SHORT_LINE_NORMALIZED_LEN = 8
@@ -202,29 +203,6 @@ def _build_openai_client(api_key: str, base_url: str):
     if base_url:
         options['base_url'] = base_url
     return openai.OpenAI(api_key=api_key, **options)
-
-
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    if not text:
-        return None
-    try:
-        from .utils import strip_reasoning_thoughts
-
-        cleaned = strip_reasoning_thoughts(text).strip()
-    except Exception:
-        cleaned = str(text).strip()
-    try:
-        return json.loads(cleaned)
-    except Exception:
-        pass
-
-    m = re.search(r'\{.*\}', cleaned, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
 
 
 def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -727,22 +705,14 @@ def _call_ai_judge(
     from .utils import openai_chat_create_with_thinking_control
 
     system = (
-        '你是严格的字幕质检员。目标：判断转录字幕是否足够可靠，可进入翻译和烧录流程。\n'
-        '如果字幕包含转录署名、字幕署名、噪声提示词、界面操作词、明显机器幻觉、长段机械重复或明显无语义模板句，必须判定为 failed。\n'
-        '若字幕极短、重复且信息量极低，即使句子本身语法正确，也必须判定为 failed。\n'
-        '短时长、术语密集、教学演示或名词解释类字幕中重复出现领域词，不等于机械重复。\n'
-        '只有当字幕主体看起来像真实人类说话、旁白或解说，且错误不影响整体理解时，才可判定为 passed。\n'
-        '请只输出严格 JSON，不要输出额外文本。输出格式示例：'
-        '{"passed": false, "score": 0.10, "reason": "hallucination_meta"}'
+        "你是严格的字幕质检员。判断字幕是否可进入翻译和烧录。"
+        "若存在署名行、Ignore noise、Click、明显机器幻觉、机械重复、超短低信息重复，必须判 failed。"
+        "术语密集但语义正常的教学/讲解字幕不等于机械重复。"
+        '只返回 JSON：{"passed":false,"score":0.10,"reason":"hallucination_meta"}。'
     )
 
     user = {
         'task': 'subtitle_qc',
-        'rules': (
-            '若样本中出现署名行、Ignore noise、Click、机械重复句、明显无语义模板句，或超短重复且信息量极低，必须判 failed。'
-            '短视频教程、术语讲解、软件名词罗列中出现 Adobe、Flash、CS6 之类领域词重复，不应直接视为机械重复。'
-            'reason 建议使用 hallucination_meta、healthy_dialogue、borderline_repeat 等短标签。'
-        ),
         'metrics': metrics,
         'subtitle_sample': sample_text,
         'output_schema': {
@@ -761,15 +731,18 @@ def _call_ai_judge(
                     {'role': 'system', 'content': system},
                     {'role': 'user', 'content': json.dumps(user, ensure_ascii=False)}
                 ],
-                'temperature': 0.2,
+                'temperature': 0.0,
+                'max_tokens': 120,
+                'response_format': {'type': 'json_object'},
             },
             thinking_enabled=config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
             logger=logger,
             scene_name='subtitle_qc',
         )
-        content = (resp.choices[0].message.content or '').strip()
-        parsed = _extract_json(content)
+        message = resp.choices[0].message
+        parsed = extract_chat_message_json(message, expected_type=dict)
         if not parsed:
+            logger.warning(f"字幕QC未返回有效JSON，响应预览: {get_chat_message_text(message)[:200]}")
             return None, None, None, 'ai_return_not_json'
 
         passed_val = parsed.get('passed', None)

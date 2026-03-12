@@ -16,8 +16,9 @@ from threading import Lock
 from modules.task_manager import TaskCancelledError
 from .utils import (
     get_app_subdir,
-    strip_reasoning_thoughts,
     openai_chat_create_with_thinking_control,
+    extract_chat_message_json,
+    get_chat_message_text,
 )
 
 logger = logging.getLogger('subtitle_translator')
@@ -391,17 +392,7 @@ class LLMRequester:
                 return [""] * len(texts)
             
             message = response.choices[0].message
-            # 优先使用最终答案；缺失时回退到 reasoning_content，并屏蔽 <think>
-            result = (message.content or getattr(message, 'reasoning_content', None) or '')
-            result = strip_reasoning_thoughts(result)
-            
-            # 检查结果是否为空
-            if not result.strip():
-                with self._log_lock:
-                    self.logger.warning(f"批次 {batch_id}: API返回空内容（content和reasoning_content均为空）")
-            
-            # 解析结构化翻译结果
-            return self._parse_structured_translation_result(result, len(texts), batch_id)
+            return self._parse_structured_translation_result(message, len(texts), batch_id)
             
         except Exception as e:
             with self._log_lock:
@@ -454,16 +445,14 @@ class LLMRequester:
                 return [""] * len(texts)
             
             message = response.choices[0].message
-            result = (message.content or getattr(message, 'reasoning_content', None) or '')
-            result = strip_reasoning_thoughts(result)
-            return self._parse_structured_translation_result(result, len(texts), batch_id)
+            return self._parse_structured_translation_result(message, len(texts), batch_id)
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"严格模式批次 {batch_id} 翻译失败: {e}")
             return texts
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
-        """构建结构化系统提示词 - 优化版：精简规则，减少token消耗"""
+        """构建结构化系统提示词。"""
         target_language = str(target_language).lower().strip()
         target_lang_map = {
             "zh": "中文",
@@ -474,33 +463,21 @@ class LLMRequester:
         target_lang_name = target_lang_map.get(target_language, "中文")
 
         if target_language != "zh":
-            return f"""你是字幕翻译器。将每条字幕翻译成{target_lang_name}，返回JSON。
+            return (
+                f"你是字幕翻译器。按顺序把 texts 每一项翻译成{target_lang_name}。"
+                "等价翻译，不解释、不扩写；保留数字、代码、URL、占位符和无公认译名的专有名词。"
+                '只返回 JSON：{"translations":["译文1","译文2"]}。'
+            )
 
-核心规则：
-1. 等价翻译：不解释、不扩写、不改写，保持原意
-2. 一一对应：输入N条，输出N条，顺序不变
-3. 保留原样：数字/代码/占位符/专有名词（无固定译名时）
-4. 自然表达：用{target_lang_name}口语，适合字幕阅读
-5. 完整翻译：除专有名词外，不保留整句原文
-
-仅返回JSON：
-{{"translations":["译文1","译文2",...]}}"""
-
-        return f"""你是字幕翻译器。将每条字幕翻译成简体中文，返回JSON。
-
-核心规则：
-1. 等价翻译：不解释、不扩写、不改写，保持原意
-2. 一一对应：输入N条，输出N条，顺序不变
-3. 中文优先：普通叙述、动作、关系、评价、说明性语句尽量译成自然简体中文，不要整句保留原文
-4. 仅少量保留原样：数字/代码/命令/占位符/配置键/URL/邮箱/账号标签/型号参数，以及品牌名、产品名、组织名或无公认译法的行业术语
-5. 中英混排时，能翻译的部分必须翻译，不能因为句中有术语就整句保留英文
-6. 自然表达：用适合字幕阅读的简体中文口语，不要生硬直译
-
-仅返回JSON：
-{{"translations":["译文1","译文2",...]}}"""
+        return (
+            "你是字幕翻译器。按顺序把 texts 每一项翻译成简体中文。"
+            "等价翻译，不解释、不扩写；数字、代码、URL、占位符和无公认译法的专有名词可保留，"
+            "其余可翻译内容尽量译成自然简体中文。"
+            '只返回 JSON：{"translations":["译文1","译文2"]}。'
+        )
 
     def _build_strict_structured_system_prompt(self, target_language: str) -> str:
-        """严格模式提示词：强制完整翻译，用于补救未译条目"""
+        """严格模式提示词：用于补救未译条目。"""
         target_language = str(target_language).lower().strip()
         target_lang_map = {
             "zh": "中文",
@@ -511,64 +488,34 @@ class LLMRequester:
         target_lang_name = target_lang_map.get(target_language, "中文")
 
         if target_language != "zh":
-            return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成{target_lang_name}，返回JSON格式。
+            return (
+                f"你是字幕翻译器（严格模式）。按顺序把 texts 每一项完整翻译成{target_lang_name}。"
+                "除数字、代码、URL、占位符和专有名词外，不要保留原文。"
+                '只返回 JSON：{"translations":["译文1","译文2"]}。'
+            )
 
-强制要求：
-1. 每条必须完整翻译，禁止保留原文
-2. 一一对应：输入N条输出N条
-3. 仅保留数字和代码占位符
-
-仅返回JSON格式：{{"translations":["译文1","译文2",...]}}"""
-        
-        return f"""你是字幕翻译器（严格模式）。将每条字幕完整翻译成简体中文，返回JSON格式。
-
-强制要求：
-1. 每条必须尽量完整翻译成自然简体中文，禁止整句保留原文
-2. 一一对应：输入N条输出N条
-3. 普通英文短语、句子、口语表达、说明文字都要译成简体中文
-4. 仅允许保留数字、代码、命令、占位符、配置键、URL、邮箱、账号标签、型号参数，以及品牌名、产品名、组织名或无公认译法的行业缩写
-5. 若句子中同时包含可翻译内容和少量术语，只保留术语，其余内容必须翻译
-
-仅返回JSON格式：{{"translations":["译文1","译文2",...]}}"""
+        return (
+            "你是字幕翻译器（严格模式）。按顺序把 texts 每一项尽量完整翻译成自然简体中文。"
+            "普通句子和说明文字不得整句保留原文；仅保留数字、代码、URL、占位符和必要专有名词。"
+            '只返回 JSON：{"translations":["译文1","译文2"]}。'
+        )
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
         """构建结构化用户提示词 - 优化版：系统提示已包含规则，此处仅提供数据"""
         return json.dumps({"texts": texts}, ensure_ascii=False)
 
-    @staticmethod
-    def _strip_code_fences(text: str) -> str:
-        """移除markdown代码块包裹，方便JSON解析。"""
-        try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = re.sub(r'^```[a-zA-Z0-9_-]*\s*', '', cleaned, flags=re.DOTALL)
-                cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.DOTALL)
-            return cleaned.strip()
-        except Exception:
-            return text
-
-    def _parse_structured_translation_result(self, result: str, expected_count: int, batch_id: str) -> List[str]:
+    def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
         try:
-            # 检查空响应
-            if not result or not result.strip():
+            json_result = extract_chat_message_json(message, expected_type=dict)
+            if not isinstance(json_result, dict):
+                preview = get_chat_message_text(message)
                 with self._log_lock:
-                    self.logger.warning(f"批次 {batch_id}: API返回空响应，将使用空翻译并依赖后续补翻")
+                    self.logger.warning(
+                        f"批次 {batch_id}: 未解析到有效JSON，响应预览: {preview[:200]}"
+                    )
                 return [""] * expected_count
-            
-            cleaned = self._strip_code_fences(result)
 
-            # 若包含额外文本，仅截取最外层花括号内的JSON
-            json_candidate = cleaned
-            if 'translations' in cleaned and '{' in cleaned:
-                start = cleaned.find('{')
-                end = cleaned.rfind('}')
-                if start != -1 and end != -1 and end > start:
-                    json_candidate = cleaned[start:end + 1]
-
-            # 解析JSON响应
-            json_result = json.loads(json_candidate)
-            
             if "translations" not in json_result:
                 with self._log_lock:
                     self.logger.warning(f"批次 {batch_id}: JSON响应缺少translations字段")
@@ -579,8 +526,7 @@ class LLMRequester:
             if not isinstance(translations, list):
                 with self._log_lock:
                     self.logger.warning(f"批次 {batch_id}: translations不是数组格式")
-                # 回退到简单解析
-                return self._fallback_parse_translation_result(result, expected_count)
+                return [""] * expected_count
             
             # 确保返回的翻译数量正确
             while len(translations) < expected_count:
@@ -593,37 +539,9 @@ class LLMRequester:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")
             
             return final_translations
-        except json.JSONDecodeError as e:
-            with self._log_lock:
-                # 记录更详细的信息以便调试
-                result_preview = result[:200] if result else "(empty)"
-                self.logger.error(f"批次 {batch_id}: JSON解析失败: {e}")
-                self.logger.debug(f"批次 {batch_id}: 原始响应预览: {result_preview}")
-            # 尝试回退解析
-            return self._fallback_parse_translation_result(result, expected_count)
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
-            return [""] * expected_count
-    
-    def _fallback_parse_translation_result(self, result: str, expected_count: int) -> List[str]:
-        """回退解析方法，用于处理非JSON响应。无法解析时返回空串以触发补翻。"""
-        try:
-            cleaned = self._strip_code_fences(result)
-            match = re.search(r'"translations"\s*:\s*(\[[\s\S]*?\])', cleaned)
-            if match:
-                try:
-                    arr = json.loads(match.group(1))
-                    if isinstance(arr, list):
-                        while len(arr) < expected_count:
-                            arr.append("")
-                        return arr[:expected_count]
-                except Exception:
-                    pass
-            # 无法提取有效译文时，返回空列表让后续补翻处理
-            return [""] * expected_count
-        except Exception as e:
-            self.logger.error(f"回退解析翻译结果失败: {e}")
             return [""] * expected_count
 
 class SubtitleTranslator:
