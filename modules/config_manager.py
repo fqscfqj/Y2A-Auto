@@ -9,11 +9,6 @@ from .utils import get_app_subdir
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
 
-DEPRECATED_CONFIG_KEYS = {
-    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES_ENABLED",
-    "SPEECH_RECOGNITION_MIN_SUBTITLE_LINES",
-}
-
 # 默认配置
 DEFAULT_CONFIG = {
     "AUTO_MODE_ENABLED": False, # 无人值守自动投稿总开关
@@ -41,7 +36,6 @@ DEFAULT_CONFIG = {
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
-    "BILIBILI_DEFAULT_REPOST": True,  # 兼容旧配置（已固定为转载投稿）
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
@@ -171,19 +165,6 @@ CONFIG_FILE = "config.json"
 config = {}
 
 
-def _normalize_voxtral_model_name(model_name):
-    """Normalize deprecated Voxtral aliases to supported defaults."""
-    model = str(model_name or '').strip()
-    if not model:
-        return DEFAULT_CONFIG["VOXTRAL_MODEL_NAME"]
-    if model == "voxtral-small-latest":
-        logger.warning(
-            "Detected deprecated VOXTRAL_MODEL_NAME 'voxtral-small-latest'; "
-            "auto-migrating to 'voxtral-mini-latest'"
-        )
-        return "voxtral-mini-latest"
-    return model
-
 def load_config():
     """
     加载配置文件，如果不存在则创建默认配置
@@ -226,25 +207,11 @@ def load_config():
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
 
-                deprecated_keys_removed = False
-                for deprecated_key in DEPRECATED_CONFIG_KEYS:
-                    if deprecated_key in config:
-                        config.pop(deprecated_key, None)
-                        deprecated_keys_removed = True
-                
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
-                voxtral_model_before = config.get('VOXTRAL_MODEL_NAME')
-                config['VOXTRAL_MODEL_NAME'] = _normalize_voxtral_model_name(
-                    voxtral_model_before
-                )
-                voxtral_model_changed = config['VOXTRAL_MODEL_NAME'] != voxtral_model_before
-
                 if (
                     missing_keys
                     or encoder_changed
-                    or voxtral_model_changed
                     or upload_target_changed
-                    or deprecated_keys_removed
                 ):
                     save_config(config, config_path)
                 return config
@@ -318,8 +285,6 @@ def update_config(new_config):
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
                 current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'
-            elif key == 'VOXTRAL_MODEL_NAME':
-                current_config[key] = _normalize_voxtral_model_name(new_config[key])
             else:
                 current_config[key] = new_config[key]
 

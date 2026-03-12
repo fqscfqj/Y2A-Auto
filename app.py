@@ -641,9 +641,6 @@ except Exception as e:
 logger = logging.getLogger('Y2A-Auto')
 logger.setLevel(logging.WARNING)
 
-# 静态目录变量（保留用于兼容性）
-covers_dir = os.path.join(get_app_subdir('static'), 'covers')
-
 def init_id_mapping():
     """
     初始化AcFun分区ID映射.
@@ -1139,18 +1136,9 @@ def edit_task(task_id):
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
         description = request.form.get('description_translated', '')
-        legacy_partition_id = request.form.get('selected_partition_id', '')
         partition_id_acfun = request.form.get('selected_partition_id_acfun', '')
         partition_id_bilibili = request.form.get('selected_partition_id_bilibili', '')
         tags_json = request.form.get('tags_json', '[]')
-
-        if upload_target == 'both':
-            partition_id_acfun = partition_id_acfun or legacy_partition_id
-        elif upload_target == 'bilibili':
-            partition_id_bilibili = partition_id_bilibili or legacy_partition_id
-        else:
-            partition_id_acfun = partition_id_acfun or legacy_partition_id
-        
         # 更新任务信息
         update_data = {
             'video_title_translated': video_title,
@@ -1160,12 +1148,6 @@ def edit_task(task_id):
             'tags_generated': tags_json
         }
 
-        # 兼容旧字段（历史逻辑仍会读取）
-        if upload_target == 'bilibili':
-            update_data['selected_partition_id'] = partition_id_bilibili
-        else:
-            update_data['selected_partition_id'] = partition_id_acfun
-        
         # 只有在安全状态下才允许设置为可上传状态，避免与正在处理的任务产生竞态条件
         safe_states_to_make_uploadable = [
             TASK_STATES['DOWNLOADED'],        # 已下载，可以上传
