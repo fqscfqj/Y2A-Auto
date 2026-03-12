@@ -215,6 +215,14 @@
                                     {% endif %}
                                 </div>
                             {% else %}
+                                {% set current_target = upload_target|default('acfun') %}
+                                {% if current_target == 'bilibili' %}
+                                    {% set current_selected_partition_id = task.selected_partition_id_bilibili or task.selected_partition_id %}
+                                    {% set current_recommended_partition_id = task.recommended_partition_id_bilibili or task.recommended_partition_id %}
+                                {% else %}
+                                    {% set current_selected_partition_id = task.selected_partition_id_acfun or task.selected_partition_id %}
+                                    {% set current_recommended_partition_id = task.recommended_partition_id_acfun or task.recommended_partition_id %}
+                                {% endif %}
                                 <div class="mb-3">
                                     <label for="selected_partition_id" class="form-label">选择分区</label>
                                     <select class="form-select" id="selected_partition_id" name="selected_partition_id" required>
@@ -222,16 +230,16 @@
                                         {% for category in id_mapping %}
                                             <optgroup label="{{ category.category }}">
                                                 {% for partition in category.partitions %}
-                                                    <option value="{{ partition.id }}" {% if task.selected_partition_id == partition.id or (not task.selected_partition_id and task.recommended_partition_id == partition.id) %}selected{% endif %}>{{ partition.name }} ({{ partition.id }})</option>
+                                                    <option value="{{ partition.id }}" {% if current_selected_partition_id == partition.id or (not current_selected_partition_id and current_recommended_partition_id == partition.id) %}selected{% endif %}>{{ partition.name }} ({{ partition.id }})</option>
                                                     {% for sub_partition in partition.sub_partitions %}
-                                                        <option value="{{ sub_partition.id }}" {% if task.selected_partition_id == sub_partition.id or (not task.selected_partition_id and task.recommended_partition_id == sub_partition.id) %}selected{% endif %}>&nbsp;&nbsp;└ {{ sub_partition.name }} ({{ sub_partition.id }})</option>
+                                                        <option value="{{ sub_partition.id }}" {% if current_selected_partition_id == sub_partition.id or (not current_selected_partition_id and current_recommended_partition_id == sub_partition.id) %}selected{% endif %}>&nbsp;&nbsp;└ {{ sub_partition.name }} ({{ sub_partition.id }})</option>
                                                     {% endfor %}
                                                 {% endfor %}
                                             </optgroup>
                                         {% endfor %}
                                     </select>
-                                    {% if task.recommended_partition_id %}
-                                        <div class="form-text">AI推荐分区: {{ get_partition_name(task.recommended_partition_id, upload_target|default('acfun')) }} ({{ task.recommended_partition_id }})</div>
+                                    {% if current_recommended_partition_id %}
+                                        <div class="form-text">AI推荐分区: {{ get_partition_name(current_recommended_partition_id, current_target) }} ({{ current_recommended_partition_id }})</div>
                                     {% endif %}
                                 </div>
                             {% endif %}
