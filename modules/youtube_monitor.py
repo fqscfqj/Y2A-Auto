@@ -524,18 +524,25 @@ class YouTubeMonitor:
         try:
             config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             os.makedirs(config_dir, exist_ok=True)
-            
+
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
-            
+
+            # 防止路径遍历攻击：验证路径在config目录内
+            config_file_real = os.path.realpath(config_file)
+            config_dir_real = os.path.realpath(config_dir)
+            if not config_file_real.startswith(config_dir_real + os.sep):
+                logger.error(f"配置文件路径不在config目录内，拒绝保存: {config_id}")
+                return
+
             # 添加配置ID到数据中
             config_data_with_id = config_data.copy()
             config_data_with_id['config_id'] = config_id
             config_data_with_id['created_time'] = datetime.now().isoformat()
-            
-            with open(config_file, 'w', encoding='utf-8') as f:
+
+            with open(config_file_real, 'w', encoding='utf-8') as f:
                 json.dump(config_data_with_id, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"监控配置已保存到文件: {config_file}")
+
+            logger.info(f"监控配置已保存到文件: {config_file_real}")
         except Exception as e:
             logger.error(f"保存配置文件失败: {str(e)}")
     
@@ -544,9 +551,16 @@ class YouTubeMonitor:
         try:
             config_dir = os.path.join(get_app_subdir('config'), 'youtube_monitor')
             config_file = os.path.join(config_dir, f"monitor_config_{config_id}.json")
-            
-            if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
+
+            # 防止路径遍历攻击：验证路径在config目录内
+            config_file_real = os.path.realpath(config_file)
+            config_dir_real = os.path.realpath(config_dir)
+            if not config_file_real.startswith(config_dir_real + os.sep):
+                logger.error(f"配置文件路径不在config目录内，拒绝加载: {config_id}")
+                return None
+
+            if os.path.exists(config_file_real):
+                with open(config_file_real, 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception as e:
             logger.error(f"加载配置文件失败: {str(e)}")

@@ -949,10 +949,31 @@ def update_task(task_id, silent=False, **kwargs):
     
     # 添加更新时间
     kwargs['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
+
+    # 白名单验证：只允许更新有效的列名
+    ALLOWED_COLUMNS = {
+        'youtube_url', 'upload_target', 'status', 'created_at', 'updated_at',
+        'video_title_original', 'video_title_translated', 'description_original',
+        'description_translated', 'tags_generated', 'recommended_partition_id',
+        'selected_partition_id', 'recommended_partition_id_acfun',
+        'selected_partition_id_acfun', 'recommended_partition_id_bilibili',
+        'selected_partition_id_bilibili', 'cover_path_local', 'video_path_local',
+        'subtitle_path_original', 'subtitle_path_translated', 'subtitle_language_detected',
+        'subtitle_qc_failed', 'subtitle_qc_reason', 'subtitle_qc_score',
+        'subtitle_qc_checked_at', 'metadata_json_path_local', 'moderation_result',
+        'error_message', 'pipeline_checkpoint', 'upload_progress',
+        'acfun_upload_response', 'bilibili_upload_response'
+    }
+
+    # 过滤掉不在白名单中的列
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in ALLOWED_COLUMNS}
+
+    if not filtered_kwargs:
+        return False
+
     # 构建SQL更新语句
-    set_clause = ', '.join([f"{key} = ?" for key in kwargs.keys()])
-    values = list(kwargs.values())
+    set_clause = ', '.join([f"{key} = ?" for key in filtered_kwargs.keys()])
+    values = list(filtered_kwargs.values())
     values.append(task_id)
     
     conn = get_db_connection()
@@ -966,10 +987,10 @@ def update_task(task_id, silent=False, **kwargs):
                 conn.commit()
                 publish_task_event('task_updated', {
                     'task_id': task_id,
-                    'status': kwargs.get('status')
+                    'status': filtered_kwargs.get('status')
                 })
                 if not silent:  # 只有非静默模式才记录到主日志
-                    logger.info(f"任务 {task_id} 更新成功: {kwargs}")
+                    logger.info(f"任务 {task_id} 更新成功: {filtered_kwargs}")
                 return True
             except sqlite3.OperationalError as e:
                 err_msg = str(e).lower()
@@ -1232,23 +1253,35 @@ def retry_failed_tasks(config=None):
 def delete_task_files(task_id):
     """
     删除任务相关文件
-    
+
     Args:
         task_id: 任务ID
-    
+
     Returns:
         success: 删除是否成功
     """
     # 删除下载目录
     task_dir = os.path.join(DOWNLOADS_DIR, task_id)
-    if os.path.exists(task_dir):
+
+    # 防止路径遍历攻击：验证路径在downloads目录内
+    try:
+        task_dir_real = os.path.realpath(task_dir)
+        downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
+        if not task_dir_real.startswith(downloads_dir_real + os.sep):
+            logger.error(f"任务 {task_id} 的路径不在downloads目录内，拒绝删除")
+            return False
+    except (ValueError, OSError) as e:
+        logger.error(f"验证任务 {task_id} 路径失败: {str(e)}")
+        return False
+
+    if os.path.exists(task_dir_real):
         try:
-            shutil.rmtree(task_dir)
-            logger.info(f"任务 {task_id} 的下载目录已删除: {task_dir}")
+            shutil.rmtree(task_dir_real)
+            logger.info(f"任务 {task_id} 的下载目录已删除: {task_dir_real}")
         except Exception as e:
             logger.error(f"删除任务 {task_id} 的下载目录失败: {str(e)}")
             # 不直接返回False，尝试继续删除其他文件
-    
+
     # 封面图片现在保存在downloads目录中，无需单独删除
 
     return True

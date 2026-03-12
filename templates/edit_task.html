@@ -322,9 +322,10 @@
                     const tagElement = document.createElement('div');
                     tagElement.className = 'badge bg-primary d-flex align-items-center';
                     tagElement.style.fontSize = '14px';
-                    tagElement.innerHTML = `
-                        <span class="me-2">${tag}</span>
-                    `;
+                    const tagSpan = document.createElement('span');
+                    tagSpan.className = 'me-2';
+                    tagSpan.textContent = tag;
+                    tagElement.appendChild(tagSpan);
                     tagsContainer.appendChild(tagElement);
                 });
             } catch (e) {

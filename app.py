@@ -1257,19 +1257,32 @@ def get_task_cover(task_id):
     # 如果没有封面，尝试在任务目录中查找
     downloads_dir = get_app_subdir('downloads')
     task_dir = os.path.join(downloads_dir, task_id)
-    
-    if os.path.exists(task_dir):
+
+    # 防止路径遍历攻击：验证路径在downloads目录内
+    try:
+        task_dir_real = os.path.realpath(task_dir)
+        downloads_dir_real = os.path.realpath(downloads_dir)
+        if not task_dir_real.startswith(downloads_dir_real + os.sep):
+            return '', 404
+    except (ValueError, OSError):
+        return '', 404
+
+    if os.path.exists(task_dir_real):
         # 查找常见的封面文件名
         cover_names = ['cover.jpg', 'cover.png', 'cover.webp', 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp']
         for name in cover_names:
-            potential_cover = os.path.join(task_dir, name)
-            if os.path.exists(potential_cover):
-                return send_file(potential_cover)
-        
+            potential_cover = os.path.join(task_dir_real, name)
+            potential_cover_real = os.path.realpath(potential_cover)
+            if potential_cover_real.startswith(downloads_dir_real + os.sep) and os.path.exists(potential_cover_real):
+                return send_file(potential_cover_real)
+
         # 查找任何图片文件
-        for filename in os.listdir(task_dir):
+        for filename in os.listdir(task_dir_real):
             if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                return send_file(os.path.join(task_dir, filename))
+                file_path = os.path.join(task_dir_real, filename)
+                file_path_real = os.path.realpath(file_path)
+                if file_path_real.startswith(downloads_dir_real + os.sep):
+                    return send_file(file_path_real)
     
     # 没有找到封面
     return '', 404
@@ -1356,7 +1369,7 @@ def add_task_via_extension():
                 
     except Exception as e:
         logger.error(f"通过扩展添加任务失败: {str(e)}")
-        return jsonify({'success': False, 'message': f'服务器错误: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': '服务器内部错误，请稍后重试'}), 500
 
 @app.route('/tasks/add', methods=['POST'])
 @login_required
@@ -2070,7 +2083,7 @@ def acfun_qrcode_start():
         })
     except Exception as e:
         logger.error(f"发起 AcFun 二维码登录失败: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': '二维码登录失败，请稍后重试'}), 500
 
 @app.route('/settings/acfun/qrcode/status/<session_id>', methods=['GET'])
 @login_required
@@ -2100,7 +2113,7 @@ def acfun_qrcode_status(session_id):
         return jsonify({'success': True, **status_data})
     except Exception as e:
         logger.error(f"查询 AcFun 二维码登录状态失败: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': '查询登录状态失败，请稍后重试'}), 500
 
 @app.route('/settings/bilibili/qrcode/start', methods=['POST'])
 @login_required
@@ -2124,7 +2137,7 @@ def bilibili_qrcode_start():
         })
     except Exception as e:
         logger.error(f"发起 bilibili 二维码登录失败: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': '二维码登录失败，请稍后重试'}), 500
 
 @app.route('/settings/bilibili/qrcode/status/<session_id>', methods=['GET'])
 @login_required
@@ -2148,7 +2161,7 @@ def bilibili_qrcode_status(session_id):
         return jsonify({'success': True, **status_data})
     except Exception as e:
         logger.error(f"查询 bilibili 二维码登录状态失败: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': '查询登录状态失败，请稍后重试'}), 500
 
 @app.route('/settings/reset', methods=['POST'])
 @login_required
@@ -2170,7 +2183,7 @@ def reset_settings():
         return jsonify({'status': 'success', 'message': '设置已重置'})
     except Exception as e:
         logger.error(f"重置设置失败: {str(e)}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({'status': 'error', 'message': '重置设置失败，请稍后重试'}), 500
 
 @app.route('/logs/cleanup', methods=['POST'])
 @login_required
@@ -2767,11 +2780,11 @@ def sync_cookies():
             
         except Exception as e:
             logger.error(f"写入cookie文件失败: {str(e)}")
-            return jsonify({'error': f'保存cookie失败: {str(e)}'}), 500
-            
+            return jsonify({'error': '保存cookie失败，请稍后重试'}), 500
+
     except Exception as e:
         logger.error(f"Cookie同步API异常: {str(e)}")
-        return jsonify({'error': f'服务器内部错误: {str(e)}'}), 500
+        return jsonify({'error': '服务器内部错误，请稍后重试'}), 500
 
 @app.route('/api/cookies/status', methods=['GET'])
 @login_required
@@ -2807,7 +2820,7 @@ def get_cookie_status():
         
     except Exception as e:
         logger.error(f"获取cookie状态失败: {str(e)}")
-        return jsonify({'error': f'获取状态失败: {str(e)}'}), 500
+        return jsonify({'error': '获取状态失败，请稍后重试'}), 500
 
 @app.route('/api/cookies/refresh-needed', methods=['POST'])
 @login_required
@@ -2835,7 +2848,7 @@ def cookie_refresh_needed():
         
     except Exception as e:
         logger.error(f"处理Cookie刷新需求失败: {str(e)}")
-        return jsonify({'error': f'处理失败: {str(e)}'}), 500
+        return jsonify({'error': '处理失败，请稍后重试'}), 500
 
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")

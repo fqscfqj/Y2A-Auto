@@ -35,6 +35,7 @@ tasks.db
 *.sqlite
 *.sqlite3
 db/
+security/
 
 # Configuration and secrets
 config/*

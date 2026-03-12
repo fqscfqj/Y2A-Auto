@@ -44,6 +44,8 @@ jobs:
 
   delete-old-docker-images:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Delete older Docker Hub images (inline script)
         env:

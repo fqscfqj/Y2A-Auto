@@ -15,7 +15,7 @@ from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 import re
 
 # 其他导入和常量定义
@@ -25,6 +25,21 @@ _YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
+
+
+def _sanitize_url_for_logging(url):
+    """移除URL中的敏感信息（用户名、密码）用于安全日志记录"""
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        if parsed.username or parsed.password:
+            # 重建URL，移除认证信息
+            sanitized = parsed._replace(netloc=f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname)
+            return urlunparse(sanitized)
+        return url
+    except Exception:
+        return "[URL]"
 
 
 def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
@@ -242,7 +257,7 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     if proxy_url:
         cmd.extend(['--proxy', proxy_url])
         if logger:
-            logger.info(f"测试视频可用性时使用代理: {proxy_url}")
+            logger.info(f"测试视频可用性时使用代理: {_sanitize_url_for_logging(proxy_url)}")
     
     if cookies_path and os.path.exists(cookies_path):
         cmd.extend(['--cookies', cookies_path])
@@ -435,7 +450,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         proxy_url = build_proxy_url(config)
         if proxy_url:
             cmd.extend(['--proxy', proxy_url])
-            logger.info(f"使用代理: {proxy_url}")
+            logger.info(f"使用代理: {_sanitize_url_for_logging(proxy_url)}")
         
         # 配置下载线程数
         download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)
