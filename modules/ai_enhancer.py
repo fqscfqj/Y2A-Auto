@@ -295,6 +295,7 @@ _LANGUAGE_NAME_MAP = {
     "ja": "日本語",
     "ko": "한국어",
 }
+_DESCRIPTION_ONLY_RETRY_REASONS = frozenset({"empty_output", "description_not_natural"})
 
 
 def _normalize_target_language(target_language: str) -> str:
@@ -554,7 +555,7 @@ def _count_description_blocks(text: str) -> int:
 
 
 def _should_use_description_only_retry(reasons: Sequence[str]) -> bool:
-    return any(reason in {"empty_output", "description_not_natural"} for reason in (reasons or []))
+    return bool(_DESCRIPTION_ONLY_RETRY_REASONS.intersection(reasons or ()))
 
 
 def _log_description_field_state(logger, phase: str, raw_value: Any, sanitized_value: str) -> None:
@@ -564,6 +565,51 @@ def _log_description_field_state(logger, phase: str, raw_value: Any, sanitized_v
         logger.warning(f"{phase} description 模型输出为空")
     elif not sanitized_text:
         logger.warning(f"{phase} description 模型有输出，但后处理后为空")
+
+
+def _request_translated_metadata_fields(
+    client,
+    model_name: str,
+    system_prompt: str,
+    payload: Dict[str, Any],
+    *,
+    max_tokens: int,
+    thinking_enabled: bool,
+    logger,
+    scene_name: str,
+    description_max_blocks: Optional[int] = 2,
+    description_log_phase: Optional[str] = None,
+) -> Dict[str, str]:
+    parsed = _request_json_object(
+        client=client,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        payload=payload,
+        max_tokens=max_tokens,
+        temperature=0.2,
+        thinking_enabled=thinking_enabled,
+        logger_obj=logger,
+        scene_name=scene_name,
+    )
+    raw_title = (parsed or {}).get("title", '')
+    raw_description = (parsed or {}).get("description", '')
+    translated_fields = {
+        "title": _sanitize_metadata_field(raw_title, "title", logger=logger),
+        "description": _sanitize_metadata_field(
+            raw_description,
+            "description",
+            logger=logger,
+            max_blocks=description_max_blocks,
+        ),
+    }
+    if description_log_phase and "description" in payload:
+        _log_description_field_state(
+            logger,
+            description_log_phase,
+            raw_description,
+            translated_fields["description"],
+        )
+    return translated_fields
 
 
 def translate_video_metadata(
@@ -606,15 +652,11 @@ def translate_video_metadata(
     ):
         logger.info("已在提示阶段前执行结构化预清洗（去导流/站外信息/列表化噪声）")
 
-    fallbacks = {
-        "title": _build_fallback_text(cleaned_title, "title", logger=logger) if translate_title else '',
+    title_fallback = _build_fallback_text(cleaned_title, "title", logger=logger) if translate_title else ''
+    final_result = {
+        "title": title_fallback if translate_title else '',
         "description": '',
     }
-    final_result = {"title": '', "description": ''}
-    if translate_title:
-        final_result["title"] = fallbacks["title"]
-    if translate_description:
-        final_result["description"] = fallbacks["description"]
 
     payload = _build_metadata_translation_payload(
         cleaned_title,
@@ -638,38 +680,18 @@ def translate_video_metadata(
         thinking_enabled = openai_config.get('OPENAI_THINKING_ENABLED', False)
 
         start_time = time.time()
-        parsed = _request_json_object(
+        translated_fields = _request_translated_metadata_fields(
             client=client,
             model_name=model_name,
             system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False),
             payload=payload,
             max_tokens=_estimate_metadata_max_tokens(requested_fields),
-            temperature=0.2,
             thinking_enabled=thinking_enabled,
-            logger_obj=logger,
             scene_name='ai_enhancer_metadata_translate',
+            logger=logger,
+            description_max_blocks=None,
+            description_log_phase="首轮",
         )
-
-        raw_translated_fields = {
-            "title": (parsed or {}).get("title", ''),
-            "description": (parsed or {}).get("description", ''),
-        }
-        translated_fields = {
-            "title": _sanitize_metadata_field(raw_translated_fields["title"], "title", logger=logger),
-            "description": _sanitize_metadata_field(
-                raw_translated_fields["description"],
-                "description",
-                logger=logger,
-                max_blocks=None,
-            ),
-        }
-        if "description" in payload:
-            _log_description_field_state(
-                logger,
-                "首轮",
-                raw_translated_fields["description"],
-                translated_fields["description"],
-            )
         cleaned_sources = {
             "title": cleaned_title if "title" in payload else '',
             "description": cleaned_description if "description" in payload else '',
@@ -691,23 +713,18 @@ def translate_video_metadata(
                     translate_title=True,
                     translate_description=False,
                 )
-                retry_parsed = _request_json_object(
+                retry_fields = _request_translated_metadata_fields(
                     client=client,
                     model_name=model_name,
                     system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True),
                     payload=retry_payload,
                     max_tokens=_estimate_metadata_max_tokens(["title"]),
-                    temperature=0.2,
                     thinking_enabled=thinking_enabled,
-                    logger_obj=logger,
                     scene_name='ai_enhancer_metadata_translate_title_retry',
+                    logger=logger,
+                    description_max_blocks=None,
                 )
-                if isinstance(retry_parsed, dict):
-                    translated_fields["title"] = _sanitize_metadata_field(
-                        retry_parsed.get("title", ''),
-                        "title",
-                        logger=logger,
-                    )
+                translated_fields["title"] = retry_fields["title"]
 
             if "description" in invalid_fields:
                 description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True)
@@ -726,31 +743,19 @@ def translate_video_metadata(
                     translate_title=False,
                     translate_description=True,
                 )
-                retry_parsed = _request_json_object(
+                retry_fields = _request_translated_metadata_fields(
                     client=client,
                     model_name=model_name,
                     system_prompt=description_retry_prompt,
                     payload=description_retry_payload,
                     max_tokens=_estimate_metadata_max_tokens(["description"]),
-                    temperature=0.2,
                     thinking_enabled=thinking_enabled,
-                    logger_obj=logger,
                     scene_name=description_retry_scene,
+                    logger=logger,
+                    description_max_blocks=None,
+                    description_log_phase="重试",
                 )
-                if isinstance(retry_parsed, dict):
-                    raw_retry_description = retry_parsed.get("description", '')
-                    translated_fields["description"] = _sanitize_metadata_field(
-                        raw_retry_description,
-                        "description",
-                        logger=logger,
-                        max_blocks=None,
-                    )
-                    _log_description_field_state(
-                        logger,
-                        "重试",
-                        raw_retry_description,
-                        translated_fields["description"],
-                    )
+                translated_fields["description"] = retry_fields["description"]
 
             invalid_fields = _collect_invalid_metadata_fields(
                 cleaned_sources,
@@ -768,7 +773,7 @@ def translate_video_metadata(
                     final_result[field_name] = ''
                     logger.warning("简介翻译失败，按策略置空，不回退原语言文本")
                 else:
-                    final_result[field_name] = fallbacks[field_name]
+                    final_result[field_name] = title_fallback
             else:
                 final_result[field_name] = translated_fields[field_name]
 
