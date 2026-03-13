@@ -220,7 +220,7 @@ def _looks_like_promo_block(block: str) -> bool:
             return True
     return False
 
-def _compress_description_blocks(text: str, max_blocks: int = 2) -> str:
+def _compress_description_blocks(text: str, max_blocks: Optional[int] = 2) -> str:
     blocks = []
     for block in _split_blocks(text):
         if _looks_like_promo_block(block):
@@ -244,9 +244,11 @@ def _compress_description_blocks(text: str, max_blocks: int = 2) -> str:
                 lines.append(normalized)
         if lines:
             blocks = [' '.join(lines)]
-    return '\n\n'.join(blocks[:max_blocks]).strip()
+    if max_blocks is not None:
+        blocks = blocks[:max(0, int(max_blocks))]
+    return '\n\n'.join(blocks).strip()
 
-def _pre_clean(text: str, content_type: str = "description") -> str:
+def _pre_clean(text: str, content_type: str = "description", max_blocks: Optional[int] = 2) -> str:
     """在发送给模型前做确定性去噪：移除导流信息，并将描述压缩成自然段。"""
     if not text:
         return text
@@ -272,7 +274,7 @@ def _pre_clean(text: str, content_type: str = "description") -> str:
         title = _normalize_whitespace(title).replace('\n', ' ')
         return title.strip()
 
-    return _compress_description_blocks(cleaned, max_blocks=2)
+    return _compress_description_blocks(cleaned, max_blocks=max_blocks)
 
 
 def _has_meaningful_content(text: str, content_type: str = "description") -> bool:
@@ -307,7 +309,7 @@ def _target_language_name(target_language: str) -> str:
     normalized = _normalize_target_language(target_language)
     return _LANGUAGE_NAME_MAP.get(normalized, safe_str(target_language).strip() or "简体中文")
 
-def _post_clean(text: str, content_type: str = "description") -> str:
+def _post_clean(text: str, content_type: str = "description", max_blocks: Optional[int] = 2) -> str:
     if not text:
         return ''
 
@@ -335,7 +337,7 @@ def _post_clean(text: str, content_type: str = "description") -> str:
         cleaned = _normalize_whitespace(cleaned).replace('\n', ' ')
         return cleaned.strip()
 
-    cleaned = _compress_description_blocks(cleaned, max_blocks=2)
+    cleaned = _compress_description_blocks(cleaned, max_blocks=max_blocks)
     return _normalize_whitespace(cleaned)
 
 def _normalize_for_similarity(text: str) -> str:
@@ -360,9 +362,11 @@ def _contains_promo_signal(text: str) -> bool:
             return True
     return False
 
-def _is_natural_description(text: str) -> bool:
+def _is_natural_description(text: str, max_blocks: Optional[int] = 2) -> bool:
     blocks = _split_blocks(text)
-    if not blocks or len(blocks) > 2:
+    if not blocks:
+        return False
+    if max_blocks is not None and len(blocks) > max_blocks:
         return False
     if _LIST_LINE_RE.search(text):
         return False
@@ -372,7 +376,13 @@ def _is_natural_description(text: str) -> bool:
         return False
     return True
 
-def _validate_output(source_clean: str, output_text: str, content_type: str = "description"):
+def _validate_output(
+    source_clean: str,
+    output_text: str,
+    content_type: str = "description",
+    *,
+    description_max_blocks: Optional[int] = 2,
+):
     reasons = []
     ct_lower = str(content_type).lower().strip()
     out = (output_text or '').strip()
@@ -393,7 +403,7 @@ def _validate_output(source_clean: str, output_text: str, content_type: str = "d
         elif src_norm == out_norm and len(src_norm) >= 6:
             reasons.append('identical_to_source')
 
-    if ct_lower != 'title' and out and not _is_natural_description(out):
+    if ct_lower != 'title' and out and not _is_natural_description(out, max_blocks=description_max_blocks):
         reasons.append('description_not_natural')
 
     return len(reasons) == 0, reasons
@@ -411,10 +421,10 @@ def _apply_output_limits(text: str, content_type: str = "description", logger=No
         limited = limited[:997] + "..."
     return limited
 
-def _build_fallback_text(source_clean: str, content_type: str, logger=None) -> str:
+def _build_fallback_text(source_clean: str, content_type: str, logger=None, max_blocks: Optional[int] = 2) -> str:
     if not source_clean:
         return ''
-    fallback = _post_clean(source_clean, content_type=content_type)
+    fallback = _post_clean(source_clean, content_type=content_type, max_blocks=max_blocks)
     return _apply_output_limits(fallback, content_type=content_type, logger=logger)
 
 
@@ -423,13 +433,23 @@ def _build_metadata_translation_system_prompt(target_language: str, retry: bool 
     prompt = (
         f"你是视频标题和简介翻译器。将输入字段改写为{target_name}。"
         "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
-        "title 必须是自然单行标题；description 必须是 0-2 段自然简介。"
+        "title 必须是自然单行标题；description 必须是自然简介，可多段，但不能写成列表、备注或说明。"
         "禁止补充新事实、解释或备注。"
         '只返回 JSON：{"title":"","description":""}。'
     )
     if retry:
         prompt += "仅重写本次输入中提供的失败字段；无法安全输出时返回空字符串。"
     return prompt
+
+
+def _build_description_retry_system_prompt(target_language: str) -> str:
+    target_name = _target_language_name(target_language)
+    return (
+        f"你是视频简介翻译器。将 description 翻译并改写为{target_name}自然简介。"
+        "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
+        "description 可以多段，不限制段落数，但不能输出列表、备注、解释或额外说明。"
+        '只返回 JSON：{"description":""}。'
+    )
 
 
 def _build_metadata_translation_payload(
@@ -484,8 +504,13 @@ def _request_json_object(
     return None
 
 
-def _sanitize_metadata_field(value: Any, content_type: str, logger=None) -> str:
-    cleaned = _post_clean(safe_str(value), content_type=content_type)
+def _sanitize_metadata_field(
+    value: Any,
+    content_type: str,
+    logger=None,
+    max_blocks: Optional[int] = 2,
+) -> str:
+    cleaned = _post_clean(safe_str(value), content_type=content_type, max_blocks=max_blocks)
     return _apply_output_limits(cleaned, content_type=content_type, logger=logger)
 
 
@@ -502,6 +527,8 @@ def _estimate_metadata_max_tokens(field_names: Sequence[str]) -> int:
 def _collect_invalid_metadata_fields(
     cleaned_sources: Dict[str, str],
     outputs: Dict[str, str],
+    *,
+    description_max_blocks: Optional[int] = 2,
 ) -> Dict[str, List[str]]:
     invalid_fields: Dict[str, List[str]] = {}
     for field_name in ("title", "description"):
@@ -515,10 +542,28 @@ def _collect_invalid_metadata_fields(
             source_clean,
             output_text,
             content_type=field_name,
+            description_max_blocks=description_max_blocks,
         )
         if not is_valid:
             invalid_fields[field_name] = reasons
     return invalid_fields
+
+
+def _count_description_blocks(text: str) -> int:
+    return len(_split_blocks(text))
+
+
+def _should_use_description_only_retry(reasons: Sequence[str]) -> bool:
+    return any(reason in {"empty_output", "description_not_natural"} for reason in (reasons or []))
+
+
+def _log_description_field_state(logger, phase: str, raw_value: Any, sanitized_value: str) -> None:
+    raw_text = safe_str(raw_value).strip()
+    sanitized_text = safe_str(sanitized_value).strip()
+    if not raw_text:
+        logger.warning(f"{phase} description 模型输出为空")
+    elif not sanitized_text:
+        logger.warning(f"{phase} description 模型有输出，但后处理后为空")
 
 
 def translate_video_metadata(
@@ -540,7 +585,11 @@ def translate_video_metadata(
     logger.info(f"原简介长度: {len(raw_description)} 字符")
 
     cleaned_title = _pre_clean(raw_title, content_type="title") if translate_title and raw_title else ''
-    cleaned_description = _pre_clean(raw_description, content_type="description") if translate_description and raw_description else ''
+    cleaned_description = (
+        _pre_clean(raw_description, content_type="description", max_blocks=None)
+        if translate_description and raw_description
+        else ''
+    )
     if cleaned_title and not _has_meaningful_content(cleaned_title, content_type="title"):
         cleaned_title = ''
     if cleaned_description and not _has_meaningful_content(cleaned_description, content_type="description"):
@@ -548,6 +597,10 @@ def translate_video_metadata(
 
     if translate_description and raw_description and not cleaned_description:
         logger.info("简介预清洗后无有效内容，直接留空")
+    elif cleaned_description:
+        logger.info(
+            f"简介预清洗后长度: {len(cleaned_description)} 字符，段落数: {_count_description_blocks(cleaned_description)}"
+        )
     if (translate_title and raw_title and cleaned_title != raw_title) or (
         translate_description and raw_description and cleaned_description != raw_description
     ):
@@ -555,11 +608,7 @@ def translate_video_metadata(
 
     fallbacks = {
         "title": _build_fallback_text(cleaned_title, "title", logger=logger) if translate_title else '',
-        "description": (
-            _build_fallback_text(cleaned_description, "description", logger=logger)
-            if translate_description and cleaned_description
-            else ''
-        ),
+        "description": '',
     }
     final_result = {"title": '', "description": ''}
     if translate_title:
@@ -601,53 +650,125 @@ def translate_video_metadata(
             scene_name='ai_enhancer_metadata_translate',
         )
 
-        translated_fields = {
-            "title": _sanitize_metadata_field((parsed or {}).get("title", ''), "title", logger=logger),
-            "description": _sanitize_metadata_field((parsed or {}).get("description", ''), "description", logger=logger),
+        raw_translated_fields = {
+            "title": (parsed or {}).get("title", ''),
+            "description": (parsed or {}).get("description", ''),
         }
+        translated_fields = {
+            "title": _sanitize_metadata_field(raw_translated_fields["title"], "title", logger=logger),
+            "description": _sanitize_metadata_field(
+                raw_translated_fields["description"],
+                "description",
+                logger=logger,
+                max_blocks=None,
+            ),
+        }
+        if "description" in payload:
+            _log_description_field_state(
+                logger,
+                "首轮",
+                raw_translated_fields["description"],
+                translated_fields["description"],
+            )
         cleaned_sources = {
             "title": cleaned_title if "title" in payload else '',
             "description": cleaned_description if "description" in payload else '',
         }
-        invalid_fields = _collect_invalid_metadata_fields(cleaned_sources, translated_fields)
+        invalid_fields = _collect_invalid_metadata_fields(
+            cleaned_sources,
+            translated_fields,
+            description_max_blocks=None,
+        )
 
         if invalid_fields:
             logger.info(f"元数据首轮输出未通过校验，失败字段: {invalid_fields}")
-            retry_payload = _build_metadata_translation_payload(
-                cleaned_title if "title" in invalid_fields else '',
-                cleaned_description if "description" in invalid_fields else '',
-                target_language=target_language,
-                translate_title="title" in invalid_fields,
-                translate_description="description" in invalid_fields,
-            )
-            if len(retry_payload) > 1:
+
+            if "title" in invalid_fields:
+                retry_payload = _build_metadata_translation_payload(
+                    cleaned_title,
+                    '',
+                    target_language=target_language,
+                    translate_title=True,
+                    translate_description=False,
+                )
                 retry_parsed = _request_json_object(
                     client=client,
                     model_name=model_name,
                     system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True),
                     payload=retry_payload,
-                    max_tokens=_estimate_metadata_max_tokens(list(invalid_fields.keys())),
+                    max_tokens=_estimate_metadata_max_tokens(["title"]),
                     temperature=0.2,
                     thinking_enabled=thinking_enabled,
                     logger_obj=logger,
-                    scene_name='ai_enhancer_metadata_translate_retry',
+                    scene_name='ai_enhancer_metadata_translate_title_retry',
                 )
                 if isinstance(retry_parsed, dict):
-                    for field_name in invalid_fields:
-                        translated_fields[field_name] = _sanitize_metadata_field(
-                            retry_parsed.get(field_name, ''),
-                            field_name,
-                            logger=logger,
-                        )
-                invalid_fields = _collect_invalid_metadata_fields(cleaned_sources, translated_fields)
-                if invalid_fields:
-                    logger.warning(f"元数据重试后仍有失败字段，回退清洗结果: {invalid_fields}")
+                    translated_fields["title"] = _sanitize_metadata_field(
+                        retry_parsed.get("title", ''),
+                        "title",
+                        logger=logger,
+                    )
+
+            if "description" in invalid_fields:
+                description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True)
+                description_retry_scene = 'ai_enhancer_metadata_translate_retry'
+                if _should_use_description_only_retry(invalid_fields["description"]):
+                    logger.info(
+                        f"description 字段触发定向重试，失败原因: {invalid_fields['description']}"
+                    )
+                    description_retry_prompt = _build_description_retry_system_prompt(target_language)
+                    description_retry_scene = 'ai_enhancer_metadata_translate_description_retry'
+
+                description_retry_payload = _build_metadata_translation_payload(
+                    '',
+                    cleaned_description,
+                    target_language=target_language,
+                    translate_title=False,
+                    translate_description=True,
+                )
+                retry_parsed = _request_json_object(
+                    client=client,
+                    model_name=model_name,
+                    system_prompt=description_retry_prompt,
+                    payload=description_retry_payload,
+                    max_tokens=_estimate_metadata_max_tokens(["description"]),
+                    temperature=0.2,
+                    thinking_enabled=thinking_enabled,
+                    logger_obj=logger,
+                    scene_name=description_retry_scene,
+                )
+                if isinstance(retry_parsed, dict):
+                    raw_retry_description = retry_parsed.get("description", '')
+                    translated_fields["description"] = _sanitize_metadata_field(
+                        raw_retry_description,
+                        "description",
+                        logger=logger,
+                        max_blocks=None,
+                    )
+                    _log_description_field_state(
+                        logger,
+                        "重试",
+                        raw_retry_description,
+                        translated_fields["description"],
+                    )
+
+            invalid_fields = _collect_invalid_metadata_fields(
+                cleaned_sources,
+                translated_fields,
+                description_max_blocks=None,
+            )
+            if invalid_fields:
+                logger.warning(f"元数据重试后仍有失败字段: {invalid_fields}")
 
         for field_name in ("title", "description"):
             if field_name not in payload:
                 continue
             if field_name in invalid_fields or not translated_fields.get(field_name):
-                final_result[field_name] = fallbacks[field_name]
+                if field_name == "description":
+                    final_result[field_name] = ''
+                    logger.warning("简介翻译失败，按策略置空，不回退原语言文本")
+                else:
+                    final_result[field_name] = fallbacks[field_name]
             else:
                 final_result[field_name] = translated_fields[field_name]
 

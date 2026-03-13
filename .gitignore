@@ -61,3 +61,5 @@ desktop.ini
 docs/_build/
 site/ 
 
+tests/
+
