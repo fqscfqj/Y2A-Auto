@@ -2540,11 +2540,17 @@ class TaskProcessor:
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.82
     _ASS_OVERRIDE_FONT_SIZE_MIN = 38.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
+    _ASS_OUTLINE_RATIO = 0.019
+    _ASS_OUTLINE_MIN = 0.8
+    _ASS_OUTLINE_MAX = 1.4
+    _ASS_OVERRIDE_OUTLINE_RATIO = 0.023
+    _ASS_OVERRIDE_OUTLINE_MIN = 1.0
+    _ASS_OVERRIDE_OUTLINE_MAX = 1.6
     _STREAMING_SRT_TEMPLATE_HEIGHTS = (720, 1080, 1440, 2160)
     _STREAMING_SRT_STYLE_TEMPLATES = {
         720: {
             'FontSize': 18.0,
-            'Outline': 1.0,
+            'Outline': 0.4,
             'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
@@ -2552,7 +2558,7 @@ class TaskProcessor:
         },
         1080: {
             'FontSize': 18.0,
-            'Outline': 1.0,
+            'Outline': 0.4,
             'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
@@ -2560,7 +2566,7 @@ class TaskProcessor:
         },
         1440: {
             'FontSize': 18.0,
-            'Outline': 1.0,
+            'Outline': 0.4,
             'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
@@ -2568,7 +2574,7 @@ class TaskProcessor:
         },
         2160: {
             'FontSize': 18.0,
-            'Outline': 1.0,
+            'Outline': 0.4,
             'Shadow': 0.6,
             'MarginL': 60,
             'MarginR': 60,
@@ -3070,7 +3076,11 @@ class TaskProcessor:
 
         style.update({
             'FontSize': font_size,
-            'Outline': cls._clamp(font_size * 0.031, 1.5, 2.6),
+            'Outline': cls._clamp(
+                font_size * cls._ASS_OUTLINE_RATIO,
+                cls._ASS_OUTLINE_MIN,
+                cls._ASS_OUTLINE_MAX,
+            ),
             'Shadow': cls._clamp(font_size * 0.014, 0.5, 1.1),
             'MarginV': margin_v,
             'MarginL': side_margin,
@@ -3431,7 +3441,11 @@ class TaskProcessor:
         if target_font_size >= float(font_size):
             return None, False
 
-        adjusted_outline = cls._clamp(target_font_size * 0.036, 1.8, 3.0)
+        adjusted_outline = cls._clamp(
+            target_font_size * cls._ASS_OVERRIDE_OUTLINE_RATIO,
+            cls._ASS_OVERRIDE_OUTLINE_MIN,
+            cls._ASS_OVERRIDE_OUTLINE_MAX,
+        )
         adjusted_shadow = cls._clamp(target_font_size * 0.018, 0.8, 1.5)
         adjusted_fits, _, _, _ = cls._check_ass_lines_width_safety(
             lines,
