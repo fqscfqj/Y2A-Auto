@@ -2581,6 +2581,19 @@ class TaskProcessor:
             'MarginV': 16,
         },
     }
+    _STREAMING_SRT_PORTRAIT_FONT_SIZE_ANCHORS = (
+        (1280.0, 12.5),
+        (1920.0, 12.5),
+        (2560.0, 13.5),
+    )
+    _STREAMING_SRT_PORTRAIT_MARGIN_V_ANCHORS = (
+        (1280.0, 18.0),
+        (1920.0, 28.0),
+        (2560.0, 40.0),
+    )
+    _STREAMING_SRT_PORTRAIT_SIDE_MARGIN_RATIO = 0.08
+    _STREAMING_SRT_LANDSCAPE_LAYOUT_DENSITY = 0.72
+    _STREAMING_SRT_PORTRAIT_LAYOUT_DENSITY = 0.96
     _BUNDLED_FONT_EXTENSIONS = ('.otf', '.ttf', '.ttc', '.otc')
 
     @staticmethod
@@ -3105,6 +3118,22 @@ class TaskProcessor:
         width, height = cls._resolve_ass_dimensions(video_width, video_height)
         template_height = cls._resolve_streaming_srt_template_height(width, height)
         template = dict(cls._STREAMING_SRT_STYLE_TEMPLATES[template_height])
+        is_portrait = height > width
+        if is_portrait:
+            template.update({
+                'FontSize': cls._clamp(
+                    cls._interpolate_anchor_value(height, cls._STREAMING_SRT_PORTRAIT_FONT_SIZE_ANCHORS),
+                    12.5,
+                    13.5,
+                ),
+                'MarginL': int(round(cls._clamp(width * cls._STREAMING_SRT_PORTRAIT_SIDE_MARGIN_RATIO, 40.0, 88.0))),
+                'MarginR': int(round(cls._clamp(width * cls._STREAMING_SRT_PORTRAIT_SIDE_MARGIN_RATIO, 40.0, 88.0))),
+                'MarginV': int(round(cls._clamp(
+                    cls._interpolate_anchor_value(height, cls._STREAMING_SRT_PORTRAIT_MARGIN_V_ANCHORS),
+                    16.0,
+                    44.0,
+                ))),
+            })
         template.update({
             'FontName': cls._sanitize_ass_font_name(font_family),
             'Alignment': 2,
@@ -3145,15 +3174,43 @@ class TaskProcessor:
         return ':'.join(filter_segments)
 
     @classmethod
-    def _create_streaming_srt_engine(cls):
+    def _estimate_streaming_srt_layout_limits(cls, video_width, video_height):
+        style = cls._build_streaming_srt_style_description('Arial', video_width, video_height)
+        width, height = cls._resolve_ass_dimensions(video_width, video_height)
+        is_portrait = height > width
+        usable_width = max(
+            120.0,
+            float(width) - float(style['MarginL']) - float(style['MarginR']),
+        )
+        font_size = max(1.0, float(style['FontSize']))
+        density = (
+            cls._STREAMING_SRT_PORTRAIT_LAYOUT_DENSITY
+            if is_portrait
+            else cls._STREAMING_SRT_LANDSCAPE_LAYOUT_DENSITY
+        )
+        max_line_length = int(round(usable_width / font_size * density))
+        if is_portrait:
+            max_line_length = int(cls._clamp(max_line_length, 12.0, 18.0))
+            max_lines = 3
+        else:
+            max_line_length = int(cls._clamp(max_line_length, 16.0, 22.0))
+            max_lines = 2
+        return max_line_length, max_lines
+
+    @classmethod
+    def _create_streaming_srt_engine(cls, video_width=None, video_height=None):
         from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+        max_line_length, max_lines = cls._estimate_streaming_srt_layout_limits(
+            video_width,
+            video_height,
+        )
 
         return SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=42,
-                max_lines=2,
+                max_line_length=max_line_length,
+                max_lines=max_lines,
                 split_long_cues=False,
-                preserve_line_breaks=True,
+                preserve_line_breaks=False,
                 normalize_punctuation=False,
                 filter_filler_words=False,
             ),
@@ -3161,8 +3218,61 @@ class TaskProcessor:
         )
 
     @classmethod
-    def _prepare_streaming_srt_cues(cls, subtitle_text):
-        engine = cls._create_streaming_srt_engine()
+    def _wrap_streaming_srt_text(cls, text, video_width, video_height):
+        normalized = cls._merge_subtitle_text_parts(
+            str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        )
+        if not normalized:
+            return ''
+
+        width, height = cls._resolve_ass_dimensions(video_width, video_height)
+        is_portrait = height > width
+        style = cls._build_streaming_srt_style_description('Arial', width, height)
+        max_line_length, max_lines = cls._estimate_streaming_srt_layout_limits(width, height)
+        usable_width = max(
+            120.0,
+            float(width) - float(style['MarginL']) - float(style['MarginR']),
+        )
+        font_size = max(1.0, float(style['FontSize']))
+        outline = float(style['Outline'])
+        shadow = float(style['Shadow'])
+        single_line_limit = int(cls._clamp(
+            round(usable_width / font_size * cls._ASS_LANDSCAPE_SINGLE_LINE_DENSITY),
+            18.0,
+            28.0,
+        ))
+        wrapped_lines = cls._build_wrapped_lines_for_ass(
+            normalized,
+            is_portrait=is_portrait,
+            max_line_length=max_line_length,
+            max_lines=max_lines,
+            single_line_limit=single_line_limit,
+            aggressive=False,
+        )
+        fits, _, _, _ = cls._check_ass_lines_width_safety(
+            wrapped_lines,
+            usable_width,
+            font_size,
+            outline,
+            shadow,
+        )
+        if not fits:
+            hard_wrap_lines, _ = cls._find_safe_hard_wrap_lines(
+                normalized,
+                max_line_length=max_line_length,
+                max_lines=max_lines,
+                usable_width=usable_width,
+                font_size=font_size,
+                outline=outline,
+                shadow=shadow,
+            )
+            if hard_wrap_lines:
+                wrapped_lines = hard_wrap_lines
+        return '\n'.join(line for line in wrapped_lines if line).strip() or normalized
+
+    @classmethod
+    def _prepare_streaming_srt_cues(cls, subtitle_text, video_width=None, video_height=None):
+        engine = cls._create_streaming_srt_engine(video_width, video_height)
         cues = engine.parse_srt(subtitle_text or '')
         if not cues:
             return []
@@ -3171,6 +3281,12 @@ class TaskProcessor:
         cues = engine.resolve_overlaps(cues, total_duration)
         cues = engine.apply_text_processing(cues)
         cues = engine.finalize_cues(cues, total_duration)
+        for cue in cues:
+            cue['text'] = cls._wrap_streaming_srt_text(
+                cue.get('text', ''),
+                video_width,
+                video_height,
+            )
         return cues
 
     def _build_streaming_srt_file(
@@ -3196,12 +3312,19 @@ class TaskProcessor:
             with open(source_path, 'r', encoding='utf-8-sig', errors='replace') as subtitle_file:
                 subtitle_content = subtitle_file.read()
 
-            cues = self._prepare_streaming_srt_cues(subtitle_content)
+            cues = self._prepare_streaming_srt_cues(
+                subtitle_content,
+                video_width=video_width,
+                video_height=video_height,
+            )
             if not cues:
                 task_logger.error(f"未解析出有效字幕条目，无法生成SRT: {os.path.basename(subtitle_path)}")
                 return False
 
-            srt_text = self._create_streaming_srt_engine().render_srt(cues)
+            srt_text = self._create_streaming_srt_engine(
+                video_width,
+                video_height,
+            ).render_srt(cues)
             if not srt_text:
                 task_logger.error(f"字幕渲染为SRT失败: {os.path.basename(subtitle_path)}")
                 return False
