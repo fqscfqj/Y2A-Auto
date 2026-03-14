@@ -740,10 +740,11 @@ def _call_ai_judge(
             scene_name='subtitle_qc',
         )
         message = resp.choices[0].message
-        parsed = extract_chat_message_json(message, expected_type=dict)
-        if not parsed:
+        parsed_raw = extract_chat_message_json(message, expected_type=dict)
+        if not isinstance(parsed_raw, dict) or not parsed_raw:
             logger.warning(f"字幕QC未返回有效JSON，响应预览: {get_chat_message_text(message)[:200]}")
             return None, None, None, 'ai_return_not_json'
+        parsed: Dict[str, Any] = parsed_raw
 
         passed_val = parsed.get('passed', None)
         if passed_val is None:

@@ -22,6 +22,7 @@ import queue
 from .utils import get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 import subprocess
+from typing import Any, Dict
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -5175,7 +5176,7 @@ class TaskProcessor:
                 recommended_field = _get_partition_field_name(platform, 'recommended')
 
                 latest_task = get_task(task_id) or {}
-                updates = {recommended_field: recommended_partition_id}
+                updates: Dict[str, Any] = {recommended_field: recommended_partition_id}
                 if not str(latest_task.get(selected_field) or '').strip():
                     updates[selected_field] = recommended_partition_id
 
