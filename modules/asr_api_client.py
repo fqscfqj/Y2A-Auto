@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import math
 import os
 import re
 import threading
@@ -882,6 +883,25 @@ class AsrApiClient:
 
         language = self._extract_language_from_data(payload)
         segments_data = payload.get('segments')
+        top_level_words = payload.get('words') if isinstance(payload.get('words'), list) else []
+        expected_duration_s = 0.0
+        if window is not None:
+            expected_duration_s = max(0.0, float(window.duration_s or 0.0))
+        raw_duration = self._to_optional_float(payload.get('duration')) or self._probe_result_duration(payload)
+        if expected_duration_s <= 0.0 and raw_duration:
+            expected_duration_s = max(0.0, float(raw_duration))
+        timing_scale = self._detect_timing_scale(
+            segments_data if isinstance(segments_data, list) else [],
+            top_level_words,
+            expected_duration_s=expected_duration_s,
+        )
+        if timing_scale != 1.0 and isinstance(segments_data, list) and segments_data:
+            self.logger.info(
+                "Normalizing ASR timestamps by scale %.0f for %s payload (expected_duration=%.2fs)",
+                timing_scale,
+                provider,
+                expected_duration_s,
+            )
         segments: List[AsrSegmentTiming] = []
 
         if isinstance(segments_data, list):
@@ -891,11 +911,11 @@ class AsrApiClient:
                 text = str(raw_segment.get('text') or '').strip()
                 if not text:
                     continue
-                start_s = float(raw_segment.get('start', 0.0) or 0.0)
-                end_s = float(raw_segment.get('end', 0.0) or 0.0)
+                start_s = self._normalize_timing_value(raw_segment.get('start', 0.0), timing_scale)
+                end_s = self._normalize_timing_value(raw_segment.get('end', 0.0), timing_scale)
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
-                words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [])
+                words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
                 if self._is_implausible_for_duration(text, max(end_s - start_s, 0.1)):
                     raise ImplausibleAsrResultError(
                         f"segment is implausible for returned timing {start_s:.2f}s-{end_s:.2f}s"
@@ -907,13 +927,22 @@ class AsrApiClient:
                         text=text,
                         words=words,
                         confidence=self._to_optional_float(raw_segment.get('avg_logprob') or raw_segment.get('confidence')),
-                        metadata={'id': raw_segment.get('id')},
+                        metadata={'id': raw_segment.get('id'), 'timing_scale': timing_scale},
                     )
                 )
 
+        if segments and top_level_words:
+            top_words = self._extract_words(top_level_words, timing_scale=timing_scale)
+            if top_words:
+                self._attach_top_level_words_to_segments(segments, top_words)
+
         text = str(payload.get('text') or '').strip()
         if not segments and text:
-            duration = self._to_optional_float(payload.get('duration')) or self._probe_result_duration(payload) or 1.0
+            duration = self._normalize_timing_value(raw_duration, timing_scale) if raw_duration is not None else 0.0
+            if duration <= 0.0 and window is not None:
+                duration = max(0.0, float(window.duration_s or 0.0))
+            if duration <= 0.0:
+                duration = 1.0
             if self._is_implausible_for_duration(text, duration):
                 raise ImplausibleAsrResultError("fallback cue without segments is implausible")
             segments.append(AsrSegmentTiming(start_s=0.0, end_s=duration, text=text))
@@ -931,7 +960,7 @@ class AsrApiClient:
             segments=segments,
             window=window,
             failure_token='' if segments or text else 'asr_failed',
-            metadata={'granularities': list(granularities)},
+            metadata={'granularities': list(granularities), 'timing_scale': timing_scale},
         )
 
     def _firered_payload_to_result(
@@ -965,15 +994,22 @@ class AsrApiClient:
 
     @staticmethod
     def _payload_has_words(payload: Dict[str, Any]) -> bool:
+        top_level_words = payload.get('words') or []
+        if AsrApiClient._extract_words(top_level_words):
+            return True
         segments = payload.get('segments') or []
         if isinstance(segments, list):
             for segment in segments:
-                if isinstance(segment, dict) and (segment.get('words') or segment.get('tokens')):
+                if not isinstance(segment, dict):
+                    continue
+                if AsrApiClient._extract_words(segment.get('words') or []):
+                    return True
+                if AsrApiClient._extract_words(segment.get('tokens') or []):
                     return True
         return False
 
     @staticmethod
-    def _extract_words(raw_words: Iterable[Any]) -> List[AsrWordTiming]:
+    def _extract_words(raw_words: Iterable[Any], timing_scale: float = 1.0) -> List[AsrWordTiming]:
         words: List[AsrWordTiming] = []
         for raw_word in raw_words or []:
             if not isinstance(raw_word, dict):
@@ -981,12 +1017,116 @@ class AsrApiClient:
             text = str(raw_word.get('word') or raw_word.get('text') or '').strip()
             if not text:
                 continue
-            start_s = float(raw_word.get('start', raw_word.get('start_s', 0.0)) or 0.0)
-            end_s = float(raw_word.get('end', raw_word.get('end_s', 0.0)) or 0.0)
+            start_s = AsrApiClient._normalize_timing_value(raw_word.get('start', raw_word.get('start_s', 0.0)), timing_scale)
+            end_s = AsrApiClient._normalize_timing_value(raw_word.get('end', raw_word.get('end_s', 0.0)), timing_scale)
             if end_s <= start_s:
                 continue
             words.append(AsrWordTiming(start_s=start_s, end_s=end_s, text=text))
         return words
+
+    @staticmethod
+    def _normalize_timing_value(value: Any, timing_scale: float = 1.0) -> float:
+        try:
+            numeric = float(value or 0.0)
+        except Exception:
+            return 0.0
+        scale = float(timing_scale or 1.0)
+        if scale <= 0.0:
+            scale = 1.0
+        return numeric / scale
+
+    @classmethod
+    def _detect_timing_scale(
+        cls,
+        raw_segments: Iterable[Any],
+        raw_words: Iterable[Any],
+        *,
+        expected_duration_s: float,
+    ) -> float:
+        values: List[float] = []
+        for raw_segment in raw_segments or []:
+            if not isinstance(raw_segment, dict):
+                continue
+            for key in ('start', 'end'):
+                numeric = cls._to_optional_float(raw_segment.get(key))
+                if numeric and numeric > 0:
+                    values.append(abs(numeric))
+            for raw_word in raw_segment.get('words') or []:
+                if not isinstance(raw_word, dict):
+                    continue
+                for key in ('start', 'end', 'start_s', 'end_s'):
+                    numeric = cls._to_optional_float(raw_word.get(key))
+                    if numeric and numeric > 0:
+                        values.append(abs(numeric))
+        for raw_word in raw_words or []:
+            if not isinstance(raw_word, dict):
+                continue
+            for key in ('start', 'end', 'start_s', 'end_s'):
+                numeric = cls._to_optional_float(raw_word.get(key))
+                if numeric and numeric > 0:
+                    values.append(abs(numeric))
+
+        if not values:
+            return 1.0
+
+        max_value = max(values)
+        if max_value <= 0.0:
+            return 1.0
+
+        if expected_duration_s > 0.0:
+            candidate_scales = (1.0, 1e3, 1e6, 1e9)
+            best_scale = 1.0
+            best_score = float('inf')
+            for scale in candidate_scales:
+                normalized = max_value / scale
+                ratio = max(normalized / max(expected_duration_s, 1e-6), 1e-9)
+                score = abs(math.log(ratio))
+                if normalized < expected_duration_s * 0.05:
+                    score += 4.0
+                elif normalized > expected_duration_s * 20.0:
+                    score += 4.0
+                if score < best_score:
+                    best_score = score
+                    best_scale = scale
+            if best_scale != 1.0 and max_value > expected_duration_s * 100.0:
+                return best_scale
+
+        if max_value >= 1e8:
+            return 1e9
+        if max_value >= 1e5:
+            return 1e6
+        if max_value >= 1e4:
+            return 1e3
+        return 1.0
+
+    @staticmethod
+    def _attach_top_level_words_to_segments(
+        segments: List[AsrSegmentTiming],
+        words: List[AsrWordTiming],
+    ):
+        if not segments or not words:
+            return
+        for segment in segments:
+            if segment.words:
+                continue
+            segment.words = []
+        for word in words:
+            selected_segment: Optional[AsrSegmentTiming] = None
+            best_overlap = -1.0
+            for segment in segments:
+                overlap = min(word.end_s, segment.end_s) - max(word.start_s, segment.start_s)
+                if overlap > best_overlap and overlap > 0.0:
+                    best_overlap = overlap
+                    selected_segment = segment
+            if selected_segment is None:
+                selected_segment = min(
+                    segments,
+                    key=lambda segment: min(
+                        abs(word.start_s - segment.start_s),
+                        abs(word.end_s - segment.end_s),
+                    ),
+                )
+            selected_segment.words.append(word)
 
     @staticmethod
     def _extract_language_from_data(data: Dict[str, Any]) -> str:

@@ -79,19 +79,57 @@ def evaluate_case(case_dir: Path) -> Dict[str, object]:
     }
 
 
+def evaluate_pair(
+    generated_path: Path,
+    reference_path: Path,
+    *,
+    media_duration_s: float = 0.0,
+    case_name: str = "ad_hoc",
+) -> Dict[str, object]:
+    generated = _load_cues(generated_path)
+    reference = _load_cues(reference_path)
+    return {
+        "case": case_name,
+        "generated_cues": len(generated),
+        "reference_cues": len(reference),
+        "boundary_error_s": round(_boundary_error(reference, generated), 4),
+        "speech_coverage": round(_speech_coverage(generated, media_duration_s), 4),
+        "duplicate_rate": round(_duplicate_rate(generated), 4),
+        "fallback_frequency": 0.0,
+        "fallback_tokens": [],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate generated subtitles against reference SRT files.")
-    parser.add_argument("cases_root", help="Directory containing per-case folders with generated.srt/reference.srt")
+    parser.add_argument("cases_root", nargs="?", help="Directory containing per-case folders with generated.srt/reference.srt")
+    parser.add_argument("--generated", help="Single generated subtitle file path")
+    parser.add_argument("--reference", help="Single reference subtitle file path")
+    parser.add_argument("--media-duration", type=float, default=0.0, help="Optional media duration in seconds for single-pair mode")
     parser.add_argument("--output", help="Optional JSON output path")
     args = parser.parse_args()
 
-    cases_root = Path(args.cases_root).resolve()
     reports = []
-    for case_dir in sorted(path for path in cases_root.iterdir() if path.is_dir()):
-        generated_path = case_dir / "generated.srt"
-        reference_path = case_dir / "reference.srt"
-        if generated_path.exists() and reference_path.exists():
-            reports.append(evaluate_case(case_dir))
+    if args.generated and args.reference:
+        generated_path = Path(args.generated).resolve()
+        reference_path = Path(args.reference).resolve()
+        reports.append(
+            evaluate_pair(
+                generated_path,
+                reference_path,
+                media_duration_s=float(args.media_duration or 0.0),
+                case_name=generated_path.stem,
+            )
+        )
+    else:
+        if not args.cases_root:
+            parser.error("cases_root is required unless --generated and --reference are provided")
+        cases_root = Path(args.cases_root).resolve()
+        for case_dir in sorted(path for path in cases_root.iterdir() if path.is_dir()):
+            generated_path = case_dir / "generated.srt"
+            reference_path = case_dir / "reference.srt"
+            if generated_path.exists() and reference_path.exists():
+                reports.append(evaluate_case(case_dir))
 
     summary = {
         "cases": reports,
