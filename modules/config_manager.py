@@ -5,6 +5,7 @@ import os
 import json
 import logging
 from .utils import get_app_subdir
+from .speech_pipeline_settings import inject_speech_pipeline_defaults
 
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
@@ -105,7 +106,7 @@ DEFAULT_CONFIG = {
     "VOXTRAL_API_KEY": "",
     "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",
     "VOXTRAL_MODEL_NAME": "voxtral-mini-latest",
-    "VOXTRAL_TIMESTAMP_GRANULARITIES": "segment",
+    "VOXTRAL_TIMESTAMP_GRANULARITIES": "segment,word",
     "VOXTRAL_DIARIZE": False,
     "VOXTRAL_CONTEXT_BIAS": "",
     "VOXTRAL_LANGUAGE": "",
@@ -134,6 +135,9 @@ DEFAULT_CONFIG = {
     "VAD_MERGE_GAP_S": 0.35,  # 缩小自动合并窗口，减少跨句吞并
     "VAD_MIN_SEGMENT_S": 0.8,  # 允许略短片段保留独立句边界
     "VAD_MAX_SEGMENT_S_FOR_SPLIT": 15.0,  # 与搜索窗硬上限对齐
+    "ASR_WORD_TIMESTAMPS_ENABLED": True,  # 优先请求词级时间戳以提升边界精度
+    "VAD_REFINEMENT_ENABLED": True,  # 对粗检出的语音窗执行二次边界收敛
+    "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.015,  # 低于该占比时触发宽松VAD重试
     # 转写参数
     "WHISPER_LANGUAGE": "",  # 强制语言（如 en, zh, ja），空=自动检测
     "WHISPER_PROMPT": "",  # 转写提示（引导生成，减少幻觉）
@@ -161,6 +165,8 @@ DEFAULT_CONFIG = {
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
     "WHISPER_FALLBACK_TO_FIXED_CHUNKS": False,  # VAD失败时回退到固定切分（默认关闭）
 }
+
+DEFAULT_CONFIG = inject_speech_pipeline_defaults(DEFAULT_CONFIG)
 
 CONFIG_FILE = "config.json"
 config = {}

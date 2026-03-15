@@ -979,7 +979,7 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="voxtral-timestamp-granularities" class="form-label">时间戳粒度</label>
-                                                            <input type="text" id="voxtral-timestamp-granularities" name="VOXTRAL_TIMESTAMP_GRANULARITIES" value="{{ config.get('VOXTRAL_TIMESTAMP_GRANULARITIES', 'segment') }}" class="form-control" placeholder="segment 或 segment,word">
+                                                            <input type="text" id="voxtral-timestamp-granularities" name="VOXTRAL_TIMESTAMP_GRANULARITIES" value="{{ config.get('VOXTRAL_TIMESTAMP_GRANULARITIES', 'segment,word') }}" class="form-control" placeholder="segment 或 segment,word">
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
@@ -1028,7 +1028,7 @@
                                             <div class="settings-card-header">
                                                 <div>
                                                     <span class="section-eyebrow">共享控制</span>
-                                                    <h4>VAD、分片与回退</h4>
+                                                    <h4>扫描窗、时间戳与回退</h4>
                                                 </div>
                                                 <div class="settings-inline-badges">
                                                     <span class="settings-pill" id="shared-vad-provider-pill">Whisper</span>
@@ -1040,26 +1040,48 @@
                                                     <div class="vad-overview-main">
                                                         <label class="checkbox-label">
                                                             <input type="checkbox" name="VAD_ENABLED" {% if config.get('VAD_ENABLED', False) %}checked{% endif %}>
-                                                            启用 VAD 语音段检测
+                                                            启用 VAD 语音扫描窗
                                                         </label>
                                                     </div>
                                                     <div class="vad-overview-side">
                                                         <span class="settings-mini-kicker">当前说明</span>
-                                                        <p class="mb-0" id="shared-vad-provider-copy">当前为 Whisper 模式，VAD、分片窗口与失败回退会直接影响 Whisper 的分段转写行为。</p>
+                                                        <p class="mb-0" id="shared-vad-provider-copy">当前为 Whisper 模式，扫描窗、词级时间戳和失败回退会共同决定最终字幕时间轴。</p>
                                                     </div>
                                                 </div>
                                                 <div class="mt-3">
                                                     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedVadOptions" aria-expanded="true" aria-controls="advancedVadOptions">
-                                                        <i class="bi bi-sliders"></i> VAD 与分片选项
+                                                        <i class="bi bi-sliders"></i> 扫描窗与分片选项
                                                     </button>
                                                     <div class="collapse show mt-3" id="advancedVadOptions">
                                                         <div class="row g-3">
                                                             <div class="col-lg-6">
                                                                 <div class="settings-option-card">
                                                                     <h5>质量与容错</h5>
-                                                                    <div class="form-group mb-0">
-                                                                        <label for="whisper-max-retries" class="form-label">最大重试次数</label>
-                                                                        <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
+                                                                    <div class="row g-3">
+                                                                        <div class="col-md-6">
+                                                                            <div class="form-group mb-0">
+                                                                                <label for="whisper-max-retries" class="form-label">最大重试次数</label>
+                                                                                <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
+                                                                            </div>
+                                                                        </div>
+                                                                        <div class="col-md-6">
+                                                                            <div class="form-group mb-0">
+                                                                                <label for="vad-min-coverage" class="form-label">最低语音覆盖率</label>
+                                                                                <input type="number" min="0" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) }}" class="form-control">
+                                                                            </div>
+                                                                        </div>
+                                                                        <div class="col-12">
+                                                                            <label class="checkbox-label">
+                                                                                <input type="checkbox" name="ASR_WORD_TIMESTAMPS_ENABLED" {% if config.get('ASR_WORD_TIMESTAMPS_ENABLED', True) %}checked{% endif %}>
+                                                                                优先请求词级时间戳
+                                                                            </label>
+                                                                        </div>
+                                                                        <div class="col-12">
+                                                                            <label class="checkbox-label">
+                                                                                <input type="checkbox" name="VAD_REFINEMENT_ENABLED" {% if config.get('VAD_REFINEMENT_ENABLED', True) %}checked{% endif %}>
+                                                                                启用二次边界收敛
+                                                                            </label>
+                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -1070,13 +1092,13 @@
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="audio-chunk-window" class="form-label">分片窗口（秒）</label>
-                                                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 25.0) }}" class="form-control">
+                                                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 15.0) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="audio-chunk-overlap" class="form-label">分片重叠（秒）</label>
-                                                                                <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.2) }}" class="form-control">
+                                                                                <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-12">
@@ -1090,7 +1112,7 @@
                                                             </div>
                                                             <div class="col-12">
                                                                 <div class="settings-option-card">
-                                                                    <h5>VAD 参数</h5>
+                                                                    <h5>VAD 扫描参数</h5>
                                                                     <div class="row g-3">
                                                                         <div class="col-md-4">
                                                                             <div class="form-group mb-0">
@@ -1107,7 +1129,7 @@
                                                                         <div class="col-md-4">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-max-segment" class="form-label">最大片段（秒）</label>
-                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 90) }}" min="10" class="form-control">
+                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 15.0) }}" min="10" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                     </div>
@@ -1578,7 +1600,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     sharedVadProviderPill.textContent = 'Whisper';
                 }
                 if (sharedVadProviderCopy) {
-                    sharedVadProviderCopy.textContent = '当前为 Whisper 模式，VAD、分片窗口与失败回退会直接影响 Whisper 的分段转写行为。';
+                    sharedVadProviderCopy.textContent = '当前为 Whisper 模式，扫描窗、词级时间戳和失败回退会共同决定最终字幕时间轴。';
                 }
             } else if (provider === 'fireredasr') {
                 whisperConfig.style.display = 'none';
@@ -1594,7 +1616,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     sharedVadProviderPill.textContent = 'Voxtral';
                 }
                 if (sharedVadProviderCopy) {
-                    sharedVadProviderCopy.textContent = '当前为 Voxtral 模式，VAD 与分片参数同样生效；关闭 VAD 时默认整段发送，超过单请求上限时仍会自动切片。';
+                    sharedVadProviderCopy.textContent = '当前为 Voxtral 模式，扫描窗和时间戳粒度同样生效；关闭扫描窗时默认整段发送，超过单请求上限时仍会自动切片。';
                 }
             }
         };

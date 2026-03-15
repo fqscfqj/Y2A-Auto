@@ -27,6 +27,11 @@ from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
+from modules.speech_pipeline_settings import (
+    SPEECH_PIPELINE_CHECKBOXES,
+    SPEECH_PIPELINE_FLOAT_FIELDS,
+    SPEECH_PIPELINE_INT_FIELDS,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
@@ -453,6 +458,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'FIREREDASR_ENABLED',
             'VOXTRAL_DIARIZE'
         ]
+        for checkbox in SPEECH_PIPELINE_CHECKBOXES:
+            if checkbox not in checkboxes:
+                checkboxes.append(checkbox)
         for checkbox in checkboxes:
             if checkbox not in form_data:
                 form_data[checkbox] = 'off'
@@ -470,6 +478,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
             'FIREREDASR_TIMEOUT', 'FIREREDASR_MAX_RETRIES'
         ]
+        for field in SPEECH_PIPELINE_INT_FIELDS:
+            if field not in numeric_fields:
+                numeric_fields.append(field)
         for field in numeric_fields:
             if field in form_data:
                 try:
@@ -501,6 +512,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'FIREREDASR_TIMEOUT': 300,
                         'FIREREDASR_MAX_RETRIES': 3
                     }
+                    defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
 
@@ -511,6 +523,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
             'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
         ]
+        for field in SPEECH_PIPELINE_FLOAT_FIELDS:
+            if field not in float_fields:
+                float_fields.append(field)
         for field in float_fields:
             if field in form_data:
                 try:
@@ -535,6 +550,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'VAD_MIN_SEGMENT_S': 0.8,
                         'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
                     }
+                    float_defaults.update(SPEECH_PIPELINE_FLOAT_FIELDS)
                     form_data[field] = str(float_defaults.get(field, 0.0))
                     print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
 

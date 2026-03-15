@@ -1,72 +1,48 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""
-Audio Transcription Module – Broad VAD-Guided ASR Timeline Alignment.
-
-Architecture:
-  1. **VadProcessor** (vad_processor.py)   – High-recall, lenient VAD that
-     produces broad "search windows" (not subtitle boundaries).
-  2. **AsrApiClient** (asr_api_client.py)  – Sends each window to the
-     OpenAI-compatible Whisper API with ``response_format="srt"`` and
-     retrieves the ASR engine's own precise timestamps.
-  3. **SrtTransformEngine** (srt_transform_engine.py) – Parses relative SRT
-     timestamps, calibrates them to the global timeline
-     (``Global = Segment_Start + Relative``), cleans hallucinations,
-     resolves overlaps, and renders the final SRT.
-
-This orchestrator module glues the three engines together while keeping the
-same public API consumed by ``task_manager.py``:
-
-  * ``SpeechRecognizer``
-  * ``create_speech_recognizer_from_config()``
-"""
-
-import os
-import tempfile
-import subprocess
-import logging
 import json
+import logging
+import os
 import shutil
+import subprocess
+import tempfile
 import wave
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
-from .vad_processor import VadProcessor, VadConfig
 from .asr_api_client import AsrApiClient, AsrConfig
-from .srt_transform_engine import SrtTransformEngine, SrtTransformConfig
+from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
+from .speech_pipeline_settings import coerce_bool
+from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+from .subtitle_pipeline_types import (
+    AlignedSubtitleCue,
+    AsrTranscriptionResult,
+    DetectedSpeechWindow,
+)
+from .vad_processor import VadConfig, VadProcessor
 
-
-# ---------------------------------------------------------------------------
-# Task-scoped logger factory
-# ---------------------------------------------------------------------------
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
-    """Create a task-scoped logger that writes into logs/task_{task_id}.log."""
     from .utils import get_app_subdir
     from logging.handlers import RotatingFileHandler
 
     log_dir = get_app_subdir('logs')
     os.makedirs(log_dir, exist_ok=True)
-
     logger = logging.getLogger(f'speech_recognition_{task_id}')
     if not logger.handlers:
         logger.setLevel(logging.INFO)
-        fh = RotatingFileHandler(
+        handler = RotatingFileHandler(
             os.path.join(log_dir, f'task_{task_id}.log'),
-            maxBytes=10485760, backupCount=5, encoding='utf-8',
+            maxBytes=10_485_760,
+            backupCount=5,
+            encoding='utf-8',
         )
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        fh.setLevel(logging.INFO)
-        logger.addHandler(fh)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
         logger.propagate = False
     return logger
 
-
-# ---------------------------------------------------------------------------
-# Unified configuration dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class SpeechRecognitionConfig:
@@ -75,11 +51,6 @@ class SpeechRecognitionConfig:
     api_key: str = ''
     base_url: str = ''
     model_name: str = 'whisper-1'
-    # Deprecated fields (kept for config compatibility)
-    detect_api_key: str = ''
-    detect_base_url: str = ''
-    detect_model_name: str = ''
-    # VAD settings (broad / lenient)
     vad_enabled: bool = False
     vad_provider: str = 'silero-vad'
     vad_threshold: float = 0.55
@@ -87,59 +58,44 @@ class SpeechRecognitionConfig:
     vad_min_silence_ms: int = 320
     vad_max_speech_s: int = 120
     vad_speech_pad_ms: int = 120
-
-    # Audio chunking
     chunk_window_s: float = 15.0
     chunk_overlap_s: float = 0.4
-
-    # VAD post-processing (broad)
     vad_merge_gap_s: float = 0.35
     vad_min_segment_s: float = 0.8
     vad_max_segment_s: float = 15.0
     vad_max_segment_s_for_split: float = 15.0
-
-    # Transcription
+    vad_refinement_enabled: bool = True
+    vad_min_speech_coverage_ratio: float = 0.015
     language: str = ''
     prompt: str = ''
     translate: bool = False
-    voxtral_timestamp_granularities: str = 'segment'
+    asr_word_timestamps_enabled: bool = True
+    voxtral_timestamp_granularities: str = 'segment,word'
     voxtral_diarize: bool = False
     voxtral_context_bias: str = ''
     voxtral_max_audio_duration_s: float = 10800.0
     voxtral_long_audio_margin_s: float = 5.0
     voxtral_enforce_max_duration: bool = True
-    max_workers: int = 3                # Concurrent segment uploads
-
-    # Text post-processing (only for Whisper)
+    max_workers: int = 3
     max_subtitle_line_length: int = 42
     max_subtitle_lines: int = 2
     normalize_punctuation: bool = True
-    filter_filler_words: bool = True
-
-    # Final cue post-processing (only for Whisper)
+    filter_filler_words: bool = False
     subtitle_time_offset_s: float = 0.0
     subtitle_min_cue_duration_s: float = 0.6
     subtitle_merge_gap_s: float = 0.3
     subtitle_min_text_length: int = 2
-
-    # Post-processing enable flags (only for Whisper)
     subtitle_time_offset_enabled: bool = False
     subtitle_min_cue_duration_enabled: bool = False
     subtitle_merge_gap_enabled: bool = False
     subtitle_min_text_length_enabled: bool = False
     subtitle_max_line_length_enabled: bool = False
     subtitle_max_lines_enabled: bool = False
-
-    # Retry / fallback
     max_retries: int = 3
     retry_delay_s: float = 2.0
     fallback_to_fixed_chunks: bool = False
     request_timeout_s: float = 300.0
 
-
-# ---------------------------------------------------------------------------
-# Custom exceptions
-# ---------------------------------------------------------------------------
 
 class VadFailure(RuntimeError):
     pass
@@ -149,13 +105,7 @@ class WhisperFailure(RuntimeError):
     pass
 
 
-# ---------------------------------------------------------------------------
-# SpeechRecognizer – Orchestrator
-# ---------------------------------------------------------------------------
-
 class SpeechRecognizer:
-    """Orchestrates the Broad-VAD → ASR-SRT → Global-Calibration pipeline."""
-
     def __init__(self, config: SpeechRecognitionConfig, task_id: Optional[str] = None):
         self.config = config
         self.task_id = task_id or 'unknown'
@@ -164,12 +114,9 @@ class SpeechRecognizer:
         self.last_error_message: str = ''
         self._temp_dirs: List[str] = []
 
-        # Validate provider
         if config.provider not in ('whisper', 'fireredasr', 'voxtral'):
-            self.logger.error(f"Unsupported speech recognition provider: {config.provider}")
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
 
-        # Build sub-components -------------------------------------------
         self._vad = VadProcessor(
             VadConfig(
                 provider=config.vad_provider,
@@ -184,6 +131,8 @@ class SpeechRecognizer:
                 min_segment_s=config.vad_min_segment_s,
                 max_segment_s=config.vad_max_segment_s,
                 max_segment_s_for_split=config.vad_max_segment_s_for_split,
+                refinement_enabled=config.vad_refinement_enabled,
+                min_speech_coverage_ratio=config.vad_min_speech_coverage_ratio,
             ),
             logger=self.logger,
         )
@@ -205,310 +154,213 @@ class SpeechRecognizer:
                 request_timeout_s=config.request_timeout_s,
                 voxtral_max_audio_duration_s=config.voxtral_max_audio_duration_s,
                 voxtral_enforce_max_duration=config.voxtral_enforce_max_duration,
+                word_timestamps_enabled=config.asr_word_timestamps_enabled,
             ),
             logger=self.logger,
         )
         self._srt = SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=config.max_subtitle_line_length if config.provider == 'whisper' and config.subtitle_max_line_length_enabled else 42,
-                max_lines=config.max_subtitle_lines if config.provider == 'whisper' and config.subtitle_max_lines_enabled else 2,
-                normalize_punctuation=config.normalize_punctuation if config.provider == 'whisper' else False,
-                filter_filler_words=config.filter_filler_words if config.provider == 'whisper' else False,
-                time_offset_s=config.subtitle_time_offset_s if config.provider == 'whisper' and config.subtitle_time_offset_enabled else 0.0,
-                min_cue_duration_s=config.subtitle_min_cue_duration_s if config.provider == 'whisper' and config.subtitle_min_cue_duration_enabled else 0.6,
-                merge_gap_s=config.subtitle_merge_gap_s if config.provider == 'whisper' and config.subtitle_merge_gap_enabled else 0.3,
-                min_text_length=config.subtitle_min_text_length if config.provider == 'whisper' and config.subtitle_min_text_length_enabled else 2,
+                max_line_length=config.max_subtitle_line_length if config.subtitle_max_line_length_enabled else 42,
+                max_lines=config.max_subtitle_lines if config.subtitle_max_lines_enabled else 2,
+                normalize_punctuation=config.normalize_punctuation,
+                filter_filler_words=config.filter_filler_words,
+                time_offset_s=config.subtitle_time_offset_s if config.subtitle_time_offset_enabled else 0.0,
+                min_cue_duration_s=config.subtitle_min_cue_duration_s if config.subtitle_min_cue_duration_enabled else 0.6,
+                merge_gap_s=config.subtitle_merge_gap_s if config.subtitle_merge_gap_enabled else 0.3,
+                min_text_length=config.subtitle_min_text_length if config.subtitle_min_text_length_enabled else 2,
             ),
             logger=self.logger,
         )
 
-    # ==================================================================
-    # Main public entry-point
-    # ==================================================================
-
-    def transcribe_video_to_subtitles(
-        self, video_path: str, output_path: str
-    ) -> Optional[str]:
-        """Transcribe *video_path* to SRT subtitles saved at *output_path*.
-
-        Pipeline:
-          1. Extract 16 kHz mono WAV.
-          2. Broad VAD → search windows.
-          3. ASR (SRT format) per window, concurrently.
-          4. Global timestamp calibration.
-          5. Hallucination cleaning + overlap resolution.
-          6. Text normalisation, cue finalisation, SRT rendering.
-          7. Quality gate.
-
-        Returns *output_path* on success, *None* otherwise.
-        """
+    def transcribe_video_to_subtitles(self, video_path: str, output_path: str) -> Optional[str]:
         try:
             self.last_warning_message = ''
             self.last_error_message = ''
 
             if not self._asr.client:
-                self.logger.error("ASR client not initialised")
+                self.last_error_message = 'ASR client not initialised'
                 return None
             if not os.path.exists(video_path):
-                self.logger.error(f"Video file not found: {video_path}")
+                self.last_error_message = f"Video file not found: {video_path}"
                 return None
 
-            # Step 1 – Audio extraction
-            self.logger.info("Step 1/6: Extracting audio (16 kHz mono WAV)")
             audio_wav = self._extract_audio_wav(video_path)
             if not audio_wav:
+                self.last_error_message = 'Audio extraction failed'
                 return None
 
             total_duration = self._probe_media_duration(audio_wav)
             if total_duration is None:
                 total_duration = self._probe_media_duration(video_path) or 0.0
-            self.logger.info(f"Audio duration: {total_duration:.1f}s")
 
-            cues: List[Dict[str, Any]] = []
-            force_fixed_chunks = False
-
-            # Step 2 – Broad VAD segmentation
+            cues: List[AlignedSubtitleCue] = []
             if self.config.vad_enabled:
-                self.logger.info("Step 2/6: Broad VAD segmentation (search windows)")
-                try:
-                    vad_segments = self._vad.detect_speech_segments(
-                        audio_wav, total_duration,
-                    )
-                    vad_state = getattr(self._vad, 'last_result_state', 'unknown')
-                    vad_reason = getattr(self._vad, 'last_failure_reason', '')
-                    if vad_segments:
-                        if vad_state == 'partial':
-                            self.logger.warning(
-                                "VAD returned partial results after chunk failures; continuing with %d search windows",
-                                len(vad_segments),
-                            )
-                        self.logger.info(
-                            f"VAD produced {len(vad_segments)} search windows"
-                        )
-
-                        # Language detection (from first & last segments)
-                        lang_hint = self._asr.detect_language_from_segments(
-                            audio_wav, vad_segments,
-                            extract_clip_fn=self._extract_audio_clip,
-                        )
-                        if lang_hint and lang_hint.lower() != 'unknown':
-                            self._asr.set_language_hint(lang_hint)
-                            self.logger.info(f"Detected language: {lang_hint}")
-                        else:
-                            self._asr.set_language_hint('')
-
-                        # Step 3 – Concurrent ASR transcription (SRT format)
-                        self.logger.info("Step 3/6: ASR transcription (concurrent, SRT format)")
-                        segment_inputs = self._prepare_segment_inputs(
-                            audio_wav, vad_segments,
-                        )
-                        if segment_inputs:
-                            asr_results = self._asr.transcribe_segments_concurrent(
-                                segment_inputs,
-                            )
-
-                            # Check for total failures
-                            success_count = sum(
-                                1 for _, srt in asr_results if srt
-                            )
-                            if success_count == 0:
-                                self.logger.warning(
-                                    "No ASR results from VAD segments – falling back"
-                                )
-                            else:
-                                # Step 4 – Global timestamp calibration
-                                self.logger.info(
-                                    f"Step 4/6: Global timestamp calibration "
-                                    f"({success_count}/{len(asr_results)} segments)"
-                                )
-                                cues = self._srt.calibrate_segments(asr_results)
-                    else:
-                        if vad_state == 'no_speech':
-                            self.last_warning_message = (
-                                "VAD detected no speech; stopping ASR"
-                            )
-                            self.logger.warning(self.last_warning_message)
-                            return None
-
-                        self.last_warning_message = (
-                            f"VAD failed, falling back: {vad_reason or 'unknown error'}"
-                        )
-                        self.logger.warning(self.last_warning_message)
-                        force_fixed_chunks = True
-                except VadFailure as exc:
-                    self.last_warning_message = f"VAD failed, falling back: {exc}"
-                    self.logger.warning(str(self.last_warning_message))
-                    force_fixed_chunks = True
-                except WhisperFailure:
-                    raise
-                except Exception as exc:
-                    self.last_warning_message = f"VAD exception, falling back: {exc}"
-                    self.logger.warning(str(self.last_warning_message))
-                    force_fixed_chunks = True
-
-            # Fallback: fixed-chunk transcription
-            if not cues:
-                cues = self._fallback_transcription(
-                    audio_wav, total_duration, force_fixed_chunks,
-                )
-                if not cues:
-                    self.logger.error("No subtitles generated")
-                    return None
-
-            # Step 5 – Hallucination cleaning + overlap resolution
-            self.logger.info("Step 5/6: Hallucination cleaning & overlap resolution")
-            cues = self._srt.clean_hallucinations(cues)
-            cues = self._srt.resolve_overlaps(cues, total_duration)
-
-            # Text normalisation
-            cues = self._srt.apply_text_processing(cues)
-
-            # Final cue timing post-processing
-            cues = self._srt.finalize_cues(cues, total_duration)
+                cues = self._transcribe_with_vad(audio_wav, total_duration)
 
             if not cues:
-                self.logger.error("No cues remaining after post-processing")
+                cues = self._fallback_transcription(audio_wav, total_duration)
+            if not cues:
+                self.last_error_message = self.last_error_message or 'No subtitles generated'
                 return None
 
-            # Log timestamp range
-            first_s = float(cues[0].get('start', 0))
-            last_e = float(cues[-1].get('end', 0))
-            self.logger.info(
-                f"Subtitle range: {first_s:.2f}s – {last_e:.2f}s "
-                f"(duration: {total_duration:.2f}s)"
-            )
+            cue_dicts = self._srt.clean_hallucinations(cues)
+            cue_dicts = self._srt.resolve_overlaps(cue_dicts, total_duration)
+            cue_dicts = self._srt.apply_text_processing(cue_dicts)
+            cue_dicts = self._srt.finalize_cues(cue_dicts, total_duration)
+            if not cue_dicts:
+                self.last_error_message = 'No cues remaining after post-processing'
+                return None
 
-            # Step 6 – Render & save SRT
-            self.logger.info(f"Step 6/6: Rendering SRT ({len(cues)} cues)")
-            srt_text = self._srt.render_srt(cues)
+            srt_text = self._srt.render_srt(cue_dicts)
             if not srt_text:
-                self.logger.error("Failed to render SRT")
+                self.last_error_message = 'Failed to render SRT'
                 return None
 
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(srt_text)
-
-            self.logger.info(f"✓ Transcription complete: {output_path}")
+            with open(output_path, 'w', encoding='utf-8') as file_obj:
+                file_obj.write(srt_text)
+            self.logger.info("Subtitle range: %.2fs -> %.2fs", cue_dicts[0]['start'], cue_dicts[-1]['end'])
             return output_path
         except WhisperFailure as exc:
-            if not self.last_error_message:
-                self.last_error_message = str(exc)
-            self.logger.error(f"Transcription failed: {exc}")
+            self.last_error_message = self.last_error_message or str(exc)
             return None
         except Exception as exc:
-            if not self.last_error_message:
-                self.last_error_message = f"Transcription failed: {exc}"
-            self.logger.error(f"Transcription failed: {exc}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            self.last_error_message = self.last_error_message or f"Transcription failed: {exc}"
+            self.logger.exception("Transcription failed")
             return None
         finally:
             self._cleanup_temp_files()
 
-    # ==================================================================
-    # Fallback: fixed-chunk or whole-audio transcription
-    # ==================================================================
+    def _transcribe_with_vad(self, audio_wav: str, total_duration: float) -> List[AlignedSubtitleCue]:
+        try:
+            windows = self._vad.detect_speech_windows(audio_wav, total_duration)
+        except Exception as exc:
+            self.last_warning_message = f"vad_failed: {exc}"
+            return []
 
-    def _fallback_transcription(
-        self,
-        audio_wav: str,
-        total_duration: float,
-        force_chunks: bool,
-    ) -> List[Dict[str, Any]]:
-        """Transcribe without VAD using fixed chunks or as a single clip."""
-        force_voxtral_chunks = (
-            self.config.api_provider == 'voxtral'
-            and self.config.voxtral_enforce_max_duration
-            and total_duration > max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
+        vad_state = getattr(self._vad, 'last_result_state', 'unknown')
+        coverage_ratio = getattr(self._vad, 'last_speech_coverage_ratio', 0.0)
+        if windows is None:
+            self.last_warning_message = getattr(self._vad, 'last_failure_reason', 'vad_failed')
+            return []
+        if not windows:
+            self.last_warning_message = getattr(self._vad, 'last_failure_reason', 'vad_no_speech')
+            return []
+
+        if coverage_ratio < self.config.vad_min_speech_coverage_ratio:
+            self.last_warning_message = 'vad_low_coverage'
+
+        lang_hint = self._asr.detect_language_from_segments(audio_wav, windows, extract_clip_fn=self._extract_audio_clip)
+        self._asr.set_language_hint(lang_hint if lang_hint and lang_hint.lower() != 'unknown' else '')
+
+        window_inputs = self._prepare_window_inputs(audio_wav, windows)
+        if not window_inputs:
+            self.last_warning_message = 'vad_no_usable_window'
+            return []
+
+        results = self._asr.transcribe_windows_concurrent(window_inputs)
+        aligned = self._srt.align_transcription_results(results, total_duration_s=total_duration)
+        success_count = sum(1 for result in results if result.ok or result.timestamp_mode == 'srt')
+        if success_count == 0:
+            self.last_warning_message = self._pick_failure_token(results) or 'asr_failed'
+        elif any(result.timestamp_mode == 'srt' for result in results):
+            self.last_warning_message = self.last_warning_message or 'asr_no_timestamps'
+
+        if vad_state == 'low_coverage' and aligned:
+            self.last_warning_message = 'vad_low_coverage'
+        return aligned
+
+    def _fallback_transcription(self, audio_wav: str, total_duration: float) -> List[AlignedSubtitleCue]:
+        chunk_cues = self._fallback_chunked_transcription(audio_wav, total_duration)
+        if chunk_cues:
+            return chunk_cues
+        if self._can_whole_audio_fallback(total_duration):
+            return self._fallback_whole_audio(audio_wav, total_duration)
+        return []
+
+    def _fallback_chunked_transcription(self, audio_wav: str, total_duration: float) -> List[AlignedSubtitleCue]:
+        chunks = self._create_audio_chunks(total_duration)
+        window_inputs = self._prepare_chunk_inputs(audio_wav, chunks)
+        if not window_inputs:
+            return []
+        results = self._asr.transcribe_windows_concurrent(window_inputs)
+        aligned = self._srt.align_transcription_results(results, total_duration_s=total_duration)
+        if not aligned:
+            self.last_warning_message = self._pick_failure_token(results) or self.last_warning_message
+        return aligned
+
+    def _fallback_whole_audio(self, audio_wav: str, total_duration: float) -> List[AlignedSubtitleCue]:
+        whole_window = DetectedSpeechWindow(
+            start_s=0.0,
+            end_s=total_duration,
+            ownership_start_s=0.0,
+            ownership_end_s=total_duration,
+            source_pass='whole_audio',
         )
-        if force_voxtral_chunks:
-            self.logger.warning(
-                "Voxtral audio %.1fs exceeds max request duration %.1fs; forcing chunked transcription.",
-                total_duration,
-                float(self.config.voxtral_max_audio_duration_s or 10800.0),
-            )
-        should_chunk = False
-        if self.config.api_provider == 'voxtral':
-            # Voxtral without VAD should prefer a single upload unless we are
-            # explicitly falling back to fixed windows or must respect the
-            # provider-side maximum request duration.
-            should_chunk = force_chunks or force_voxtral_chunks
-        else:
-            should_chunk = (
-                force_chunks
-                or force_voxtral_chunks
-                or total_duration > self.config.chunk_window_s * 2
-            )
+        result = self._asr.transcribe_window(audio_wav, window=whole_window, segment_info='whole-audio')
+        aligned = self._srt.align_transcription_results([result], total_duration_s=total_duration)
+        if not aligned and result.failure_token:
+            self.last_warning_message = result.failure_token
+        return aligned
 
-        if should_chunk:
-            self.logger.info("Fallback: fixed-window chunked transcription")
-            chunks = self._create_audio_chunks(total_duration)
-            segment_inputs = self._prepare_chunk_inputs(audio_wav, chunks)
-            if not segment_inputs:
-                return []
-            asr_results = self._asr.transcribe_segments_concurrent(segment_inputs)
-            return self._srt.calibrate_segments(asr_results)
-        else:
-            self.logger.info("Fallback: whole-audio transcription")
-            srt_text = self._asr.transcribe_segment(audio_wav)
-            if not srt_text:
-                return []
-            return self._srt.parse_srt(srt_text, base_offset_s=0.0)
+    def _pick_failure_token(self, results: List[AsrTranscriptionResult]) -> str:
+        for result in results:
+            if result.failure_token:
+                return result.failure_token
+            if result.timestamp_mode == 'srt':
+                return 'asr_no_timestamps'
+        return ''
 
-    # ==================================================================
-    # Segment / chunk preparation helpers
-    # ==================================================================
+    def _can_whole_audio_fallback(self, total_duration: float) -> bool:
+        if self.config.api_provider != 'voxtral':
+            return True
+        if not self.config.voxtral_enforce_max_duration:
+            return True
+        return total_duration <= max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
 
-    def _prepare_segment_inputs(
+    def _prepare_window_inputs(
         self,
         audio_wav: str,
-        vad_segments: List[Tuple[float, float]],
-    ) -> List[Tuple[float, str]]:
-        """Extract audio clips for VAD segments and return (offset, path) pairs."""
-        inputs: List[Tuple[float, str]] = []
-        for seg_start, seg_end in vad_segments:
-            seg_start = max(0.0, float(seg_start))
-            seg_end = max(seg_start + 0.01, float(seg_end))
-            clip = self._extract_audio_clip(audio_wav, seg_start, seg_end)
+        windows: List[DetectedSpeechWindow],
+    ) -> List[Tuple[DetectedSpeechWindow, str]]:
+        inputs: List[Tuple[DetectedSpeechWindow, str]] = []
+        for window in windows:
+            clip = self._extract_audio_clip(audio_wav, window.start_s, window.end_s)
             if clip:
-                inputs.append((seg_start, clip))
+                inputs.append((window, clip))
         return inputs
 
     def _prepare_chunk_inputs(
         self,
         audio_wav: str,
         chunks: List[Tuple[float, float]],
-    ) -> List[Tuple[float, str]]:
-        """Extract audio clips for fixed chunks."""
-        inputs: List[Tuple[float, str]] = []
+    ) -> List[Tuple[DetectedSpeechWindow, str]]:
+        inputs: List[Tuple[DetectedSpeechWindow, str]] = []
         for chunk_start, chunk_end in chunks:
             clip = self._extract_audio_clip(audio_wav, chunk_start, chunk_end)
-            if clip:
-                inputs.append((chunk_start, clip))
+            if not clip:
+                continue
+            inputs.append((
+                DetectedSpeechWindow(
+                    start_s=chunk_start,
+                    end_s=chunk_end,
+                    ownership_start_s=chunk_start,
+                    ownership_end_s=chunk_end,
+                    source_pass='fixed_chunk',
+                ),
+                clip,
+            ))
         return inputs
 
-    def _create_audio_chunks(
-        self, total_duration_s: float
-    ) -> List[Tuple[float, float]]:
-        """Create overlapping fixed-size chunks."""
-        window = max(0.1, float(self.config.chunk_window_s or 25.0))
-        overlap = self.config.chunk_overlap_s
+    def _create_audio_chunks(self, total_duration_s: float) -> List[Tuple[float, float]]:
+        window = max(0.1, float(self.config.chunk_window_s or 15.0))
+        overlap = max(0.0, float(self.config.chunk_overlap_s or 0.0))
         if self.config.api_provider == 'voxtral' and self.config.voxtral_enforce_max_duration:
             max_duration_s = max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
             margin_s = max(0.0, float(self.config.voxtral_long_audio_margin_s or 0.0))
-            effective_max_window = max(1.0, max_duration_s - margin_s)
-            if window > effective_max_window:
-                self.logger.warning(
-                    "AUDIO_CHUNK_WINDOW_S %.2fs exceeds Voxtral safe window %.2fs "
-                    "(max %.2fs - margin %.2fs); clamping automatically.",
-                    window,
-                    effective_max_window,
-                    max_duration_s,
-                    margin_s,
-                )
-                window = effective_max_window
+            window = min(window, max(1.0, max_duration_s - margin_s))
         if total_duration_s <= window:
             return [(0.0, total_duration_s)]
+
         chunks: List[Tuple[float, float]] = []
         current = 0.0
         while current < total_duration_s:
@@ -517,84 +369,68 @@ class SpeechRecognizer:
             if end >= total_duration_s:
                 break
             current = end - overlap
-        self.logger.info(
-            f"Fixed chunks: {total_duration_s:.1f}s total, "
-            f"window {window}s, overlap {overlap}s, {len(chunks)} chunks"
-        )
         return chunks
 
-    # ==================================================================
-    # Audio extraction helpers
-    # ==================================================================
-
     def _extract_audio_wav(self, video_path: str) -> Optional[str]:
-        """Extract 16 kHz mono WAV from video using ffmpeg."""
         try:
-            ffmpeg_bin = get_ffmpeg_path(logger=self.logger)
-            if ffmpeg_bin and os.path.exists(ffmpeg_bin):
-                self.logger.info(f"Using ffmpeg: {ffmpeg_bin}")
-            else:
-                ffmpeg_bin = 'ffmpeg'
-
-            tmp_dir = tempfile.mkdtemp(prefix='y2a_audio_')
-            self._temp_dirs.append(tmp_dir)
-            audio_path = os.path.join(tmp_dir, 'audio.wav')
+            ffmpeg_bin = get_ffmpeg_path(logger=self.logger) or 'ffmpeg'
+            out_dir = tempfile.mkdtemp(prefix='y2a_audio_')
+            self._temp_dirs.append(out_dir)
+            audio_path = os.path.join(out_dir, 'audio.wav')
             cmd = [
                 ffmpeg_bin, '-y', '-i', video_path,
                 '-vn', '-ac', '1', '-ar', '16000',
-                '-acodec', 'pcm_s16le', '-f', 'wav',
-                audio_path,
+                '-acodec', 'pcm_s16le', '-f', 'wav', audio_path,
             ]
-            self.logger.info(f"Extracting audio: {' '.join(cmd)}")
             result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=600,
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=600,
             )
             if result.returncode != 0 or not os.path.exists(audio_path):
-                self.logger.error(f"Audio extraction failed: {result.stderr}")
+                self.logger.error("Audio extraction failed: %s", result.stderr)
                 return None
             return audio_path
         except Exception as exc:
-            self.logger.error(f"Audio extraction exception: {exc}")
+            self.logger.error("Audio extraction exception: %s", exc)
             return None
 
-    def _extract_audio_clip(
-        self, wav_path: str, start_s: float, end_s: float
-    ) -> Optional[str]:
-        """Extract a WAV clip from *wav_path*."""
+    def _extract_audio_clip(self, wav_path: str, start_s: float, end_s: float) -> Optional[str]:
         try:
             ffmpeg_bin = get_ffmpeg_path(logger=self.logger) or 'ffmpeg'
             out_dir = tempfile.mkdtemp(prefix='y2a_clip_')
             self._temp_dirs.append(out_dir)
             out_wav = os.path.join(out_dir, 'clip.wav')
-            dur = max(0.01, end_s - start_s)
+            duration = max(0.01, float(end_s) - float(start_s))
             cmd = [
                 ffmpeg_bin, '-y',
-                '-ss', f"{start_s:.3f}", '-t', f"{dur:.3f}",
+                '-ss', f"{start_s:.3f}", '-t', f"{duration:.3f}",
                 '-i', wav_path,
-                '-ac', '1', '-ar', '16000', '-acodec', 'pcm_s16le', '-f', 'wav',
-                out_wav,
+                '-ac', '1', '-ar', '16000',
+                '-acodec', 'pcm_s16le', '-f', 'wav', out_wav,
             ]
             result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=120,
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=120,
             )
             if result.returncode != 0 or not os.path.exists(out_wav):
-                self.logger.warning(f"Clip extraction failed: {result.stderr[:200]}")
                 return None
-
             with wave.open(out_wav, 'rb') as wf:
                 actual = wf.getnframes() / wf.getframerate() if wf.getframerate() > 0 else 0.0
                 if actual < 0.1:
-                    self.logger.warning(f"Clip too short ({actual:.3f}s) – skipping")
                     return None
             return out_wav
-        except Exception as exc:
-            self.logger.warning(f"Clip extraction exception: {exc}")
+        except Exception:
             return None
 
     def _probe_media_duration(self, media_path: str) -> Optional[float]:
-        """Get media duration in seconds via ffprobe."""
         try:
             ffmpeg_bin = get_ffmpeg_path(logger=self.logger)
             if not ffmpeg_bin:
@@ -602,13 +438,13 @@ class SpeechRecognizer:
             ffprobe_bin = get_ffprobe_path(ffmpeg_path=ffmpeg_bin, logger=self.logger)
             if not ffprobe_bin:
                 return None
-            cmd = [
-                ffprobe_bin, '-v', 'quiet',
-                '-print_format', 'json', '-show_format', media_path,
-            ]
             result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=60,
+                [ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', media_path],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=60,
             )
             if result.returncode != 0:
                 return None
@@ -617,119 +453,64 @@ class SpeechRecognizer:
         except Exception:
             return None
 
-    # ==================================================================
-    # Cleanup
-    # ==================================================================
-
     def _cleanup_temp_files(self):
-        """Remove all temporary directories."""
         self._vad.cleanup()
-        for d in self._temp_dirs:
+        for temp_dir in self._temp_dirs:
             try:
-                if os.path.exists(d):
-                    shutil.rmtree(d)
-            except Exception as exc:
-                # Best-effort cleanup: log and continue without failing the task.
-                self.logger.debug(f"Failed to remove temp dir {d}: {exc}")
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception:
+                continue
         self._temp_dirs.clear()
 
 
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
 def create_speech_recognizer_from_config(
-    app_config: dict, task_id: Optional[str] = None
+    app_config: dict,
+    task_id: Optional[str] = None,
 ) -> Optional[SpeechRecognizer]:
-    """Build a ``SpeechRecognizer`` from the application config dict."""
     try:
-        def _to_bool(value) -> bool:
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, (int, float)):
-                return value != 0
-            return str(value).strip().lower() in ('true', '1', 'on', 'yes')
-
-        speech_enabled = _to_bool(app_config.get('SPEECH_RECOGNITION_ENABLED', False))
-
-        if not speech_enabled:
+        if not coerce_bool(app_config.get('SPEECH_RECOGNITION_ENABLED', False)):
             return None
 
-        provider = (app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').lower()
+        provider = str(app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').strip().lower()
         use_fireredasr = provider == 'fireredasr'
         use_voxtral = provider == 'voxtral'
 
-        voxtral_timestamp_granularities = 'segment'
-        voxtral_diarize = False
-        voxtral_context_bias = ''
-        voxtral_max_audio_duration_s = 10800.0
-        voxtral_long_audio_margin_s = 5.0
-        voxtral_enforce_max_duration = True
-
         if use_fireredasr:
-            asr_provider = 'fireredasr2s'
-            asr_base_url = app_config.get('FIREREDASR_BASE_URL') or ''
-            asr_api_key = app_config.get('FIREREDASR_API_KEY') or ''
-            # FireRed `/v1/process_all` mode does not consume model/language/prompt params.
-            asr_model = ''
-            asr_language = ''
-            asr_prompt = ''
-            asr_max_retries = int(
-                app_config.get('FIREREDASR_MAX_RETRIES', 3) or 3
-            )
-            asr_timeout_s = float(
-                app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0
-            )
+            api_provider = 'fireredasr2s'
+            api_key = app_config.get('FIREREDASR_API_KEY') or ''
+            base_url = app_config.get('FIREREDASR_BASE_URL') or ''
+            model_name = ''
+            language = ''
+            prompt = ''
+            max_retries = int(app_config.get('FIREREDASR_MAX_RETRIES', 3) or 3)
+            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
         elif use_voxtral:
-            asr_provider = 'voxtral'
-            asr_base_url = (
-                app_config.get('VOXTRAL_BASE_URL')
-                or 'https://api.mistral.ai/v1'
-            )
-            asr_api_key = app_config.get('VOXTRAL_API_KEY') or ''
-            asr_model = app_config.get('VOXTRAL_MODEL_NAME') or 'voxtral-mini-latest'
-            asr_language = app_config.get('VOXTRAL_LANGUAGE') or ''
-            asr_prompt = ''
-            asr_max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
-            asr_timeout_s = 300.0
-            voxtral_timestamp_granularities = (
-                app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment'
-            )
-            voxtral_diarize = _to_bool(app_config.get('VOXTRAL_DIARIZE', False))
-            voxtral_context_bias = app_config.get('VOXTRAL_CONTEXT_BIAS') or ''
-            voxtral_max_audio_duration_s = float(
-                app_config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) or 10800.0
-            )
-            voxtral_long_audio_margin_s = float(
-                app_config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) or 5.0
-            )
-            voxtral_enforce_max_duration = _to_bool(
-                app_config.get('VOXTRAL_ENFORCE_MAX_DURATION', True)
-            )
+            api_provider = 'voxtral'
+            api_key = app_config.get('VOXTRAL_API_KEY') or ''
+            base_url = app_config.get('VOXTRAL_BASE_URL') or 'https://api.mistral.ai/v1'
+            model_name = app_config.get('VOXTRAL_MODEL_NAME') or 'voxtral-mini-latest'
+            language = app_config.get('VOXTRAL_LANGUAGE') or ''
+            prompt = ''
+            max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
+            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
         else:
-            asr_provider = 'whisper'
-            asr_base_url = (
-                app_config.get('WHISPER_BASE_URL')
-                or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-            )
-            asr_api_key = (
-                app_config.get('WHISPER_API_KEY')
-                or app_config.get('OPENAI_API_KEY', '')
-            )
-            asr_model = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
-            asr_language = app_config.get('WHISPER_LANGUAGE') or ''
-            asr_prompt = app_config.get('WHISPER_PROMPT') or ''
-            asr_max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
-            asr_timeout_s = 300.0
+            api_provider = 'whisper'
+            api_key = app_config.get('WHISPER_API_KEY') or app_config.get('OPENAI_API_KEY', '')
+            base_url = app_config.get('WHISPER_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+            model_name = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
+            language = app_config.get('WHISPER_LANGUAGE') or ''
+            prompt = app_config.get('WHISPER_PROMPT') or ''
+            max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
+            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
 
         config = SpeechRecognitionConfig(
             provider=provider,
-            api_provider=asr_provider,
-            api_key=asr_api_key,
-            base_url=asr_base_url,
-            model_name=asr_model,
-            # VAD
-            vad_enabled=_to_bool(app_config.get('VAD_ENABLED', False)),
+            api_provider=api_provider,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            vad_enabled=coerce_bool(app_config.get('VAD_ENABLED', False)),
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
             vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.55) or 0.55),
             vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 220) or 220),
@@ -741,68 +522,38 @@ def create_speech_recognizer_from_config(
             vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.35) or 0.35),
             vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 0.8) or 0.8),
             vad_max_segment_s=float(app_config.get('VAD_MAX_SEGMENT_S', 15.0) or 15.0),
-            vad_max_segment_s_for_split=float(
-                app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0) or 15.0
-            ),
-            # Transcription
-            language=asr_language,
-            prompt=asr_prompt,
-            translate=_to_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_fireredasr and not use_voxtral else False,
-            voxtral_timestamp_granularities=voxtral_timestamp_granularities,
-            voxtral_diarize=voxtral_diarize,
-            voxtral_context_bias=voxtral_context_bias,
-            voxtral_max_audio_duration_s=voxtral_max_audio_duration_s,
-            voxtral_long_audio_margin_s=voxtral_long_audio_margin_s,
-            voxtral_enforce_max_duration=voxtral_enforce_max_duration,
+            vad_max_segment_s_for_split=float(app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0) or 15.0),
+            vad_refinement_enabled=coerce_bool(app_config.get('VAD_REFINEMENT_ENABLED', True)),
+            vad_min_speech_coverage_ratio=float(app_config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) or 0.015),
+            language=language,
+            prompt=prompt,
+            translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral and not use_fireredasr else False,
+            asr_word_timestamps_enabled=coerce_bool(app_config.get('ASR_WORD_TIMESTAMPS_ENABLED', True)),
+            voxtral_timestamp_granularities=app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment,word',
+            voxtral_diarize=coerce_bool(app_config.get('VOXTRAL_DIARIZE', False)),
+            voxtral_context_bias=app_config.get('VOXTRAL_CONTEXT_BIAS') or '',
+            voxtral_max_audio_duration_s=float(app_config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) or 10800.0),
+            voxtral_long_audio_margin_s=float(app_config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) or 5.0),
+            voxtral_enforce_max_duration=coerce_bool(app_config.get('VOXTRAL_ENFORCE_MAX_DURATION', True)),
             max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
-            # Text processing
-            max_subtitle_line_length=int(
-                app_config.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42
-            ),
+            max_subtitle_line_length=int(app_config.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42),
             max_subtitle_lines=int(app_config.get('SUBTITLE_MAX_LINES', 2) or 2),
-            normalize_punctuation=bool(
-                app_config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True)
-            ),
-            filter_filler_words=bool(
-                app_config.get('SUBTITLE_FILTER_FILLER_WORDS', True)
-            ),
-            subtitle_time_offset_s=float(
-                app_config.get('SUBTITLE_TIME_OFFSET_S', 0.0) or 0.0
-            ),
-            subtitle_min_cue_duration_s=float(
-                app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) or 0.6
-            ),
-            subtitle_merge_gap_s=float(
-                app_config.get('SUBTITLE_MERGE_GAP_S', 0.3) or 0.3
-            ),
-            subtitle_min_text_length=int(
-                app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2
-            ),
-            # Post-processing enable flags (only for Whisper)
-            subtitle_time_offset_enabled=bool(
-                app_config.get('SUBTITLE_TIME_OFFSET_ENABLED', False)
-            ),
-            subtitle_min_cue_duration_enabled=bool(
-                app_config.get('SUBTITLE_MIN_CUE_DURATION_ENABLED', False)
-            ),
-            subtitle_merge_gap_enabled=bool(
-                app_config.get('SUBTITLE_MERGE_GAP_ENABLED', False)
-            ),
-            subtitle_min_text_length_enabled=bool(
-                app_config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False)
-            ),
-            subtitle_max_line_length_enabled=bool(
-                app_config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False)
-            ),
-            subtitle_max_lines_enabled=bool(
-                app_config.get('SUBTITLE_MAX_LINES_ENABLED', False)
-            ),
-            max_retries=asr_max_retries,
+            normalize_punctuation=coerce_bool(app_config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True)),
+            filter_filler_words=coerce_bool(app_config.get('SUBTITLE_FILTER_FILLER_WORDS', False)),
+            subtitle_time_offset_s=float(app_config.get('SUBTITLE_TIME_OFFSET_S', 0.0) or 0.0),
+            subtitle_min_cue_duration_s=float(app_config.get('SUBTITLE_MIN_CUE_DURATION_S', 0.6) or 0.6),
+            subtitle_merge_gap_s=float(app_config.get('SUBTITLE_MERGE_GAP_S', 0.3) or 0.3),
+            subtitle_min_text_length=int(app_config.get('SUBTITLE_MIN_TEXT_LENGTH', 2) or 2),
+            subtitle_time_offset_enabled=coerce_bool(app_config.get('SUBTITLE_TIME_OFFSET_ENABLED', False)),
+            subtitle_min_cue_duration_enabled=coerce_bool(app_config.get('SUBTITLE_MIN_CUE_DURATION_ENABLED', False)),
+            subtitle_merge_gap_enabled=coerce_bool(app_config.get('SUBTITLE_MERGE_GAP_ENABLED', False)),
+            subtitle_min_text_length_enabled=coerce_bool(app_config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False)),
+            subtitle_max_line_length_enabled=coerce_bool(app_config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False)),
+            subtitle_max_lines_enabled=coerce_bool(app_config.get('SUBTITLE_MAX_LINES_ENABLED', False)),
+            max_retries=max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
-            fallback_to_fixed_chunks=_to_bool(
-                app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False)
-            ),
-            request_timeout_s=asr_timeout_s,
+            fallback_to_fixed_chunks=coerce_bool(app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False)),
+            request_timeout_s=timeout_s,
         )
         return SpeechRecognizer(config, task_id)
     except Exception:
