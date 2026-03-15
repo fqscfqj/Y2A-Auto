@@ -502,11 +502,11 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'YOUTUBE_DOWNLOAD_THREADS': 4,
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15,
-                        'VAD_SILERO_MIN_SPEECH_MS': 220,
+                        'VAD_SILERO_MIN_SPEECH_MS': 300,
                         'VAD_SILERO_MIN_SILENCE_MS': 320,
                         'VAD_SILERO_MAX_SPEECH_S': 120,
                         'VAD_SILERO_SPEECH_PAD_MS': 120,
-                        'VAD_MAX_SEGMENT_S': 15,
+                        'VAD_MAX_SEGMENT_S': 30,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
                         'SUBTITLE_QC_MAX_CHARS': 9000,
                         'FIREREDASR_TIMEOUT': 300,
@@ -544,11 +544,11 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'SUBTITLE_MERGE_GAP_S': 0.3,
                         'SUBTITLE_QC_THRESHOLD': 0.35,
                         'WHISPER_RETRY_DELAY_S': 2.0,
-                        'AUDIO_CHUNK_WINDOW_S': 15.0,
+                        'AUDIO_CHUNK_WINDOW_S': 30.0,
                         'AUDIO_CHUNK_OVERLAP_S': 0.4,
                         'VAD_MERGE_GAP_S': 0.35,
                         'VAD_MIN_SEGMENT_S': 0.8,
-                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
+                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 30.0,
                     }
                     float_defaults.update(SPEECH_PIPELINE_FLOAT_FIELDS)
                     form_data[field] = str(float_defaults.get(field, 0.0))

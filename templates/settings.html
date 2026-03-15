@@ -1092,7 +1092,7 @@
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="audio-chunk-window" class="form-label">分片窗口（秒）</label>
-                                                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 15.0) }}" class="form-control">
+                                                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 30.0) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-md-6">
@@ -1123,13 +1123,13 @@
                                                                         <div class="col-md-4">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-min-speech" class="form-label">最短语音（ms）</label>
-                                                                                <input type="number" id="vad-min-speech" name="VAD_SILERO_MIN_SPEECH_MS" value="{{ config.get('VAD_SILERO_MIN_SPEECH_MS', 220) }}" min="0" class="form-control">
+                                                                                <input type="number" id="vad-min-speech" name="VAD_SILERO_MIN_SPEECH_MS" value="{{ config.get('VAD_SILERO_MIN_SPEECH_MS', 300) }}" min="0" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-md-4">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-max-segment" class="form-label">最大片段（秒）</label>
-                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 15.0) }}" min="10" class="form-control">
+                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 30.0) }}" min="10" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                     </div>

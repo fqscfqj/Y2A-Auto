@@ -22,16 +22,16 @@ from .subtitle_pipeline_types import DetectedSpeechWindow
 class VadConfig:
     provider: str = 'silero-vad'
     threshold: float = 0.55
-    min_speech_ms: int = 220
+    min_speech_ms: int = 300
     min_silence_ms: int = 320
     max_speech_s: int = 120
     speech_pad_ms: int = 120
-    chunk_window_s: float = 15.0
+    chunk_window_s: float = 30.0
     chunk_overlap_s: float = 0.4
     merge_gap_s: float = 0.35
     min_segment_s: float = 0.8
-    max_segment_s: float = 15.0
-    max_segment_s_for_split: float = 15.0
+    max_segment_s: float = 30.0
+    max_segment_s_for_split: float = 30.0
     refinement_enabled: bool = True
     min_speech_coverage_ratio: float = 0.015
 
