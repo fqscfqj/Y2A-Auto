@@ -41,6 +41,9 @@ _FILLER_PATTERNS = [
 _REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
 _SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
+_LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
+_CJK_CHAR_RE = re.compile(r'[\u3400-\u9fff]')
+_VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 
 # Hallucination: same short phrase repeated 3+ times in succession
 _HALLUCINATION_RE = re.compile(r'(.{2,30}?)(?:\s*\1){2,}', re.IGNORECASE)
@@ -87,6 +90,38 @@ class SrtTransformEngine:
     ):
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
+
+    @staticmethod
+    def _text_density_metrics(text: str) -> Dict[str, float]:
+        normalized = str(text or '').strip()
+        if not normalized:
+            return {'visible_chars': 0.0, 'word_like_units': 0.0}
+        return {
+            'visible_chars': float(len(_VISIBLE_TEXT_RE.findall(normalized))),
+            'word_like_units': float(
+                len(_LATIN_WORD_RE.findall(normalized)) + len(_CJK_CHAR_RE.findall(normalized))
+            ),
+        }
+
+    @classmethod
+    def _is_implausibly_dense_cue(cls, text: str, duration_s: float) -> bool:
+        normalized = str(text or '').strip()
+        if not normalized:
+            return False
+        metrics = cls._text_density_metrics(normalized)
+        safe_duration = max(float(duration_s or 0.0), 0.1)
+        chars_per_second = metrics['visible_chars'] / safe_duration
+        units_per_second = metrics['word_like_units'] / safe_duration
+
+        if safe_duration < 8.0 and metrics['visible_chars'] > 280:
+            return True
+        if safe_duration < 15.0 and metrics['visible_chars'] > 420:
+            return True
+        if chars_per_second > 45.0:
+            return True
+        if units_per_second > 8.0:
+            return True
+        return False
 
     # ==================================================================
     # 1. SRT Parsing
@@ -201,6 +236,17 @@ class SrtTransformEngine:
         for cue in cues:
             text = cue.get('text', '').strip()
             if not text:
+                continue
+
+            duration = max(float(cue.get('end', 0.0)) - float(cue.get('start', 0.0)), 0.0)
+            if self._is_implausibly_dense_cue(text, duration):
+                preview = _WHITESPACE_RE.sub(' ', text).strip()[:160]
+                self.logger.warning(
+                    "Dropping implausible dense cue: start=%.2fs, end=%.2fs, preview=%r",
+                    float(cue.get('start', 0.0)),
+                    float(cue.get('end', 0.0)),
+                    preview,
+                )
                 continue
 
             # a) Internal repetition – collapse to single occurrence

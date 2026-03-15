@@ -17,6 +17,7 @@ Features:
 
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -54,6 +55,9 @@ def _format_srt_timestamp(seconds: float) -> str:
 
 # Supported response formats in order of preference
 _SUPPORTED_FORMATS = ['verbose_json', 'srt']
+_LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
+_CJK_CHAR_RE = re.compile(r'[\u3400-\u9fff]')
+_VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 
 @dataclass
 class AsrConfig:
@@ -187,6 +191,36 @@ class AsrApiClient:
             "falling back to 'srt'. Last error: %s",
             exc,
         )
+
+    @staticmethod
+    def _text_density_metrics(text: str) -> Tuple[int, int]:
+        normalized = str(text or '').strip()
+        if not normalized:
+            return 0, 0
+        visible_chars = len(_VISIBLE_TEXT_RE.findall(normalized))
+        word_like_units = len(_LATIN_WORD_RE.findall(normalized)) + len(_CJK_CHAR_RE.findall(normalized))
+        return visible_chars, word_like_units
+
+    @classmethod
+    def _is_implausible_for_duration(cls, text: str, duration_s: float) -> bool:
+        normalized = str(text or '').strip()
+        if not normalized:
+            return False
+
+        visible_chars, word_like_units = cls._text_density_metrics(normalized)
+        safe_duration = max(float(duration_s or 0.0), 0.1)
+        chars_per_second = visible_chars / safe_duration
+        units_per_second = word_like_units / safe_duration
+
+        if safe_duration < 8.0 and visible_chars > 280:
+            return True
+        if safe_duration < 15.0 and visible_chars > 420:
+            return True
+        if chars_per_second > 45.0:
+            return True
+        if units_per_second > 8.0:
+            return True
+        return False
 
     @staticmethod
     def _derive_language_detection_format(transcription_fmt: str) -> str:
@@ -985,6 +1019,14 @@ class AsrApiClient:
                     if not isinstance(duration, (int, float)) or duration <= 0:
                         # Fallback: 1.0s may not reflect actual audio duration but provides a valid SRT entry
                         duration = 1.0
+                    if self._is_implausible_for_duration(text, duration):
+                        preview = re.sub(r'\s+', ' ', text).strip()[:160]
+                        self.logger.warning(
+                            "Discarding implausible ASR fallback cue without segments: duration=%.2fs, preview=%r",
+                            duration,
+                            preview,
+                        )
+                        return None
                     end_ts = _format_srt_timestamp(duration)
                     # Return simple SRT with single segment
                     return f"1\n00:00:00,000 --> {end_ts}\n{text.strip()}\n"
@@ -1002,6 +1044,17 @@ class AsrApiClient:
                 text = seg.get('text', '').strip()
                 
                 if not text:
+                    continue
+
+                duration = max(float(end or 0.0) - float(start or 0.0), 0.0)
+                if self._is_implausible_for_duration(text, duration):
+                    preview = re.sub(r'\s+', ' ', text).strip()[:160]
+                    self.logger.warning(
+                        "Discarding implausible ASR segment: start=%.2fs, end=%.2fs, preview=%r",
+                        float(start or 0.0),
+                        float(end or 0.0),
+                        preview,
+                    )
                     continue
                 
                 # Format timestamps as SRT (HH:MM:SS,mmm)
