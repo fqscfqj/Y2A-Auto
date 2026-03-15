@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+import mimetypes
 import shutil
 import time
 import datetime
@@ -16,6 +17,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
 from flask_cors import CORS
+from PIL import Image, UnidentifiedImageError
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
@@ -30,6 +32,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
+
+ALLOWED_COVER_EXTENSIONS = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+}
 
 # bilibili二维码登录会话（内存）
 _BILIBILI_QR_SESSIONS = {}
@@ -210,6 +219,124 @@ def _append_settings_message(messages: list, category: str, text: str):
     if not clean_text:
         return
     messages.append({'category': category, 'text': clean_text})
+
+
+def _get_task_dir_real(task_id: str) -> str:
+    downloads_dir_real = os.path.realpath(get_app_subdir('downloads'))
+    task_dir_real = os.path.realpath(os.path.join(downloads_dir_real, str(task_id)))
+    if task_dir_real != downloads_dir_real and not task_dir_real.startswith(downloads_dir_real + os.sep):
+        raise ValueError('非法任务目录')
+    return task_dir_real
+
+
+def _is_safe_task_file(path: str, task_dir_real: str) -> bool:
+    try:
+        file_real = os.path.realpath(path)
+    except (ValueError, OSError):
+        return False
+    return file_real == task_dir_real or file_real.startswith(task_dir_real + os.sep)
+
+
+def _get_cover_file_info(path: str):
+    ext = os.path.splitext(str(path or ''))[1].lower()
+    return ext, ALLOWED_COVER_EXTENSIONS.get(ext)
+
+
+def _validate_cover_upload(file_storage):
+    if not file_storage or not getattr(file_storage, 'filename', ''):
+        raise ValueError('请选择要上传的封面图片')
+
+    ext, _ = _get_cover_file_info(file_storage.filename)
+    if ext not in ALLOWED_COVER_EXTENSIONS:
+        raise ValueError('仅支持 JPG、JPEG、PNG、WEBP 格式的封面图片')
+
+    current_pos = file_storage.stream.tell()
+    try:
+        with Image.open(file_storage.stream) as img:
+            img.verify()
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ValueError(f'上传文件不是有效图片: {exc}') from exc
+    finally:
+        file_storage.stream.seek(current_pos)
+
+    return ext
+
+
+def _find_original_cover_backup(task_dir_real: str):
+    for ext in ALLOWED_COVER_EXTENSIONS:
+        candidate = os.path.join(task_dir_real, f'original_cover{ext}')
+        if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
+            return candidate
+    return None
+
+
+def _get_current_cover_path(task: dict, task_dir_real: str):
+    cover_path = str(task.get('cover_path_local') or '').strip()
+    if cover_path and os.path.exists(cover_path) and _is_safe_task_file(cover_path, task_dir_real):
+        return os.path.realpath(cover_path)
+
+    for name in ('cover.jpg', 'cover.png', 'cover.webp', 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp'):
+        candidate = os.path.join(task_dir_real, name)
+        if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
+            return os.path.realpath(candidate)
+
+    for filename in os.listdir(task_dir_real):
+        if filename.lower().endswith(tuple(ALLOWED_COVER_EXTENSIONS.keys())):
+            candidate = os.path.join(task_dir_real, filename)
+            if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
+                return os.path.realpath(candidate)
+
+    return ''
+
+
+def _replace_task_cover(task: dict, uploaded_file):
+    task_id = str(task.get('id') or '').strip()
+    if not task_id:
+        raise ValueError('任务不存在')
+
+    task_dir_real = _get_task_dir_real(task_id)
+    os.makedirs(task_dir_real, exist_ok=True)
+
+    current_cover_path = _get_current_cover_path(task, task_dir_real)
+    if not current_cover_path:
+        raise ValueError('当前任务没有可替换的原始封面')
+
+    ext = _validate_cover_upload(uploaded_file)
+    original_backup = _find_original_cover_backup(task_dir_real)
+
+    if not original_backup:
+        current_ext, _ = _get_cover_file_info(current_cover_path)
+        if current_ext not in ALLOWED_COVER_EXTENSIONS:
+            raise ValueError('当前原始封面格式不受支持，无法创建恢复备份')
+        original_backup = os.path.join(task_dir_real, f'original_cover{current_ext}')
+        shutil.copy2(current_cover_path, original_backup)
+
+    for existing_ext in ALLOWED_COVER_EXTENSIONS:
+        custom_candidate = os.path.join(task_dir_real, f'custom_cover{existing_ext}')
+        if os.path.exists(custom_candidate):
+            os.remove(custom_candidate)
+
+    new_cover_path = os.path.join(task_dir_real, f'custom_cover{ext}')
+    uploaded_file.save(new_cover_path)
+    update_task(task_id, cover_path_local=new_cover_path, silent=True)
+    return new_cover_path
+
+
+def _restore_task_cover(task: dict):
+    task_id = str(task.get('id') or '').strip()
+    if not task_id:
+        raise ValueError('任务不存在')
+
+    task_dir_real = _get_task_dir_real(task_id)
+    if not os.path.isdir(task_dir_real):
+        raise ValueError('任务目录不存在，无法恢复原封面')
+
+    original_backup = _find_original_cover_backup(task_dir_real)
+    if not original_backup:
+        raise ValueError('未找到原始封面备份，无法恢复')
+
+    update_task(task_id, cover_path_local=original_backup, silent=True)
+    return original_backup
 
 
 def _is_ajax_request() -> bool:
@@ -1133,6 +1260,28 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
+        action = request.form.get('action', 'save_metadata').strip().lower()
+        redirect_target = url_for('edit_task', task_id=task_id)
+
+        if action == 'replace_cover':
+            try:
+                cover_file = request.files.get('cover_file')
+                _replace_task_cover(task, cover_file)
+                flash('任务封面已更新。', 'success')
+            except Exception as e:
+                logger.warning(f"替换任务 {task_id} 封面失败: {e}")
+                flash(f'更换封面失败: {e}', 'danger')
+            return redirect(redirect_target)
+
+        if action == 'restore_cover':
+            try:
+                _restore_task_cover(task)
+                flash('已恢复原始封面。', 'success')
+            except Exception as e:
+                logger.warning(f"恢复任务 {task_id} 原始封面失败: {e}")
+                flash(f'恢复原封面失败: {e}', 'danger')
+            return redirect(redirect_target)
+
         upload_target = str(task.get('upload_target') or 'acfun').lower()
         # 处理表单提交
         video_title = request.form.get('video_title_translated', '')
@@ -1200,7 +1349,7 @@ def edit_task(task_id):
         else:
             flash('任务已保存。', 'success')
 
-        return redirect(url_for('edit_task', task_id=task_id))
+        return redirect(redirect_target)
     
     # GET请求，显示编辑页面
     # 封面图片现在直接从downloads目录提供
@@ -1226,6 +1375,22 @@ def edit_task(task_id):
         TASK_STATES['READY_FOR_UPLOAD'],
         TASK_STATES['AWAITING_REVIEW']
     ]
+    has_original_cover_backup = False
+    has_cover_preview = False
+    is_custom_cover_active = False
+    current_cover_filename = ''
+    try:
+        task_dir_real = _get_task_dir_real(task_id)
+        has_original_cover_backup = bool(os.path.isdir(task_dir_real) and _find_original_cover_backup(task_dir_real))
+        active_cover_path = _get_current_cover_path(task, task_dir_real) if os.path.isdir(task_dir_real) else ''
+        has_cover_preview = bool(active_cover_path)
+        current_cover_filename = os.path.basename(active_cover_path) if active_cover_path else ''
+        is_custom_cover_active = current_cover_filename.startswith('custom_cover.')
+    except Exception:
+        has_original_cover_backup = False
+        has_cover_preview = bool(task.get('cover_path_local'))
+        is_custom_cover_active = False
+        current_cover_filename = os.path.basename(str(task.get('cover_path_local') or ''))
     
     return render_template(
         'edit_task.html', 
@@ -1236,7 +1401,11 @@ def edit_task(task_id):
         tags_string=tags_string,
         config=config,
         upload_target=upload_target,
-        can_upload=can_upload
+        can_upload=can_upload,
+        has_cover_preview=has_cover_preview,
+        has_original_cover_backup=has_original_cover_backup,
+        is_custom_cover_active=is_custom_cover_active,
+        current_cover_filename=current_cover_filename
     )
 
 @app.route('/tasks/<task_id>/cover')
@@ -1252,8 +1421,8 @@ def get_task_cover(task_id):
     cover_path = task.get('cover_path_local')
     
     if cover_path and os.path.exists(cover_path):
-        # 返回封面图片
-        return send_file(cover_path, mimetype='image/jpeg')
+        mime_type, _ = mimetypes.guess_type(cover_path)
+        return send_file(cover_path, mimetype=mime_type)
     
     # 如果没有封面，尝试在任务目录中查找
     downloads_dir = get_app_subdir('downloads')

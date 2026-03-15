@@ -30,24 +30,61 @@
                     </div>
                 </div>
                 
-                {% if task.cover_path_local %}
-                    <div class="card mb-4">
-                        <div class="card-header">
-                            视频封面
-                        </div>
-                        <img src="{{ url_for('get_task_cover', task_id=task.id) }}" class="card-img-top" alt="视频封面">
-                        <div class="card-body">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="cover-mode-switch" 
-                                       {% if config.COVER_PROCESSING_MODE == 'crop' %}checked{% endif %}>
-                                <label class="form-check-label" for="cover-mode-switch">
-                                    使用裁剪模式 (当前: {{ '裁剪' if config.COVER_PROCESSING_MODE == 'crop' else '填充' }})
-                                </label>
-                            </div>
-                            <button class="btn btn-sm btn-primary mt-2" id="toggle-cover-mode">切换封面处理模式</button>
-                        </div>
+                <div class="card mb-4">
+                    <div class="card-header">
+                        视频封面
                     </div>
-                {% endif %}
+                    {% if has_cover_preview %}
+                        <img src="{{ url_for('get_task_cover', task_id=task.id) }}" class="card-img-top" alt="视频封面">
+                    {% else %}
+                        <div class="card-body text-muted">
+                            当前任务暂无可预览封面。
+                        </div>
+                    {% endif %}
+                    <div class="card-body">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="cover-mode-switch" 
+                                   {% if config.COVER_PROCESSING_MODE == 'crop' %}checked{% endif %}>
+                            <label class="form-check-label" for="cover-mode-switch">
+                                使用裁剪模式 (当前: {{ '裁剪' if config.COVER_PROCESSING_MODE == 'crop' else '填充' }})
+                            </label>
+                        </div>
+                        <button class="btn btn-sm btn-primary mt-2" id="toggle-cover-mode">切换封面处理模式</button>
+
+                        <hr>
+
+                        <div class="small text-muted mb-2">
+                            当前生效文件: {{ current_cover_filename or '未检测到封面文件' }}
+                        </div>
+                        <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}" enctype="multipart/form-data" class="mb-2">
+                            <input type="hidden" name="action" value="replace_cover">
+                            <label for="cover_file" class="form-label">更换视频封面</label>
+                            <input class="form-control" type="file" id="cover_file" name="cover_file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required>
+                            <div class="form-text">支持 JPG、JPEG、PNG、WEBP。上传后会直接替换当前任务封面。</div>
+                            <button type="submit" class="btn btn-sm btn-warning mt-2">
+                                <i class="bi bi-image me-1"></i>上传新封面
+                            </button>
+                        </form>
+
+                        <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}">
+                            <input type="hidden" name="action" value="restore_cover">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary" {% if not (has_original_cover_backup and is_custom_cover_active) %}disabled{% endif %}>
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>恢复原封面
+                            </button>
+                            <div class="form-text mt-1">
+                                {% if has_original_cover_backup %}
+                                    {% if is_custom_cover_active %}
+                                        已检测到原始封面备份，可恢复。
+                                    {% else %}
+                                        原始封面备份已存在，当前已在使用原始封面。
+                                    {% endif %}
+                                {% else %}
+                                    首次成功替换封面后，才会生成可恢复的原始封面备份。
+                                {% endif %}
+                            </div>
+                        </form>
+                    </div>
+                </div>
                 
                 {% if task.moderation_result %}
                     <div class="card mb-4">
@@ -136,6 +173,7 @@
             <!-- 右侧编辑表单 -->
             <div class="col-md-8">
                 <form method="post" action="{{ url_for('edit_task', task_id=task.id) }}" id="task-edit-form">
+                    <input type="hidden" name="action" value="save_metadata">
                     <div class="card mb-4">
                         <div class="card-header">
                             编辑视频信息
