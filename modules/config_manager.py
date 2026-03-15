@@ -5,7 +5,10 @@ import os
 import json
 import logging
 from .utils import get_app_subdir
-from .speech_pipeline_settings import inject_speech_pipeline_defaults
+from .speech_pipeline_settings import (
+    inject_speech_pipeline_defaults,
+    migrate_legacy_speech_pipeline_config,
+)
 
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
@@ -120,21 +123,21 @@ DEFAULT_CONFIG = {
     "FIREREDASR_TIMEOUT": 300,
     "FIREREDASR_MAX_RETRIES": 3,
     # 语音活动检测（VAD）
-    "VAD_ENABLED": False,
+    "VAD_ENABLED": True,
     "VAD_PROVIDER": "silero-vad",
     "VAD_SILERO_THRESHOLD": 0.55,
     "VAD_SILERO_MIN_SPEECH_MS": 300,   # 过滤过短噪声脉冲，更贴近正常口语起句
     "VAD_SILERO_MIN_SILENCE_MS": 320,   # 收紧切分，降低单个搜索窗跨句概率
     "VAD_SILERO_MAX_SPEECH_S": 120,
     "VAD_SILERO_SPEECH_PAD_MS": 120,    # 降低边界填充，避免窗口过宽
-    "VAD_MAX_SEGMENT_S": 30,           # 正常语音识别搜索窗放宽到半分钟
+    "VAD_MAX_SEGMENT_S": 15.0,          # 质量优先：限制搜索窗，减少跨句/跨轮次漂移
     # 音频分片策略（针对长音频）
-    "AUDIO_CHUNK_WINDOW_S": 30.0,  # 与搜索窗上限对齐，避免仍被 15s 分块
+    "AUDIO_CHUNK_WINDOW_S": 15.0,  # canonical 默认值：更利于词级时间戳稳定回填
     "AUDIO_CHUNK_OVERLAP_S": 0.4,  # 略增重叠避免句首句尾丢失
     # VAD后处理约束（宽松策略 - 搜索窗口，非字幕边界）
     "VAD_MERGE_GAP_S": 0.35,  # 缩小自动合并窗口，减少跨句吞并
     "VAD_MIN_SEGMENT_S": 0.8,  # 允许略短片段保留独立句边界
-    "VAD_MAX_SEGMENT_S_FOR_SPLIT": 30.0,  # 与搜索窗硬上限对齐
+    "VAD_MAX_SEGMENT_S_FOR_SPLIT": 15.0,  # 与搜索窗硬上限对齐
     "ASR_WORD_TIMESTAMPS_ENABLED": True,  # 优先请求词级时间戳以提升边界精度
     "VAD_REFINEMENT_ENABLED": True,  # 对粗检出的语音窗执行二次边界收敛
     "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.015,  # 低于该占比时触发宽松VAD重试
@@ -190,6 +193,8 @@ def load_config():
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 logger.info("成功加载配置文件")
+
+                config, migrated_legacy_speech = migrate_legacy_speech_pipeline_config(config)
                 
                 # 确保所有默认配置项都存在
                 missing_keys = False
@@ -219,7 +224,10 @@ def load_config():
                     missing_keys
                     or encoder_changed
                     or upload_target_changed
+                    or migrated_legacy_speech
                 ):
+                    if migrated_legacy_speech:
+                        logger.info("检测到旧版 ASR/VAD 默认值，已自动迁移到质量优先默认配置")
                     save_config(config, config_path)
                 return config
     except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
