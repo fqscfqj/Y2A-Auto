@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import json
+import base64
 import traceback
 from typing import Any, Dict, List, Optional, Sequence
 from difflib import SequenceMatcher
@@ -479,12 +480,16 @@ def _request_json_object(
     thinking_enabled: bool,
     logger_obj,
     scene_name: str,
+    user_content=None,
 ) -> Optional[Dict[str, Any]]:
+    user_message_content = user_content
+    if user_message_content is None:
+        user_message_content = json.dumps(payload, ensure_ascii=False)
     create_kwargs = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            {"role": "user", "content": user_message_content},
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -1021,6 +1026,51 @@ def _compact_partition_candidates(partitions) -> List[Dict[str, str]]:
     return [candidate for candidate in candidates if candidate["id"] and candidate["name"]]
 
 
+def _build_cover_data_url(cover_path: str) -> Optional[str]:
+    path = safe_str(cover_path).strip()
+    if not path:
+        return None
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"封面文件不存在: {path}")
+
+    extension = os.path.splitext(path)[1].lower()
+    mime_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    mime_type = mime_types.get(extension)
+    if not mime_type:
+        raise ValueError(f"不支持的封面格式: {extension or 'unknown'}")
+
+    with open(path, "rb") as file_obj:
+        raw = file_obj.read()
+    if not raw:
+        raise ValueError("封面文件为空")
+
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _is_multimodal_input_unsupported_error(exc: Exception) -> bool:
+    text = safe_str(exc).lower()
+    signals = (
+        "image_url",
+        "input_image",
+        "image input",
+        "vision",
+        "multimodal",
+        "content type",
+        "invalid chat format",
+        "unsupported content",
+        "does not support image",
+        "only text",
+        "not support image",
+    )
+    return any(signal in text for signal in signals)
+
+
 def _request_partition_id(
     *,
     title: str,
@@ -1029,6 +1079,7 @@ def _request_partition_id(
     openai_config,
     logger,
     scene_name: str,
+    cover_path: Optional[str] = None,
 ) -> Optional[str]:
     if not openai_config or not openai_config.get("OPENAI_API_KEY"):
         return None
@@ -1039,24 +1090,64 @@ def _request_partition_id(
 
     client = get_openai_client(openai_config)
     model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
-    parsed = _request_json_object(
-        client=client,
-        model_name=model_name,
-        system_prompt=(
-            "你是视频分区选择器。只从 candidates 中选 1 个最匹配的分区。"
-            '只返回 JSON：{"id":"候选ID"}，不要解释。'
-        ),
-        payload={
-            "title": title,
-            "description": description,
-            "candidates": candidates,
-        },
-        max_tokens=80,
-        temperature=0.0,
-        thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
-        logger_obj=logger,
-        scene_name=scene_name,
+    payload = {
+        "title": title,
+        "description": description,
+        "candidates": candidates,
+    }
+    system_prompt = (
+        "你是视频分区选择器。只从 candidates 中选 1 个最匹配的分区。"
+        '只返回 JSON：{"id":"候选ID"}，不要解释。'
     )
+
+    parsed = None
+    if cover_path:
+        try:
+            cover_data_url = _build_cover_data_url(cover_path)
+            parsed = _request_json_object(
+                client=client,
+                model_name=model_name,
+                system_prompt=system_prompt,
+                payload=payload,
+                max_tokens=80,
+                temperature=0.0,
+                thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+                logger_obj=logger,
+                scene_name=scene_name,
+                user_content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "请结合以下 JSON 信息与封面图片，从 candidates 中选择最合适的分区并只返回 JSON。\n"
+                            f"{json.dumps(payload, ensure_ascii=False)}"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": cover_data_url},
+                    },
+                ],
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            logger.warning(f"{scene_name} 封面不可用于分区推荐，已回退文本模式: {exc}")
+        except Exception as exc:
+            if _is_multimodal_input_unsupported_error(exc):
+                logger.warning(f"{scene_name} 当前模型或接口不支持图片输入，已回退文本模式: {exc}")
+            else:
+                raise
+
+    if parsed is None:
+        parsed = _request_json_object(
+            client=client,
+            model_name=model_name,
+            system_prompt=system_prompt,
+            payload=payload,
+            max_tokens=80,
+            temperature=0.0,
+            thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger_obj=logger,
+            scene_name=scene_name,
+        )
     partition_id = safe_str((parsed or {}).get("id")).strip()
     valid_ids = {safe_str(partition.get("id")).strip() for partition in partitions}
     if partition_id in valid_ids:
@@ -1064,7 +1155,15 @@ def _request_partition_id(
     return None
 
 
-def recommend_bilibili_partition(title, description, zone_data, openai_config=None, task_id=None):
+def recommend_bilibili_partition(
+    title,
+    description,
+    zone_data,
+    openai_config=None,
+    task_id=None,
+    cover_path: Optional[str] = None,
+    include_cover_for_ai: bool = False,
+):
     """
     使用 OpenAI + 规则策略推荐 Bilibili 分区。
 
@@ -1115,6 +1214,7 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
             openai_config=openai_config,
             logger=logger,
             scene_name='ai_enhancer_partition_bilibili',
+            cover_path=cover_path if include_cover_for_ai else None,
         )
         if partition_id:
             logger.info(f"LLM 命中 bilibili 分区ID: {partition_id}")
@@ -1127,7 +1227,15 @@ def recommend_bilibili_partition(title, description, zone_data, openai_config=No
         logger.error(traceback.format_exc())
         return None
 
-def recommend_acfun_partition(title, description, id_mapping_data, openai_config=None, task_id=None):
+def recommend_acfun_partition(
+    title,
+    description,
+    id_mapping_data,
+    openai_config=None,
+    task_id=None,
+    cover_path: Optional[str] = None,
+    include_cover_for_ai: bool = False,
+):
     """
     使用OpenAI推荐AcFun视频分区
     
@@ -1191,6 +1299,7 @@ def recommend_acfun_partition(title, description, id_mapping_data, openai_config
             openai_config=openai_config,
             logger=logger,
             scene_name='ai_enhancer_partition_acfun',
+            cover_path=cover_path if include_cover_for_ai else None,
         )
         if partition_id:
             logger.info(f"LLM 命中 AcFun 分区ID: {partition_id}")

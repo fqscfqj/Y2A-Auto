@@ -158,7 +158,12 @@
                                                         <input type="checkbox" name="RECOMMEND_PARTITION" {% if config.RECOMMEND_PARTITION %}checked{% endif %}>
                                                         自动推荐分区
                                                     </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="RECOMMEND_PARTITION_WITH_COVER" {% if config.get('RECOMMEND_PARTITION_WITH_COVER', False) %}checked{% endif %}>
+                                                        推荐分区时附带原视频封面供 AI 参考
+                                                    </label>
                                                 </div>
+                                                <p class="help-text mt-2 mb-0">仅在已启用自动推荐分区、任务存在封面、且 AI 接口支持图片输入时生效；否则自动回退文本模式。</p>
                                             </div>
                                         </article>
                                     </div>

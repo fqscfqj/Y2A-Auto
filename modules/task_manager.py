@@ -5229,7 +5229,9 @@ class TaskProcessor:
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
             'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
+            'RECOMMEND_PARTITION_WITH_COVER': self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
         }
+        cover_path = task.get('cover_path_local', '')
 
         task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
         from modules.utils import safe_str
@@ -5275,7 +5277,9 @@ class TaskProcessor:
                     description,
                     zone_data,
                     openai_config=openai_config,
-                    task_id=task_id
+                    task_id=task_id,
+                    cover_path=cover_path,
+                    include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
                 )
             else:
                 from .utils import get_app_subdir
@@ -5304,7 +5308,9 @@ class TaskProcessor:
                     description,
                     id_mapping_data,
                     openai_config=openai_config,
-                    task_id=task_id
+                    task_id=task_id,
+                    cover_path=cover_path,
+                    include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
                 )
 
             platform_results[platform] = recommended_partition_id
