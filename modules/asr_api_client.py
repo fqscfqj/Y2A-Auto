@@ -102,6 +102,10 @@ class AsrFormatIncompatibleError(RuntimeError):
     """Raised when the ASR API supports neither verbose_json nor srt."""
 
 
+class ImplausibleAsrResultError(RuntimeError):
+    """Raised when the ASR provider returns text implausible for the clip duration."""
+
+
 class AsrApiClient:
     """Client for OpenAI-compatible Whisper transcription APIs.
 
@@ -310,6 +314,9 @@ class AsrApiClient:
         self,
         wav_path: str,
         model: str,
+        *,
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
     ) -> _AsrCapabilityProbeResult:
         format_errors: List[Tuple[str, Exception]] = []
         verbose_json_data: Optional[Dict[str, Any]] = None
@@ -319,6 +326,8 @@ class AsrApiClient:
                 wav_path,
                 model,
                 'verbose_json',
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
             )
             verbose_json_data = self._as_dict(verbose_resp) or {}
             srt_text = self._verbose_json_to_srt(verbose_resp)
@@ -336,7 +345,13 @@ class AsrApiClient:
                 raise
 
         try:
-            srt_text = self._try_format(wav_path, 'srt', model)
+            srt_text = self._try_format(
+                wav_path,
+                'srt',
+                model,
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
+            )
             if srt_text:
                 if format_errors:
                     self._log_fallback_warning_once(format_errors[-1][1])
@@ -368,6 +383,9 @@ class AsrApiClient:
         self,
         wav_path: str,
         model: str,
+        *,
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
     ) -> _AsrCapabilityProbeResult:
         while True:
             with self._capability_probe_condition:
@@ -388,7 +406,12 @@ class AsrApiClient:
                 break
 
         try:
-            probe_result = self._probe_capabilities(wav_path, model)
+            probe_result = self._probe_capabilities(
+                wav_path,
+                model,
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
+            )
         except AsrFormatIncompatibleError:
             with self._capability_probe_condition:
                 self._capability_probe_in_progress = False
@@ -424,8 +447,16 @@ class AsrApiClient:
         model: str,
         segment_desc: str,
         allow_reprobe: bool = True,
+        *,
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
     ) -> Optional[str]:
-        probe_result = self._get_or_probe_capabilities(wav_path, model)
+        probe_result = self._get_or_probe_capabilities(
+            wav_path,
+            model,
+            include_language_hint=include_language_hint,
+            include_prompt=include_prompt,
+        )
         if probe_result.srt_text:
             return probe_result.srt_text
 
@@ -434,7 +465,13 @@ class AsrApiClient:
             return None
 
         try:
-            srt_text = self._try_format(wav_path, fmt, model)
+            srt_text = self._try_format(
+                wav_path,
+                fmt,
+                model,
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
+            )
             if srt_text:
                 return srt_text
             self.logger.warning(
@@ -443,7 +480,12 @@ class AsrApiClient:
             if allow_reprobe:
                 self._invalidate_capabilities(expected_transcription_fmt=fmt)
                 return self._transcribe_with_negotiated_format(
-                    wav_path, model, segment_desc, allow_reprobe=False,
+                    wav_path,
+                    model,
+                    segment_desc,
+                    allow_reprobe=False,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
                 )
             return None
         except Exception as exc:
@@ -456,7 +498,12 @@ class AsrApiClient:
             if allow_reprobe:
                 self._invalidate_capabilities(expected_transcription_fmt=fmt)
                 return self._transcribe_with_negotiated_format(
-                    wav_path, model, segment_desc, allow_reprobe=False,
+                    wav_path,
+                    model,
+                    segment_desc,
+                    allow_reprobe=False,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
                 )
             raise
 
@@ -497,7 +544,15 @@ class AsrApiClient:
                 return self.client.audio.translations.create(**params)
             return self.client.audio.transcriptions.create(**params)
 
-    def _try_format(self, wav_path: str, fmt: str, model: str) -> Optional[str]:
+    def _try_format(
+        self,
+        wav_path: str,
+        fmt: str,
+        model: str,
+        *,
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
+    ) -> Optional[str]:
         """Try transcribing with a specific format.
         
         Args:
@@ -508,7 +563,13 @@ class AsrApiClient:
         Returns:
             SRT text if successful, None otherwise
         """
-        resp = self._request_transcription_response(wav_path, model, fmt)
+        resp = self._request_transcription_response(
+            wav_path,
+            model,
+            fmt,
+            include_language_hint=include_language_hint,
+            include_prompt=include_prompt,
+        )
 
         # Extract or convert to SRT
         if fmt == 'verbose_json':
@@ -536,6 +597,7 @@ class AsrApiClient:
 
         model = self.config.model_name or 'whisper-1'
         segment_desc = segment_info or wav_path
+        implausible_retry_used = False
 
         for attempt in range(self.config.max_retries):
             srt_text = None
@@ -545,6 +607,48 @@ class AsrApiClient:
                 )
                 if srt_text:
                     return srt_text
+            except ImplausibleAsrResultError as exc:
+                if not implausible_retry_used:
+                    implausible_retry_used = True
+                    self.logger.warning(
+                        "Implausible ASR result for segment [%s]; retrying once without prompt/language hint: %s",
+                        segment_desc,
+                        exc,
+                    )
+                    try:
+                        srt_text = self._transcribe_with_negotiated_format(
+                            wav_path,
+                            model,
+                            f"{segment_desc} [clean-retry]",
+                            include_language_hint=False,
+                            include_prompt=False,
+                        )
+                        if srt_text:
+                            self.logger.info(
+                                "Clean retry recovered segment [%s] after implausible ASR output",
+                                segment_desc,
+                            )
+                            return srt_text
+                    except ImplausibleAsrResultError as retry_exc:
+                        self.logger.warning(
+                            "Clean retry still returned implausible ASR result for segment [%s]: %s",
+                            segment_desc,
+                            retry_exc,
+                        )
+                    except AsrFormatIncompatibleError:
+                        raise
+                    except Exception as retry_exc:
+                        self.logger.warning(
+                            "Clean retry failed for segment [%s]: %s",
+                            segment_desc,
+                            retry_exc,
+                        )
+                else:
+                    self.logger.warning(
+                        "Implausible ASR result persists for segment [%s]: %s",
+                        segment_desc,
+                        exc,
+                    )
             except AsrFormatIncompatibleError:
                 raise
             except Exception as exc:
@@ -1021,12 +1125,10 @@ class AsrApiClient:
                         duration = 1.0
                     if self._is_implausible_for_duration(text, duration):
                         preview = re.sub(r'\s+', ' ', text).strip()[:160]
-                        self.logger.warning(
-                            "Discarding implausible ASR fallback cue without segments: duration=%.2fs, preview=%r",
-                            duration,
-                            preview,
+                        raise ImplausibleAsrResultError(
+                            "fallback cue without segments is implausible for "
+                            f"{duration:.2f}s clip, preview={preview!r}"
                         )
-                        return None
                     end_ts = _format_srt_timestamp(duration)
                     # Return simple SRT with single segment
                     return f"1\n00:00:00,000 --> {end_ts}\n{text.strip()}\n"
@@ -1049,13 +1151,10 @@ class AsrApiClient:
                 duration = max(float(end or 0.0) - float(start or 0.0), 0.0)
                 if self._is_implausible_for_duration(text, duration):
                     preview = re.sub(r'\s+', ' ', text).strip()[:160]
-                    self.logger.warning(
-                        "Discarding implausible ASR segment: start=%.2fs, end=%.2fs, preview=%r",
-                        float(start or 0.0),
-                        float(end or 0.0),
-                        preview,
+                    raise ImplausibleAsrResultError(
+                        "segment is implausible for returned timing "
+                        f"{float(start or 0.0):.2f}s-{float(end or 0.0):.2f}s, preview={preview!r}"
                     )
-                    continue
                 
                 # Format timestamps as SRT (HH:MM:SS,mmm)
                 start_ts = _format_srt_timestamp(start)
