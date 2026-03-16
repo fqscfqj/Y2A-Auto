@@ -163,11 +163,11 @@ def get_openai_client(openai_config):
     options = {}
     if openai_config.get('OPENAI_BASE_URL'):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
-    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 120)
+    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
     try:
         timeout_seconds = float(str(timeout_value).strip())
     except Exception:
-        timeout_seconds = 120.0
+        timeout_seconds = 600.0
     if timeout_seconds > 0:
         options['timeout'] = timeout_seconds
     return openai.OpenAI(api_key=api_key, **options)

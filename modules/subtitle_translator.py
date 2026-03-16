@@ -76,11 +76,11 @@ def get_openai_client(openai_config):
     # 如果提供了base_url，添加到选项中
     if openai_config.get('OPENAI_BASE_URL'):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
-    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 120)
+    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
     try:
         timeout_seconds = float(str(timeout_value).strip())
     except Exception:
-        timeout_seconds = 120.0
+        timeout_seconds = 600.0
     if timeout_seconds > 0:
         options['timeout'] = timeout_seconds
     
@@ -114,6 +114,7 @@ class TranslationConfig:
     retry_delay: int = 2
     max_workers: int = 2  # 减少最大并发线程数以降低内存使用
     thinking_enabled: bool = False
+    timeout_seconds: int = 600  # API请求超时秒数；思考模型输出可达64k token，建议不低于300
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -595,6 +596,7 @@ class SubtitleTranslator:
             'OPENAI_BASE_URL': config.base_url or 'https://api.openai.com/v1',
             'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
             'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
+            'OPENAI_TIMEOUT_SECONDS': config.timeout_seconds,
         }
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
@@ -1078,6 +1080,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             retry_delay=retry_delay,
             max_workers=max_workers,
             thinking_enabled=app_config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
+            timeout_seconds=int(app_config.get('OPENAI_TIMEOUT_SECONDS', 600)),
         )
         
         if not translation_config.api_key:
