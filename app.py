@@ -2150,9 +2150,26 @@ def system_health():
 def settings():
     """设置页面，用于管理配置"""
     if request.method == 'POST':
+        config = load_config()
         form_data = request.form.to_dict()
         uploads = _extract_settings_uploads(request.files)
         operation_id = str(form_data.get('save_operation_id') or uuid.uuid4())
+        enable_password_protection = str(form_data.get('password_protection_enabled', '')).lower() in ['true', '1', 'on']
+        submitted_new_password = str(form_data.get('new_password') or '')
+        submitted_confirm_password = str(form_data.get('confirm_password') or '')
+        has_effective_password = (
+            (submitted_new_password and submitted_new_password == submitted_confirm_password)
+            or bool(config.get('password'))
+        )
+
+        # 当用户在未开启保护的情况下保存“启用密码保护”时，需要立即把当前会话标记为已登录，
+        # 否则前端接下来轮询 /settings/save-progress/... 会被 login_required 重定向到登录页，
+        # 导致保存进度卡住或请求解析失败。
+        if enable_password_protection and has_effective_password:
+            session['logged_in'] = True
+            session.permanent = True
+        elif not enable_password_protection:
+            session.pop('logged_in', None)
 
         if _is_ajax_request():
             _update_settings_save_progress(
