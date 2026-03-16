@@ -533,10 +533,7 @@ def _request_json_object(
     response = None
     request_start = time.time()
     if logger_obj:
-        logger_obj.info(
-            f"{scene_name} 发起模型请求: model={model_name}, max_tokens={max_tokens}, "
-            "temperature已设置, response_format=json_object"
-        )
+        logger_obj.info("发起模型请求（JSON模式）")
     try:
         response = openai_chat_create_with_thinking_control(
             client=client,
@@ -564,7 +561,7 @@ def _request_json_object(
             raise
     finally:
         if logger_obj:
-            logger_obj.info(f"{scene_name} 模型请求结束，耗时: {time.time() - request_start:.2f}秒")
+            logger_obj.info(f"模型请求结束，耗时: {time.time() - request_start:.2f}秒")
     if not getattr(response, "choices", None):
         return None
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
