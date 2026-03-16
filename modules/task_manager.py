@@ -5232,7 +5232,11 @@ class TaskProcessor:
     
     def _recommend_partition(self, task_id, task_logger):
         """推荐视频分区（平台感知：AcFun/Bilibili）"""
-        from modules.ai_enhancer import recommend_acfun_partition, recommend_bilibili_partition
+        from modules.ai_enhancer import (
+            recommend_acfun_partition,
+            recommend_bilibili_partition,
+            recommend_partitions_aio,
+        )
 
         task = get_task(task_id)
         if not task:
@@ -5279,65 +5283,83 @@ class TaskProcessor:
             targets_to_recommend = [UPLOAD_TARGET_ACFUN]
 
         platform_results = {}
+        zone_data = []
+        id_mapping_data = []
+
+        if UPLOAD_TARGET_BILIBILI in targets_to_recommend:
+            try:
+                from bilibili_api import video_zone
+                zone_data = video_zone.get_zone_list_sub() or []
+                task_logger.info(f"成功读取bilibili分区数据，长度: {len(zone_data)}")
+            except Exception as e:
+                task_logger.error(f"读取bilibili分区数据失败: {e}")
+
+        if UPLOAD_TARGET_ACFUN in targets_to_recommend:
+            from .utils import get_app_subdir
+            id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
+            task_logger.info(f"尝试读取 AcFun 分区映射文件: {id_mapping_path}")
+            try:
+                if not os.path.exists(id_mapping_path):
+                    task_logger.error(f"分区映射文件不存在: {id_mapping_path}")
+                else:
+                    with open(id_mapping_path, 'r', encoding='utf-8') as f:
+                        id_mapping_data = json.load(f)
+                    task_logger.info(f"成功读取 AcFun 分区映射文件，包含 {len(id_mapping_data)} 个分类")
+            except Exception as e:
+                task_logger.error(f"读取 AcFun 分区ID映射失败: {str(e)}")
+                id_mapping_data = []
+
+        if targets_to_recommend == [UPLOAD_TARGET_ACFUN, UPLOAD_TARGET_BILIBILI]:
+            if not id_mapping_data:
+                task_logger.warning("AcFun 分区映射数据为空，跳过AcFun推荐")
+            if not zone_data:
+                task_logger.warning("bilibili分区数据为空，跳过bilibili推荐")
+            platform_results = recommend_partitions_aio(
+                title,
+                description,
+                acfun_id_mapping_data=id_mapping_data,
+                bilibili_zone_data=zone_data,
+                openai_config=openai_config,
+                task_id=task_id,
+                cover_path=cover_path,
+                include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
+            )
+        else:
+            for platform in targets_to_recommend:
+                recommended_partition_id = None
+                if platform == UPLOAD_TARGET_BILIBILI:
+                    if not zone_data:
+                        task_logger.warning("bilibili分区数据为空，跳过bilibili推荐")
+                        platform_results[platform] = None
+                        continue
+                    recommended_partition_id = recommend_bilibili_partition(
+                        title,
+                        description,
+                        zone_data,
+                        openai_config=openai_config,
+                        task_id=task_id,
+                        cover_path=cover_path,
+                        include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
+                    )
+                else:
+                    if not id_mapping_data:
+                        task_logger.warning("AcFun 分区映射数据为空，跳过AcFun推荐")
+                        platform_results[platform] = None
+                        continue
+                    recommended_partition_id = recommend_acfun_partition(
+                        title,
+                        description,
+                        id_mapping_data,
+                        openai_config=openai_config,
+                        task_id=task_id,
+                        cover_path=cover_path,
+                        include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
+                    )
+
+                platform_results[platform] = recommended_partition_id
 
         for platform in targets_to_recommend:
-            recommended_partition_id = None
-            if platform == UPLOAD_TARGET_BILIBILI:
-                zone_data = []
-                try:
-                    from bilibili_api import video_zone
-                    zone_data = video_zone.get_zone_list_sub() or []
-                    task_logger.info(f"成功读取bilibili分区数据，长度: {len(zone_data)}")
-                except Exception as e:
-                    task_logger.error(f"读取bilibili分区数据失败: {e}")
-
-                if not zone_data:
-                    task_logger.warning("bilibili分区数据为空，跳过bilibili推荐")
-                    platform_results[platform] = None
-                    continue
-
-                recommended_partition_id = recommend_bilibili_partition(
-                    title,
-                    description,
-                    zone_data,
-                    openai_config=openai_config,
-                    task_id=task_id,
-                    cover_path=cover_path,
-                    include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
-                )
-            else:
-                from .utils import get_app_subdir
-                id_mapping_path = os.path.join(get_app_subdir('acfunid'), 'id_mapping.json')
-                task_logger.info(f"尝试读取 AcFun 分区映射文件: {id_mapping_path}")
-
-                id_mapping_data = []
-                try:
-                    if not os.path.exists(id_mapping_path):
-                        task_logger.error(f"分区映射文件不存在: {id_mapping_path}")
-                    else:
-                        with open(id_mapping_path, 'r', encoding='utf-8') as f:
-                            id_mapping_data = json.load(f)
-                        task_logger.info(f"成功读取 AcFun 分区映射文件，包含 {len(id_mapping_data)} 个分类")
-                except Exception as e:
-                    task_logger.error(f"读取 AcFun 分区ID映射失败: {str(e)}")
-                    id_mapping_data = []
-
-                if not id_mapping_data:
-                    task_logger.warning("AcFun 分区映射数据为空，跳过AcFun推荐")
-                    platform_results[platform] = None
-                    continue
-
-                recommended_partition_id = recommend_acfun_partition(
-                    title,
-                    description,
-                    id_mapping_data,
-                    openai_config=openai_config,
-                    task_id=task_id,
-                    cover_path=cover_path,
-                    include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
-                )
-
-            platform_results[platform] = recommended_partition_id
+            recommended_partition_id = platform_results.get(platform)
             if recommended_partition_id:
                 selected_field = _get_partition_field_name(platform, 'selected')
                 recommended_field = _get_partition_field_name(platform, 'recommended')

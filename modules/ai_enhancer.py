@@ -1081,24 +1081,61 @@ def _request_partition_id(
     scene_name: str,
     cover_path: Optional[str] = None,
 ) -> Optional[str]:
-    if not openai_config or not openai_config.get("OPENAI_API_KEY"):
-        return None
+    result_map = _request_partition_ids_aio(
+        title=title,
+        description=description,
+        platform_partitions={"default": partitions},
+        openai_config=openai_config,
+        logger=logger,
+        scene_name=scene_name,
+        cover_path=cover_path,
+        system_prompt=(
+            "你是视频分区选择器。只从 default.candidates 中选 1 个最匹配的分区。"
+            '只返回 JSON：{"default":{"id":"候选ID"}}，不要解释。'
+        ),
+        max_tokens=80,
+    )
+    return result_map.get("default")
 
-    candidates = _compact_partition_candidates(partitions)
-    if not candidates:
-        return None
+
+def _request_partition_ids_aio(
+    *,
+    title: str,
+    description: str,
+    platform_partitions: Dict[str, Sequence[Dict[str, Any]]],
+    openai_config,
+    logger,
+    scene_name: str,
+    cover_path: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    max_tokens: int = 160,
+) -> Dict[str, Optional[str]]:
+    platform_candidates = {
+        platform: _compact_partition_candidates(partitions)
+        for platform, partitions in (platform_partitions or {}).items()
+        if partitions
+    }
+    result_map: Dict[str, Optional[str]] = {platform: None for platform in platform_candidates}
+    if not openai_config or not openai_config.get("OPENAI_API_KEY") or not platform_candidates:
+        return result_map
 
     client = get_openai_client(openai_config)
     model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
     payload = {
         "title": title,
         "description": description,
-        "candidates": candidates,
+        "platforms": {
+            platform: {"candidates": candidates}
+            for platform, candidates in platform_candidates.items()
+        },
     }
-    system_prompt = (
-        "你是视频分区选择器。只从 candidates 中选 1 个最匹配的分区。"
-        '只返回 JSON：{"id":"候选ID"}，不要解释。'
-    )
+    if not system_prompt:
+        system_prompt = (
+            "你是多平台视频分区选择器。请分别为每个平台只从该平台 candidates 中选 1 个最匹配的分区。"
+            "不要跨平台复用候选，不要编造候选ID。"
+            '只返回 JSON，例如：{"acfun":{"id":"候选ID"},"bilibili":{"id":"候选ID"}}。'
+            "若某个平台无法判断，id 返回空字符串。不要输出解释。"
+        )
 
     parsed = None
     if cover_path:
@@ -1109,7 +1146,7 @@ def _request_partition_id(
                 model_name=model_name,
                 system_prompt=system_prompt,
                 payload=payload,
-                max_tokens=80,
+                max_tokens=max_tokens,
                 temperature=0.0,
                 thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
                 logger_obj=logger,
@@ -1118,7 +1155,7 @@ def _request_partition_id(
                     {
                         "type": "text",
                         "text": (
-                            "请结合以下 JSON 信息与封面图片，从 candidates 中选择最合适的分区并只返回 JSON。\n"
+                            "请结合以下 JSON 信息与封面图片，为每个平台选择最合适的分区并只返回 JSON。\n"
                             f"{json.dumps(payload, ensure_ascii=False)}"
                         ),
                     },
@@ -1142,17 +1179,165 @@ def _request_partition_id(
             model_name=model_name,
             system_prompt=system_prompt,
             payload=payload,
-            max_tokens=80,
+            max_tokens=max_tokens,
             temperature=0.0,
             thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
             logger_obj=logger,
             scene_name=scene_name,
         )
-    partition_id = safe_str((parsed or {}).get("id")).strip()
-    valid_ids = {safe_str(partition.get("id")).strip() for partition in partitions}
-    if partition_id in valid_ids:
-        return partition_id
-    return None
+
+    parsed = parsed if isinstance(parsed, dict) else {}
+    if "id" in parsed and len(platform_partitions) == 1:
+        only_platform = next(iter(platform_partitions.keys()))
+        parsed = {only_platform: {"id": parsed.get("id")}}
+    for platform, partitions in platform_partitions.items():
+        valid_ids = {safe_str(partition.get("id")).strip() for partition in (partitions or [])}
+        platform_value = parsed.get(platform)
+        candidate_id = ""
+        if isinstance(platform_value, dict):
+            candidate_id = safe_str(platform_value.get("id")).strip()
+        else:
+            candidate_id = safe_str(platform_value).strip()
+        if candidate_id in valid_ids:
+            result_map[platform] = candidate_id
+    return result_map
+
+
+def _recommend_partition_core(
+    *,
+    title: str,
+    description: str,
+    platform_sources: Dict[str, Sequence[Dict[str, Any]]],
+    openai_config=None,
+    logger=None,
+    cover_path: Optional[str] = None,
+    include_cover_for_ai: bool = False,
+    prefer_aio: bool = False,
+) -> Dict[str, Optional[str]]:
+    openai_config = openai_config or {}
+    logger = logger or logging.getLogger(__name__)
+    result_map: Dict[str, Optional[str]] = {platform: None for platform in platform_sources}
+    unresolved_partitions: Dict[str, Sequence[Dict[str, Any]]] = {}
+    fixed_key_map = {
+        "acfun": "FIXED_PARTITION_ID",
+        "bilibili": "FIXED_PARTITION_ID_BILIBILI",
+    }
+    platform_label_map = {
+        "acfun": "AcFun",
+        "bilibili": "bilibili",
+    }
+
+    for platform, partitions in platform_sources.items():
+        if not partitions:
+            logger.warning("%s 分区数据为空，无法推荐", platform_label_map.get(platform, platform))
+            continue
+
+        fixed_key = fixed_key_map.get(platform, "")
+        fixed_pid = safe_str(openai_config.get(fixed_key)).strip() if fixed_key else ""
+        available_ids = {safe_str(partition.get("id")).strip() for partition in partitions}
+        if fixed_pid:
+            if fixed_pid in available_ids:
+                logger.info("命中 %s 固定分区配置", platform_label_map.get(platform, platform))
+                result_map[platform] = fixed_pid
+                continue
+            logger.warning("配置的 %s 无效，已忽略", fixed_key)
+
+        rule_based_id = _rule_based_partition_fallback(title, description, partitions)
+        if rule_based_id:
+            logger.info("规则优先命中 %s 分区ID: %s", platform_label_map.get(platform, platform), rule_based_id)
+            result_map[platform] = rule_based_id
+            continue
+
+        unresolved_partitions[platform] = partitions
+
+    if not unresolved_partitions:
+        return result_map
+    if not openai_config.get("OPENAI_API_KEY"):
+        logger.info("缺少OpenAI配置或API密钥，且规则未命中")
+        return result_map
+
+    use_cover = cover_path if include_cover_for_ai else None
+    try:
+        if prefer_aio and len(unresolved_partitions) > 1:
+            aio_results = _request_partition_ids_aio(
+                title=title,
+                description=description[:240],
+                platform_partitions=unresolved_partitions,
+                openai_config=openai_config,
+                logger=logger,
+                scene_name='ai_enhancer_partition_aio',
+                cover_path=use_cover,
+                max_tokens=160,
+            )
+            for platform, partition_id in aio_results.items():
+                if partition_id:
+                    result_map[platform] = partition_id
+                    logger.info("AIO LLM 命中 %s 分区ID: %s", platform_label_map.get(platform, platform), partition_id)
+
+        for platform, partitions in unresolved_partitions.items():
+            if result_map.get(platform):
+                continue
+            partition_id = _request_partition_id(
+                title=title,
+                description=description[:240],
+                partitions=partitions,
+                openai_config=openai_config,
+                logger=logger,
+                scene_name=f'ai_enhancer_partition_{platform}',
+                cover_path=use_cover,
+            )
+            if partition_id:
+                result_map[platform] = partition_id
+                logger.info("LLM 命中 %s 分区ID: %s", platform_label_map.get(platform, platform), partition_id)
+            else:
+                logger.warning("%s 分区推荐未返回有效 ID", platform_label_map.get(platform, platform))
+        return result_map
+    except Exception as e:
+        logger.error(f"分区推荐过程中发生严重错误: {str(e)}")
+        logger.error(traceback.format_exc())
+        return result_map
+
+
+def recommend_partitions_aio(
+    title,
+    description,
+    *,
+    acfun_id_mapping_data=None,
+    bilibili_zone_data=None,
+    openai_config=None,
+    task_id=None,
+    cover_path: Optional[str] = None,
+    include_cover_for_ai: bool = False,
+) -> Dict[str, Optional[str]]:
+    logger = setup_task_logger(task_id or "unknown")
+    logger.info("开始AIO推荐多平台视频分区")
+
+    title = _pre_clean(safe_str(title), content_type="title")
+    description = _pre_clean(safe_str(description), content_type="description")
+    if not _has_meaningful_content(title, content_type="title"):
+        title = ''
+    if not _has_meaningful_content(description, content_type="description"):
+        description = ''
+    if not title and not description:
+        logger.warning("缺少标题和描述，无法推荐分区")
+        return {"acfun": None, "bilibili": None}
+
+    platform_sources: Dict[str, Sequence[Dict[str, Any]]] = {}
+    if acfun_id_mapping_data:
+        platform_sources["acfun"] = flatten_partitions(acfun_id_mapping_data)
+    if bilibili_zone_data:
+        platform_sources["bilibili"] = flatten_bilibili_partitions(bilibili_zone_data)
+
+    return _recommend_partition_core(
+        title=title,
+        description=description,
+        platform_sources=platform_sources,
+        openai_config=openai_config,
+        logger=logger,
+        cover_path=cover_path,
+        include_cover_for_ai=include_cover_for_ai,
+        prefer_aio=True,
+    )
 
 
 def recommend_bilibili_partition(
@@ -1187,45 +1372,17 @@ def recommend_bilibili_partition(
     if not partitions:
         logger.warning("bilibili分区数据为空，无法推荐")
         return None
-
-    available_partition_ids = [p["id"] for p in partitions]
-
-    fixed_pid = safe_str((openai_config or {}).get("FIXED_PARTITION_ID_BILIBILI"))
-    if fixed_pid:
-        if fixed_pid in available_partition_ids:
-            logger.info("命中 bilibili 固定分区配置")
-            return fixed_pid
-        logger.warning("配置的 FIXED_PARTITION_ID_BILIBILI 无效，已忽略")
-
-    rule_based_id = _rule_based_partition_fallback(title, description, partitions)
-    if rule_based_id:
-        logger.info(f"规则优先命中 bilibili 分区ID: {rule_based_id}")
-        return rule_based_id
-
-    if not openai_config or not openai_config.get("OPENAI_API_KEY"):
-        logger.info("未配置 OpenAI，且规则未命中")
-        return None
-
-    try:
-        partition_id = _request_partition_id(
-            title=title,
-            description=description[:240],
-            partitions=partitions,
-            openai_config=openai_config,
-            logger=logger,
-            scene_name='ai_enhancer_partition_bilibili',
-            cover_path=cover_path if include_cover_for_ai else None,
-        )
-        if partition_id:
-            logger.info(f"LLM 命中 bilibili 分区ID: {partition_id}")
-            return partition_id
-        logger.warning("bilibili 分区推荐未返回有效 ID")
-        return None
-
-    except Exception as e:
-        logger.error(f"bilibili分区推荐异常: {e}")
-        logger.error(traceback.format_exc())
-        return None
+    result_map = _recommend_partition_core(
+        title=title,
+        description=description,
+        platform_sources={"bilibili": partitions},
+        openai_config=openai_config,
+        logger=logger,
+        cover_path=cover_path,
+        include_cover_for_ai=include_cover_for_ai,
+        prefer_aio=False,
+    )
+    return result_map.get("bilibili")
 
 def recommend_acfun_partition(
     title,
@@ -1274,40 +1431,14 @@ def recommend_acfun_partition(
         logger.warning("分区映射数据格式错误或为空 (flatten_partitions returned empty list)，无法推荐分区")
         return None
     
-    fixed_pid = safe_str((openai_config or {}).get('FIXED_PARTITION_ID')).strip()
-    if fixed_pid:
-        available_ids = {safe_str(partition.get('id')).strip() for partition in partitions}
-        if fixed_pid in available_ids:
-            logger.info("命中 AcFun 固定分区配置")
-            return fixed_pid
-        logger.warning("配置的 FIXED_PARTITION_ID 无效，已忽略")
-
-    rule_based_id = _rule_based_partition_fallback(title, description, partitions)
-    if rule_based_id:
-        logger.info(f"规则优先命中 AcFun 分区ID: {rule_based_id}")
-        return rule_based_id
-
-    if not openai_config or not openai_config.get('OPENAI_API_KEY'):
-        logger.info("缺少OpenAI配置或API密钥，且规则未命中")
-        return None
-
-    try:
-        partition_id = _request_partition_id(
-            title=title,
-            description=description[:240],
-            partitions=partitions,
-            openai_config=openai_config,
-            logger=logger,
-            scene_name='ai_enhancer_partition_acfun',
-            cover_path=cover_path if include_cover_for_ai else None,
-        )
-        if partition_id:
-            logger.info(f"LLM 命中 AcFun 分区ID: {partition_id}")
-            return partition_id
-        logger.warning("AcFun 分区推荐未返回有效 ID")
-        return None
-
-    except Exception as e:
-        logger.error(f"推荐分区过程中发生严重错误: {str(e)}")
-        logger.error(traceback.format_exc())
-        return None
+    result_map = _recommend_partition_core(
+        title=title,
+        description=description,
+        platform_sources={"acfun": partitions},
+        openai_config=openai_config,
+        logger=logger,
+        cover_path=cover_path,
+        include_cover_for_ai=include_cover_for_ai,
+        prefer_aio=False,
+    )
+    return result_map.get("acfun")
