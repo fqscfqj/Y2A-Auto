@@ -810,12 +810,12 @@ body {
 
 /* 表格列宽设置（总和≤100%，避免出现横向滚动条） */
 .tasks-table th.col-id { width: 7%; }
-.tasks-table th.col-title { width: 22%; }
+.tasks-table th.col-title { width: 20%; }
 .tasks-table th.col-status { width: 8%; }
-.tasks-table th.col-time { width: 11%; }
-.tasks-table th.col-platform { width: 7%; }
-.tasks-table th.col-partition { width: 8%; }
-.tasks-table th.col-tags { width: 11%; }
+.tasks-table th.col-time { width: 10%; }
+.tasks-table th.col-platform { width: 6%; }
+.tasks-table th.col-partition { width: 11%; }
+.tasks-table th.col-tags { width: 12%; }
 .tasks-table th.col-result { width: 10%; }
 .tasks-table th.col-actions { width: 16%; }
 
@@ -824,10 +824,26 @@ body {
     overflow: hidden;
 }
 
+/* 防止分区和标签列 badge 溢出覆盖相邻列 */
+.tasks-table td.col-partition,
+.tasks-table td.col-tags {
+    overflow: hidden;
+}
+
+.tasks-table .col-partition .badge,
+.tasks-table .col-tags .badge {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    vertical-align: bottom;
+}
+
 /* 操作按钮样式 */
 .task-action-btn {
-    min-width: 80px;
-    max-width: 100px;
+    min-width: 56px;
+    white-space: nowrap;
 } 
 
 /* YouTube 监控页面表格列宽 */

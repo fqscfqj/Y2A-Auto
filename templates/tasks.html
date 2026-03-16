@@ -6,13 +6,18 @@
 <div class="tasks-container" data-tasks-stream="{{ url_for('tasks_event_stream') }}">
     {% set failed_tasks = tasks|selectattr('status', 'equalto', 'failed')|list if tasks else [] %}
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
-        <h2 class="mb-0">任务列表</h2>
+        <div class="d-flex align-items-center gap-2">
+            <h2 class="mb-0">任务列表</h2>
+            <div id="tasksRefreshIndicator" class="d-none" aria-hidden="true">
+                <span class="spinner-border spinner-border-sm text-primary" role="status" aria-label="正在刷新"></span>
+            </div>
+        </div>
         <div class="d-flex gap-2 flex-wrap align-items-center">
-            <button type="button" class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#addTaskModal">
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addTaskModal">
                 <i class="bi bi-plus-circle"></i> 新建任务
             </button>
             {% if failed_tasks %}
-            <button type="button" class="btn btn-outline-danger me-2" id="retryFailedTasksBtn" onclick="confirmRetryFailed()">
+            <button type="button" class="btn btn-outline-danger" id="retryFailedTasksBtn" onclick="confirmRetryFailed()">
                 <i class="bi bi-arrow-repeat"></i> 重试失败任务
                 <span class="badge bg-danger ms-1">{{ failed_tasks|length }}</span>
             </button>
@@ -854,8 +859,10 @@
 .upload-result-container {
     display: flex;
     flex-direction: column;
-    gap: 4px;
     align-items: flex-start;
+    gap: 4px;
+    max-width: 180px;
+    overflow: hidden;
 }
 
 .error-message-badge {
@@ -921,16 +928,7 @@
 .tasks-table .col-time { text-align: center; }
 .tasks-table .col-platform { text-align: center; }
 .tasks-table .col-partition { text-align: center; }
-.tasks-table .col-actions { width: 160px; text-align: right; }
-
-.upload-result-container {
-    max-width: 200px;
-    overflow: hidden;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.25rem;
-}
+.tasks-table .col-actions { text-align: right; }
 
 .task-datetime {
     cursor: help;
@@ -951,19 +949,19 @@
 }
 
 .tags-container {
-    max-width: 150px;
+    max-width: 100%;
     overflow: hidden;
 }
 
 .tasks-table .badge {
-    max-width: 100px;
+    max-width: 120px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .tasks-table .col-result .badge {
-    max-width: 140px;
+    max-width: 160px;
 }
 
 .tasks-table .btn-sm { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
@@ -1000,11 +998,11 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
 /* 去边框现代化风格 */
 .modern-list { border: none; box-shadow: none; }
-.modern-table table { border-collapse: separate; border-spacing: 0 8px; }
+.modern-table table { border-collapse: separate; border-spacing: 0 4px; }
 .modern-table table tbody tr { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .modern-table table thead th { border-bottom: 1px solid #e9ecef; }
 .modern-table table tbody tr td { border-top: none; }
-.modern-table .table-hover tbody tr:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); transition: all .15s ease; }
+.modern-table .table-hover tbody tr:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.1); transition: box-shadow .15s ease; }
 .modern-table .table { background: transparent; }
 .table-borderless>:not(caption)>*>* { border-bottom-width: 0; }
 </style>
@@ -1096,6 +1094,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     let refreshInProgress = false;
     let fallbackMode = false;
     let tasksEventSource = null;
+    let reconnectTimer = null;  // 防止多个重连计时器并存
 
     // 避免后台实时刷新导致 hover 闪烁/点击丢失：用户交互时延迟应用 DOM 更新
     let pendingTasksContentHtml = null;
@@ -1182,7 +1181,8 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
     function enableFallbackPolling(initialDelay) {
         if (fallbackMode) {
-            if (typeof initialDelay === 'number') {
+            // 已在轮询模式，仅在没有活跃计时器时才调度，避免 onerror 频繁触发时不断重置计时器
+            if (typeof initialDelay === 'number' && !refreshTimer) {
                 scheduleNextRefresh(initialDelay);
             }
             return;
@@ -1254,6 +1254,10 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
 
         tasksEventSource.onopen = function() {
             eventSourceReconnectAttempts = 0;
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
             const wasFallback = disableFallbackPolling();
             if (wasFallback) {
                 refreshTasksData(true);
@@ -1279,17 +1283,20 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         tasksEventSource.onerror = function() {
             const readyState = tasksEventSource ? tasksEventSource.readyState : EventSource.CLOSED;
             if (readyState === EventSource.CLOSED) {
-                eventSourceReconnectAttempts++;
-                if (eventSourceReconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                closeTasksEventSource();
+                // 仅在没有待执行的重连计时器时才调度，防止多重重连
+                if (!reconnectTimer && eventSourceReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    eventSourceReconnectAttempts++;
                     const delay = RECONNECT_DELAY_BASE * Math.pow(1.5, eventSourceReconnectAttempts - 1);
-                    setTimeout(() => {
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null;
                         if (!tasksEventSource) {
                             initTasksEventStream();
                         }
                     }, delay);
                 }
-                closeTasksEventSource();
             }
+            // 启用 fallback 轮询；当 CONNECTING 时频繁触发 onerror ，不重置已就绪的计时器
             const activeDelay = hasProcessingTasks() ? REFRESH_INTERVAL_ACTIVE : REFRESH_INTERVAL_IDLE;
             enableFallbackPolling(activeDelay);
         };
