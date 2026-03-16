@@ -71,6 +71,8 @@ class TaskCancelledError(Exception):
 
 _TASK_CANCEL_FLAGS = {}
 _TASK_CANCEL_LOCK = threading.Lock()
+_ACTIVE_TASK_IDS = set()
+_ACTIVE_TASKS_LOCK = threading.Lock()
 
 
 def get_task_cancel_event(task_id):
@@ -108,6 +110,36 @@ def clear_task_cancel(task_id, clear_flag=False):
         return
     with _TASK_CANCEL_LOCK:
         _TASK_CANCEL_FLAGS.pop(task_id, None)
+
+
+def _mark_task_active(task_id: str) -> bool:
+    """标记任务线程已激活，返回 False 表示同任务线程已存在。"""
+    if not task_id:
+        return False
+    with _ACTIVE_TASKS_LOCK:
+        if task_id in _ACTIVE_TASK_IDS:
+            return False
+        _ACTIVE_TASK_IDS.add(task_id)
+        return True
+
+
+def _mark_task_inactive(task_id: str) -> None:
+    if not task_id:
+        return
+    with _ACTIVE_TASKS_LOCK:
+        _ACTIVE_TASK_IDS.discard(task_id)
+
+
+def _is_task_active(task_id: str) -> bool:
+    if not task_id:
+        return False
+    with _ACTIVE_TASKS_LOCK:
+        return task_id in _ACTIVE_TASK_IDS
+
+
+def _get_active_task_ids() -> set:
+    with _ACTIVE_TASKS_LOCK:
+        return set(_ACTIVE_TASK_IDS)
 
 
 def _raise_if_cancelled(task_id, task_logger=None):
@@ -1516,6 +1548,10 @@ class TaskProcessor:
             job_id: 调度作业ID
         """
         try:
+            if _is_task_active(task_id):
+                logger.warning(f"任务 {task_id} 已有活动线程，跳过重复调度")
+                return f"thread_{task_id}"
+
             # 检查任务是否已在调度器中
             existing_job_id = f"task_{task_id}"
             existing_job = None
@@ -1550,6 +1586,12 @@ class TaskProcessor:
                     import traceback
                     logger.error(traceback.format_exc())
                     update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"执行出错: {str(e)}")
+                finally:
+                    _mark_task_inactive(task_id)
+
+            if not _mark_task_active(task_id):
+                logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
+                return f"thread_{task_id}"
             
             # 启动后台线程
             thread = threading.Thread(
@@ -1557,7 +1599,11 @@ class TaskProcessor:
                 name=f"task_{task_id}",
                 daemon=True
             )
-            thread.start()
+            try:
+                thread.start()
+            except Exception:
+                _mark_task_inactive(task_id)
+                raise
             
             logger.info(f"任务 {task_id} 已在后台线程启动")
             return f"thread_{task_id}"
@@ -1797,9 +1843,14 @@ class TaskProcessor:
         try:
             # 获取所有pending任务
             pending_tasks = get_tasks_by_status(TASK_STATES['PENDING'])
+            active_task_ids = _get_active_task_ids()
+            pending_tasks = [task for task in pending_tasks if task.get('id') not in active_task_ids]
             
             if not pending_tasks:
-                logger.info("没有pending任务需要启动")
+                if active_task_ids:
+                    logger.info(f"当前没有可启动的pending任务（{len(active_task_ids)} 个任务线程处于活动状态）")
+                else:
+                    logger.info("没有pending任务需要启动")
                 return
             
             # 检查当前是否有正在运行的任务
@@ -1821,6 +1872,8 @@ class TaskProcessor:
             running_tasks = []
             for state in processing_states:
                 running_tasks.extend(get_tasks_by_status(state))
+            running_task_ids = {task.get('id') for task in running_tasks if task.get('id')}
+            effective_running_count = len(running_task_ids.union(active_task_ids))
             
             # 如果有任务正在运行且并发限制为1，则不启动新任务
             # 兼容字符串配置，安全转换为整数
@@ -1835,8 +1888,11 @@ class TaskProcessor:
                 max_concurrent = max(1, max_concurrent // 2)
                 logger.info(f"检测到高内存使用，降低并发数至 {max_concurrent}")
                 
-            if len(running_tasks) >= max_concurrent:
-                logger.info(f"当前有 {len(running_tasks)} 个任务正在运行，达到并发限制 {max_concurrent}，暂不启动新任务")
+            if effective_running_count >= max_concurrent:
+                logger.info(
+                    f"当前有效运行任务数 {effective_running_count}（DB运行中 {len(running_task_ids)}，活动线程 {len(active_task_ids)}），"
+                    f"达到并发限制 {max_concurrent}，暂不启动新任务"
+                )
                 return
             
             # 按创建时间排序，启动最早的pending任务

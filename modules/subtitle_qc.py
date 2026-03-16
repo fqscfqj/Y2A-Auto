@@ -202,6 +202,7 @@ def _build_openai_client(api_key: str, base_url: str):
     options: Dict[str, Any] = {}
     if base_url:
         options['base_url'] = base_url
+    options['timeout'] = 120.0
     return openai.OpenAI(api_key=api_key, **options)
 
 

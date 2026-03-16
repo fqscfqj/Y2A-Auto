@@ -163,7 +163,42 @@ def get_openai_client(openai_config):
     options = {}
     if openai_config.get('OPENAI_BASE_URL'):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 120)
+    try:
+        timeout_seconds = float(str(timeout_value).strip())
+    except Exception:
+        timeout_seconds = 120.0
+    if timeout_seconds > 0:
+        options['timeout'] = timeout_seconds
     return openai.OpenAI(api_key=api_key, **options)
+
+
+def _is_timeout_like_error(exc: Exception) -> bool:
+    exc_type = exc.__class__.__name__.lower()
+    text = safe_str(exc).lower()
+    timeout_signals = (
+        'timeout',
+        'timed out',
+        'readtimeout',
+        'connecttimeout',
+        'apitimeouterror',
+        'deadline exceeded',
+    )
+    return any(signal in exc_type or signal in text for signal in timeout_signals)
+
+
+def _is_response_format_unsupported_error(exc: Exception) -> bool:
+    text = safe_str(exc).lower()
+    signals = (
+        'response_format',
+        'json_object',
+        'json schema',
+        'unsupported format',
+        'invalid parameter',
+        'unrecognized request argument',
+        'extra inputs are not permitted',
+    )
+    return any(signal in text for signal in signals)
 
 def _normalize_whitespace(text: str) -> str:
     if not text:
@@ -495,13 +530,42 @@ def _request_json_object(
         "temperature": temperature,
         "response_format": {"type": "json_object"},
     }
-    response = openai_chat_create_with_thinking_control(
-        client=client,
-        create_kwargs=create_kwargs,
-        thinking_enabled=thinking_enabled,
-        logger=logger_obj,
-        scene_name=scene_name,
-    )
+    response = None
+    request_start = time.time()
+    if logger_obj:
+        payload_keys = list((payload or {}).keys())
+        logger_obj.info(
+            f"{scene_name} 发起模型请求: model={model_name}, max_tokens={max_tokens}, "
+            f"temperature={temperature}, response_format=json_object, payload_keys={payload_keys}"
+        )
+    try:
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=thinking_enabled,
+            logger=logger_obj,
+            scene_name=scene_name,
+        )
+    except Exception as exc:
+        if _is_timeout_like_error(exc) or _is_response_format_unsupported_error(exc):
+            if logger_obj:
+                logger_obj.warning(
+                    f"{scene_name} JSON模式请求失败，回退到纯文本JSON解析: {exc.__class__.__name__}: {exc}"
+                )
+            fallback_kwargs = dict(create_kwargs)
+            fallback_kwargs.pop("response_format", None)
+            response = openai_chat_create_with_thinking_control(
+                client=client,
+                create_kwargs=fallback_kwargs,
+                thinking_enabled=thinking_enabled,
+                logger=logger_obj,
+                scene_name=f"{scene_name}_fallback_plain_json",
+            )
+        else:
+            raise
+    finally:
+        if logger_obj:
+            logger_obj.info(f"{scene_name} 模型请求结束，耗时: {time.time() - request_start:.2f}秒")
     if not getattr(response, "choices", None):
         return None
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)

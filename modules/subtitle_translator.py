@@ -76,6 +76,13 @@ def get_openai_client(openai_config):
     # 如果提供了base_url，添加到选项中
     if openai_config.get('OPENAI_BASE_URL'):
         options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 120)
+    try:
+        timeout_seconds = float(str(timeout_value).strip())
+    except Exception:
+        timeout_seconds = 120.0
+    if timeout_seconds > 0:
+        options['timeout'] = timeout_seconds
     
     # 创建并返回新版客户端实例
     return openai.OpenAI(api_key=api_key, **options)
