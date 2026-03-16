@@ -461,16 +461,24 @@ class LLMRequester:
             "ko": "한국어",
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
+        shared_rules = (
+            "必须保持与输入数组一一对应：第 N 条输入只翻译成第 N 条输出。"
+            "禁止跨条目借用、合并、拆分、提前翻译下一条或重复上一条内容。"
+            "若某条源文本本身是不完整短语、半句或续句，译文也必须保持同样边界，不要擅自补成完整句。"
+            "不要根据上下文重写相邻条目，不要消除原始断句。"
+        )
 
         if target_language != "zh":
             return (
                 f"你是字幕翻译器。按顺序把 texts 每一项翻译成{target_lang_name}。"
+                f"{shared_rules}"
                 "等价翻译，不解释、不扩写；保留数字、代码、URL、占位符和无公认译名的专有名词。"
                 '只返回 JSON：{"translations":["译文1","译文2"]}。'
             )
 
         return (
             "你是字幕翻译器。按顺序把 texts 每一项翻译成简体中文。"
+            f"{shared_rules}"
             "等价翻译，不解释、不扩写；数字、代码、URL、占位符和无公认译法的专有名词可保留，"
             "其余可翻译内容尽量译成自然简体中文。"
             '只返回 JSON：{"translations":["译文1","译文2"]}。'
@@ -486,23 +494,42 @@ class LLMRequester:
             "ko": "한국어",
         }
         target_lang_name = target_lang_map.get(target_language, "中文")
+        shared_rules = (
+            "必须保持与输入数组一一对应：第 N 条输入只翻译成第 N 条输出。"
+            "禁止跨条目借用、合并、拆分、提前翻译下一条或重复上一条内容。"
+            "即使上下文相关，也不得把相邻条目的信息揉进当前条目。"
+            "若源文本是不完整短语、半句或续句，译文也保持不完整，不要补全。"
+        )
 
         if target_language != "zh":
             return (
                 f"你是字幕翻译器（严格模式）。按顺序把 texts 每一项完整翻译成{target_lang_name}。"
+                f"{shared_rules}"
                 "除数字、代码、URL、占位符和专有名词外，不要保留原文。"
                 '只返回 JSON：{"translations":["译文1","译文2"]}。'
             )
 
         return (
             "你是字幕翻译器（严格模式）。按顺序把 texts 每一项尽量完整翻译成自然简体中文。"
+            f"{shared_rules}"
             "普通句子和说明文字不得整句保留原文；仅保留数字、代码、URL、占位符和必要专有名词。"
             '只返回 JSON：{"translations":["译文1","译文2"]}。'
         )
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
-        """构建结构化用户提示词 - 优化版：系统提示已包含规则，此处仅提供数据"""
-        return json.dumps({"texts": texts}, ensure_ascii=False)
+        """构建结构化用户提示词。"""
+        return json.dumps(
+            {
+                "task": "subtitle_translation",
+                "requirements": {
+                    "one_to_one_alignment": True,
+                    "no_cross_item_carryover": True,
+                    "keep_fragment_boundaries": True,
+                },
+                "texts": texts,
+            },
+            ensure_ascii=False,
+        )
 
     def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
