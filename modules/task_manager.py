@@ -3277,7 +3277,9 @@ class TaskProcessor:
         if not cues:
             return []
         total_duration = max(float(cue.get('end', 0.0) or 0.0) for cue in cues)
-        cues = engine.clean_hallucinations(cues)
+        # Rendering should preserve validated subtitle content. Hallucination cleanup
+        # is part of the ASR generation pipeline and is too destructive here,
+        # especially for dense translated Chinese cues that are still legitimate.
         cues = engine.resolve_overlaps(cues, total_duration)
         cues = engine.apply_text_processing(cues)
         cues = engine.finalize_cues(cues, total_duration)
