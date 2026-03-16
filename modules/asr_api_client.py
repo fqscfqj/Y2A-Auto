@@ -523,6 +523,8 @@ class AsrApiClient:
                 return probe_result.transcription_result
             fmt = probe_result.transcription_format
             granularities = tuple(probe_result.transcription_granularities or ())
+        if not fmt:
+            raise self._build_incompatible_error()
 
         if fmt == 'srt':
             response = self._request_whisper_response(
@@ -883,7 +885,8 @@ class AsrApiClient:
 
         language = self._extract_language_from_data(payload)
         segments_data = payload.get('segments')
-        top_level_words = payload.get('words') if isinstance(payload.get('words'), list) else []
+        raw_words = payload.get('words')
+        top_level_words: List[Any] = raw_words if isinstance(raw_words, list) else []
         expected_duration_s = 0.0
         if window is not None:
             expected_duration_s = max(0.0, float(window.duration_s or 0.0))
