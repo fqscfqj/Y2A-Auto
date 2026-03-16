@@ -533,10 +533,9 @@ def _request_json_object(
     response = None
     request_start = time.time()
     if logger_obj:
-        payload_keys = list((payload or {}).keys())
         logger_obj.info(
             f"{scene_name} 发起模型请求: model={model_name}, max_tokens={max_tokens}, "
-            f"temperature={temperature}, response_format=json_object, payload_keys={payload_keys}"
+            "temperature已设置, response_format=json_object"
         )
     try:
         response = openai_chat_create_with_thinking_control(

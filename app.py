@@ -10,7 +10,6 @@ import time
 import datetime
 import uuid
 import threading
-from urllib.parse import urlparse
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -684,18 +683,6 @@ def _run_settings_save_operation(operation_id: str, form_data: dict, uploads: di
     _finalize_settings_save_operation(operation_id, result)
 
 
-def _build_relative_redirect_target(parsed_target):
-    path = parsed_target.path or '/'
-    normalized_path = '/' + path.lstrip('/')
-    if parsed_target.params:
-        normalized_path = f'{normalized_path};{parsed_target.params}'
-    if parsed_target.query:
-        normalized_path = f'{normalized_path}?{parsed_target.query}'
-    if parsed_target.fragment:
-        normalized_path = f'{normalized_path}#{parsed_target.fragment}'
-    return normalized_path
-
-
 # 登录验证装饰器
 def login_required(f):
     @wraps(f)
@@ -1056,10 +1043,6 @@ def login():
             sec.update({'failed_attempts': 0, 'locked_until': 0, 'last_attempt': now_ts})
             _save_security_state(sec)
             flash('登录成功', 'success')
-            next_url = str(request.args.get('next') or '').strip().replace('\\', '')
-            parsed_next = urlparse(next_url)
-            if next_url and not parsed_next.scheme and not parsed_next.netloc:
-                return redirect(_build_relative_redirect_target(parsed_next))
             return redirect(url_for('index'))
         else:
             # 密码错误，更新失败计数
@@ -1716,10 +1699,6 @@ def force_upload_task_route(task_id):
     upload_thread = threading.Thread(target=background_force_upload, daemon=True)
     upload_thread.start()
 
-    next_url = str(request.form.get('next') or request.args.get('next') or '').strip().replace('\\', '')
-    parsed_next = urlparse(next_url)
-    if next_url and not parsed_next.scheme and not parsed_next.netloc:
-        return redirect(_build_relative_redirect_target(parsed_next))
     return redirect(url_for('manual_review'))
 
 @app.route('/tasks/reset_stuck', methods=['POST'])

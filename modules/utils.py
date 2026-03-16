@@ -426,12 +426,11 @@ def openai_chat_create_with_thinking_control(
         if logger:
             if warn_key not in _THINKING_FALLBACK_WARNED_SCENES:
                 logger.warning(
-                    f"场景[{scene}] 模型[{model_name}] 不支持 thinking 控制参数，"
-                    "已降级为普通请求"
+                    "模型不支持 thinking 控制参数，已降级为普通请求"
                 )
                 _THINKING_FALLBACK_WARNED_SCENES.add(warn_key)
             else:
                 logger.debug(
-                    f"场景[{scene}] 模型[{model_name}] thinking 控制参数不受支持，继续普通请求"
+                    "thinking 控制参数不受支持，继续普通请求"
                 )
         return client.chat.completions.create(**create_kwargs)
