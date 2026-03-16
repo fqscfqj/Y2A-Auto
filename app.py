@@ -18,6 +18,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
+from werkzeug.utils import safe_join
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
@@ -228,18 +229,31 @@ def _append_settings_message(messages: list, category: str, text: str):
 
 def _get_task_dir_real(task_id: str) -> str:
     downloads_dir_real = os.path.realpath(get_app_subdir('downloads'))
-    task_dir_real = os.path.realpath(os.path.join(downloads_dir_real, str(task_id)))
-    if task_dir_real != downloads_dir_real and not task_dir_real.startswith(downloads_dir_real + os.sep):
+    try:
+        normalized_task_id = str(uuid.UUID(str(task_id or '').strip()))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError('非法任务目录') from exc
+
+    safe_task_dir = safe_join(downloads_dir_real, normalized_task_id)
+    if not safe_task_dir:
+        raise ValueError('非法任务目录')
+    task_dir_real = os.path.realpath(safe_task_dir)
+    if os.path.commonpath([downloads_dir_real, task_dir_real]) != downloads_dir_real:
         raise ValueError('非法任务目录')
     return task_dir_real
 
 
-def _is_safe_task_file(path: str, task_dir_real: str) -> bool:
+def _safe_join_task_dir(task_dir_real: str, *parts: str) -> str | None:
     try:
-        file_real = os.path.realpath(path)
+        safe_path = safe_join(task_dir_real, *[str(part) for part in parts])
+        if not safe_path:
+            return None
+        file_real = os.path.realpath(safe_path)
+        if os.path.commonpath([task_dir_real, file_real]) != task_dir_real:
+            return None
+        return file_real
     except (ValueError, OSError):
-        return False
-    return file_real == task_dir_real or file_real.startswith(task_dir_real + os.sep)
+        return None
 
 
 def _get_cover_file_info(path: str):
@@ -269,27 +283,32 @@ def _validate_cover_upload(file_storage):
 
 def _find_original_cover_backup(task_dir_real: str):
     for ext in ALLOWED_COVER_EXTENSIONS:
-        candidate = os.path.join(task_dir_real, f'original_cover{ext}')
-        if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
+        candidate = _safe_join_task_dir(task_dir_real, f'original_cover{ext}')
+        if candidate and os.path.exists(candidate):
             return candidate
     return None
 
 
 def _get_current_cover_path(task: dict, task_dir_real: str):
     cover_path = str(task.get('cover_path_local') or '').strip()
-    if cover_path and os.path.exists(cover_path) and _is_safe_task_file(cover_path, task_dir_real):
-        return os.path.realpath(cover_path)
+    if cover_path:
+        candidate = _safe_join_task_dir(task_dir_real, os.path.basename(cover_path))
+        if candidate and os.path.exists(candidate):
+            return candidate
 
     for name in ('cover.jpg', 'cover.png', 'cover.webp', 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp'):
-        candidate = os.path.join(task_dir_real, name)
-        if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
-            return os.path.realpath(candidate)
+        candidate = _safe_join_task_dir(task_dir_real, name)
+        if candidate and os.path.exists(candidate):
+            return candidate
 
-    for filename in os.listdir(task_dir_real):
-        if filename.lower().endswith(tuple(ALLOWED_COVER_EXTENSIONS.keys())):
-            candidate = os.path.join(task_dir_real, filename)
-            if os.path.exists(candidate) and _is_safe_task_file(candidate, task_dir_real):
-                return os.path.realpath(candidate)
+    if os.path.isdir(task_dir_real):
+        for entry in os.scandir(task_dir_real):
+            if not entry.is_file():
+                continue
+            if entry.name.lower().endswith(tuple(ALLOWED_COVER_EXTENSIONS.keys())):
+                candidate = _safe_join_task_dir(task_dir_real, entry.name)
+                if candidate and os.path.exists(candidate):
+                    return candidate
 
     return ''
 
@@ -313,15 +332,19 @@ def _replace_task_cover(task: dict, uploaded_file):
         current_ext, _ = _get_cover_file_info(current_cover_path)
         if current_ext not in ALLOWED_COVER_EXTENSIONS:
             raise ValueError('当前原始封面格式不受支持，无法创建恢复备份')
-        original_backup = os.path.join(task_dir_real, f'original_cover{current_ext}')
+        original_backup = _safe_join_task_dir(task_dir_real, f'original_cover{current_ext}')
+        if not original_backup:
+            raise ValueError('无法创建原始封面备份路径')
         shutil.copy2(current_cover_path, original_backup)
 
     for existing_ext in ALLOWED_COVER_EXTENSIONS:
-        custom_candidate = os.path.join(task_dir_real, f'custom_cover{existing_ext}')
-        if os.path.exists(custom_candidate):
+        custom_candidate = _safe_join_task_dir(task_dir_real, f'custom_cover{existing_ext}')
+        if custom_candidate and os.path.exists(custom_candidate):
             os.remove(custom_candidate)
 
-    new_cover_path = os.path.join(task_dir_real, f'custom_cover{ext}')
+    new_cover_path = _safe_join_task_dir(task_dir_real, f'custom_cover{ext}')
+    if not new_cover_path:
+        raise ValueError('无法创建封面保存路径')
     uploaded_file.save(new_cover_path)
     update_task(task_id, cover_path_local=new_cover_path, silent=True)
     return new_cover_path
@@ -661,27 +684,16 @@ def _run_settings_save_operation(operation_id: str, form_data: dict, uploads: di
     _finalize_settings_save_operation(operation_id, result)
 
 
-def _is_safe_redirect_url(target):
-    """Validate that a redirect target is safe (same origin, not external)."""
-    if not target:
-        return False
-    # Normalize whitespace to prevent bypass via leading/trailing spaces or
-    # control characters (e.g. " http://evil.com" or "\nhttp://evil.com")
-    target = target.strip()
-    if not target:
-        return False
-    # Reject backslashes — some browsers treat \\ as // (e.g. \\evil.com)
-    if '\\' in target:
-        return False
-    # Reject any URL with a scheme (e.g. http://, https://) or a netloc
-    # (e.g. //evil.com protocol-relative URLs). Only purely relative URLs
-    # (path, query, fragment) are allowed.
-    parsed_target = urlparse(target)
-    if parsed_target.scheme or parsed_target.netloc:
-        return False
-    # At this point, target is a relative URL without scheme or netloc,
-    # which is safe from open redirect to an external host.
-    return True
+def _build_relative_redirect_target(parsed_target):
+    path = parsed_target.path or '/'
+    normalized_path = '/' + path.lstrip('/')
+    if parsed_target.params:
+        normalized_path = f'{normalized_path};{parsed_target.params}'
+    if parsed_target.query:
+        normalized_path = f'{normalized_path}?{parsed_target.query}'
+    if parsed_target.fragment:
+        normalized_path = f'{normalized_path}#{parsed_target.fragment}'
+    return normalized_path
 
 
 # 登录验证装饰器
@@ -1044,9 +1056,11 @@ def login():
             sec.update({'failed_attempts': 0, 'locked_until': 0, 'last_attempt': now_ts})
             _save_security_state(sec)
             flash('登录成功', 'success')
-            next_url = request.args.get('next')
-            safe_next_url = next_url if _is_safe_redirect_url(next_url) else None
-            return redirect(safe_next_url or url_for('index'))
+            next_url = str(request.args.get('next') or '').strip().replace('\\', '')
+            parsed_next = urlparse(next_url)
+            if next_url and not parsed_next.scheme and not parsed_next.netloc:
+                return redirect(_build_relative_redirect_target(parsed_next))
+            return redirect(url_for('index'))
         else:
             # 密码错误，更新失败计数
             max_attempts = int(config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) or 5)
@@ -1434,41 +1448,15 @@ def get_task_cover(task_id):
         # 返回默认图片或404
         return '', 404
     
-    cover_path = task.get('cover_path_local')
-    
-    if cover_path and os.path.exists(cover_path):
-        mime_type, _ = mimetypes.guess_type(cover_path)
-        return send_file(cover_path, mimetype=mime_type)
-    
-    # 如果没有封面，尝试在任务目录中查找
-    downloads_dir = get_app_subdir('downloads')
-    task_dir = os.path.join(downloads_dir, task_id)
-
-    # 防止路径遍历攻击：验证路径在downloads目录内
     try:
-        task_dir_real = os.path.realpath(task_dir)
-        downloads_dir_real = os.path.realpath(downloads_dir)
-        if not task_dir_real.startswith(downloads_dir_real + os.sep):
-            return '', 404
+        task_dir_real = _get_task_dir_real(task_id)
     except (ValueError, OSError):
         return '', 404
 
-    if os.path.exists(task_dir_real):
-        # 查找常见的封面文件名
-        cover_names = ['cover.jpg', 'cover.png', 'cover.webp', 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp']
-        for name in cover_names:
-            potential_cover = os.path.join(task_dir_real, name)
-            potential_cover_real = os.path.realpath(potential_cover)
-            if potential_cover_real.startswith(downloads_dir_real + os.sep) and os.path.exists(potential_cover_real):
-                return send_file(potential_cover_real)
-
-        # 查找任何图片文件
-        for filename in os.listdir(task_dir_real):
-            if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                file_path = os.path.join(task_dir_real, filename)
-                file_path_real = os.path.realpath(file_path)
-                if file_path_real.startswith(downloads_dir_real + os.sep):
-                    return send_file(file_path_real)
+    cover_path = _get_current_cover_path(task, task_dir_real)
+    if cover_path and os.path.exists(cover_path):
+        mime_type, _ = mimetypes.guess_type(cover_path)
+        return send_file(cover_path, mimetype=mime_type)
     
     # 没有找到封面
     return '', 404
@@ -1728,10 +1716,10 @@ def force_upload_task_route(task_id):
     upload_thread = threading.Thread(target=background_force_upload, daemon=True)
     upload_thread.start()
 
-    next_url = request.form.get('next') or request.args.get('next')
-    safe_next_url = next_url if _is_safe_redirect_url(next_url) else None
-    if safe_next_url:
-        return redirect(safe_next_url)
+    next_url = str(request.form.get('next') or request.args.get('next') or '').strip().replace('\\', '')
+    parsed_next = urlparse(next_url)
+    if next_url and not parsed_next.scheme and not parsed_next.netloc:
+        return redirect(_build_relative_redirect_target(parsed_next))
     return redirect(url_for('manual_review'))
 
 @app.route('/tasks/reset_stuck', methods=['POST'])

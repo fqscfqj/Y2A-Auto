@@ -257,7 +257,7 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     if proxy_url:
         cmd.extend(['--proxy', proxy_url])
         if logger:
-            logger.info(f"测试视频可用性时使用代理: {_sanitize_url_for_logging(proxy_url)}")
+            logger.info("测试视频可用性时已启用代理")
     
     if cookies_path and os.path.exists(cookies_path):
         cmd.extend(['--cookies', cookies_path])
@@ -450,7 +450,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         proxy_url = build_proxy_url(config)
         if proxy_url:
             cmd.extend(['--proxy', proxy_url])
-            logger.info(f"使用代理: {_sanitize_url_for_logging(proxy_url)}")
+            logger.info("下载 YouTube 时已启用代理")
         
         # 配置下载线程数
         download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)

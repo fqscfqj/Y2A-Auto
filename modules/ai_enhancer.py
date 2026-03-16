@@ -1193,9 +1193,9 @@ def recommend_bilibili_partition(
     fixed_pid = safe_str((openai_config or {}).get("FIXED_PARTITION_ID_BILIBILI"))
     if fixed_pid:
         if fixed_pid in available_partition_ids:
-            logger.info(f"命中 bilibili 固定分区ID: {fixed_pid}")
+            logger.info("命中 bilibili 固定分区配置")
             return fixed_pid
-        logger.warning(f"配置的 FIXED_PARTITION_ID_BILIBILI 无效: {fixed_pid}")
+        logger.warning("配置的 FIXED_PARTITION_ID_BILIBILI 无效，已忽略")
 
     rule_based_id = _rule_based_partition_fallback(title, description, partitions)
     if rule_based_id:
@@ -1278,9 +1278,9 @@ def recommend_acfun_partition(
     if fixed_pid:
         available_ids = {safe_str(partition.get('id')).strip() for partition in partitions}
         if fixed_pid in available_ids:
-            logger.info(f"命中 AcFun 固定分区ID: {fixed_pid}")
+            logger.info("命中 AcFun 固定分区配置")
             return fixed_pid
-        logger.warning(f"配置的 FIXED_PARTITION_ID 无效: {fixed_pid}")
+        logger.warning("配置的 FIXED_PARTITION_ID 无效，已忽略")
 
     rule_based_id = _rule_based_partition_fallback(title, description, partitions)
     if rule_based_id:

@@ -366,11 +366,13 @@ def _mask_base_url(base_url):
         return 'unknown'
     try:
         parsed = urlparse(text)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.scheme and parsed.hostname:
+            if parsed.port:
+                return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+            return f"{parsed.scheme}://{parsed.hostname}"
     except Exception:
         pass
-    return text[:64]
+    return 'configured-endpoint'
 
 
 def _is_thinking_param_unsupported_error(exc):
@@ -418,18 +420,18 @@ def openai_chat_create_with_thinking_control(
             raise
 
         model_name = safe_str((create_kwargs or {}).get('model'), default='unknown')
-        base_url = _mask_base_url(getattr(client, 'base_url', None))
+        endpoint_label = _mask_base_url(getattr(client, 'base_url', None))
         scene = safe_str(scene_name, default='unknown')
-        warn_key = f"{scene}:{model_name}:{base_url}"
+        warn_key = f"{scene}:{model_name}:{endpoint_label}"
         if logger:
             if warn_key not in _THINKING_FALLBACK_WARNED_SCENES:
                 logger.warning(
-                    f"场景[{scene}] 模型[{model_name}] 接口[{base_url}] 不支持 thinking 控制参数，"
+                    f"场景[{scene}] 模型[{model_name}] 不支持 thinking 控制参数，"
                     "已降级为普通请求"
                 )
                 _THINKING_FALLBACK_WARNED_SCENES.add(warn_key)
             else:
                 logger.debug(
-                    f"场景[{scene}] 模型[{model_name}] 接口[{base_url}] thinking 控制参数不受支持，继续普通请求"
+                    f"场景[{scene}] 模型[{model_name}] thinking 控制参数不受支持，继续普通请求"
                 )
         return client.chat.completions.create(**create_kwargs)

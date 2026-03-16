@@ -953,28 +953,50 @@ def update_task(task_id, silent=False, **kwargs):
 
     # 白名单验证：只允许更新有效的列名
     ALLOWED_COLUMNS = {
-        'youtube_url', 'upload_target', 'status', 'created_at', 'updated_at',
-        'video_title_original', 'video_title_translated', 'description_original',
-        'description_translated', 'tags_generated', 'recommended_partition_id',
-        'selected_partition_id', 'recommended_partition_id_acfun',
-        'selected_partition_id_acfun', 'recommended_partition_id_bilibili',
-        'selected_partition_id_bilibili', 'cover_path_local', 'video_path_local',
-        'subtitle_path_original', 'subtitle_path_translated', 'subtitle_language_detected',
-        'subtitle_qc_failed', 'subtitle_qc_reason', 'subtitle_qc_score',
-        'subtitle_qc_checked_at', 'metadata_json_path_local', 'moderation_result',
-        'error_message', 'pipeline_checkpoint', 'upload_progress',
-        'acfun_upload_response', 'bilibili_upload_response'
+        'youtube_url': 'youtube_url = ?',
+        'upload_target': 'upload_target = ?',
+        'status': 'status = ?',
+        'created_at': 'created_at = ?',
+        'updated_at': 'updated_at = ?',
+        'video_title_original': 'video_title_original = ?',
+        'video_title_translated': 'video_title_translated = ?',
+        'description_original': 'description_original = ?',
+        'description_translated': 'description_translated = ?',
+        'tags_generated': 'tags_generated = ?',
+        'recommended_partition_id': 'recommended_partition_id = ?',
+        'selected_partition_id': 'selected_partition_id = ?',
+        'recommended_partition_id_acfun': 'recommended_partition_id_acfun = ?',
+        'selected_partition_id_acfun': 'selected_partition_id_acfun = ?',
+        'recommended_partition_id_bilibili': 'recommended_partition_id_bilibili = ?',
+        'selected_partition_id_bilibili': 'selected_partition_id_bilibili = ?',
+        'cover_path_local': 'cover_path_local = ?',
+        'video_path_local': 'video_path_local = ?',
+        'subtitle_path_original': 'subtitle_path_original = ?',
+        'subtitle_path_translated': 'subtitle_path_translated = ?',
+        'subtitle_language_detected': 'subtitle_language_detected = ?',
+        'subtitle_qc_failed': 'subtitle_qc_failed = ?',
+        'subtitle_qc_reason': 'subtitle_qc_reason = ?',
+        'subtitle_qc_score': 'subtitle_qc_score = ?',
+        'subtitle_qc_checked_at': 'subtitle_qc_checked_at = ?',
+        'metadata_json_path_local': 'metadata_json_path_local = ?',
+        'moderation_result': 'moderation_result = ?',
+        'error_message': 'error_message = ?',
+        'pipeline_checkpoint': 'pipeline_checkpoint = ?',
+        'upload_progress': 'upload_progress = ?',
+        'acfun_upload_response': 'acfun_upload_response = ?',
+        'bilibili_upload_response': 'bilibili_upload_response = ?',
     }
 
     # 过滤掉不在白名单中的列
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in ALLOWED_COLUMNS}
+    filtered_items = [(k, v) for k, v in kwargs.items() if k in ALLOWED_COLUMNS]
+    filtered_kwargs = dict(filtered_items)
 
     if not filtered_kwargs:
         return False
 
     # 构建SQL更新语句
-    set_clause = ', '.join([f"{key} = ?" for key in filtered_kwargs.keys()])
-    values = list(filtered_kwargs.values())
+    set_clause = ', '.join(ALLOWED_COLUMNS[key] for key, _ in filtered_items)
+    values = [value for _, value in filtered_items]
     values.append(task_id)
     
     conn = get_db_connection()
@@ -5326,7 +5348,7 @@ class TaskProcessor:
                     updates[selected_field] = recommended_partition_id
 
                 update_task(task_id, **updates)
-                task_logger.info(f"{platform} 获取到推荐分区ID: {recommended_partition_id}")
+                task_logger.info("%s 获取到推荐分区并已更新任务", platform)
             else:
                 if not openai_config.get('OPENAI_API_KEY'):
                     task_logger.warning(f"{platform} 分区推荐未命中：未配置OpenAI且规则匹配失败")
