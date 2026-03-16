@@ -235,24 +235,42 @@
                                     {% if bili_result and bili_result.bvid %}
                                         <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ bili_result.bvid }}</a>
                                     {% elif task.status == 'failed' and task.error_message %}
+                                        {% if ac_result and ac_result.ac_number %}
+                                        <button type="button"
+                                              class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                              title="点击查看B站上传错误详情"
+                                              data-error-message="[B站] {{ task.error_message }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">B站上传错误</button>
+                                        {% else %}
                                         <button type="button"
                                               class="badge bg-danger error-message-badge error-message-trigger border-0"
                                               title="点击查看B站上传失败详情"
                                               data-error-message="[B站] {{ task.error_message }}"
                                               data-task-title="{{ display_title }}"
                                               data-task-id="{{ task.id }}">B站上传失败</button>
+                                        {% endif %}
                                     {% else %}
                                         <span class="badge bg-secondary">BV待上传</span>
                                     {% endif %}
                                     {% if ac_result and ac_result.ac_number %}
                                         <a href="https://www.acfun.cn/v/ac{{ ac_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开AC页面">AC{{ ac_result.ac_number }}</a>
-                                    {% elif task.status == 'failed' and task.error_message and not bili_result %}
+                                    {% elif task.status == 'failed' and task.error_message %}
+                                        {% if bili_result and bili_result.bvid %}
+                                        <button type="button"
+                                              class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                              title="点击查看AcFun上传错误详情"
+                                              data-error-message="[AcFun] {{ task.error_message }}"
+                                              data-task-title="{{ display_title }}"
+                                              data-task-id="{{ task.id }}">AC上传错误</button>
+                                        {% else %}
                                         <button type="button"
                                               class="badge bg-danger error-message-badge error-message-trigger border-0"
                                               title="点击查看AcFun上传失败详情"
                                               data-error-message="[AcFun] {{ task.error_message }}"
                                               data-task-title="{{ display_title }}"
                                               data-task-id="{{ task.id }}">AC上传失败</button>
+                                        {% endif %}
                                     {% else %}
                                         <span class="badge bg-secondary">AC待上传</span>
                                     {% endif %}
@@ -529,24 +547,42 @@
                                 {% if bili_result and bili_result.bvid %}
                                     <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">{{ bili_result.bvid }}</a>
                                 {% elif task.status == 'failed' and task.error_message %}
+                                    {% if ac_result and ac_result.ac_number %}
+                                    <button type="button"
+                                            class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                            title="点击查看B站上传错误详情"
+                                            data-error-message="[B站] {{ task.error_message }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">B站上传错误</button>
+                                    {% else %}
                                     <button type="button"
                                             class="badge bg-danger error-message-badge error-message-trigger border-0"
                                             title="点击查看B站上传失败详情"
                                             data-error-message="[B站] {{ task.error_message }}"
                                             data-task-title="{{ display_title }}"
                                             data-task-id="{{ task.id }}">B站上传失败</button>
+                                    {% endif %}
                                 {% else %}
                                     <span class="badge bg-secondary">BV待上传</span>
                                 {% endif %}
                                 {% if ac_result and ac_result.ac_number %}
                                     <a href="https://www.acfun.cn/v/ac{{ ac_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ ac_result.ac_number }}</a>
-                                {% elif task.status == 'failed' and task.error_message and not bili_result %}
+                                {% elif task.status == 'failed' and task.error_message %}
+                                    {% if bili_result and bili_result.bvid %}
+                                    <button type="button"
+                                            class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                                            title="点击查看AcFun上传错误详情"
+                                            data-error-message="[AcFun] {{ task.error_message }}"
+                                            data-task-title="{{ display_title }}"
+                                            data-task-id="{{ task.id }}">AC上传错误</button>
+                                    {% else %}
                                     <button type="button"
                                             class="badge bg-danger error-message-badge error-message-trigger border-0"
                                             title="点击查看AcFun上传失败详情"
                                             data-error-message="[AcFun] {{ task.error_message }}"
                                             data-task-title="{{ display_title }}"
                                             data-task-id="{{ task.id }}">AC上传失败</button>
+                                    {% endif %}
                                 {% else %}
                                     <span class="badge bg-secondary">AC待上传</span>
                                 {% endif %}
