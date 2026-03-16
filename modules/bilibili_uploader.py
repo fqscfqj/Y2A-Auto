@@ -11,7 +11,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Callable, List, Optional, Tuple, Union
 
 from bilibili_api import video_uploader
-from bilibili_api.exceptions import ArgsException
+from bilibili_api.exceptions import ArgsException, ResponseCodeException
 
 from .bilibili_auth import load_credential_from_file
 from .utils import get_app_subdir
@@ -129,6 +129,48 @@ def format_bilibili_description(
     if not summary:
         return _truncate_multiline_text(repost_notice, max_len)
     return f"{repost_notice}\n\n{summary}"
+
+
+def _extract_response_code_from_exception(exc: Exception) -> Optional[int]:
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str) and code.isdigit():
+        return int(code)
+
+    info = getattr(exc, "raw", None)
+    if isinstance(info, dict):
+        raw_code = info.get("code")
+        if isinstance(raw_code, int):
+            return raw_code
+        if isinstance(raw_code, str) and raw_code.isdigit():
+            return int(raw_code)
+
+    match = re.search(r"错误代码[:：]\s*(\d+)", str(exc))
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _compact_exception_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _format_bilibili_exception(exc: Exception) -> str:
+    code = _extract_response_code_from_exception(exc)
+    message = _compact_exception_text(getattr(exc, "msg", "") or str(exc))
+
+    raw = getattr(exc, "raw", None)
+    if isinstance(raw, dict):
+        raw_msg = _compact_exception_text(str(raw.get("message", "") or ""))
+        if raw_msg and raw_msg not in message:
+            message = f"{message} | 接口消息: {raw_msg}" if message else raw_msg
+
+    if code is not None and message:
+        return f"接口返回错误代码：{code}，信息：{message}"
+    if code is not None:
+        return f"接口返回错误代码：{code}"
+    return message or "未知错误"
 
 
 class BilibiliUploader:
@@ -312,11 +354,15 @@ class BilibiliUploader:
             @uploader.on(video_uploader.VideoUploaderEvents.FAILED.value)
             def on_failed(data):
                 err = data.get("err") if isinstance(data, dict) else data
-                self.log(f"bilibili上传失败事件: {err}")
+                if isinstance(err, ResponseCodeException):
+                    self.log(f"bilibili上传失败事件: {_format_bilibili_exception(err)}")
+                else:
+                    self.log(f"bilibili上传失败事件: {_compact_exception_text(str(err))}")
 
             _emit_progress("0.0%")
             self.log("开始上传到bilibili")
             result = asyncio.run(uploader.start())
+
             last_emitted_percent = 100.0
             _emit_progress("100.0%")
             self.log(f"bilibili上传完成: {result}")
@@ -346,7 +392,11 @@ class BilibiliUploader:
                 "bilibili-api 缺少网络后端依赖，请安装 httpx/aiohttp/curl_cffi。"
                 f" 详细错误: {e}"
             )
+        except ResponseCodeException as e:
+            pretty_error = _format_bilibili_exception(e)
+            self.log(f"bilibili上传异常: {pretty_error}")
+            return False, f"bilibili上传异常: {pretty_error}"
         except Exception as e:
-            self.log(f"bilibili上传异常: {e}")
+            self.log(f"bilibili上传异常: {_compact_exception_text(str(e))}")
             self.log(traceback.format_exc())
-            return False, f"bilibili上传异常: {e}"
+            return False, f"bilibili上传异常: {_compact_exception_text(str(e))}"
