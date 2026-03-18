@@ -160,6 +160,32 @@ def _looks_like_youtube_bot_challenge(error_text: str | None) -> bool:
     return any(indicator in normalized for indicator in indicators)
 
 
+def _summarize_yt_dlp_error(stdout_text: str | None, stderr_text: str | None) -> str:
+    """从 yt-dlp 输出中提取更有价值的错误摘要。"""
+    candidates: list[str] = []
+    for text in (stderr_text, stdout_text):
+        if not text:
+            continue
+        for raw_line in str(text).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("ERROR:"):
+                candidates.append(line)
+            elif "[youtube]" in line or "[download]" in line:
+                candidates.append(line)
+
+    if candidates:
+        return candidates[-1]
+
+    merged = (stderr_text or stdout_text or "").strip()
+    if not merged:
+        return "未知错误"
+
+    lines = [line.strip() for line in merged.splitlines() if line.strip()]
+    return lines[-1] if lines else "未知错误"
+
+
 def _find_yt_dlp_command(log: logging.Logger) -> list[str]:
     """解析 yt-dlp 调用命令，优先使用当前解释器 python -m yt_dlp。"""
     log.info("开始查找yt-dlp执行命令...")
@@ -585,13 +611,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         
         # 根据参数调整命令（不再进行缩略图格式转换，直接使用原生格式）
         if skip_download:
+            # “采集信息”阶段当前只依赖 metadata + cover；
+            # 不要把字幕下载失败放大成整步失败。
             cmd.extend([
                 '--skip-download',
                 '--write-info-json',
                 '--write-thumbnail',
-                '--write-subs',
-                '--all-subs',
-                '--convert-subs', 'srt',
             ])
         elif only_video:
             cmd.extend([
@@ -785,7 +810,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 
                 if attempt == max_retries - 1:
                     # 最后一次尝试也失败
-                    error_msg = f"yt-dlp执行错误: {str(e)}"
+                    error_summary = _summarize_yt_dlp_error(error_output, error_stderr)
+                    error_msg = f"yt-dlp执行错误: {error_summary}"
                     logger.error(error_msg)
                     logger.error(f"标准输出: {error_output}")
                     logger.error(f"标准错误: {error_stderr}")
