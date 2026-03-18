@@ -8,6 +8,7 @@ import uuid
 import shutil
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 from modules.config_manager import load_config
@@ -22,6 +23,10 @@ import re
 logger = logging.getLogger(__name__)
 # YouTube playlist ID 仅允许字母、数字、下划线和连字符
 _YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_YOUTUBE_USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+)
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
@@ -65,6 +70,110 @@ def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | Non
         _log.warning(f"cookies文件不存在或不是普通文件，已忽略: {cookies_file_path}")
         return None
     return resolved
+
+
+def _detect_js_runtime_args() -> list[str]:
+    """检测可供 yt-dlp 使用的 JS runtime。"""
+    for runtime in ('node', 'deno'):
+        runtime_path = _which(runtime)
+        if runtime_path:
+            return ['--js-runtimes', runtime]
+    return []
+
+
+def _get_youtube_runtime_args() -> list[str]:
+    """统一 YouTube 运行时参数。"""
+    args = _detect_js_runtime_args()
+    args.extend(['--remote-components', 'ejs:github'])
+    return args
+
+
+def _youtube_cookies_look_authenticated(cookies_path: str | None) -> tuple[bool, str | None]:
+    """粗略判断 cookies 是否包含可用于 YouTube 登录的一方凭据。"""
+    if not cookies_path or not os.path.isfile(cookies_path):
+        return False, "cookies文件不存在"
+
+    auth_cookie_names = {
+        'SAPISID', 'APISID', 'SID', 'HSID', 'SSID',
+        '__Secure-1PSID', '__Secure-1PAPISID', 'LOGIN_INFO',
+    }
+
+    try:
+        present_names: set[str] = set()
+        with open(cookies_path, 'r', encoding='utf-8', errors='replace') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 7:
+                    present_names.add(parts[5].strip())
+        if present_names & auth_cookie_names:
+            return True, None
+        return False, "cookies中缺少 Google/YouTube 一方登录态关键字段"
+    except Exception as exc:
+        return False, f"读取cookies失败: {exc}"
+
+
+def _append_yt_dlp_network_args(
+    cmd: list[str],
+    *,
+    proxy_url: str | None = None,
+    cookies_path: str | None = None,
+) -> list[str]:
+    """为 yt-dlp 命令附加网络与认证相关参数。"""
+    cmd.extend(_get_youtube_runtime_args())
+    if proxy_url:
+        cmd.extend(['--proxy', proxy_url])
+    if cookies_path and os.path.exists(cookies_path):
+        cmd.extend(['--cookies', cookies_path])
+    return cmd
+
+
+def _find_yt_dlp_command(log: logging.Logger) -> list[str]:
+    """解析 yt-dlp 调用命令，优先使用当前解释器 python -m yt_dlp。"""
+    log.info("开始查找yt-dlp执行命令...")
+
+    current_python = sys.executable
+    if current_python:
+        try:
+            result = subprocess.run(
+                [current_python, '-m', 'yt_dlp', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding='utf-8',
+                errors='replace'
+            )
+            if result.returncode == 0:
+                log.info(f"使用当前Python解释器调用yt-dlp: {current_python} -m yt_dlp")
+                return [current_python, '-m', 'yt_dlp']
+        except Exception as exc:
+            log.debug(f"验证当前Python解释器中的yt-dlp失败: {exc}")
+
+    found = _which('yt-dlp')
+    if found:
+        log.info(f"找到系统中的yt-dlp: {found}")
+        return [found]
+
+    possible_paths = [
+        '/home/y2a/.local/bin/yt-dlp',
+        '/usr/local/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            log.info(f"找到存在的yt-dlp路径: {path}")
+            return [path]
+
+    if os.name == 'nt':
+        venv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.venv', 'Scripts', 'yt-dlp.exe')
+        if os.path.exists(venv_path):
+            log.info(f"回退到虚拟环境中的yt-dlp.exe: {venv_path}")
+            return [venv_path]
+
+    log.info("未找到显式yt-dlp路径，回退到PATH中的yt-dlp")
+    return ['yt-dlp']
 
 
 def is_docker_env() -> bool:
@@ -227,13 +336,13 @@ def setup_task_logger(task_id):
     
     return logger
 
-def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=None):
+def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=None):
     """
     测试视频可用性和格式
     
     Args:
         youtube_url: YouTube视频URL
-        yt_dlp_path: yt-dlp可执行文件路径
+        yt_dlp_cmd: yt-dlp执行命令
         cookies_path: Cookie文件路径
         logger: 日志记录器
         
@@ -243,50 +352,61 @@ def test_video_availability(youtube_url, yt_dlp_path, cookies_path=None, logger=
     if not logger:
         logger = logging.getLogger(__name__)
         
-    cmd = [
-        yt_dlp_path,
-        youtube_url,
-        '--list-formats',
-        '--no-warnings',
-        '--simulate'
-    ]
+    cmd = [*yt_dlp_cmd, youtube_url, '--list-formats', '--no-warnings', '--simulate']
     
     # 检查是否需要使用代理
     config = load_config()
     proxy_url = build_proxy_url(config)
-    if proxy_url:
-        cmd.extend(['--proxy', proxy_url])
-        if logger:
-            logger.info("测试视频可用性时已启用代理")
+    _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+    if proxy_url and logger:
+        logger.info("测试视频可用性时已启用代理")
     
-    if cookies_path and os.path.exists(cookies_path):
-        cmd.extend(['--cookies', cookies_path])
-    
-    try:
-        logger.info("测试视频可用性和格式...")
-        process = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
-            timeout=30,
-            encoding='utf-8',
-            errors='replace'  # 遇到无法解码的字符时用?替换
-        )
-        
-        if process.returncode == 0:
-            formats = process.stdout
-            logger.info("视频格式检查成功")
-            return True, formats, None
-        else:
+    max_attempts = 3
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(f"测试视频可用性和格式（尝试 {attempt}/{max_attempts}）...")
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=45,
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            if process.returncode == 0:
+                formats = process.stdout
+                logger.info("视频格式检查成功")
+                return True, formats, None
+
+            error_text = (process.stderr or process.stdout or "").strip()
+            last_error = error_text or f"格式检查返回非零状态码: {process.returncode}"
             logger.warning(f"格式检查返回非零状态码: {process.returncode}")
-            return False, None, process.stderr
-            
-    except subprocess.TimeoutExpired:
-        logger.error("格式检查超时")
-        return False, None, "格式检查超时"
-    except Exception as e:
-        logger.error(f"格式检查出错: {str(e)}")
-        return False, None, str(e)
+
+            if "The page needs to be reloaded." in last_error and attempt < max_attempts:
+                logger.warning("YouTube返回页面需重载，等待后重试")
+                time.sleep(2)
+                continue
+
+            return False, None, last_error
+
+        except subprocess.TimeoutExpired:
+            last_error = "格式检查超时"
+            logger.error(last_error)
+            if attempt < max_attempts:
+                time.sleep(2)
+                continue
+            return False, None, last_error
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"格式检查出错: {last_error}")
+            if attempt < max_attempts:
+                time.sleep(1)
+                continue
+            return False, None, last_error
+
+    return False, None, last_error or "格式检查失败"
 
 def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False, progress_callback=None, cancel_event=None):
     """
@@ -330,59 +450,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
     thumbnail_output = os.path.join(task_dir, 'cover.jpg')
     
     try:
-        # 获取yt-dlp路径
-        yt_dlp_path = 'yt-dlp'
-        logger.info("开始查找yt-dlp可执行文件路径...")
-        
-        # 优先使用跨平台方式在PATH中查找 yt-dlp
-        try:
-            import shutil as _shutil
-            found = _shutil.which('yt-dlp')
-            if found:
-                yt_dlp_path = found
-                logger.info(f"找到系统中的yt-dlp: {yt_dlp_path}")
-            else:
-                logger.debug("PATH 未找到 yt-dlp，尝试常见安装位置")
-                # 检查常见的yt-dlp安装位置（Linux/Docker）
-                possible_paths = [
-                    '/home/y2a/.local/bin/yt-dlp',  # Docker环境中的用户安装路径
-                    '/usr/local/bin/yt-dlp',        # 系统全局安装路径
-                    '/usr/bin/yt-dlp',              # 系统安装路径
-                ]
-                logger.debug(f"检查常见yt-dlp安装位置: {possible_paths}")
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        yt_dlp_path = path
-                        logger.info(f"找到存在的yt-dlp路径: {yt_dlp_path}")
-                        break
-        except Exception as e:
-            logger.debug(f"通过PATH查找 yt-dlp 异常: {e}")
-        
-        # Windows环境的特殊处理（保持兼容性）
-        if os.name == 'nt':  # Windows系统
-            # 检查虚拟环境中的yt-dlp
-            venv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.venv', 'Scripts', 'yt-dlp.exe')
-            if os.path.exists(venv_path):
-                yt_dlp_path = venv_path
-                logger.info(f"使用虚拟环境中的yt-dlp: {yt_dlp_path}")
-            
-            # 检查python目录下的yt-dlp
-            try:
-                python_dir = os.path.dirname(os.path.dirname(subprocess.run(
-                    ['where', 'python'], 
-                    capture_output=True, 
-                    text=True, 
-                    shell=True,
-                    timeout=10,  # 添加10秒超时
-                    encoding='utf-8',
-                    errors='replace'
-                ).stdout.strip()))
-                python_scripts = os.path.join(python_dir, 'Scripts', 'yt-dlp.exe')
-                if os.path.exists(python_scripts):
-                    yt_dlp_path = python_scripts
-                    logger.info(f"使用Python Scripts目录中的yt-dlp: {yt_dlp_path}")
-            except:
-                pass
+        yt_dlp_cmd = _find_yt_dlp_command(logger)
         
         # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
         cookies_path = None
@@ -390,15 +458,17 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
             if cookies_path:
                 logger.info(f"使用cookies文件: {cookies_path}")
+                cookies_auth_ok, cookies_auth_reason = _youtube_cookies_look_authenticated(cookies_path)
+                if cookies_auth_ok:
+                    logger.info("检测到YouTube cookies包含完整登录态标记")
+                else:
+                    logger.warning(f"YouTube cookies疑似不完整: {cookies_auth_reason}")
         
         # 验证yt-dlp路径有效性
-        logger.info(f"最终确定的yt-dlp路径: {yt_dlp_path}")
-        if yt_dlp_path != 'yt-dlp' and not os.path.exists(yt_dlp_path):
-            logger.error(f"yt-dlp路径不存在: {yt_dlp_path}")
-            return False, f"yt-dlp可执行文件不存在: {yt_dlp_path}"
+        logger.info(f"最终确定的yt-dlp命令: {' '.join(yt_dlp_cmd)}")
         
         # 首先测试视频可用性
-        available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_path, cookies_path, logger)
+        available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_cmd, cookies_path, logger)
         if not available:
             # 检查是否是cookie相关的错误
             bot_indicators = [
@@ -432,7 +502,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
 
         # 准备yt-dlp命令
         cmd = [
-            yt_dlp_path,
+            *yt_dlp_cmd,
             youtube_url,
             '--output', video_output,  # 输出视频文件
             '--no-check-certificates',  # 不检查SSL证书
@@ -442,14 +512,14 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             '--retry-sleep', '3',  # 重试间隔
             '--ignore-errors',  # 忽略错误继续下载
             '--no-playlist',  # 不下载播放列表，仅下载单个视频
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',  # 设置User-Agent
+            '--user-agent', _YOUTUBE_USER_AGENT,  # 设置User-Agent
         ]
         
         # 检查是否需要使用代理
         config = load_config()
         proxy_url = build_proxy_url(config)
+        _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
         if proxy_url:
-            cmd.extend(['--proxy', proxy_url])
             logger.info("下载 YouTube 时已启用代理")
         
         # 配置下载线程数
@@ -508,10 +578,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if ffmpeg_location and os.path.isabs(ffmpeg_location):
             cmd.extend(['--ffmpeg-location', ffmpeg_location])
         
-        # 如果提供了cookie文件，添加到命令中
-        if cookies_path:
-            cmd.extend(['--cookies', cookies_path])
-
         # 添加进度显示选项
         if progress_callback and not skip_download:
             cmd.extend(['--progress'])
@@ -529,7 +595,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
 
                 if progress_callback and not skip_download:
                     # 使用Popen实时获取进度，设置UTF-8编码
-                    logger.info(f"准备执行yt-dlp命令，路径: {yt_dlp_path}")
+                    logger.info(f"准备执行yt-dlp命令: {' '.join(yt_dlp_cmd)}")
                     logger.debug(f"完整命令: {' '.join(cmd)}")
                     
                     try:
