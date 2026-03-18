@@ -298,6 +298,35 @@ def _task_has_platform_upload_response(task, platform):
     return bool(task.get('acfun_upload_response'))
 
 
+def _get_upload_platforms_for_target(upload_target):
+    target = normalize_upload_target(upload_target)
+    if target == UPLOAD_TARGET_BOTH:
+        return [UPLOAD_TARGET_ACFUN, UPLOAD_TARGET_BILIBILI]
+    if target == UPLOAD_TARGET_BILIBILI:
+        return [UPLOAD_TARGET_BILIBILI]
+    return [UPLOAD_TARGET_ACFUN]
+
+
+def _get_pending_upload_platforms(task, upload_target=None):
+    if not task:
+        return []
+    target = normalize_upload_target(upload_target or task.get('upload_target'))
+    platforms = _get_upload_platforms_for_target(target)
+    return [p for p in platforms if not _task_has_platform_upload_response(task, p)]
+
+
+def _has_partial_upload_success(task, upload_target=None):
+    if not task:
+        return False
+    target = normalize_upload_target(upload_target or task.get('upload_target'))
+    platforms = _get_upload_platforms_for_target(target)
+    if len(platforms) <= 1:
+        return False
+    has_success = any(_task_has_platform_upload_response(task, p) for p in platforms)
+    has_pending = any(not _task_has_platform_upload_response(task, p) for p in platforms)
+    return has_success and has_pending
+
+
 def _get_partition_field_name(platform: str, field_type: str) -> str:
     p = normalize_upload_target(platform)
     return PARTITION_FIELD_MAP.get(p, PARTITION_FIELD_MAP[UPLOAD_TARGET_ACFUN]).get(field_type, '')
@@ -1666,6 +1695,39 @@ class TaskProcessor:
                 _persist_pipeline_checkpoint(task_id, completed_stages)
             except Exception:
                 pass
+
+            # 重新获取任务，避免排队等待期间状态变化导致基于旧快照决策
+            task = get_task(task_id) or task
+            if task is None:
+                task_logger.error("任务对象为None，终止任务处理")
+                return
+
+            # 上传失败恢复优化：若目标平台已全部成功则直接完成；若仅部分成功则仅重试失败平台
+            upload_target = _get_task_upload_target(task)
+            pending_platforms = _get_pending_upload_platforms(task, upload_target)
+            if task.get('status') == TASK_STATES['FAILED'] and not pending_platforms and _task_has_upload_response(task, upload_target):
+                task_logger.info("检测到目标平台已全部上传成功，跳过重复流程并标记完成")
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
+                update_task(task_id, status=TASK_STATES['COMPLETED'], error_message=None, upload_progress=None)
+                return
+
+            if task.get('status') == TASK_STATES['FAILED'] and _has_partial_upload_success(task, upload_target):
+                done_platforms = [
+                    p for p in _get_upload_platforms_for_target(upload_target)
+                    if _task_has_platform_upload_response(task, p)
+                ]
+                task_logger.info(
+                    "检测到部分平台已上传成功，进入失败点续传模式。"
+                    f" 已完成平台: {done_platforms}，待重试平台: {pending_platforms}"
+                )
+                self._upload_to_target(task_id, task_logger)
+                task = get_task(task_id)
+                if task and _task_has_upload_response(task, upload_target):
+                    completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
+                    if task.get('status') != TASK_STATES['COMPLETED']:
+                        update_task(task_id, status=TASK_STATES['COMPLETED'], error_message=None, upload_progress=None)
+                        task_logger.info("失败平台重试成功，任务已标记为完成")
+                return
 
             # 1. 采集视频信息（只获取元数据和封面，不下载视频文件）
             task_logger.info(f"开始处理任务，当前task对象: {task}")
@@ -5769,12 +5831,20 @@ class TaskProcessor:
             return
 
         upload_target = _get_task_upload_target(task)
+        pending_platforms = _get_pending_upload_platforms(task, upload_target)
         task_logger.info(f"上传分发目标平台: {upload_target}")
+        task_logger.info(f"待上传平台: {pending_platforms}")
+
+        if not pending_platforms:
+            task_logger.info("目标平台均已有上传结果，跳过重复上传")
+            if task.get('status') != TASK_STATES['COMPLETED']:
+                update_task(task_id, status=TASK_STATES['COMPLETED'], error_message=None, upload_progress=None)
+            return
 
         if upload_target == UPLOAD_TARGET_BOTH:
             task_logger.info("双平台上传将字幕预处理延后到各平台上传阶段执行，确保视频已下载后再处理字幕")
             # 双平台投稿：按 AcFun -> bilibili 顺序执行，且对已成功的平台幂等跳过
-            if not _task_has_platform_upload_response(task, UPLOAD_TARGET_ACFUN):
+            if UPLOAD_TARGET_ACFUN in pending_platforms:
                 self._upload_to_acfun(task_id, task_logger, subtitle_prepared=False)
                 task = get_task(task_id)
                 if not task or task.get('status') == TASK_STATES['FAILED']:
@@ -5782,17 +5852,23 @@ class TaskProcessor:
             else:
                 task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
 
-            if not _task_has_platform_upload_response(task, UPLOAD_TARGET_BILIBILI):
+            if UPLOAD_TARGET_BILIBILI in pending_platforms:
                 self._upload_to_bilibili(task_id, task_logger, subtitle_prepared=False)
             else:
                 task_logger.info("检测到已有 bilibili 上传结果，跳过 bilibili 上传")
             return
 
         if upload_target == UPLOAD_TARGET_BILIBILI:
-            self._upload_to_bilibili(task_id, task_logger)
+            if UPLOAD_TARGET_BILIBILI in pending_platforms:
+                self._upload_to_bilibili(task_id, task_logger)
+            else:
+                task_logger.info("检测到已有 bilibili 上传结果，跳过 bilibili 上传")
             return
 
-        self._upload_to_acfun(task_id, task_logger)
+        if UPLOAD_TARGET_ACFUN in pending_platforms:
+            self._upload_to_acfun(task_id, task_logger)
+        else:
+            task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
 
     def _upload_to_bilibili(self, task_id, task_logger, subtitle_prepared=False):
         """上传到 Bilibili - 带并发控制"""
