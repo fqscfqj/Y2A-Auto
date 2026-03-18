@@ -50,11 +50,21 @@
             </div>
         </button>
         <button type="button" class="settings-summary-card" data-settings-target="#vtab-accounts">
-            <span class="settings-summary-icon"><i class="bi bi-person-badge"></i></span>
+            <span class="settings-summary-icon settings-icon-dual"><i class="bi bi-person-badge"></i><i class="bi bi-globe2"></i></span>
             <div>
                 <div class="settings-summary-label">账号与网络</div>
                 <div class="settings-summary-value">登录、Cookies、代理</div>
                 <span class="settings-status-badge is-info">集中管理</span>
+            </div>
+        </button>
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-moderation">
+            <span class="settings-summary-icon"><i class="bi bi-shield-check"></i></span>
+            <div>
+                <div class="settings-summary-label">内容审核</div>
+                <div class="settings-summary-value">{{ '已接入审核服务' if moderation_ready else '待配置审核服务' }}</div>
+                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
+                    {{ '可用' if moderation_ready else '未配置' }}
+                </span>
             </div>
         </button>
         <button type="button" class="settings-summary-card" data-settings-target="#vtab-ai-models">
@@ -77,8 +87,12 @@
                     <span>运行概览</span>
                 </a>
                 <a class="nav-link" id="vtab-accounts-tab" data-bs-toggle="pill" href="#vtab-accounts" role="tab" aria-controls="vtab-accounts" aria-selected="false">
-                    <i class="bi bi-person-vcard"></i>
+                    <span class="settings-nav-icon-group"><i class="bi bi-person-vcard"></i><i class="bi bi-globe2"></i></span>
                     <span>账号与网络</span>
+                </a>
+                <a class="nav-link" id="vtab-moderation-tab" data-bs-toggle="pill" href="#vtab-moderation" role="tab" aria-controls="vtab-moderation" aria-selected="false">
+                    <i class="bi bi-shield-check"></i>
+                    <span>内容审核</span>
                 </a>
                 <a class="nav-link" id="vtab-ai-models-tab" data-bs-toggle="pill" href="#vtab-ai-models" role="tab" aria-controls="vtab-ai-models" aria-selected="false">
                     <i class="bi bi-robot"></i>
@@ -253,57 +267,6 @@
                                                             将 YouTube 上传者作为首标签
                                                         </label>
                                                         <p class="help-text mb-0">会占用 1 个标签名额，适合强调来源作者。</p>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">内容审核</span>
-                                                    <h4>内容审核与阿里云凭证</h4>
-                                                </div>
-                                                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
-                                                    {{ '凭证已配置' if moderation_ready else '凭证未完成' }}
-                                                </span>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="settings-field settings-field-switch">
-                                                    <div>
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
-                                                            启用内容审核
-                                                        </label>
-                                                        <p class="help-text mb-0">审核标题、描述和封面，建议与阿里云凭证一起完成配置。</p>
-                                                    </div>
-                                                </div>
-                                                <div class="row g-3 mt-1">
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-key" class="form-label">AccessKey ID</label>
-                                                            <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-secret" class="form-label">AccessKey Secret</label>
-                                                            <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-region" class="form-label">审核区域</label>
-                                                            <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}" class="form-control" placeholder="默认 cn-shanghai">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group mb-0">
-                                                            <label for="aliyun-text-service" class="form-label">文本审核服务</label>
-                                                            <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection_pro">
-                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -508,6 +471,70 @@
                                                 <div class="form-group mt-3 mb-0">
                                                     <label for="ffmpeg-location" class="form-label">FFmpeg 自定义路径</label>
                                                     <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="留空使用内置 FFmpeg">
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="vtab-moderation" role="tabpanel" aria-labelledby="vtab-moderation-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">内容审核</h3>
+                                        <p class="section-lead mb-0">独立维护审核开关、阿里云凭证和审核服务参数，减少与投稿设置混排。</p>
+                                    </div>
+                                </div>
+                                <div class="row g-4 settings-pane-grid">
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">审核服务</span>
+                                                    <h4>内容审核与阿里云凭证</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
+                                                    {{ '凭证已配置' if moderation_ready else '凭证未完成' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
+                                                            启用内容审核
+                                                        </label>
+                                                        <p class="help-text mb-0">审核标题、描述和封面，建议与阿里云凭证一起完成配置。</p>
+                                                    </div>
+                                                </div>
+                                                <div class="row g-3 mt-1">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-key" class="form-label">AccessKey ID</label>
+                                                            <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-secret" class="form-label">AccessKey Secret</label>
+                                                            <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-region" class="form-label">审核区域</label>
+                                                            <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}" class="form-control" placeholder="默认 cn-shanghai">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group mb-0">
+                                                            <label for="aliyun-text-service" class="form-label">文本审核服务</label>
+                                                            <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection_pro">
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </article>
