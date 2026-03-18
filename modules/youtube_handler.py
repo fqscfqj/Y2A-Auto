@@ -130,6 +130,36 @@ def _append_yt_dlp_network_args(
     return cmd
 
 
+def _is_format_selection_error(error_text: str | None) -> bool:
+    """判断是否属于格式选择失败，而非视频不可访问。"""
+    if not error_text:
+        return False
+    normalized = str(error_text)
+    indicators = (
+        "Requested format is not available",
+        "Only images are available",
+    )
+    return any(indicator in normalized for indicator in indicators)
+
+
+def _looks_like_youtube_bot_challenge(error_text: str | None) -> bool:
+    """判断是否像是 YouTube 反机器人/登录校验问题。"""
+    if not error_text:
+        return False
+    normalized = str(error_text)
+    indicators = (
+        "Sign in to confirm",
+        "not a bot",
+        "Signature extraction failed",
+        "Some formats may be missing",
+        "HTTP Error 403",
+        "player",
+        "decodeURIComponent",
+        "The page needs to be reloaded.",
+    )
+    return any(indicator in normalized for indicator in indicators)
+
+
 def _find_yt_dlp_command(log: logging.Logger) -> list[str]:
     """解析 yt-dlp 调用命令，优先使用当前解释器 python -m yt_dlp。"""
     log.info("开始查找yt-dlp执行命令...")
@@ -352,7 +382,15 @@ def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=N
     if not logger:
         logger = logging.getLogger(__name__)
         
-    cmd = [*yt_dlp_cmd, youtube_url, '--list-formats', '--no-warnings', '--simulate']
+    # 仅检查视频是否可访问，不在预检阶段触发格式选择，避免把“格式不可用”误判为“视频不可用”
+    cmd = [
+        *yt_dlp_cmd,
+        youtube_url,
+        '--skip-download',
+        '--no-warnings',
+        '--no-playlist',
+        '--print', '%(id)s\t%(title)s'
+    ]
     
     # 检查是否需要使用代理
     config = load_config()
@@ -376,9 +414,9 @@ def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=N
             )
 
             if process.returncode == 0:
-                formats = process.stdout
-                logger.info("视频格式检查成功")
-                return True, formats, None
+                info_text = process.stdout
+                logger.info("视频可用性检查成功")
+                return True, info_text, None
 
             error_text = (process.stderr or process.stdout or "").strip()
             last_error = error_text or f"格式检查返回非零状态码: {process.returncode}"
@@ -470,32 +508,29 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         # 首先测试视频可用性
         available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_cmd, cookies_path, logger)
         if not available:
-            # 检查是否是cookie相关的错误
-            bot_indicators = [
-                "Sign in to confirm",
-                "not a bot", 
-                "Signature extraction failed",
-                "Some formats may be missing",
-                "HTTP Error 403",
-                "Requested format is not available",
-                "player",
-                "decodeURIComponent"
-            ]
-            if error_msg and any(indicator in str(error_msg) for indicator in bot_indicators):
-                logger.warning("检测到YouTube反机器人验证，可能需要更新Cookie")
-                # 发送cookie更新通知到Web界面
-                try:
-                    import requests
-                    # 尝试通知Web界面显示cookie更新提示
-                    requests.post('http://localhost:5000/api/cookies/refresh-needed', 
-                                json={'reason': 'bot_detection', 'video_url': youtube_url}, 
-                                timeout=1)
-                    logger.info("已发送Cookie刷新通知")
-                except:
-                    pass  # 忽略请求失败，不影响主流程
-            
-            logger.error(f"视频不可用或无法访问: {error_msg}")
-            return False, f"视频不可用或无法访问: {error_msg}"
+            # 预检查若只是格式选择问题，则继续进入正式下载，让后续降级格式策略接管
+            if _is_format_selection_error(error_msg):
+                logger.warning(f"视频预检查遇到格式选择问题，继续进入下载阶段处理: {error_msg}")
+            else:
+                if _looks_like_youtube_bot_challenge(error_msg):
+                    logger.warning("检测到YouTube反机器人验证，可能需要更新Cookie")
+                    # 发送cookie更新通知到Web界面
+                    try:
+                        import requests
+                        # 尝试通知Web界面显示cookie更新提示
+                        requests.post('http://localhost:5000/api/cookies/refresh-needed', 
+                                    json={'reason': 'bot_detection', 'video_url': youtube_url}, 
+                                    timeout=1)
+                        logger.info("已发送Cookie刷新通知")
+                    except:
+                        pass  # 忽略请求失败，不影响主流程
+                
+                logger.error(f"视频不可用或无法访问: {error_msg}")
+                return False, f"视频不可用或无法访问: {error_msg}"
+
+        if not available and error_msg and _looks_like_youtube_bot_challenge(error_msg):
+            # 对于同时存在格式/访问混合异常的场景，保留诊断日志但不阻塞后续下载重试
+            logger.warning(f"预检查存在潜在YouTube风控迹象，下载阶段将继续重试: {error_msg}")
         
         # 预先检测 ffmpeg（内部会在未提供config时自行加载配置）
         ffmpeg_location = get_ffmpeg_path(logger=logger)
