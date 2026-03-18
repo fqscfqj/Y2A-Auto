@@ -1006,9 +1006,10 @@ class SubtitleTranslator:
                 seen.add(key)
                 cleaned_lines.append(line)
 
-            return '\n'.join(cleaned_lines).strip()
+            sanitized = '\n'.join(cleaned_lines).strip()
+            return SubtitleWriter._strip_terminal_full_stop(sanitized)
         except Exception:
-            return text.strip()
+            return SubtitleWriter._strip_terminal_full_stop(text.strip())
     
     def _write_translated_file(self, items: List[SubtitleItem], output_path: str) -> bool:
         """写入翻译后的文件"""
