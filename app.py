@@ -17,7 +17,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
-from werkzeug.utils import safe_join
+from werkzeug.security import safe_join
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
