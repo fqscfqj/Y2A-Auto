@@ -88,7 +88,10 @@ DEFAULT_CONFIG = {
     # ASR 源字幕预检（可选）
     "SUBTITLE_QC_ENABLED": False,  # 失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
     "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
+    "SUBTITLE_QC_BASE_URL": "",  # 留空则回退到 SUBTITLE_OPENAI_BASE_URL / OPENAI_BASE_URL
+    "SUBTITLE_QC_API_KEY": "",  # 留空则回退到 SUBTITLE_OPENAI_API_KEY / OPENAI_API_KEY
     "SUBTITLE_QC_MODEL_NAME": "",  # 留空则回退到 SUBTITLE_OPENAI_MODEL_NAME / OPENAI_MODEL_NAME
+    "SUBTITLE_QC_THINKING_ENABLED": False,  # 字幕质检独立思考开关
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）

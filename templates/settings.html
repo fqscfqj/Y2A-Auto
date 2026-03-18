@@ -604,6 +604,44 @@
                                                         </div>
                                                     </div>
                                                 </div>
+
+                                                <div class="settings-subcard">
+                                                    <div class="settings-subcard-header">
+                                                        <h5>字幕质检大模型</h5>
+                                                        <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_QC_API_KEY') or config.get('SUBTITLE_QC_MODEL_NAME') or config.get('SUBTITLE_QC_BASE_URL') else 'is-neutral' }}">
+                                                            {{ '已覆盖质检配置' if config.get('SUBTITLE_QC_API_KEY') or config.get('SUBTITLE_QC_MODEL_NAME') or config.get('SUBTITLE_QC_BASE_URL') else '留空即继承字幕翻译/全局配置' }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-qc-url" class="form-label">质检专用接口地址</label>
+                                                                <input type="text" id="subtitle-qc-url" name="SUBTITLE_QC_BASE_URL" value="{{ config.get('SUBTITLE_QC_BASE_URL', '') }}" class="form-control" placeholder="留空则沿用字幕翻译专用接口/全局接口">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-qc-key" class="form-label">质检专用 API 密钥</label>
+                                                                <input type="password" id="subtitle-qc-key" name="SUBTITLE_QC_API_KEY" value="{{ config.get('SUBTITLE_QC_API_KEY', '') }}" class="form-control" placeholder="留空则沿用字幕翻译专用密钥/全局密钥">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-qc-model" class="form-label">质检模型名</label>
+                                                                <input type="text" id="subtitle-qc-model" name="SUBTITLE_QC_MODEL_NAME" value="{{ config.get('SUBTITLE_QC_MODEL_NAME', '') }}" class="form-control" placeholder="留空复用字幕模型">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-check form-switch">
+                                                                <input class="form-check-input" type="checkbox" id="subtitle-qc-thinking-enabled" name="SUBTITLE_QC_THINKING_ENABLED" {% if config.get('SUBTITLE_QC_THINKING_ENABLED', False) %}checked{% endif %}>
+                                                                <label class="form-check-label" for="subtitle-qc-thinking-enabled">质检模型启用思考模式</label>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <p class="help-text mb-0">仅用于字幕质检；地址、密钥、模型名留空时按“字幕质检专用覆盖”→“字幕翻译专用覆盖”→“全局模型”的顺序回退。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </article>
                                     </div>
@@ -724,28 +762,22 @@
                                                     </button>
                                                     <div class="collapse mt-3" id="advancedSubtitleQc">
                                                         <div class="row g-3">
-                                                            <div class="col-md-3">
+                                                            <div class="col-md-4">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-threshold" class="form-label">通过阈值</label>
                                                                     <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.35) }}" class="form-control">
                                                                 </div>
                                                             </div>
-                                                            <div class="col-md-3">
+                                                            <div class="col-md-4">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-sample" class="form-label">AI 抽样上限</label>
                                                                     <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">
                                                                 </div>
                                                             </div>
-                                                            <div class="col-md-3">
+                                                            <div class="col-md-4">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-maxchars" class="form-label">送检字符上限</label>
                                                                     <input type="number" min="1000" max="30000" step="500" id="subtitle-qc-maxchars" name="SUBTITLE_QC_MAX_CHARS" value="{{ config.get('SUBTITLE_QC_MAX_CHARS', 9000) }}" class="form-control">
-                                                                </div>
-                                                            </div>
-                                                            <div class="col-md-3">
-                                                                <div class="form-group">
-                                                                    <label for="subtitle-qc-model" class="form-label">QC 模型名</label>
-                                                                    <input type="text" id="subtitle-qc-model" name="SUBTITLE_QC_MODEL_NAME" value="{{ config.get('SUBTITLE_QC_MODEL_NAME', '') }}" class="form-control" placeholder="留空复用字幕模型">
                                                                 </div>
                                                             </div>
                                                         </div>

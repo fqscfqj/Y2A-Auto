@@ -690,8 +690,16 @@ def _call_ai_judge(
     metrics: Dict[str, Any],
     config: Dict[str, Any],
 ) -> Tuple[Optional[bool], Optional[float], Optional[Dict[str, Any]], str]:
-    api_key = (config.get('SUBTITLE_OPENAI_API_KEY') or config.get('OPENAI_API_KEY') or '').strip()
-    base_url = (config.get('SUBTITLE_OPENAI_BASE_URL') or config.get('OPENAI_BASE_URL') or '').strip()
+    api_key = (
+        (config.get('SUBTITLE_QC_API_KEY') or '').strip()
+        or (config.get('SUBTITLE_OPENAI_API_KEY') or '').strip()
+        or (config.get('OPENAI_API_KEY') or '').strip()
+    )
+    base_url = (
+        (config.get('SUBTITLE_QC_BASE_URL') or '').strip()
+        or (config.get('SUBTITLE_OPENAI_BASE_URL') or '').strip()
+        or (config.get('OPENAI_BASE_URL') or '').strip()
+    )
 
     model_name = (
         (config.get('SUBTITLE_QC_MODEL_NAME') or '').strip()
@@ -736,7 +744,7 @@ def _call_ai_judge(
                 'max_tokens': 120,
                 'response_format': {'type': 'json_object'},
             },
-            thinking_enabled=config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
+            thinking_enabled=config.get('SUBTITLE_QC_THINKING_ENABLED', False),
             logger=logger,
             scene_name='subtitle_qc',
         )
