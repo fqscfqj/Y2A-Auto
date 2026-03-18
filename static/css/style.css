@@ -285,6 +285,15 @@ body {
     text-align: center;
 }
 
+.settings-layout .settings-nav .nav-link > i,
+.settings-layout .settings-nav .nav-link .settings-nav-icon-group {
+    width: 1.45rem;
+    min-width: 1.45rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .settings-nav-icon-group {
     display: inline-flex;
     align-items: center;
