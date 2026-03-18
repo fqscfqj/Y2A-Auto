@@ -463,19 +463,19 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             cmd.extend(['--throttled-rate', throttled_rate])
             logger.info(f"启用下载速度限制: {throttled_rate}")
         
-        # 添加格式选择策略 - 改进的格式选择
+        # 添加格式选择策略：优先下载最高画质视频 + 最高音质音频
         if not skip_download:
             has_ffmpeg = bool(ffmpeg_location) or is_docker_env()
             if has_ffmpeg:
-                # 有可用 ffmpeg（内置或 Docker 环境）：选择分离的视频+音频并合并
+                # 有可用 ffmpeg（内置或 Docker 环境）：优先分离的最佳视频+最佳音频并合并
                 cmd.extend([
-                    '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
+                    '--format', 'bestvideo+bestaudio/best',
                     '--merge-output-format', 'mp4'
                 ])
             else:
-                # 无 ffmpeg：避免触发合并，直接选单路流
+                # 无 ffmpeg：避免触发合并，直接选择最佳单文件
                 cmd.extend([
-                    '--format', 'best[ext=mp4]/best'
+                    '--format', 'best'
                 ])
         
         # 根据参数调整命令（不再进行缩略图格式转换，直接使用原生格式）
@@ -666,9 +666,9 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         if '--format' in cmd:
                             format_index = cmd.index('--format')
                             if attempt == 0:
-                                # 第二次尝试：使用更宽松的格式
-                                cmd[format_index + 1] = 'best[ext=mp4]/best'
-                                logger.info("使用降级格式策略: best[ext=mp4]/best")
+                                # 第二次尝试：改为最佳单文件，降低对分离流/封装格式的要求
+                                cmd[format_index + 1] = 'best'
+                                logger.info("使用降级格式策略: best")
                             elif attempt == 1:
                                 # 第三次尝试：移除格式限制
                                 cmd.pop(format_index + 1)  # 移除格式参数
@@ -934,3 +934,5 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     except Exception as e:
         logger.error(f"extract_video_urls_from_playlist异常: {str(e)}")
     return video_urls
+
+
