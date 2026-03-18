@@ -711,14 +711,6 @@
                                                             <input type="text" id="subtitle-font-name" name="SUBTITLE_FONT_NAME" value="{{ config.get('SUBTITLE_FONT_NAME', 'SourceHanSansHWSC-VF.otf') }}" class="form-control" placeholder="SourceHanSansHWSC-VF.otf">
                                                         </div>
                                                     </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-api-provider" class="form-label">翻译接口</label>
-                                                            <select id="subtitle-api-provider" name="SUBTITLE_API_PROVIDER" class="form-select">
-                                                                <option value="openai" {% if config.get('SUBTITLE_API_PROVIDER', 'openai') == 'openai' %}selected{% endif %}>OpenAI 兼容</option>
-                                                            </select>
-                                                        </div>
-                                                    </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">
                                                             <label for="subtitle-batch-size" class="form-label">批次大小</label>
