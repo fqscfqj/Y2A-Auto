@@ -288,12 +288,30 @@ class SubtitleWriter:
     """字幕文件输出器"""
 
     @staticmethod
+    def _strip_terminal_full_stop(text: str) -> str:
+        """移除每行结尾的句号/英文句点，保留其他标点。"""
+        if not text:
+            return text
+
+        normalized_lines: List[str] = []
+        for raw_line in str(text).split('\n'):
+            line = raw_line.rstrip()
+            if line.endswith('。'):
+                line = line[:-1].rstrip()
+            elif line.endswith('.') and not line.endswith('..'):
+                line = line[:-1].rstrip()
+            normalized_lines.append(line)
+        return '\n'.join(normalized_lines)
+
+    @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
         """写入SRT字幕文件"""
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    if translated:
+                        text = SubtitleWriter._strip_terminal_full_stop(text)
                     f.write(f"{item.index}\n")
                     f.write(f"{item.time_range}\n")
                     f.write(f"{text}\n\n")
@@ -309,6 +327,8 @@ class SubtitleWriter:
                 f.write("WEBVTT\n\n")
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
+                    if translated:
+                        text = SubtitleWriter._strip_terminal_full_stop(text)
                     start_time = item.start_time.replace(',', '.')
                     end_time = item.end_time.replace(',', '.')
                     f.write(f"{start_time} --> {end_time}\n")
