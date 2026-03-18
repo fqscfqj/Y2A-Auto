@@ -514,18 +514,32 @@ def recover_interrupted_tasks_to_pending():
             task_id = row['id']
             status = row['status']
             upload_target = normalize_upload_target(row['upload_target'])
+            has_acfun_resp = bool(row['acfun_upload_response'])
+            has_bilibili_resp = bool(row['bilibili_upload_response'])
             if upload_target == UPLOAD_TARGET_BOTH:
-                has_upload_resp = bool(row['acfun_upload_response']) and bool(row['bilibili_upload_response'])
+                has_upload_resp = has_acfun_resp and has_bilibili_resp
+                has_partial_upload_resp = has_acfun_resp != has_bilibili_resp
             elif upload_target == UPLOAD_TARGET_BILIBILI:
-                has_upload_resp = bool(row['bilibili_upload_response'])
+                has_upload_resp = has_bilibili_resp
+                has_partial_upload_resp = False
             else:
-                has_upload_resp = bool(row['acfun_upload_response'])
+                has_upload_resp = has_acfun_resp
+                has_partial_upload_resp = False
 
             # 若上传响应已存在，直接标记为 completed（避免重复上传）
             if has_upload_resp:
                 conn.execute(
                     'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
                     (TASK_STATES['COMPLETED'], now_str, task_id)
+                )
+                recovered += 1
+                continue
+
+            # 双平台仅部分成功：恢复为 failed，让 process_task 走“失败点续传”只补失败平台
+            if has_partial_upload_resp:
+                conn.execute(
+                    'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                    (TASK_STATES['FAILED'], now_str, task_id)
                 )
                 recovered += 1
                 continue
@@ -1307,12 +1321,25 @@ def retry_failed_tasks(config=None):
     for task in failed_tasks:
         task_id = task['id']
         original_error = task.get('error_message')
+        upload_target = _get_task_upload_target(task)
 
-        # 先重置状态与错误信息，便于前端展示最新状态
+        # 失败状态兜底修复：目标平台其实都成功时，直接纠正为 completed，避免重复调度
+        if _task_has_upload_response(task, upload_target):
+            update_task(
+                task_id,
+                silent=True,
+                status=TASK_STATES['COMPLETED'],
+                error_message=None,
+                upload_progress=None
+            )
+            continue
+
+        # 对“部分平台已成功”的失败任务，保留 FAILED 状态以触发 process_task 的失败点续传分支
+        next_status = TASK_STATES['FAILED'] if _has_partial_upload_success(task, upload_target) else TASK_STATES['PENDING']
         update_task(
             task_id,
             silent=True,
-            status=TASK_STATES['PENDING'],
+            status=next_status,
             error_message=None,
             upload_progress=None
         )
@@ -5843,9 +5870,12 @@ class TaskProcessor:
 
         if upload_target == UPLOAD_TARGET_BOTH:
             task_logger.info("双平台上传将字幕预处理延后到各平台上传阶段执行，确保视频已下载后再处理字幕")
+            subtitle_prepared_in_this_round = False
+
             # 双平台投稿：按 AcFun -> bilibili 顺序执行，且对已成功的平台幂等跳过
             if UPLOAD_TARGET_ACFUN in pending_platforms:
                 self._upload_to_acfun(task_id, task_logger, subtitle_prepared=False)
+                subtitle_prepared_in_this_round = True
                 task = get_task(task_id)
                 if not task or task.get('status') == TASK_STATES['FAILED']:
                     return
@@ -5853,7 +5883,11 @@ class TaskProcessor:
                 task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
 
             if UPLOAD_TARGET_BILIBILI in pending_platforms:
-                self._upload_to_bilibili(task_id, task_logger, subtitle_prepared=False)
+                self._upload_to_bilibili(
+                    task_id,
+                    task_logger,
+                    subtitle_prepared=subtitle_prepared_in_this_round
+                )
             else:
                 task_logger.info("检测到已有 bilibili 上传结果，跳过 bilibili 上传")
             return
