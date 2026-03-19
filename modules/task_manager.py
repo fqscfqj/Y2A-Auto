@@ -1083,10 +1083,32 @@ def update_task(task_id, silent=False, **kwargs):
                     values
                 )
                 conn.commit()
-                publish_task_event('task_updated', {
+
+                event_type = 'task_updated'
+                event_payload = {
                     'task_id': task_id,
                     'status': filtered_kwargs.get('status')
-                })
+                }
+
+                changed_fields = {key for key in filtered_kwargs.keys() if key != 'updated_at'}
+                if changed_fields == {'upload_progress'}:
+                    current_status = filtered_kwargs.get('status')
+                    if current_status is None:
+                        try:
+                            row = conn.execute('SELECT status FROM tasks WHERE id = ?', (task_id,)).fetchone()
+                            current_status = row['status'] if row else None
+                        except Exception:
+                            current_status = None
+
+                    event_type = 'task_progress'
+                    event_payload = {
+                        'task_id': task_id,
+                        'status': current_status,
+                        'upload_progress': filtered_kwargs.get('upload_progress'),
+                        'updated_at': filtered_kwargs.get('updated_at')
+                    }
+
+                publish_task_event(event_type, event_payload)
                 if not silent:  # 只有非静默模式才记录到主日志
                     logger.info(f"任务 {task_id} 更新成功: {filtered_kwargs}")
                 return True

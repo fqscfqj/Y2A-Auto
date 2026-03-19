@@ -1,0 +1,307 @@
+{% set qc_threshold = config.get('SUBTITLE_QC_THRESHOLD', 0.35)|float %}
+{% set qc_score = task.subtitle_qc_score %}
+{% set qc_score_value = qc_score|float if qc_score is not none and qc_score != '' else none %}
+{% set qc_reason_raw = (task.subtitle_qc_reason or '字幕质检失败') %}
+{% set qc_reason_parts = qc_reason_raw.split(':', 1) %}
+{% set qc_reason_prefix = qc_reason_parts[0] if qc_reason_parts|length > 1 else '' %}
+{% set qc_reason_token = qc_reason_parts[1] if qc_reason_parts|length > 1 else qc_reason_raw %}
+{% if qc_reason_prefix == 'ai_fail' %}
+    {% set qc_reason_prefix_zh = 'AI复核未通过' %}
+{% elif qc_reason_prefix == 'ai_pass' %}
+    {% set qc_reason_prefix_zh = 'AI复核通过' %}
+{% elif qc_reason_prefix == 'ai_warn' %}
+    {% set qc_reason_prefix_zh = 'AI提示但规则放行' %}
+{% elif qc_reason_prefix == 'rule_fail' %}
+    {% set qc_reason_prefix_zh = '规则拦截失败' %}
+{% elif qc_reason_prefix == 'rule_pass' %}
+    {% set qc_reason_prefix_zh = '规则直接通过' %}
+{% elif qc_reason_prefix == 'qc_skipped' %}
+    {% set qc_reason_prefix_zh = 'AI不可用，按规则结果处理' %}
+{% else %}
+    {% set qc_reason_prefix_zh = '' %}
+{% endif %}
+{% if qc_reason_token == 'hallucination_meta' %}
+    {% set qc_reason_token_zh = '疑似幻觉/元信息污染' %}
+{% elif qc_reason_token == 'healthy_dialogue' %}
+    {% set qc_reason_token_zh = '内容正常' %}
+{% elif qc_reason_token == 'borderline_repeat' %}
+    {% set qc_reason_token_zh = '疑似重复模板' %}
+{% elif qc_reason_token == 'ultra_short_repeat' %}
+    {% set qc_reason_token_zh = '超短字幕重复' %}
+{% elif qc_reason_token == 'ultra_short_low_info' %}
+    {% set qc_reason_token_zh = '超短字幕信息量过低' %}
+{% elif qc_reason_token == 'provider_disabled' %}
+    {% set qc_reason_token_zh = '未启用AI复核提供商' %}
+{% elif qc_reason_token == 'empty_sample' %}
+    {% set qc_reason_token_zh = '抽样为空' %}
+{% elif qc_reason_token == 'asr_no_subtitle' %}
+    {% set qc_reason_token_zh = '语音识别未能生成字幕，已跳过字幕流程' %}
+{% elif qc_reason_token.startswith('ai_error') %}
+    {% set qc_reason_token_zh = 'AI调用异常' %}
+{% elif qc_reason_token == '字幕质检失败' %}
+    {% set qc_reason_token_zh = qc_reason_token %}
+{% else %}
+    {% set qc_reason_token_zh = qc_reason_token %}
+{% endif %}
+{% if qc_reason_prefix_zh %}
+    {% set qc_reason = qc_reason_prefix_zh ~ '（' ~ qc_reason_token_zh ~ '）' %}
+{% else %}
+    {% set qc_reason = qc_reason_token_zh %}
+{% endif %}
+{% if qc_score_value is not none %}
+    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 分数: ' ~ ('%.3f'|format(qc_score_value)) ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+{% elif qc_reason_token == 'asr_no_subtitle' %}
+    {% set qc_tooltip = '原因: ' ~ qc_reason %}
+{% else %}
+    {% set qc_tooltip = '原因: ' ~ qc_reason ~ ' | 阈值: ' ~ ('%.3f'|format(qc_threshold)) %}
+{% endif %}
+{% set display_title = task.video_title_translated or task.video_title_original or '未获取标题' %}
+{% set show_progress = (task.status in ['uploading', 'downloading', 'translating_subtitle', 'encoding_video', 'asr_transcribing']) and task.upload_progress %}
+{% set target = (task.upload_target or 'acfun')|lower %}
+{% set icon = 'circle' %}
+{% if task.status == 'downloading' %}{% set icon = 'download' %}
+{% elif task.status == 'uploading' %}{% set icon = 'cloud-upload' %}
+{% elif task.status == 'translating' or task.status == 'translating_subtitle' %}{% set icon = 'translate' %}
+{% elif task.status == 'asr_transcribing' %}{% set icon = 'mic' %}
+{% elif task.status == 'encoding_video' %}{% set icon = 'cpu' %}
+{% elif task.status == 'awaiting_manual_review' %}{% set icon = 'eye' %}
+{% elif task.status == 'completed' %}{% set icon = 'check-circle' %}
+{% elif task.status == 'failed' %}{% set icon = 'x-circle' %}
+{% elif task.status == 'ready_for_upload' %}{% set icon = 'cloud-arrow-up' %}
+{% elif task.status == 'pending' %}{% set icon = 'pause-circle' %}
+{% endif %}
+<tr data-task-id="{{ task.id }}" data-task-status="{{ task.status }}" class="status-{{ task.status }}">
+    <td>
+        <div class="id-cell d-flex align-items-center gap-1">
+            <span class="text-monospace" title="{{ task.id }}">{{ task.id[:8] }}...</span>
+            <button type="button" class="btn btn-link p-0 ms-1 copy-id-btn" title="复制ID" data-full-id="{{ task.id }}">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+    </td>
+    <td>
+        <div class="title-clamp title-clamp-3" title="{{ display_title }}">{{ display_title }}</div>
+        {% if task.video_title_translated and task.video_title_original %}
+            <div class="small text-muted text-truncate" title="原标题: {{ task.video_title_original }}">原标题: {{ task.video_title_original }}</div>
+        {% endif %}
+    </td>
+    <td>
+        <div class="d-flex flex-column align-items-center">
+            <span class="badge rounded-pill bg-{{ task_status_color(task.status) }} task-status-badge" data-task-status-badge>
+                <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
+            </span>
+            <small class="text-muted mt-1{% if not show_progress %} d-none{% endif %}" data-task-progress>{{ task.upload_progress or '' }}</small>
+            {% if task.subtitle_qc_failed %}
+                <span class="badge bg-warning text-dark mt-1" title="{{ qc_tooltip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+            {% endif %}
+        </div>
+    </td>
+    <td>
+        <span class="task-datetime"
+              data-task-datetime
+              data-datetime="{{ task.updated_at or task.created_at }}"
+              title="点击查看详细时间">
+            {{ task.updated_at or task.created_at }}
+        </span>
+    </td>
+    <td>
+        {% if target == 'bilibili' %}
+            <span class="badge-platform badge-platform-bilibili"><i class="bi bi-play-btn-fill"></i>bilibili</span>
+        {% elif target == 'both' %}
+            <span class="badge-platform badge-platform-both"><i class="bi bi-collection-play-fill"></i>双平台</span>
+        {% else %}
+            <span class="badge-platform badge-platform-acfun"><i class="bi bi-camera-video-fill"></i>AcFun</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if target == 'both' %}
+            {% if task.selected_partition_id_acfun or task.recommended_partition_id_acfun %}
+                {% set ac_pid = task.selected_partition_id_acfun or task.recommended_partition_id_acfun %}
+                <div><span class="badge bg-info">AcFun: {{ get_partition_name(ac_pid, 'acfun') or ac_pid }}</span>{% if (not task.selected_partition_id_acfun) and task.recommended_partition_id_acfun %}<span class="small text-muted ms-1">荐</span>{% endif %}</div>
+            {% endif %}
+            {% if task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili %}
+                {% set bili_pid = task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili %}
+                <div class="mt-1"><span class="badge bg-info">bili: {{ get_partition_name(bili_pid, 'bilibili') or bili_pid }}</span>{% if (not task.selected_partition_id_bilibili) and task.recommended_partition_id_bilibili %}<span class="small text-muted ms-1">荐</span>{% endif %}</div>
+            {% endif %}
+        {% elif target == 'bilibili' %}
+            {% set bili_pid = task.selected_partition_id_bilibili or task.recommended_partition_id_bilibili or task.selected_partition_id or task.recommended_partition_id %}
+            {% if bili_pid %}
+                <span class="badge bg-info">{{ get_partition_name(bili_pid, 'bilibili') or bili_pid }}</span>
+                {% if (not task.selected_partition_id_bilibili and not task.selected_partition_id) and (task.recommended_partition_id_bilibili or task.recommended_partition_id) %}
+                    <div class="small text-muted mt-1">推荐</div>
+                {% endif %}
+            {% else %}
+                <span class="badge bg-secondary">未设置</span>
+            {% endif %}
+        {% else %}
+            {% set ac_pid = task.selected_partition_id_acfun or task.recommended_partition_id_acfun or task.selected_partition_id or task.recommended_partition_id %}
+            {% if ac_pid %}
+                <span class="badge bg-info">{{ get_partition_name(ac_pid, 'acfun') or ac_pid }}</span>
+                {% if (not task.selected_partition_id_acfun and not task.selected_partition_id) and (task.recommended_partition_id_acfun or task.recommended_partition_id) %}
+                    <div class="small text-muted mt-1">推荐</div>
+                {% endif %}
+            {% else %}
+                <span class="badge bg-secondary">未设置</span>
+            {% endif %}
+        {% endif %}
+    </td>
+    <td>
+        {% if task.tags_generated %}
+            {% set tags = parse_json(task.tags_generated) %}
+            <div class="tags-container">
+                {% for tag in tags[:3] %}
+                    <span class="badge bg-secondary me-1 mb-1">{{ tag }}</span>
+                {% endfor %}
+                {% if tags|length > 3 %}
+                    <span class="badge bg-light text-dark me-1 mb-1">+{{ tags|length - 3 }}</span>
+                {% endif %}
+            </div>
+        {% else %}
+            <span class="badge bg-secondary">未生成</span>
+        {% endif %}
+    </td>
+    <td>
+        <div class="upload-result-container">
+        {% if target == 'both' and (task.acfun_upload_response or task.bilibili_upload_response) %}
+            {% set ac_result = parse_json(task.acfun_upload_response) if task.acfun_upload_response else {} %}
+            {% set bili_result = parse_json(task.bilibili_upload_response) if task.bilibili_upload_response else {} %}
+            {% if bili_result and bili_result.bvid %}
+                <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ bili_result.bvid }}</a>
+            {% elif task.status == 'failed' and task.error_message %}
+                {% if ac_result and ac_result.ac_number %}
+                <button type="button"
+                      class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                      title="点击查看B站上传错误详情"
+                      data-error-message="[B站] {{ task.error_message }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">B站上传错误</button>
+                {% else %}
+                <button type="button"
+                      class="badge bg-danger error-message-badge error-message-trigger border-0"
+                      title="点击查看B站上传失败详情"
+                      data-error-message="[B站] {{ task.error_message }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">B站上传失败</button>
+                {% endif %}
+            {% else %}
+                <span class="badge bg-secondary">BV待上传</span>
+            {% endif %}
+            {% if ac_result and ac_result.ac_number %}
+                <a href="https://www.acfun.cn/v/ac{{ ac_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开AC页面">AC{{ ac_result.ac_number }}</a>
+            {% elif task.status == 'failed' and task.error_message %}
+                {% if bili_result and bili_result.bvid %}
+                <button type="button"
+                      class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                      title="点击查看AcFun上传错误详情"
+                      data-error-message="[AcFun] {{ task.error_message }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">AC上传错误</button>
+                {% else %}
+                <button type="button"
+                      class="badge bg-danger error-message-badge error-message-trigger border-0"
+                      title="点击查看AcFun上传失败详情"
+                      data-error-message="[AcFun] {{ task.error_message }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">AC上传失败</button>
+                {% endif %}
+            {% else %}
+                <span class="badge bg-secondary">AC待上传</span>
+            {% endif %}
+        {% elif task.status == 'completed' and target == 'bilibili' and task.bilibili_upload_response %}
+            {% set upload_result = parse_json(task.bilibili_upload_response) %}
+            {% if upload_result and upload_result.bvid %}
+                <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ upload_result.bvid }}</a>
+                <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-bv-btn" title="复制BV号" data-bv-number="{{ upload_result.bvid }}">
+                    <i class="bi bi-clipboard"></i>
+                </button>
+            {% else %}
+                <span class="badge bg-secondary">未获取BV号</span>
+            {% endif %}
+        {% elif task.status == 'completed' and target != 'bilibili' and task.acfun_upload_response %}
+            {% set upload_result = parse_json(task.acfun_upload_response) %}
+            {% if upload_result and upload_result.ac_number %}
+                <a href="https://www.acfun.cn/v/ac{{ upload_result.ac_number }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开AC页面">AC{{ upload_result.ac_number }}</a>
+                <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-ac-btn" title="复制AC号" data-ac-number="{{ upload_result.ac_number }}">
+                    <i class="bi bi-clipboard"></i>
+                </button>
+            {% else %}
+                <span class="badge bg-secondary">未获取AC号</span>
+            {% endif %}
+        {% elif task.status == 'ready_for_upload' and task.error_message %}
+            {% set error_msg = task.error_message %}
+            {% if error_msg|length > 30 %}
+                <button type="button"
+                      class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                      title="点击查看完整错误信息"
+                      data-error-message="{{ error_msg }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">
+                    {{ error_msg[:27] }}...
+                </button>
+            {% else %}
+                <button type="button"
+                      class="badge bg-warning text-dark error-message-badge error-message-trigger border-0"
+                      title="点击查看完整错误信息"
+                      data-error-message="{{ error_msg }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">
+                    {{ error_msg }}
+                </button>
+            {% endif %}
+        {% elif task.status == 'failed' %}
+            {% set error_msg = task.error_message or '未知错误' %}
+            {% if error_msg|length > 30 %}
+                <button type="button"
+                      class="badge bg-danger error-message-badge error-message-trigger border-0"
+                      title="点击查看完整错误信息"
+                      data-error-message="{{ error_msg }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">
+                    {{ error_msg[:27] }}...
+                </button>
+            {% else %}
+                <button type="button"
+                      class="badge bg-danger error-message-badge error-message-trigger border-0"
+                      title="点击查看完整错误信息"
+                      data-error-message="{{ error_msg }}"
+                      data-task-title="{{ display_title }}"
+                      data-task-id="{{ task.id }}">
+                    {{ error_msg }}
+                </button>
+            {% endif %}
+        {% else %}
+            <span class="badge bg-secondary">未上传</span>
+        {% endif %}
+        </div>
+    </td>
+    <td>
+        <div class="d-flex justify-content-end gap-1">
+            {% if task.status == 'awaiting_manual_review' %}
+                <a href="{{ url_for('review_task', task_id=task.id) }}" class="btn btn-sm btn-warning d-flex align-items-center justify-content-center task-action-btn">
+                    <i class="bi bi-eye me-1"></i> 审核
+                </a>
+            {% elif task.status == 'pending' or task.status == 'failed' %}
+                <form method="post" action="{{ url_for('start_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                    <button type="submit" class="btn btn-sm btn-primary d-flex align-items-center justify-content-center task-action-btn">
+                        <i class="bi bi-play-fill me-1"></i> 开始
+                    </button>
+                </form>
+            {% elif task.status == 'ready_for_upload' %}
+                <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" class="m-0 p-0 d-inline">
+                    <button type="submit" class="btn btn-sm btn-success d-flex align-items-center justify-content-center task-action-btn">
+                        <i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}
+                    </button>
+                </form>
+            {% endif %}
+            <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-outline-primary d-flex align-items-center justify-content-center task-action-btn">
+                <i class="bi bi-pencil me-1"></i> 编辑
+            </a>
+            <button type="button" class="btn btn-sm btn-outline-danger d-flex align-items-center justify-content-center task-action-btn"
+                    data-task-id="{{ task.id }}"
+                    data-task-title="{{ display_title }}"
+                    onclick="confirmDelete(this.dataset.taskId, this.dataset.taskTitle)">
+                <i class="bi bi-trash me-1"></i> 删除
+            </button>
+        </div>
+    </td>
+</tr>

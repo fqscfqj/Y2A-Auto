@@ -1223,6 +1223,32 @@ def tasks():
                          tasks=pagination_data['tasks'],
                          pagination=pagination_data,
                          config=config)
+
+
+def _render_task_fragments(task: dict, config: dict | None = None) -> dict:
+    if config is None:
+        config = load_config()
+
+    return {
+        'task_id': task.get('id'),
+        'row_html': render_template('partials/task_row.html', task=task, config=config),
+        'card_html': render_template('partials/task_card.html', task=task, config=config),
+    }
+
+
+@app.route('/tasks/<task_id>/fragment')
+@login_required
+def task_fragment(task_id):
+    """返回单个任务的桌面/移动端片段 HTML。"""
+    task = get_task(task_id)
+    if not task:
+        return jsonify({'success': False, 'message': '任务不存在'}), 404
+
+    config = load_config()
+    return jsonify({
+        'success': True,
+        **_render_task_fragments(task, config)
+    })
     
 @app.route('/tasks/stream')
 @login_required
