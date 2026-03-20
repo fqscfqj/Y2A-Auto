@@ -1056,7 +1056,8 @@ def _rule_based_partition_fallback(title: str, description: str, partitions) -> 
         (["music", "歌曲", "演唱", "mv", "翻唱", "乐器", "单曲", "专辑"], ("综合音乐", "原创·翻唱", "演奏·乐器", "音乐综合", "音乐")),
         (["舞蹈", "dance", "编舞", "翻跳", "宅舞"], ("综合舞蹈", "宅舞", "舞蹈")),
         (["预告", "花絮", "trailer", "behind the scenes", "影视", "电影"], ("预告·花絮", "影视")),
-        (["game", "游戏", "实况", "攻略", "电竞"], ("主机单机", "电子竞技", "网络游戏", "游戏")),
+        (["电竞", "esports", "赛事", "比赛", "联赛", "战队", "职业选手", "职业哥", "bp"], ("电子竞技", "网络游戏", "游戏")),
+        (["game", "游戏", "实况", "攻略", "mod", "mods", "rpg"], ("主机单机", "单机游戏", "主机游戏", "电子竞技", "网络游戏", "游戏")),
         (["科技", "数码", "评测", "开箱", "测评"], ("数码家电", "科技制造", "科技", "数码")),
         (["vlog", "生活", "美食", "旅行", "宠物"], ("生活日常", "美食", "旅行", "生活")),
         (["教程", "科普", "知识", "教学"], ("知识", "科普")),
@@ -1071,16 +1072,277 @@ def _rule_based_partition_fallback(title: str, description: str, partitions) -> 
     return None
 
 
+_PARTITION_CANDIDATE_DESCRIPTION_LIMIT = 144
+_PARTITION_SELECTION_ALT_LIMIT = 3
+_PARTITION_LOW_CONFIDENCE_THRESHOLD = 0.55
+_PARTITION_DOMAIN_CHOICES = {
+    "game",
+    "music",
+    "dance",
+    "film",
+    "technology",
+    "lifestyle",
+    "knowledge",
+    "other",
+}
+_PARTITION_CONTENT_FORMAT_CHOICES = {
+    "interview",
+    "review",
+    "gameplay",
+    "news",
+    "tutorial",
+    "vlog",
+    "highlights",
+    "commentary",
+    "analysis",
+    "clip",
+    "other",
+}
+_PARTITION_GAME_MODE_CHOICES = {
+    "single_player",
+    "online",
+    "esports",
+    "mobile",
+    "unknown",
+}
+
+
+def _clean_partition_input(value: Any, *, content_type: str) -> str:
+    cleaned = _pre_clean(safe_str(value), content_type=content_type)
+    if not _has_meaningful_content(cleaned, content_type=content_type):
+        return ''
+    return cleaned
+
+
+def _normalize_partition_tags(tags: Any) -> List[str]:
+    parsed = tags
+    if isinstance(tags, str):
+        raw_text = tags.strip()
+        if not raw_text:
+            return []
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = re.split(r'[,，\s]+', raw_text)
+
+    if not isinstance(parsed, list):
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    for raw_tag in parsed:
+        tag = _normalize_whitespace(safe_str(raw_tag)).strip()
+        if not tag:
+            continue
+        tag = tag[:20]
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(tag)
+        if len(normalized) >= 8:
+            break
+    return normalized
+
+
+def _dedupe_non_empty_text(parts: Sequence[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for part in parts:
+        text = _normalize_whitespace(safe_str(part)).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(text)
+    return deduped
+
+
+def _build_partition_metadata(
+    *,
+    title: str,
+    description: str,
+    title_original: str = '',
+    description_original: str = '',
+    title_translated: str = '',
+    description_translated: str = '',
+    tags: Any = None,
+) -> Dict[str, Any]:
+    primary_title = _clean_partition_input(title, content_type="title")
+    primary_description = _clean_partition_input(description, content_type="description")
+    normalized_title_original = _clean_partition_input(title_original, content_type="title")
+    normalized_description_original = _clean_partition_input(description_original, content_type="description")
+    normalized_title_translated = _clean_partition_input(title_translated, content_type="title")
+    normalized_description_translated = _clean_partition_input(description_translated, content_type="description")
+
+    if not primary_title:
+        primary_title = normalized_title_translated or normalized_title_original
+    if not primary_description:
+        primary_description = normalized_description_translated or normalized_description_original
+
+    if not normalized_title_translated and primary_title and normalized_title_original and primary_title != normalized_title_original:
+        normalized_title_translated = primary_title
+    if not normalized_description_translated and primary_description and normalized_description_original and primary_description != normalized_description_original:
+        normalized_description_translated = primary_description
+
+    return {
+        "primary_title": primary_title,
+        "primary_description": primary_description,
+        "title_original": normalized_title_original,
+        "description_original": normalized_description_original,
+        "title_translated": normalized_title_translated,
+        "description_translated": normalized_description_translated,
+        "tags": _normalize_partition_tags(tags),
+    }
+
+
+def _truncate_partition_text(text: str, limit: int) -> str:
+    normalized = _normalize_whitespace(safe_str(text))
+    if not normalized:
+        return ''
+    return normalized[:limit]
+
+
+def _build_partition_analysis_payload(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "source_metadata": {
+            "primary_title": metadata.get("primary_title", ''),
+            "primary_description": _truncate_partition_text(metadata.get("primary_description", ''), 1200),
+            "title_translated": metadata.get("title_translated", ''),
+            "description_translated": _truncate_partition_text(metadata.get("description_translated", ''), 1200),
+            "title_original": metadata.get("title_original", ''),
+            "description_original": _truncate_partition_text(metadata.get("description_original", ''), 1200),
+            "tags": metadata.get("tags", []),
+        }
+    }
+
+
+def _build_rule_fallback_inputs(metadata: Dict[str, Any]) -> Dict[str, str]:
+    title_parts = _dedupe_non_empty_text(
+        [
+            metadata.get("primary_title", ''),
+            metadata.get("title_translated", ''),
+            metadata.get("title_original", ''),
+        ]
+    )
+    description_parts = _dedupe_non_empty_text(
+        [
+            metadata.get("primary_description", ''),
+            metadata.get("description_translated", ''),
+            metadata.get("description_original", ''),
+            ' '.join(metadata.get("tags", [])),
+        ]
+    )
+    return {
+        "title": '\n'.join(title_parts),
+        "description": '\n'.join(description_parts),
+    }
+
+
+def _coerce_confidence(value: Any) -> Optional[float]:
+    try:
+        confidence = float(value)
+    except Exception:
+        return None
+    if confidence != confidence:
+        return None
+    if confidence < 0.0:
+        return 0.0
+    if confidence > 1.0:
+        return 1.0
+    return round(confidence, 4)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = safe_str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _normalize_enum(value: Any, allowed_values: Sequence[str], default: str) -> str:
+    text = safe_str(value).strip().lower()
+    if text in allowed_values:
+        return text
+    return default
+
+
+def _normalize_content_profile(parsed: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(parsed, dict):
+        return None
+
+    entities: List[str] = []
+    seen_entities = set()
+    for raw_entity in parsed.get("entities", []) if isinstance(parsed.get("entities"), list) else []:
+        entity = _normalize_whitespace(safe_str(raw_entity)).strip()
+        if not entity:
+            continue
+        entity = entity[:40]
+        lowered = entity.lower()
+        if lowered in seen_entities:
+            continue
+        seen_entities.add(lowered)
+        entities.append(entity)
+        if len(entities) >= 6:
+            break
+
+    profile = {
+        "domain": _normalize_enum(parsed.get("domain"), _PARTITION_DOMAIN_CHOICES, "other"),
+        "subdomain": _normalize_whitespace(safe_str(parsed.get("subdomain"))).strip()[:48],
+        "content_format": _normalize_enum(parsed.get("content_format"), _PARTITION_CONTENT_FORMAT_CHOICES, "other"),
+        "entities": entities,
+        "game_mode": _normalize_enum(parsed.get("game_mode"), _PARTITION_GAME_MODE_CHOICES, "unknown"),
+        "is_interview": _coerce_bool(parsed.get("is_interview")),
+        "confidence": _coerce_confidence(parsed.get("confidence")),
+        "reason_summary": _normalize_whitespace(safe_str(parsed.get("reason_summary"))).strip()[:120],
+    }
+    profile["low_confidence"] = bool(
+        profile["confidence"] is not None and profile["confidence"] < _PARTITION_LOW_CONFIDENCE_THRESHOLD
+    )
+
+    if not any(
+        [
+            profile["subdomain"],
+            profile["entities"],
+            profile["reason_summary"],
+            profile["domain"] != "other",
+            profile["content_format"] != "other",
+            profile["game_mode"] != "unknown",
+            profile["is_interview"],
+        ]
+    ):
+        return None
+    return profile
+
+
+def _make_partition_selection(content_profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "id": None,
+        "source": None,
+        "confidence": None,
+        "alternatives": [],
+        "low_confidence": False,
+        "reason_summary": '',
+        "content_profile": content_profile,
+    }
+
+
 def _compact_partition_candidates(partitions) -> List[Dict[str, str]]:
     candidates: List[Dict[str, str]] = []
     for partition in partitions:
         description = _normalize_whitespace(safe_str(partition.get("description")))
+        name = safe_str(partition.get("name")).strip()
+        parent = safe_str(partition.get("parent_name")).strip()
+        path_label = f"{parent} / {name}" if parent and parent != name else name
         candidates.append(
             {
                 "id": safe_str(partition.get("id")).strip(),
-                "name": safe_str(partition.get("name")).strip(),
-                "parent": safe_str(partition.get("parent_name")).strip(),
-                "description": description[:48],
+                "name": name,
+                "parent": parent,
+                "path_label": path_label,
+                "description": description[:_PARTITION_CANDIDATE_DESCRIPTION_LIMIT],
             }
         )
     return [candidate for candidate in candidates if candidate["id"] and candidate["name"]]
@@ -1131,71 +1393,32 @@ def _is_multimodal_input_unsupported_error(exc: Exception) -> bool:
     return any(signal in text for signal in signals)
 
 
-def _request_partition_id(
+def _request_content_profile(
     *,
-    title: str,
-    description: str,
-    partitions,
+    metadata: Dict[str, Any],
     openai_config,
     logger,
     scene_name: str,
     cover_path: Optional[str] = None,
-) -> Optional[str]:
-    result_map = _request_partition_ids_aio(
-        title=title,
-        description=description,
-        platform_partitions={"default": partitions},
-        openai_config=openai_config,
-        logger=logger,
-        scene_name=scene_name,
-        cover_path=cover_path,
-        system_prompt=(
-            "你是视频分区选择器。只从 default.candidates 中选 1 个最匹配的分区。"
-            '只返回 JSON：{"default":{"id":"候选ID"}}，不要解释。'
-        ),
-        max_tokens=80,
-    )
-    return result_map.get("default")
-
-
-def _request_partition_ids_aio(
-    *,
-    title: str,
-    description: str,
-    platform_partitions: Dict[str, Sequence[Dict[str, Any]]],
-    openai_config,
-    logger,
-    scene_name: str,
-    cover_path: Optional[str] = None,
-    system_prompt: Optional[str] = None,
-    max_tokens: int = 160,
-) -> Dict[str, Optional[str]]:
-    platform_candidates = {
-        platform: _compact_partition_candidates(partitions)
-        for platform, partitions in (platform_partitions or {}).items()
-        if partitions
-    }
-    result_map: Dict[str, Optional[str]] = {platform: None for platform in platform_candidates}
-    if not openai_config or not openai_config.get("OPENAI_API_KEY") or not platform_candidates:
-        return result_map
+) -> Optional[Dict[str, Any]]:
+    if not openai_config or not openai_config.get("OPENAI_API_KEY"):
+        return None
 
     client = get_openai_client(openai_config)
     model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
-    payload = {
-        "title": title,
-        "description": description,
-        "platforms": {
-            platform: {"candidates": candidates}
-            for platform, candidates in platform_candidates.items()
-        },
-    }
-    if not system_prompt:
-        system_prompt = (
-            "你是多平台视频分区选择器。请分别为每个平台只从该平台 candidates 中选 1 个最匹配的分区。"
-            "不要跨平台复用候选，不要编造候选ID。"
-            '只返回 JSON，例如：{"acfun":{"id":"候选ID"},"bilibili":{"id":"候选ID"}}。'
-            "若某个平台无法判断，id 返回空字符串。不要输出解释。"
-        )
+    payload = _build_partition_analysis_payload(metadata)
+    system_prompt = (
+        "你是视频内容分析器。根据 source_metadata 判断题材、内容形式与语义实体，并返回 JSON。"
+        "domain 只能是 game/music/dance/film/technology/lifestyle/knowledge/other。"
+        "content_format 只能是 interview/review/gameplay/news/tutorial/vlog/highlights/commentary/analysis/clip/other。"
+        "如果是游戏内容，game_mode 只能是 single_player/online/esports/mobile/unknown。"
+        "只有明显赛事、联赛、战队、职业选手、比赛结果类内容才可标记为 esports。"
+        "单机、主机、RPG、剧情、模组、开发者访谈等内容通常不属于 esports。"
+        "entities 输出数组，保留专有名词。"
+        "is_interview 输出布尔值。confidence 输出 0 到 1 的数字。"
+        "reason_summary 用简体中文简要概括判断依据。"
+        '只返回 JSON：{"domain":"","subdomain":"","content_format":"","entities":[],"game_mode":"unknown","is_interview":false,"confidence":0.0,"reason_summary":""}。'
+    )
 
     parsed = None
     if cover_path:
@@ -1206,7 +1429,7 @@ def _request_partition_ids_aio(
                 model_name=model_name,
                 system_prompt=system_prompt,
                 payload=payload,
-                max_tokens=max_tokens,
+                max_tokens=220,
                 temperature=0.0,
                 thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
                 logger_obj=logger,
@@ -1215,7 +1438,7 @@ def _request_partition_ids_aio(
                     {
                         "type": "text",
                         "text": (
-                            "请结合以下 JSON 信息与封面图片，为每个平台选择最合适的分区并只返回 JSON。\n"
+                            "请结合以下 JSON 信息与封面图片，完成内容分析并只返回 JSON。\n"
                             f"{json.dumps(payload, ensure_ascii=False)}"
                         ),
                     },
@@ -1226,7 +1449,7 @@ def _request_partition_ids_aio(
                 ],
             )
         except (FileNotFoundError, ValueError, OSError) as exc:
-            logger.warning(f"{scene_name} 封面不可用于分区推荐，已回退文本模式: {exc}")
+            logger.warning(f"{scene_name} 封面不可用于内容分析，已回退文本模式: {exc}")
         except Exception as exc:
             if _is_multimodal_input_unsupported_error(exc):
                 logger.warning(f"{scene_name} 当前模型或接口不支持图片输入，已回退文本模式: {exc}")
@@ -1239,28 +1462,157 @@ def _request_partition_ids_aio(
             model_name=model_name,
             system_prompt=system_prompt,
             payload=payload,
-            max_tokens=max_tokens,
+            max_tokens=220,
             temperature=0.0,
             thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
             logger_obj=logger,
             scene_name=scene_name,
         )
 
+    return _normalize_content_profile(parsed)
+
+
+def _normalize_partition_selection_entry(
+    platform_value: Any,
+    valid_ids,
+    content_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    selection = _make_partition_selection(content_profile)
+    candidate_id = ""
+    confidence = None
+    alternatives_raw = []
+    reason_summary = ''
+
+    if isinstance(platform_value, dict):
+        candidate_id = safe_str(platform_value.get("id")).strip()
+        confidence = _coerce_confidence(platform_value.get("confidence"))
+        alternatives_raw = platform_value.get("alternatives", [])
+        reason_summary = _normalize_whitespace(safe_str(platform_value.get("reason_summary"))).strip()[:120]
+    else:
+        candidate_id = safe_str(platform_value).strip()
+
+    selection["_raw_id"] = candidate_id or None
+    if candidate_id in valid_ids:
+        selection["id"] = candidate_id
+    selection["confidence"] = confidence
+    selection["reason_summary"] = reason_summary
+
+    alternatives: List[str] = []
+    seen_alternatives = set()
+    if isinstance(alternatives_raw, list):
+        for raw_alt in alternatives_raw:
+            alt_id = safe_str(raw_alt).strip()
+            if not alt_id or alt_id not in valid_ids or alt_id == selection["id"] or alt_id in seen_alternatives:
+                continue
+            seen_alternatives.add(alt_id)
+            alternatives.append(alt_id)
+            if len(alternatives) >= _PARTITION_SELECTION_ALT_LIMIT:
+                break
+    selection["alternatives"] = alternatives
+    selection["low_confidence"] = bool(
+        selection["id"] and selection["confidence"] is not None and selection["confidence"] < _PARTITION_LOW_CONFIDENCE_THRESHOLD
+    )
+    return selection
+
+
+def _request_partition_selection(
+    *,
+    metadata: Dict[str, Any],
+    content_profile: Dict[str, Any],
+    platform_partitions: Dict[str, Sequence[Dict[str, Any]]],
+    openai_config,
+    logger,
+    scene_name: str,
+) -> Dict[str, Dict[str, Any]]:
+    platform_candidates = {
+        platform: _compact_partition_candidates(partitions)
+        for platform, partitions in (platform_partitions or {}).items()
+        if partitions
+    }
+    result_map: Dict[str, Dict[str, Any]] = {
+        platform: _make_partition_selection(content_profile) for platform in platform_candidates
+    }
+    if not openai_config or not openai_config.get("OPENAI_API_KEY") or not platform_candidates:
+        return result_map
+
+    client = get_openai_client(openai_config)
+    model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+    payload = {
+        "source_metadata": {
+            "primary_title": metadata.get("primary_title", ''),
+            "primary_description": _truncate_partition_text(metadata.get("primary_description", ''), 600),
+            "title_original": metadata.get("title_original", ''),
+            "title_translated": metadata.get("title_translated", ''),
+            "tags": metadata.get("tags", []),
+        },
+        "content_profile": content_profile,
+        "platforms": {
+            platform: {"candidates": candidates}
+            for platform, candidates in platform_candidates.items()
+        },
+    }
+    system_prompt = (
+        "你是多平台视频分区选择器。"
+        "你会收到 source_metadata、content_profile 和各平台候选分区。"
+        "请分别为每个平台只从该平台 candidates 中选 1 个最匹配的分区。"
+        "不要跨平台复用候选，不要编造候选ID。"
+        "当 content_profile.domain=game 时，优先根据 game_mode 判断："
+        "single_player 更偏单机/主机，online 更偏网络游戏，esports 仅用于明显赛事/战队/职业内容，mobile 更偏手游。"
+        "即使不确定，也要返回最佳猜测，但应降低 confidence。"
+        "alternatives 最多返回 3 个同平台候选ID。"
+        '只返回 JSON，例如：{"acfun":{"id":"候选ID","confidence":0.82,"alternatives":["候选ID"],"reason_summary":""},"bilibili":{"id":"候选ID","confidence":0.70,"alternatives":[],"reason_summary":""}}。'
+    )
+    parsed = _request_json_object(
+        client=client,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        payload=payload,
+        max_tokens=320,
+        temperature=0.0,
+        thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
+        logger_obj=logger,
+        scene_name=scene_name,
+    )
+
     parsed = parsed if isinstance(parsed, dict) else {}
     if "id" in parsed and len(platform_partitions) == 1:
         only_platform = next(iter(platform_partitions.keys()))
-        parsed = {only_platform: {"id": parsed.get("id")}}
+        parsed = {only_platform: parsed}
+
     for platform, partitions in platform_partitions.items():
         valid_ids = {safe_str(partition.get("id")).strip() for partition in (partitions or [])}
-        platform_value = parsed.get(platform)
-        candidate_id = ""
-        if isinstance(platform_value, dict):
-            candidate_id = safe_str(platform_value.get("id")).strip()
-        else:
-            candidate_id = safe_str(platform_value).strip()
-        if candidate_id in valid_ids:
-            result_map[platform] = candidate_id
+        result_map[platform] = _normalize_partition_selection_entry(
+            parsed.get(platform),
+            valid_ids,
+            content_profile,
+        )
     return result_map
+
+
+def _log_partition_selection(logger, platform: str, selection: Dict[str, Any]) -> None:
+    partition_id = selection.get("id")
+    if not partition_id:
+        return
+    if selection.get("low_confidence"):
+        logger.warning(
+            "%s 分区推荐 low_confidence: source=%s, id=%s, confidence=%s, alternatives=%s, reason=%s",
+            platform,
+            selection.get("source"),
+            partition_id,
+            selection.get("confidence"),
+            selection.get("alternatives") or [],
+            selection.get("reason_summary") or '',
+        )
+        return
+    logger.info(
+        "%s 分区推荐来源=%s, id=%s, confidence=%s, alternatives=%s, reason=%s",
+        platform,
+        selection.get("source"),
+        partition_id,
+        selection.get("confidence"),
+        selection.get("alternatives") or [],
+        selection.get("reason_summary") or '',
+    )
 
 
 def _recommend_partition_core(
@@ -1268,15 +1620,30 @@ def _recommend_partition_core(
     title: str,
     description: str,
     platform_sources: Dict[str, Sequence[Dict[str, Any]]],
+    title_original: str = '',
+    description_original: str = '',
+    title_translated: str = '',
+    description_translated: str = '',
+    tags: Any = None,
     openai_config=None,
     logger=None,
     cover_path: Optional[str] = None,
     include_cover_for_ai: bool = False,
-    prefer_aio: bool = False,
-) -> Dict[str, Optional[str]]:
+    ) -> Dict[str, Dict[str, Any]]:
     openai_config = openai_config or {}
     logger = logger or logging.getLogger(__name__)
-    result_map: Dict[str, Optional[str]] = {platform: None for platform in platform_sources}
+    metadata = _build_partition_metadata(
+        title=title,
+        description=description,
+        title_original=title_original,
+        description_original=description_original,
+        title_translated=title_translated,
+        description_translated=description_translated,
+        tags=tags,
+    )
+    result_map: Dict[str, Dict[str, Any]] = {
+        platform: _make_partition_selection() for platform in platform_sources
+    }
     unresolved_partitions: Dict[str, Sequence[Dict[str, Any]]] = {}
     fixed_key_map = {
         "acfun": "FIXED_PARTITION_ID",
@@ -1286,6 +1653,10 @@ def _recommend_partition_core(
         "acfun": "AcFun",
         "bilibili": "bilibili",
     }
+
+    if not metadata.get("primary_title") and not metadata.get("primary_description"):
+        logger.warning("缺少标题和描述，无法推荐分区")
+        return result_map
 
     for platform, partitions in platform_sources.items():
         if not partitions:
@@ -1297,65 +1668,117 @@ def _recommend_partition_core(
         available_ids = {safe_str(partition.get("id")).strip() for partition in partitions}
         if fixed_pid:
             if fixed_pid in available_ids:
-                logger.info("命中 %s 固定分区配置", platform_label_map.get(platform, platform))
-                result_map[platform] = fixed_pid
+                selection = _make_partition_selection()
+                selection.update(
+                    {
+                        "id": fixed_pid,
+                        "source": "fixed",
+                        "confidence": 1.0,
+                        "reason_summary": "命中固定分区配置",
+                    }
+                )
+                result_map[platform] = selection
+                logger.info("%s 分区推荐来源=fixed, id=%s", platform_label_map.get(platform, platform), fixed_pid)
                 continue
             logger.warning("配置的 %s 无效，已忽略", fixed_key)
-
-        rule_based_id = _rule_based_partition_fallback(title, description, partitions)
-        if rule_based_id:
-            logger.info("规则优先命中 %s 分区ID: %s", platform_label_map.get(platform, platform), rule_based_id)
-            result_map[platform] = rule_based_id
-            continue
 
         unresolved_partitions[platform] = partitions
 
     if not unresolved_partitions:
         return result_map
-    if not openai_config.get("OPENAI_API_KEY"):
-        logger.info("缺少OpenAI配置或API密钥，且规则未命中")
-        return result_map
-
-    use_cover = cover_path if include_cover_for_ai else None
-    try:
-        if prefer_aio and len(unresolved_partitions) > 1:
-            aio_results = _request_partition_ids_aio(
-                title=title,
-                description=description[:240],
-                platform_partitions=unresolved_partitions,
+    content_profile = None
+    if openai_config.get("OPENAI_API_KEY"):
+        use_cover = cover_path if include_cover_for_ai else None
+        try:
+            content_profile = _request_content_profile(
+                metadata=metadata,
                 openai_config=openai_config,
                 logger=logger,
-                scene_name='ai_enhancer_partition_aio',
+                scene_name='ai_enhancer_content_profile',
                 cover_path=use_cover,
-                max_tokens=160,
             )
-            for platform, partition_id in aio_results.items():
-                if partition_id:
-                    result_map[platform] = partition_id
-                    logger.info("AIO LLM 命中 %s 分区ID: %s", platform_label_map.get(platform, platform), partition_id)
+            if content_profile:
+                logger.info(
+                    "AI 内容分析结果: domain=%s, subdomain=%s, format=%s, game_mode=%s, interview=%s, confidence=%s, reason=%s, entities=%s",
+                    content_profile.get("domain"),
+                    content_profile.get("subdomain"),
+                    content_profile.get("content_format"),
+                    content_profile.get("game_mode"),
+                    content_profile.get("is_interview"),
+                    content_profile.get("confidence"),
+                    content_profile.get("reason_summary"),
+                    content_profile.get("entities"),
+                )
+                if content_profile.get("low_confidence"):
+                    logger.warning(
+                        "AI 内容分析 low_confidence: confidence=%s, reason=%s",
+                        content_profile.get("confidence"),
+                        content_profile.get("reason_summary"),
+                    )
 
-        for platform, partitions in unresolved_partitions.items():
-            if result_map.get(platform):
-                continue
-            partition_id = _request_partition_id(
-                title=title,
-                description=description[:240],
-                partitions=partitions,
-                openai_config=openai_config,
-                logger=logger,
-                scene_name=f'ai_enhancer_partition_{platform}',
-                cover_path=use_cover,
-            )
-            if partition_id:
-                result_map[platform] = partition_id
-                logger.info("LLM 命中 %s 分区ID: %s", platform_label_map.get(platform, platform), partition_id)
+                ai_results = _request_partition_selection(
+                    metadata=metadata,
+                    content_profile=content_profile,
+                    platform_partitions=unresolved_partitions,
+                    openai_config=openai_config,
+                    logger=logger,
+                    scene_name='ai_enhancer_partition_selection',
+                )
+                for platform, ai_selection in ai_results.items():
+                    if ai_selection.get("id"):
+                        ai_selection["source"] = "ai"
+                        result_map[platform] = ai_selection
+                        _log_partition_selection(logger, platform_label_map.get(platform, platform), ai_selection)
+                    else:
+                        raw_id = ai_selection.get("_raw_id")
+                        if raw_id:
+                            logger.warning(
+                                "%s AI 返回非法分区ID: %s，回退规则兜底",
+                                platform_label_map.get(platform, platform),
+                                raw_id,
+                            )
+                        else:
+                            logger.warning(
+                                "%s AI 未返回有效分区ID，回退规则兜底",
+                                platform_label_map.get(platform, platform),
+                            )
+                        result_map[platform]["content_profile"] = content_profile
             else:
-                logger.warning("%s 分区推荐未返回有效 ID", platform_label_map.get(platform, platform))
-        return result_map
-    except Exception as e:
-        logger.error(f"分区推荐过程中发生严重错误: {str(e)}")
-        logger.error(traceback.format_exc())
-        return result_map
+                logger.warning("AI 内容分析未返回有效 content_profile，回退规则兜底")
+        except Exception as e:
+            logger.error(f"AI 分区判断阶段发生错误: {str(e)}")
+            logger.error(traceback.format_exc())
+    else:
+        logger.info("缺少OpenAI配置或API密钥，跳过 AI 分区判断，直接使用规则兜底")
+
+    fallback_inputs = _build_rule_fallback_inputs(metadata)
+    for platform, partitions in unresolved_partitions.items():
+        if result_map.get(platform, {}).get("id"):
+            continue
+        rule_based_id = _rule_based_partition_fallback(
+            fallback_inputs.get("title", ''),
+            fallback_inputs.get("description", ''),
+            partitions,
+        )
+        if rule_based_id:
+            selection = _make_partition_selection(content_profile)
+            selection.update(
+                {
+                    "id": rule_based_id,
+                    "source": "rule_fallback",
+                    "reason_summary": "AI未命中，使用规则兜底",
+                }
+            )
+            result_map[platform] = selection
+            logger.info(
+                "%s 分区推荐来源=rule_fallback, id=%s",
+                platform_label_map.get(platform, platform),
+                rule_based_id,
+            )
+        else:
+            result_map[platform]["content_profile"] = content_profile
+            logger.warning("%s 分区推荐未命中", platform_label_map.get(platform, platform))
+    return result_map
 
 
 def recommend_partitions_aio(
@@ -1364,23 +1787,18 @@ def recommend_partitions_aio(
     *,
     acfun_id_mapping_data=None,
     bilibili_zone_data=None,
+    title_original: str = '',
+    description_original: str = '',
+    title_translated: str = '',
+    description_translated: str = '',
+    tags: Any = None,
     openai_config=None,
     task_id=None,
     cover_path: Optional[str] = None,
     include_cover_for_ai: bool = False,
-) -> Dict[str, Optional[str]]:
+) -> Dict[str, Dict[str, Any]]:
     logger = setup_task_logger(task_id or "unknown")
     logger.info("开始AIO推荐多平台视频分区")
-
-    title = _pre_clean(safe_str(title), content_type="title")
-    description = _pre_clean(safe_str(description), content_type="description")
-    if not _has_meaningful_content(title, content_type="title"):
-        title = ''
-    if not _has_meaningful_content(description, content_type="description"):
-        description = ''
-    if not title and not description:
-        logger.warning("缺少标题和描述，无法推荐分区")
-        return {"acfun": None, "bilibili": None}
 
     platform_sources: Dict[str, Sequence[Dict[str, Any]]] = {}
     if acfun_id_mapping_data:
@@ -1391,12 +1809,16 @@ def recommend_partitions_aio(
     return _recommend_partition_core(
         title=title,
         description=description,
+        title_original=title_original,
+        description_original=description_original,
+        title_translated=title_translated,
+        description_translated=description_translated,
+        tags=tags,
         platform_sources=platform_sources,
         openai_config=openai_config,
         logger=logger,
         cover_path=cover_path,
         include_cover_for_ai=include_cover_for_ai,
-        prefer_aio=True,
     )
 
 
@@ -1404,101 +1826,91 @@ def recommend_bilibili_partition(
     title,
     description,
     zone_data,
+    *,
+    title_original: str = '',
+    description_original: str = '',
+    title_translated: str = '',
+    description_translated: str = '',
+    tags: Any = None,
     openai_config=None,
     task_id=None,
     cover_path: Optional[str] = None,
     include_cover_for_ai: bool = False,
-):
+ ) -> Dict[str, Any]:
     """
-    使用 OpenAI + 规则策略推荐 Bilibili 分区。
+    使用 AI 主判定 + 规则兜底策略推荐 Bilibili 分区。
 
     Returns:
-        str | None: 推荐分区ID
+        dict: partition_selection 结构
     """
     logger = setup_task_logger(task_id or "unknown")
     logger.info("开始推荐 Bilibili 视频分区")
 
-    title = _pre_clean(safe_str(title), content_type="title")
-    description = _pre_clean(safe_str(description), content_type="description")
-    if not _has_meaningful_content(title, content_type="title"):
-        title = ''
-    if not _has_meaningful_content(description, content_type="description"):
-        description = ''
-    if not title and not description:
-        logger.warning("缺少标题和描述，无法推荐 bilibili 分区")
-        return None
-
     partitions = flatten_bilibili_partitions(zone_data)
     if not partitions:
         logger.warning("bilibili分区数据为空，无法推荐")
-        return None
+        return _make_partition_selection()
     result_map = _recommend_partition_core(
         title=title,
         description=description,
+        title_original=title_original,
+        description_original=description_original,
+        title_translated=title_translated,
+        description_translated=description_translated,
+        tags=tags,
         platform_sources={"bilibili": partitions},
         openai_config=openai_config,
         logger=logger,
         cover_path=cover_path,
         include_cover_for_ai=include_cover_for_ai,
-        prefer_aio=False,
     )
-    return result_map.get("bilibili")
+    return result_map.get("bilibili", _make_partition_selection())
 
 def recommend_acfun_partition(
     title,
     description,
     id_mapping_data,
+    *,
+    title_original: str = '',
+    description_original: str = '',
+    title_translated: str = '',
+    description_translated: str = '',
+    tags: Any = None,
     openai_config=None,
     task_id=None,
     cover_path: Optional[str] = None,
     include_cover_for_ai: bool = False,
-):
+ ) -> Dict[str, Any]:
     """
-    使用OpenAI推荐AcFun视频分区
+    使用 AI 主判定 + 规则兜底策略推荐 AcFun 分区。
     
-    Args:
-        title (str): 视频标题
-        description (str): 视频描述
-        id_mapping_data (list): 分区ID映射数据
-        openai_config (dict): OpenAI配置信息
-        task_id (str, optional): 任务ID，用于日志记录
-        
     Returns:
-        str or None: 推荐分区ID，出错时返回None
+        dict: partition_selection 结构
     """
     logger = setup_task_logger(task_id or "unknown")
     logger.info(f"开始推荐AcFun视频分区")
 
-    title = _pre_clean(safe_str(title), content_type="title")
-    description = _pre_clean(safe_str(description), content_type="description")
-    if not _has_meaningful_content(title, content_type="title"):
-        title = ''
-    if not _has_meaningful_content(description, content_type="description"):
-        description = ''
-
-    # 检查必要信息
-    if not title and not description:
-        logger.warning("缺少标题和描述，无法推荐分区")
-        return None
-    
     if not id_mapping_data:
         logger.warning("缺少分区映射数据 (id_mapping_data is empty or None)，无法推荐分区")
-        return None
-    
-    # 将分区数据扁平化为易于处理的列表
+        return _make_partition_selection()
+
     partitions = flatten_partitions(id_mapping_data)
     if not partitions:
         logger.warning("分区映射数据格式错误或为空 (flatten_partitions returned empty list)，无法推荐分区")
-        return None
-    
+        return _make_partition_selection()
+
     result_map = _recommend_partition_core(
         title=title,
         description=description,
+        title_original=title_original,
+        description_original=description_original,
+        title_translated=title_translated,
+        description_translated=description_translated,
+        tags=tags,
         platform_sources={"acfun": partitions},
         openai_config=openai_config,
         logger=logger,
         cover_path=cover_path,
         include_cover_for_ai=include_cover_for_ai,
-        prefer_aio=False,
     )
-    return result_map.get("acfun")
+    return result_map.get("acfun", _make_partition_selection())

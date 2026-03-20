@@ -62,4 +62,6 @@ docs/_build/
 site/ 
 
 tests/
+.uv-cache/
+.uv-python/
 

@@ -5415,6 +5415,18 @@ class TaskProcessor:
 
         title = task.get('video_title_translated', '') or task.get('video_title_original', '')
         description = task.get('description_translated', '') or task.get('description_original', '')
+        title_original = task.get('video_title_original', '') or ''
+        description_original = task.get('description_original', '') or ''
+        title_translated = task.get('video_title_translated', '') or ''
+        description_translated = task.get('description_translated', '') or ''
+        tags_generated = []
+        if task.get('tags_generated'):
+            try:
+                parsed_tags = json.loads(task.get('tags_generated', '[]'))
+                if isinstance(parsed_tags, list):
+                    tags_generated = parsed_tags
+            except json.JSONDecodeError:
+                task_logger.warning("解析 AI 标签失败，分区推荐将忽略标签上下文")
         upload_target = _get_task_upload_target(task)
 
         openai_config = {
@@ -5422,6 +5434,7 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
             'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
             'RECOMMEND_PARTITION_WITH_COVER': self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
@@ -5486,6 +5499,11 @@ class TaskProcessor:
                 description,
                 acfun_id_mapping_data=id_mapping_data,
                 bilibili_zone_data=zone_data,
+                title_original=title_original,
+                description_original=description_original,
+                title_translated=title_translated,
+                description_translated=description_translated,
+                tags=tags_generated,
                 openai_config=openai_config,
                 task_id=task_id,
                 cover_path=cover_path,
@@ -5493,16 +5511,21 @@ class TaskProcessor:
             )
         else:
             for platform in targets_to_recommend:
-                recommended_partition_id = None
+                partition_selection = None
                 if platform == UPLOAD_TARGET_BILIBILI:
                     if not zone_data:
                         task_logger.warning("bilibili分区数据为空，跳过bilibili推荐")
-                        platform_results[platform] = None
+                        platform_results[platform] = {}
                         continue
-                    recommended_partition_id = recommend_bilibili_partition(
+                    partition_selection = recommend_bilibili_partition(
                         title,
                         description,
                         zone_data,
+                        title_original=title_original,
+                        description_original=description_original,
+                        title_translated=title_translated,
+                        description_translated=description_translated,
+                        tags=tags_generated,
                         openai_config=openai_config,
                         task_id=task_id,
                         cover_path=cover_path,
@@ -5511,22 +5534,42 @@ class TaskProcessor:
                 else:
                     if not id_mapping_data:
                         task_logger.warning("AcFun 分区映射数据为空，跳过AcFun推荐")
-                        platform_results[platform] = None
+                        platform_results[platform] = {}
                         continue
-                    recommended_partition_id = recommend_acfun_partition(
+                    partition_selection = recommend_acfun_partition(
                         title,
                         description,
                         id_mapping_data,
+                        title_original=title_original,
+                        description_original=description_original,
+                        title_translated=title_translated,
+                        description_translated=description_translated,
+                        tags=tags_generated,
                         openai_config=openai_config,
                         task_id=task_id,
                         cover_path=cover_path,
                         include_cover_for_ai=self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
                     )
 
-                platform_results[platform] = recommended_partition_id
+                platform_results[platform] = partition_selection or {}
 
         for platform in targets_to_recommend:
-            recommended_partition_id = platform_results.get(platform)
+            partition_selection = platform_results.get(platform) or {}
+            recommended_partition_id = str(partition_selection.get('id') or '').strip()
+            content_profile = partition_selection.get('content_profile') or {}
+            if content_profile:
+                task_logger.info(
+                    "%s content_profile: domain=%s, subdomain=%s, format=%s, game_mode=%s, interview=%s, confidence=%s, reason=%s, entities=%s",
+                    platform,
+                    content_profile.get('domain'),
+                    content_profile.get('subdomain'),
+                    content_profile.get('content_format'),
+                    content_profile.get('game_mode'),
+                    content_profile.get('is_interview'),
+                    content_profile.get('confidence'),
+                    content_profile.get('reason_summary'),
+                    content_profile.get('entities'),
+                )
             if recommended_partition_id:
                 selected_field = _get_partition_field_name(platform, 'selected')
                 recommended_field = _get_partition_field_name(platform, 'recommended')
@@ -5537,7 +5580,16 @@ class TaskProcessor:
                     updates[selected_field] = recommended_partition_id
 
                 update_task(task_id, **updates)
-                task_logger.info("%s 获取到推荐分区并已更新任务", platform)
+                task_logger.info(
+                    "%s 获取到推荐分区并已更新任务: source=%s, id=%s, confidence=%s, alternatives=%s, low_confidence=%s, reason=%s",
+                    platform,
+                    partition_selection.get('source'),
+                    recommended_partition_id,
+                    partition_selection.get('confidence'),
+                    partition_selection.get('alternatives') or [],
+                    partition_selection.get('low_confidence'),
+                    partition_selection.get('reason_summary') or '',
+                )
             else:
                 if not openai_config.get('OPENAI_API_KEY'):
                     task_logger.warning(f"{platform} 分区推荐未命中：未配置OpenAI且规则匹配失败")
