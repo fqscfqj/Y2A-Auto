@@ -28,11 +28,31 @@ COPY requirements.txt .
 # 先安装 CPU-only 版本的 torch 和 torchaudio（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --user -r requirements.txt
+    pip install --user --no-compile torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --user --no-compile -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
+
+# 清理不必要的文件以减小镜像体积
+RUN set -eux; \
+    SITE=/root/.local/lib/python3.11/site-packages; \
+    # 删除 PyTorch 测试、C++ 头文件、CMake 文件等开发文件
+    rm -rf "$SITE/torch/test" \
+           "$SITE/torch/testing/_internal" \
+           "$SITE/torch/include" \
+           "$SITE/torch/share" \
+           "$SITE/torch/utils/benchmark" \
+           "$SITE/torch/cuda" \
+           "$SITE/torch/distributed" \
+    # 删除 torchaudio 测试文件
+           "$SITE/torchaudio/test" \
+    # 删除所有 .pyc / .pyo 缓存文件
+    && find /root/.local -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true \
+    && find /root/.local \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    # 去除共享库的调试符号
+    && find /root/.local -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true \
+    && echo "Builder cleanup complete"
 
 # ============================================================
 # 第二阶段：FFmpeg 下载
@@ -110,7 +130,6 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
         libxml2 \
         libsndfile1 \
         libsox3 \
-        sox \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a
