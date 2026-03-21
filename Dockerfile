@@ -35,9 +35,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN /root/.local/bin/yt-dlp --version
 
 # 清理不必要的文件以减小镜像体积
+# - 删除 PyTorch / torchaudio 测试、C++ 头文件、CMake、CUDA stubs 等开发文件
+# - 删除所有 __pycache__ / .pyc / .pyo 缓存文件
+# - 去除共享库的调试符号
 RUN set -eux; \
     SITE=/root/.local/lib/python3.11/site-packages; \
-    # 删除 PyTorch 测试、C++ 头文件、CMake 文件等开发文件
     rm -rf "$SITE/torch/test" \
            "$SITE/torch/testing/_internal" \
            "$SITE/torch/include" \
@@ -45,12 +47,9 @@ RUN set -eux; \
            "$SITE/torch/utils/benchmark" \
            "$SITE/torch/cuda" \
            "$SITE/torch/distributed" \
-    # 删除 torchaudio 测试文件
            "$SITE/torchaudio/test" \
-    # 删除所有 .pyc / .pyo 缓存文件
     && find /root/.local -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true \
     && find /root/.local \( -name '*.pyc' -o -name '*.pyo' \) -delete \
-    # 去除共享库的调试符号
     && find /root/.local -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true \
     && echo "Builder cleanup complete"
 
