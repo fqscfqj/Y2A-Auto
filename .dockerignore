@@ -59,6 +59,7 @@ Makefile
 .git/
 .gitignore
 .gitattributes
+.github/
 
 # Documentation and development files
 README.md

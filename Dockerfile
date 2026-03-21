@@ -26,13 +26,23 @@ COPY requirements.txt .
 
 # 安装Python依赖到本地目录
 # 先安装 CPU-only 版本的 torch 和 torchaudio（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
     && pip install --user -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
+
+# 清理 Python 包中的冗余文件以减小镜像体积
+# 以下操作为尽力而为（best-effort）：文件/目录不存在时静默忽略即可
+RUN find /root/.local \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null; \
+    find /root/.local -type d -name '__pycache__' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -type d -name 'tests' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -type d -name 'test' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -name '*.so' -exec strip --strip-debug '{}' \; 2>/dev/null; \
+    true
 
 # ============================================================
 # 第二阶段：FFmpeg 下载
@@ -109,8 +119,6 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
         libunistring5 \
         libxml2 \
         libsndfile1 \
-        libsox3 \
-        sox \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a
@@ -172,7 +180,8 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # 确保本地包在PATH中
-ENV PATH=/home/y2a/.local/bin:$PATH
+ENV PATH=/home/y2a/.local/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1
 # 避免引用未定义变量的告警，直接补充常见站点路径
 ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
 

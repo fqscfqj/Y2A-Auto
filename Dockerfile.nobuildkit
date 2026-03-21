@@ -24,12 +24,22 @@ COPY requirements.txt .
 
 # 安装 Python 依赖到本地用户目录（不使用缓存挂载）
 # 先安装 CPU-only 版本的 torch 和 torchaudio（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
 RUN pip install --user --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
     && pip install --user --no-cache-dir -r requirements.txt
 
 # 验证 yt-dlp 安装
 RUN /root/.local/bin/yt-dlp --version
+
+# 清理 Python 包中的冗余文件以减小镜像体积
+# 以下操作为尽力而为（best-effort）：文件/目录不存在时静默忽略即可
+RUN find /root/.local \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null; \
+    find /root/.local -type d -name '__pycache__' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -type d -name 'tests' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -type d -name 'test' -prune -exec rm -rf '{}' \; 2>/dev/null; \
+    find /root/.local -name '*.so' -exec strip --strip-debug '{}' \; 2>/dev/null; \
+    true
 
 # ============================================================
 # 第二阶段：FFmpeg 下载
@@ -144,7 +154,8 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # PATH 与 PYTHONPATH
-ENV PATH=/home/y2a/.local/bin:$PATH
+ENV PATH=/home/y2a/.local/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
 
 # 切换到非 root 用户
