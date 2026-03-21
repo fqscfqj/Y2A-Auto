@@ -27,6 +27,7 @@ temp/
 # Downloads and generated content (exclude from image)
 downloads/
 static/covers/
+static/img/readme/
 
 # FFmpeg binaries (Docker will install its own)
 ffmpeg/
