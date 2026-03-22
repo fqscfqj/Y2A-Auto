@@ -8,7 +8,7 @@ import time
 import json
 import base64
 import traceback
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Collection, Dict, List, Optional, Sequence
 from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
 from .utils import (
@@ -1262,7 +1262,7 @@ def _coerce_bool(value: Any) -> bool:
     return text in {"1", "true", "yes", "y", "on"}
 
 
-def _normalize_enum(value: Any, allowed_values: Sequence[str], default: str) -> str:
+def _normalize_enum(value: Any, allowed_values: Collection[str], default: str) -> str:
     text = safe_str(value).strip().lower()
     if text in allowed_values:
         return text
