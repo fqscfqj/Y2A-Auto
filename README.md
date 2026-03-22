@@ -41,7 +41,7 @@
 </p>
 
 <div align="center">
-  <sub>以上为真实页面截图。</sub>
+  <sub>以上为当前页面截图。</sub>
 </div>
 
 ## 核心亮点
