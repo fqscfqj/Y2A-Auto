@@ -1766,6 +1766,8 @@ class TaskProcessor:
                     return queued_job_id
 
                 import threading
+                release_slot_on_failure = True
+                task_marked_active = False
 
                 def run_task_wrapper():
                     try:
@@ -1783,22 +1785,26 @@ class TaskProcessor:
                     finally:
                         _mark_task_inactive(task_id)
 
-                if not _mark_task_active(task_id):
-                    local_task_semaphore.release()
-                    logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
-                    return f"thread_{task_id}"
-
-                thread = threading.Thread(
-                    target=run_task_wrapper,
-                    name=f"task_{task_id}",
-                    daemon=True
-                )
                 try:
+                    if not _mark_task_active(task_id):
+                        logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
+                        return f"thread_{task_id}"
+                    task_marked_active = True
+
+                    thread = threading.Thread(
+                        target=run_task_wrapper,
+                        name=f"task_{task_id}",
+                        daemon=True
+                    )
                     thread.start()
+                    release_slot_on_failure = False
                 except Exception:
-                    _mark_task_inactive(task_id)
-                    local_task_semaphore.release()
                     raise
+                finally:
+                    if release_slot_on_failure:
+                        if task_marked_active:
+                            _mark_task_inactive(task_id)
+                        local_task_semaphore.release()
 
                 logger.info(f"任务 {task_id} 已在后台线程启动")
                 return f"thread_{task_id}"
@@ -1819,6 +1825,9 @@ class TaskProcessor:
         task_logger.info(f"开始处理任务 {task_id}")
         slot_acquired = bool(slot_already_acquired)
         active_task_semaphore = acquired_task_semaphore
+        if slot_already_acquired and active_task_semaphore is None:
+            task_logger.warning("slot_already_acquired=True 但未提供信号量实例，改为重新获取并发配额")
+            slot_acquired = False
         if active_task_semaphore is None:
             global task_semaphore
             with _TASK_SCHEDULING_LOCK:
