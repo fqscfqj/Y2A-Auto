@@ -73,7 +73,7 @@ _TASK_CANCEL_FLAGS = {}
 _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
-_TASK_SCHEDULING_LOCK = threading.Lock()
+_TASK_SCHEDULING_LOCK = threading.RLock()
 
 
 def get_task_cancel_event(task_id):
@@ -1660,12 +1660,13 @@ class TaskProcessor:
             self._runtime_limit_refresh_pending = True
             return False
 
-        init_task_semaphore(desired_tasks)
-        init_upload_semaphore(desired_uploads)
-        self._current_max_concurrent_tasks = desired_tasks
-        self._current_max_concurrent_uploads = desired_uploads
-        self._runtime_limit_refresh_pending = False
-        self._last_deferred_limit_signature = None
+        with _TASK_SCHEDULING_LOCK:
+            init_task_semaphore(desired_tasks)
+            init_upload_semaphore(desired_uploads)
+            self._current_max_concurrent_tasks = desired_tasks
+            self._current_max_concurrent_uploads = desired_uploads
+            self._runtime_limit_refresh_pending = False
+            self._last_deferred_limit_signature = None
         logger.info(
             f"并发配置已生效 - 最大并发任务: {desired_tasks}, 最大并发上传: {desired_uploads}"
         )
@@ -1820,12 +1821,13 @@ class TaskProcessor:
         active_task_semaphore = acquired_task_semaphore
         if active_task_semaphore is None:
             global task_semaphore
-            active_task_semaphore = task_semaphore
-            if active_task_semaphore is None:
-                # 兜底：根据当前配置重新初始化
-                task_logger.warning("task_semaphore 为 None，正在重新初始化...")
-                init_task_semaphore(self._current_max_concurrent_tasks)
+            with _TASK_SCHEDULING_LOCK:
                 active_task_semaphore = task_semaphore
+                if active_task_semaphore is None:
+                    # 兜底：根据当前配置重新初始化
+                    task_logger.warning("task_semaphore 为 None，正在重新初始化...")
+                    init_task_semaphore(self._current_max_concurrent_tasks)
+                    active_task_semaphore = task_semaphore
             task_logger.info(f"task_semaphore 当前值: {active_task_semaphore}")
             if active_task_semaphore is None:
                 task_logger.error("task_semaphore 初始化失败，无法继续执行任务")
