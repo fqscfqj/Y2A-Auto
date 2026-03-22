@@ -73,6 +73,7 @@ _TASK_CANCEL_FLAGS = {}
 _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
+_TASK_SCHEDULING_LOCK = threading.RLock()
 
 
 def get_task_cancel_event(task_id):
@@ -376,6 +377,21 @@ def _as_bool(value):
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() in ('true', '1', 'on', 'yes')
+
+
+def _as_int(value, default, minimum=None):
+    """稳健地将值转换为整数，并可选限制最小值。"""
+    try:
+        if value is None:
+            result = int(default)
+        else:
+            result = int(str(value).strip())
+    except Exception:
+        result = int(default)
+
+    if minimum is not None:
+        result = max(int(minimum), result)
+    return result
 
 
 def _is_asr_enabled(config: dict) -> bool:
@@ -1438,7 +1454,7 @@ def init_task_semaphore(max_concurrent_tasks=3):
     task_semaphore = threading.Semaphore(max_concurrent_tasks)
     logger.info(f"任务信号量初始化完成: {task_semaphore}")
 
-def reset_stuck_tasks():
+def reset_stuck_tasks(skip_active=False, cancel_active=False):
     """重置卡住的任务"""
     import time
     current_time = time.time()
@@ -1463,11 +1479,20 @@ def reset_stuck_tasks():
         
         if stuck_tasks:
             logger.warning(f"发现 {len(stuck_tasks)} 个可能卡住的任务，正在重置...")
+            reset_count = 0
             
             for task in stuck_tasks:
                 task_id = task[0]
                 old_status = task[1]
                 updated_at = task[2]
+
+                if skip_active and _is_task_active(task_id):
+                    if cancel_active:
+                        request_task_cancel(task_id)
+                    logger.warning(
+                        f"任务 {task_id[:8]}... 仍处于活动线程中，已跳过自动重置"
+                    )
+                    continue
                 
                 # 重置为失败状态
                 conn.execute('''
@@ -1478,11 +1503,12 @@ def reset_stuck_tasks():
                       f"任务超时重置 (原状态: {old_status})",
                       datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                       task_id))
+                reset_count += 1
                 
                 logger.info(f"重置任务 {task_id[:8]}... 从 {old_status} 到 failed")
             
             conn.commit()
-            return len(stuck_tasks)
+            return reset_count
         else:
             logger.info("没有发现卡住的任务")
             return 0
@@ -1542,29 +1568,20 @@ class TaskProcessor:
         Args:
             config: 配置字典，包含各种API的配置信息
         """
-        self.config = config or {}
-
-        # 获取并发配置并做健壮的类型转换
-        def _as_int(value, default):
-            try:
-                if value is None:
-                    return int(default)
-                # 允许字符串数字
-                return int(str(value).strip())
-            except Exception:
-                return int(default)
-
-        max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2)
-        max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1)
+        self.config = dict(config or {})
+        self._current_max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
+        self._current_max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1, minimum=1)
+        self._runtime_limit_refresh_pending = False
+        self._last_deferred_limit_signature = None
         
         # 初始化上传信号量
-        init_upload_semaphore(max_concurrent_uploads)
+        init_upload_semaphore(self._current_max_concurrent_uploads)
         # 初始化任务并发信号量
-        init_task_semaphore(max_concurrent_tasks)
+        init_task_semaphore(self._current_max_concurrent_tasks)
         
         self.scheduler = BackgroundScheduler(
             executors={
-                'default': APSchedulerThreadPoolExecutor(max_workers=max_concurrent_tasks)
+                'default': APSchedulerThreadPoolExecutor(max_workers=max(2, self._current_max_concurrent_tasks))
             },
             job_defaults={
                 'coalesce': False,
@@ -1572,7 +1589,10 @@ class TaskProcessor:
             }
         )
         self.scheduler.start()
-        logger.info(f"任务处理器初始化完成 - 最大并发任务: {max_concurrent_tasks}, 最大并发上传: {max_concurrent_uploads}")
+        logger.info(
+            f"任务处理器初始化完成 - 最大并发任务: {self._current_max_concurrent_tasks}, "
+            f"最大并发上传: {self._current_max_concurrent_uploads}"
+        )
 
         # 断点续跑：仅在进程生命周期内执行一次，避免配置变更重建处理器时干扰运行中任务
         global _RESUME_RECOVERY_DONE
@@ -1582,24 +1602,105 @@ class TaskProcessor:
             finally:
                 _RESUME_RECOVERY_DONE = True
 
-        # 定时扫描 pending 任务（默认每30秒，可通过配置 PENDING_SCAN_INTERVAL_SECONDS 覆盖）
+        self._register_periodic_jobs()
+
+    def _register_periodic_jobs(self):
+        """注册或刷新周期性任务。"""
         try:
-            scan_interval = self.config.get('PENDING_SCAN_INTERVAL_SECONDS', 30)
-            try:
-                scan_interval = int(str(scan_interval).strip())
-            except Exception:
-                scan_interval = 30
-            # 使用固定作业ID，避免重复创建；replace_existing 确保重建时替换
+            scan_interval = _as_int(self.config.get('PENDING_SCAN_INTERVAL_SECONDS', 30), 30, minimum=5)
             self.scheduler.add_job(
                 self._check_and_start_next_pending_task,
                 'interval',
-                seconds=max(5, scan_interval),  # 下限5秒，防误配
+                seconds=scan_interval,
                 id='pending_scanner',
                 replace_existing=True
             )
-            logger.info(f"已启动定时扫描pending任务：每 {max(5, scan_interval)} 秒")
+            logger.info(f"已启动定时扫描pending任务：每 {scan_interval} 秒")
         except Exception as e:
             logger.warning(f"注册定时扫描pending任务失败（不影响主流程）：{e}")
+
+        try:
+            stuck_check_interval = _as_int(
+                self.config.get('STUCK_TASK_CHECK_INTERVAL_SECONDS', 300),
+                300,
+                minimum=30,
+            )
+            self.scheduler.add_job(
+                self._recover_stuck_tasks,
+                'interval',
+                seconds=stuck_check_interval,
+                id='stuck_task_recovery',
+                replace_existing=True
+            )
+            logger.info(f"已启动卡住任务扫描：每 {stuck_check_interval} 秒")
+        except Exception as e:
+            logger.warning(f"注册卡住任务扫描失败（不影响主流程）：{e}")
+
+    def _refresh_runtime_limits(self, force=False):
+        """按当前配置刷新并发上限；运行中有活动任务时延后生效。"""
+        desired_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
+        desired_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1, minimum=1)
+
+        if (
+            desired_tasks == self._current_max_concurrent_tasks
+            and desired_uploads == self._current_max_concurrent_uploads
+            and not self._runtime_limit_refresh_pending
+        ):
+            return True
+
+        active_task_count = len(_get_active_task_ids())
+        if active_task_count > 0 and not force:
+            signature = (desired_tasks, desired_uploads)
+            if signature != self._last_deferred_limit_signature:
+                logger.info(
+                    "检测到并发配置变更，但当前仍有活动任务运行；"
+                    f"新的任务/上传并发上限将延后到空闲时生效: {signature}"
+                )
+                self._last_deferred_limit_signature = signature
+            self._runtime_limit_refresh_pending = True
+            return False
+
+        with _TASK_SCHEDULING_LOCK:
+            init_task_semaphore(desired_tasks)
+            init_upload_semaphore(desired_uploads)
+            self._current_max_concurrent_tasks = desired_tasks
+            self._current_max_concurrent_uploads = desired_uploads
+            self._runtime_limit_refresh_pending = False
+            self._last_deferred_limit_signature = None
+        logger.info(
+            f"并发配置已生效 - 最大并发任务: {desired_tasks}, 最大并发上传: {desired_uploads}"
+        )
+        return True
+
+    def refresh_config(self, config=None):
+        """刷新运行时配置，而不是重建处理器实例。"""
+        self.config = dict(config or {})
+        self._register_periodic_jobs()
+        self._refresh_runtime_limits(force=False)
+
+    def _enqueue_task_retry(self, task_id, delay_seconds=2):
+        """为未抢到执行位的任务注册一次延迟重试，避免创建等待线程。"""
+        try:
+            self.scheduler.add_job(
+                self.schedule_task,
+                'date',
+                run_date=datetime.now() + timedelta(seconds=max(1, int(delay_seconds))),
+                id=f'queued_retry_{task_id}',
+                replace_existing=True,
+                args=[task_id],
+            )
+        except Exception as e:
+            logger.debug(f"为任务 {task_id} 注册延迟重试失败，将依赖定时扫描器: {e}")
+
+    def _recover_stuck_tasks(self):
+        """周期性清理非活动的卡住任务，并对活动卡住任务发送取消请求。"""
+        try:
+            reset_count = reset_stuck_tasks(skip_active=True, cancel_active=True)
+            if reset_count > 0:
+                logger.warning(f"自动恢复了 {reset_count} 个卡住任务，准备继续调度 pending 队列")
+                self._check_and_start_next_pending_task()
+        except Exception as e:
+            logger.warning(f"自动恢复卡住任务失败（忽略）：{e}")
     
     def shutdown(self):
         """安全关闭调度器"""
@@ -1626,65 +1727,87 @@ class TaskProcessor:
             job_id: 调度作业ID
         """
         try:
-            if _is_task_active(task_id):
-                logger.warning(f"任务 {task_id} 已有活动线程，跳过重复调度")
-                return f"thread_{task_id}"
+            with _TASK_SCHEDULING_LOCK:
+                self._refresh_runtime_limits(force=False)
 
-            # 检查任务是否已在调度器中
-            existing_job_id = f"task_{task_id}"
-            existing_job = None
-            try:
-                existing_job = self.scheduler.get_job(existing_job_id)
-            except:
-                pass
-            
-            if existing_job:
-                logger.warning(f"任务 {task_id} 已在调度器中，跳过重复调度")
-                return existing_job_id
-            
-            # 检查任务当前状态
-            task = get_task(task_id)
-            if not task:
-                logger.error(f"任务 {task_id} 不存在")
-                return None
-                
-            if task['status'] not in [TASK_STATES['PENDING'], TASK_STATES['FAILED']]:
-                logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能调度")
-                return None
-            
-            # 直接在新线程中执行，避免调度器冲突
-            import threading
-            
-            def run_task_wrapper():
+                if _is_task_active(task_id):
+                    logger.warning(f"任务 {task_id} 已有活动线程，跳过重复调度")
+                    return f"thread_{task_id}"
+
+                queued_job_id = f"queued_retry_{task_id}"
                 try:
-                    logger.info(f"任务 {task_id} 开始在线程中执行")
-                    self.process_task(task_id)
-                except Exception as e:
-                    logger.error(f"任务 {task_id} 执行出错: {str(e)}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"执行出错: {str(e)}")
-                finally:
-                    _mark_task_inactive(task_id)
+                    existing_retry_job = self.scheduler.get_job(queued_job_id)
+                except Exception:
+                    existing_retry_job = None
 
-            if not _mark_task_active(task_id):
-                logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
+                # 检查任务当前状态
+                task = get_task(task_id)
+                if not task:
+                    logger.error(f"任务 {task_id} 不存在")
+                    return None
+
+                if task['status'] not in [TASK_STATES['PENDING'], TASK_STATES['FAILED']]:
+                    logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能调度")
+                    return None
+
+                global task_semaphore
+                if task_semaphore is None:
+                    init_task_semaphore(self._current_max_concurrent_tasks)
+                assert task_semaphore is not None, "task_semaphore 应该已经初始化"
+                local_task_semaphore = task_semaphore
+
+                slot_acquired = local_task_semaphore.acquire(blocking=False)
+                if not slot_acquired:
+                    if existing_retry_job is None:
+                        self._enqueue_task_retry(task_id, delay_seconds=2)
+                    logger.info(
+                        f"任务 {task_id} 当前达到并发上限，保留原状态等待后续调度，不再创建等待线程"
+                    )
+                    return queued_job_id
+
+                import threading
+                release_slot_on_failure = True
+                task_marked_active = False
+
+                def run_task_wrapper():
+                    try:
+                        logger.info(f"任务 {task_id} 开始在线程中执行")
+                        self.process_task(
+                            task_id,
+                            slot_already_acquired=True,
+                            acquired_task_semaphore=local_task_semaphore,
+                        )
+                    except Exception as e:
+                        logger.error(f"任务 {task_id} 执行出错: {str(e)}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"执行出错: {str(e)}")
+                    finally:
+                        _mark_task_inactive(task_id)
+
+                try:
+                    if not _mark_task_active(task_id):
+                        logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
+                        return f"thread_{task_id}"
+                    task_marked_active = True
+
+                    thread = threading.Thread(
+                        target=run_task_wrapper,
+                        name=f"task_{task_id}",
+                        daemon=True
+                    )
+                    thread.start()
+                    release_slot_on_failure = False
+                except Exception:
+                    raise
+                finally:
+                    if release_slot_on_failure:
+                        if task_marked_active:
+                            _mark_task_inactive(task_id)
+                        local_task_semaphore.release()
+
+                logger.info(f"任务 {task_id} 已在后台线程启动")
                 return f"thread_{task_id}"
-            
-            # 启动后台线程
-            thread = threading.Thread(
-                target=run_task_wrapper, 
-                name=f"task_{task_id}",
-                daemon=True
-            )
-            try:
-                thread.start()
-            except Exception:
-                _mark_task_inactive(task_id)
-                raise
-            
-            logger.info(f"任务 {task_id} 已在后台线程启动")
-            return f"thread_{task_id}"
             
         except Exception as e:
             logger.error(f"调度任务 {task_id} 失败: {str(e)}")
@@ -1694,48 +1817,56 @@ class TaskProcessor:
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"调度失败: {str(e)}")
             return None
     
-    def process_task(self, task_id):
+    def process_task(self, task_id, slot_already_acquired=False, acquired_task_semaphore=None):
         """
         处理任务，包括采集信息、内容审核、下载、上传等步骤
         """
         task_logger = setup_task_logger(task_id)
         task_logger.info(f"开始处理任务 {task_id}")
-        task = get_task(task_id)
-        if not task:
-            logger.error(f"任务 {task_id} 不存在")
-            return
-        # 并发控制：获取任务并发配额
-        global task_semaphore
-        if task_semaphore is None:
-            # 兜底：根据当前配置重新初始化
-            task_logger.warning("task_semaphore 为 None，正在重新初始化...")
-            init_task_semaphore(self.config.get('MAX_CONCURRENT_TASKS', 2))
-            task_logger.info(f"task_semaphore 重新初始化完成，当前值: {task_semaphore}")
-            # 确保初始化成功
-            if task_semaphore is None:
+        slot_acquired = bool(slot_already_acquired)
+        active_task_semaphore = acquired_task_semaphore
+        if slot_already_acquired and active_task_semaphore is None:
+            task_logger.warning("slot_already_acquired=True 但未提供信号量实例，改为重新获取并发配额")
+            slot_acquired = False
+        if active_task_semaphore is None:
+            global task_semaphore
+            with _TASK_SCHEDULING_LOCK:
+                active_task_semaphore = task_semaphore
+                if active_task_semaphore is None:
+                    # 兜底：根据当前配置重新初始化
+                    task_logger.warning("task_semaphore 为 None，正在重新初始化...")
+                    init_task_semaphore(self._current_max_concurrent_tasks)
+                    active_task_semaphore = task_semaphore
+            task_logger.info(f"task_semaphore 当前值: {active_task_semaphore}")
+            if active_task_semaphore is None:
                 task_logger.error("task_semaphore 初始化失败，无法继续执行任务")
                 return
-        else:
-            task_logger.info(f"task_semaphore 已初始化，当前值: {task_semaphore}")
-            
-        task_logger.info("等待获取任务并发配额...")
         try:
-            # 类型断言，告诉 Pylance task_semaphore 不是 None
-            assert task_semaphore is not None, "task_semaphore 应该已经初始化"
-            while True:
-                if is_task_cancelled(task_id):
-                    raise TaskCancelledError("任务已取消")
-                if task_semaphore.acquire(timeout=0.5):
-                    break
-            task_logger.info("获得任务并发配额，开始执行任务")
-        except TaskCancelledError:
-            task_logger.info("任务在等待并发配额时已取消")
-            update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
-            return
-        except Exception as _e:
-            task_logger.error(f"获取任务并发配额失败: {_e}")
-            return
-        try:
+            task = get_task(task_id)
+            if not task:
+                logger.error(f"任务 {task_id} 不存在")
+                return
+
+            if not slot_acquired:
+                task_logger.info("等待获取任务并发配额...")
+                try:
+                    while True:
+                        if is_task_cancelled(task_id):
+                            raise TaskCancelledError("任务已取消")
+                        if active_task_semaphore.acquire(timeout=0.5):
+                            slot_acquired = True
+                            break
+                    task_logger.info("获得任务并发配额，开始执行任务")
+                except TaskCancelledError:
+                    task_logger.info("任务在等待并发配额时已取消")
+                    update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
+                    return
+                except Exception as _e:
+                    task_logger.error(f"获取任务并发配额失败: {_e}")
+                    return
+            else:
+                task_logger.info("任务已在调度阶段获得任务并发配额")
+
             _raise_if_cancelled(task_id, task_logger)
             # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
             completed_stages = _get_completed_stages(task)
@@ -1922,13 +2053,12 @@ class TaskProcessor:
         finally:
             clear_task_cancel(task_id, clear_flag=True)
             # 释放并发配额
-            try:
-                # 类型断言，告诉 Pylance task_semaphore 不是 None
-                assert task_semaphore is not None, "task_semaphore 应该已经初始化"
-                task_semaphore.release()
-                task_logger.info("已释放任务并发配额")
-            except Exception:
-                pass
+            if slot_acquired:
+                try:
+                    active_task_semaphore.release()
+                    task_logger.info("已释放任务并发配额")
+                except Exception:
+                    pass
             
             # 主动清理内存以降低系统资源占用
             try:
@@ -1952,6 +2082,7 @@ class TaskProcessor:
     def _check_and_start_next_pending_task(self):
         """检查并启动下一个pending任务"""
         try:
+            self._refresh_runtime_limits(force=False)
             # 获取所有pending任务
             pending_tasks = get_tasks_by_status(TASK_STATES['PENDING'])
             active_task_ids = _get_active_task_ids()
@@ -1988,11 +2119,7 @@ class TaskProcessor:
             
             # 如果有任务正在运行且并发限制为1，则不启动新任务
             # 兼容字符串配置，安全转换为整数
-            max_concurrent = self.config.get('MAX_CONCURRENT_TASKS', 2)
-            try:
-                max_concurrent = int(str(max_concurrent).strip())
-            except Exception:
-                max_concurrent = 2
+            max_concurrent = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
             
             # 内存感知并发控制：如果内存使用过高，降低并发数
             if _should_reduce_concurrency():
@@ -6629,14 +6756,9 @@ def get_global_task_processor(config=None):
     if _global_task_processor is None:
         logger.info("创建全局任务处理器实例")
         _global_task_processor = TaskProcessor(config)
-    elif config and config != _global_task_processor.config:
-        # 如果配置发生变化，重新创建处理器
-        logger.info("配置已更新，重新创建全局任务处理器实例")
-        try:
-            _global_task_processor.shutdown()
-        except Exception as e:
-            logger.warning(f"忽略关闭全局任务处理器时的异常: {e}")
-        _global_task_processor = TaskProcessor(config)
+    elif config:
+        logger.info("配置已更新，刷新全局任务处理器运行时配置")
+        _global_task_processor.refresh_config(config)
     
     return _global_task_processor
 
