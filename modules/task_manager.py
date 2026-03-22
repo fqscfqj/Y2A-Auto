@@ -73,7 +73,7 @@ _TASK_CANCEL_FLAGS = {}
 _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
-_TASK_SCHEDULING_LOCK = threading.Lock()
+_TASK_SCHEDULING_LOCK = threading.RLock()
 
 
 def get_task_cancel_event(task_id):
@@ -1660,12 +1660,13 @@ class TaskProcessor:
             self._runtime_limit_refresh_pending = True
             return False
 
-        init_task_semaphore(desired_tasks)
-        init_upload_semaphore(desired_uploads)
-        self._current_max_concurrent_tasks = desired_tasks
-        self._current_max_concurrent_uploads = desired_uploads
-        self._runtime_limit_refresh_pending = False
-        self._last_deferred_limit_signature = None
+        with _TASK_SCHEDULING_LOCK:
+            init_task_semaphore(desired_tasks)
+            init_upload_semaphore(desired_uploads)
+            self._current_max_concurrent_tasks = desired_tasks
+            self._current_max_concurrent_uploads = desired_uploads
+            self._runtime_limit_refresh_pending = False
+            self._last_deferred_limit_signature = None
         logger.info(
             f"并发配置已生效 - 最大并发任务: {desired_tasks}, 最大并发上传: {desired_uploads}"
         )
@@ -1753,8 +1754,9 @@ class TaskProcessor:
                 if task_semaphore is None:
                     init_task_semaphore(self._current_max_concurrent_tasks)
                 assert task_semaphore is not None, "task_semaphore 应该已经初始化"
+                local_task_semaphore = task_semaphore
 
-                slot_acquired = task_semaphore.acquire(blocking=False)
+                slot_acquired = local_task_semaphore.acquire(blocking=False)
                 if not slot_acquired:
                     if existing_retry_job is None:
                         self._enqueue_task_retry(task_id, delay_seconds=2)
@@ -1764,11 +1766,17 @@ class TaskProcessor:
                     return queued_job_id
 
                 import threading
+                release_slot_on_failure = True
+                task_marked_active = False
 
                 def run_task_wrapper():
                     try:
                         logger.info(f"任务 {task_id} 开始在线程中执行")
-                        self.process_task(task_id, slot_already_acquired=True)
+                        self.process_task(
+                            task_id,
+                            slot_already_acquired=True,
+                            acquired_task_semaphore=local_task_semaphore,
+                        )
                     except Exception as e:
                         logger.error(f"任务 {task_id} 执行出错: {str(e)}")
                         import traceback
@@ -1777,22 +1785,26 @@ class TaskProcessor:
                     finally:
                         _mark_task_inactive(task_id)
 
-                if not _mark_task_active(task_id):
-                    task_semaphore.release()
-                    logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
-                    return f"thread_{task_id}"
-
-                thread = threading.Thread(
-                    target=run_task_wrapper,
-                    name=f"task_{task_id}",
-                    daemon=True
-                )
                 try:
+                    if not _mark_task_active(task_id):
+                        logger.warning(f"任务 {task_id} 在线程启动前检测到重复调度，已跳过")
+                        return f"thread_{task_id}"
+                    task_marked_active = True
+
+                    thread = threading.Thread(
+                        target=run_task_wrapper,
+                        name=f"task_{task_id}",
+                        daemon=True
+                    )
                     thread.start()
+                    release_slot_on_failure = False
                 except Exception:
-                    _mark_task_inactive(task_id)
-                    task_semaphore.release()
                     raise
+                finally:
+                    if release_slot_on_failure:
+                        if task_marked_active:
+                            _mark_task_inactive(task_id)
+                        local_task_semaphore.release()
 
                 logger.info(f"任务 {task_id} 已在后台线程启动")
                 return f"thread_{task_id}"
@@ -1805,53 +1817,56 @@ class TaskProcessor:
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"调度失败: {str(e)}")
             return None
     
-    def process_task(self, task_id, slot_already_acquired=False):
+    def process_task(self, task_id, slot_already_acquired=False, acquired_task_semaphore=None):
         """
         处理任务，包括采集信息、内容审核、下载、上传等步骤
         """
         task_logger = setup_task_logger(task_id)
         task_logger.info(f"开始处理任务 {task_id}")
-        task = get_task(task_id)
-        if not task:
-            logger.error(f"任务 {task_id} 不存在")
-            return
-        # 并发控制：获取任务并发配额
-        global task_semaphore
         slot_acquired = bool(slot_already_acquired)
-        if task_semaphore is None:
-            # 兜底：根据当前配置重新初始化
-            task_logger.warning("task_semaphore 为 None，正在重新初始化...")
-            init_task_semaphore(self._current_max_concurrent_tasks)
-            task_logger.info(f"task_semaphore 重新初始化完成，当前值: {task_semaphore}")
-            # 确保初始化成功
-            if task_semaphore is None:
+        active_task_semaphore = acquired_task_semaphore
+        if slot_already_acquired and active_task_semaphore is None:
+            task_logger.warning("slot_already_acquired=True 但未提供信号量实例，改为重新获取并发配额")
+            slot_acquired = False
+        if active_task_semaphore is None:
+            global task_semaphore
+            with _TASK_SCHEDULING_LOCK:
+                active_task_semaphore = task_semaphore
+                if active_task_semaphore is None:
+                    # 兜底：根据当前配置重新初始化
+                    task_logger.warning("task_semaphore 为 None，正在重新初始化...")
+                    init_task_semaphore(self._current_max_concurrent_tasks)
+                    active_task_semaphore = task_semaphore
+            task_logger.info(f"task_semaphore 当前值: {active_task_semaphore}")
+            if active_task_semaphore is None:
                 task_logger.error("task_semaphore 初始化失败，无法继续执行任务")
                 return
-        else:
-            task_logger.info(f"task_semaphore 已初始化，当前值: {task_semaphore}")
-            
-        if not slot_acquired:
-            task_logger.info("等待获取任务并发配额...")
-            try:
-                # 类型断言，告诉 Pylance task_semaphore 不是 None
-                assert task_semaphore is not None, "task_semaphore 应该已经初始化"
-                while True:
-                    if is_task_cancelled(task_id):
-                        raise TaskCancelledError("任务已取消")
-                    if task_semaphore.acquire(timeout=0.5):
-                        slot_acquired = True
-                        break
-                task_logger.info("获得任务并发配额，开始执行任务")
-            except TaskCancelledError:
-                task_logger.info("任务在等待并发配额时已取消")
-                update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
-                return
-            except Exception as _e:
-                task_logger.error(f"获取任务并发配额失败: {_e}")
-                return
-        else:
-            task_logger.info("任务已在调度阶段获得任务并发配额")
         try:
+            task = get_task(task_id)
+            if not task:
+                logger.error(f"任务 {task_id} 不存在")
+                return
+
+            if not slot_acquired:
+                task_logger.info("等待获取任务并发配额...")
+                try:
+                    while True:
+                        if is_task_cancelled(task_id):
+                            raise TaskCancelledError("任务已取消")
+                        if active_task_semaphore.acquire(timeout=0.5):
+                            slot_acquired = True
+                            break
+                    task_logger.info("获得任务并发配额，开始执行任务")
+                except TaskCancelledError:
+                    task_logger.info("任务在等待并发配额时已取消")
+                    update_task(task_id, status=TASK_STATES['FAILED'], error_message="任务已取消")
+                    return
+                except Exception as _e:
+                    task_logger.error(f"获取任务并发配额失败: {_e}")
+                    return
+            else:
+                task_logger.info("任务已在调度阶段获得任务并发配额")
+
             _raise_if_cancelled(task_id, task_logger)
             # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
             completed_stages = _get_completed_stages(task)
@@ -2040,9 +2055,7 @@ class TaskProcessor:
             # 释放并发配额
             if slot_acquired:
                 try:
-                    # 类型断言，告诉 Pylance task_semaphore 不是 None
-                    assert task_semaphore is not None, "task_semaphore 应该已经初始化"
-                    task_semaphore.release()
+                    active_task_semaphore.release()
                     task_logger.info("已释放任务并发配额")
                 except Exception:
                     pass
