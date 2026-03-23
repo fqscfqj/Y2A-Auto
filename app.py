@@ -513,14 +513,14 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     defaults = {
-                        'MAX_CONCURRENT_TASKS': 3,
+                        'MAX_CONCURRENT_TASKS': 2,
                         'MAX_CONCURRENT_UPLOADS': 1,
                         'LOG_CLEANUP_HOURS': 168,
                         'LOG_CLEANUP_INTERVAL': 24,
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 0,
+                        'SUBTITLE_MAX_WORKERS': 2,
                         'YOUTUBE_DOWNLOAD_THREADS': 4,
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15,
