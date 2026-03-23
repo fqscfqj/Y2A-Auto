@@ -69,7 +69,6 @@ class SpeechRecognitionConfig:
     language: str = ''
     prompt: str = ''
     translate: bool = False
-    asr_word_timestamps_enabled: bool = True
     voxtral_timestamp_granularities: str = 'segment,word'
     voxtral_diarize: bool = False
     voxtral_context_bias: str = ''
@@ -145,7 +144,11 @@ class SpeechRecognizer:
                 language=config.language,
                 prompt=config.prompt,
                 translate=config.translate,
-                timestamp_granularities=config.voxtral_timestamp_granularities,
+                timestamp_granularities=(
+                    config.voxtral_timestamp_granularities
+                    if config.api_provider == 'voxtral'
+                    else 'segment'
+                ),
                 diarize=config.voxtral_diarize,
                 context_bias=config.voxtral_context_bias,
                 max_retries=config.max_retries,
@@ -154,7 +157,6 @@ class SpeechRecognizer:
                 request_timeout_s=config.request_timeout_s,
                 voxtral_max_audio_duration_s=config.voxtral_max_audio_duration_s,
                 voxtral_enforce_max_duration=config.voxtral_enforce_max_duration,
-                word_timestamps_enabled=config.asr_word_timestamps_enabled,
             ),
             logger=self.logger,
         )
@@ -528,7 +530,6 @@ def create_speech_recognizer_from_config(
             language=language,
             prompt=prompt,
             translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral and not use_fireredasr else False,
-            asr_word_timestamps_enabled=coerce_bool(app_config.get('ASR_WORD_TIMESTAMPS_ENABLED', True)),
             voxtral_timestamp_granularities=app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment,word',
             voxtral_diarize=coerce_bool(app_config.get('VOXTRAL_DIARIZE', False)),
             voxtral_context_bias=app_config.get('VOXTRAL_CONTEXT_BIAS') or '',

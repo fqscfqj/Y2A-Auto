@@ -1096,7 +1096,7 @@
                                                     </div>
                                                     <div class="vad-overview-side">
                                                         <span class="settings-mini-kicker">当前说明</span>
-                                                        <p class="mb-0" id="shared-vad-provider-copy">当前为 Whisper 模式，扫描窗、词级时间戳和失败回退会共同决定最终字幕时间轴。</p>
+                                                        <p class="mb-0" id="shared-vad-provider-copy">当前为 Whisper 模式，扫描窗、segment 时间戳和失败回退会共同决定最终字幕时间轴。</p>
                                                     </div>
                                                 </div>
                                                 <div class="mt-3">
@@ -1120,12 +1120,6 @@
                                                                                 <label for="vad-min-coverage" class="form-label">最低语音覆盖率</label>
                                                                                 <input type="number" min="0" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) }}" class="form-control">
                                                                             </div>
-                                                                        </div>
-                                                                        <div class="col-12">
-                                                                            <label class="checkbox-label">
-                                                                                <input type="checkbox" name="ASR_WORD_TIMESTAMPS_ENABLED" {% if config.get('ASR_WORD_TIMESTAMPS_ENABLED', True) %}checked{% endif %}>
-                                                                                优先请求词级时间戳
-                                                                            </label>
                                                                         </div>
                                                                         <div class="col-12">
                                                                             <label class="checkbox-label">
@@ -1651,7 +1645,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     sharedVadProviderPill.textContent = 'Whisper';
                 }
                 if (sharedVadProviderCopy) {
-                    sharedVadProviderCopy.textContent = '当前为 Whisper 模式，扫描窗、词级时间戳和失败回退会共同决定最终字幕时间轴。';
+                    sharedVadProviderCopy.textContent = '当前为 Whisper 模式，扫描窗、segment 时间戳和失败回退会共同决定最终字幕时间轴。';
                 }
             } else if (provider === 'fireredasr') {
                 whisperConfig.style.display = 'none';

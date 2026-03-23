@@ -57,7 +57,6 @@ class AsrConfig:
     request_timeout_s: float = 300.0
     voxtral_max_audio_duration_s: float = 10800.0
     voxtral_enforce_max_duration: bool = True
-    word_timestamps_enabled: bool = True
 
 
 @dataclass
@@ -202,10 +201,10 @@ class AsrApiClient:
             "ASR API incompatible: unable to negotiate a supported transcription format."
         )
 
-    def _parse_requested_granularities(self) -> Tuple[str, ...]:
+    def _parse_voxtral_requested_granularities(self) -> Tuple[str, ...]:
         raw = str(self.config.timestamp_granularities or '').strip()
         if not raw:
-            return ('segment', 'word') if self.config.word_timestamps_enabled else ('segment',)
+            return ('segment',)
         allowed = {'segment', 'word'}
         result: List[str] = []
         for part in raw.replace('\n', ',').split(','):
@@ -213,29 +212,13 @@ class AsrApiClient:
             if token in allowed and token not in result:
                 result.append(token)
         if not result:
-            return ('segment', 'word') if self.config.word_timestamps_enabled else ('segment',)
-        if self.config.word_timestamps_enabled and 'word' not in result:
-            result.append('word')
+            return ('segment',)
         if 'segment' not in result:
             result.insert(0, 'segment')
         return tuple(result)
 
     def _whisper_granularity_candidates(self) -> List[Tuple[str, ...]]:
-        requested = self._parse_requested_granularities()
-        candidates: List[Tuple[str, ...]] = []
-        if requested:
-            candidates.append(requested)
-        if 'word' in requested:
-            candidates.append(tuple(gran for gran in requested if gran != 'word'))
-        if ('segment',) not in candidates:
-            candidates.append(('segment',))
-        candidates.append(tuple())
-        deduped: List[Tuple[str, ...]] = []
-        for candidate in candidates:
-            normalized = tuple(gran for gran in candidate if gran)
-            if normalized not in deduped:
-                deduped.append(normalized)
-        return deduped
+        return [('segment',), tuple()]
 
     def _probe_capabilities(
         self,
@@ -563,7 +546,7 @@ class AsrApiClient:
         )
 
     def _voxtral_granularity_candidates(self) -> List[Tuple[str, ...]]:
-        requested = self._parse_requested_granularities()
+        requested = self._parse_voxtral_requested_granularities()
         candidates: List[Tuple[str, ...]] = []
         if requested:
             candidates.append(requested)

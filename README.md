@@ -217,7 +217,7 @@ python app.py
 - `SPEECH_RECOGNITION_ENABLED`：是否启用语音识别生成字幕，默认 `false`
 - `SPEECH_RECOGNITION_PROVIDER`：支持 `whisper`、`voxtral`、`fireredasr`
 - `VAD_ENABLED`：VAD 语音扫描窗，默认 `true`
-- `ASR_WORD_TIMESTAMPS_ENABLED`：优先请求词级时间戳，默认 `true`
+- `WHISPER` 路径默认使用 `segment` 级时间戳，并自动兼容不支持 `timestamp_granularities` 的接口
 - `WHISPER_FALLBACK_TO_FIXED_CHUNKS`：VAD 失败时是否回退到固定分片，默认 `false`
 - `WHISPER_LANGUAGE` / `WHISPER_PROMPT` / `WHISPER_TRANSLATE`：Whisper 专用参数
 - `VOXTRAL_TIMESTAMP_GRANULARITIES`：默认 `segment,word`
