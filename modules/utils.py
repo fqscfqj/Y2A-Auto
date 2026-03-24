@@ -35,96 +35,11 @@ def get_app_subdir(subdir_name):
     """
     return os.path.join(get_app_root_dir(), subdir_name)
 
-"""
-工具函数模块
-"""
-
 import re
 import copy
 import json
 from typing import Any, Optional
 from urllib.parse import urlparse
-from PIL import Image
-
-def init_app():
-    """
-    初始化应用
-    """
-    pass
-
-def parse_id_md_to_json(md_content_str):
-    """
-    解析id.md文件内容，将其转换为结构化的JSON
-    
-    Args:
-        md_content_str (str): id.md文件的内容字符串
-        
-    Returns:
-        list: 分类和分区的JSON结构
-    """
-    result = []
-    current_category = None
-    current_partition = None
-    
-    # 按行处理
-    lines = md_content_str.strip().split('\n')
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # 检查是否为分类行 (例如: "## 番剧")
-        category_match = re.match(r'^##\s+(.+)$', line)
-        if category_match:
-            category_name = category_match.group(1).strip()
-            current_category = {
-                "category": category_name,
-                "partitions": []
-            }
-            result.append(current_category)
-            continue
-            
-        # 检查是否为一级分区行 (例如: "- **TV动画** `67` - 连载日本动画（季番/半年番）")
-        partition_match = re.match(r'^-\s+\*\*(.+?)\*\*\s+`(\d+)`\s*-\s*(.*)$', line)
-        if partition_match:
-            partition_name = partition_match.group(1).strip()
-            partition_id = partition_match.group(2).strip()
-            partition_description = partition_match.group(3).strip() if partition_match.group(3) else ""
-            
-            current_partition = {
-                "id": partition_id,
-                "name": partition_name,
-                "description": partition_description,
-                "sub_partitions": []
-            }
-            
-            if current_category:
-                current_category["partitions"].append(current_partition)
-            continue
-            
-        # 检查是否为二级分区行 (例如: "- **动画综合** `106` - 无法归类到其他子分区的动画相关内容")
-        # 结构与一级分区相似，但缩进不同，在当前实现中我们通过行的开头来区分
-        sub_partition_match = re.match(r'^\s+-\s+\*\*(.+?)\*\*\s+`(\d+)`\s*-\s*(.*)$', line)
-        if not sub_partition_match:
-            # 尝试另一种可能的格式 (例如: "- **王者荣耀** `214`")
-            sub_partition_match = re.match(r'^\s+-\s+\*\*(.+?)\*\*\s+`(\d+)`\s*$', line)
-            
-        if sub_partition_match:
-            sub_name = sub_partition_match.group(1).strip()
-            sub_id = sub_partition_match.group(2).strip()
-            sub_description = sub_partition_match.group(3).strip() if len(sub_partition_match.groups()) > 2 and sub_partition_match.group(3) else ""
-            
-            sub_partition = {
-                "id": sub_id,
-                "name": sub_name,
-                "description": sub_description
-            }
-            
-            if current_partition:
-                current_partition["sub_partitions"].append(sub_partition)
-            continue
-    
-    return result
 
 def process_cover(image_path, output_path=None, mode='crop'):
     """

@@ -7,7 +7,6 @@ import logging
 import mimetypes
 import shutil
 import time
-import datetime
 import uuid
 import threading
 
@@ -475,7 +474,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
             'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
             'SUBTITLE_QC_ENABLED',
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE', 'WHISPER_FALLBACK_TO_FIXED_CHUNKS',
+            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
             'VIDEO_CUSTOM_PARAMS_ENABLED',
             'FIREREDASR_ENABLED',
             'VOXTRAL_DIARIZE'
@@ -1622,9 +1621,6 @@ def start_task_route(task_id):
         if config.get('AUTO_MODE_ENABLED', False):
             flash('任务已启动，自动模式将会自动完成下载、处理和上传', 'info')
             
-            # 等待一段时间后检查任务状态
-            import threading
-            
             # 使用传统页面刷新方式
         else:
             flash('任务处理已启动', 'success')
@@ -1703,8 +1699,6 @@ def force_upload_task_route(task_id):
     # 启动后台强制上传
     logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
     flash(f'已启动强制上传到{platform_name}，正在后台处理...', 'info')
-    
-    import threading
     
     def background_force_upload():
         """后台强制上传函数"""
@@ -2921,15 +2915,6 @@ def sync_cookies():
         
         youtube_cookies_path = os.path.join(cookies_dir, 'yt_cookies.txt')
         
-        # 不再创建备份文件（用户要求禁用备份功能）
-        # if data['source'] == 'userscript' and os.path.exists(youtube_cookies_path):
-        #     backup_path = youtube_cookies_path + f'.backup.{int(time.time())}'
-        #     try:
-        #         shutil.copy2(youtube_cookies_path, backup_path)
-        #         logger.info(f"已备份原有cookie文件到: {backup_path}")
-        #     except Exception as e:
-        #         logger.warning(f"备份cookie文件失败: {str(e)}")
-        
         # 写入新的cookie文件
         try:
             with open(youtube_cookies_path, 'w', encoding='utf-8') as f:
@@ -2947,27 +2932,7 @@ def sync_cookies():
             
             source_name = '浏览器扩展' if data['source'] == 'extension' else '油猴脚本'
             logger.info(f"Cookie同步成功 - 来源: {source_name}, 数量: {data['cookieCount']}, 大小: {len(cookies_content)} bytes")
-            
-            # 备份文件功能已禁用，不再需要清理逻辑
-            # try:
-            #     backup_files = []
-            #     for file in os.listdir(cookies_dir):
-            #         if file.startswith('yt_cookies.txt.backup.'):
-            #             backup_path = os.path.join(cookies_dir, file)
-            #             backup_files.append((os.path.getmtime(backup_path), backup_path))
-            #     
-            #     # 按时间排序，删除多余的备份
-            #     if len(backup_files) > 5:
-            #         backup_files.sort()
-            #         for _, old_backup in backup_files[:-5]:
-            #             try:
-            #                 os.remove(old_backup)
-            #                 logger.debug(f"已删除旧备份文件: {old_backup}")
-            #             except Exception as e:
-            #                 logger.warning(f"删除旧备份文件失败: {str(e)}")
-            # except Exception as e:
-            #     logger.warning(f"清理备份文件失败: {str(e)}")
-            
+
             return jsonify({
                 'success': True,
                 'message': 'Cookie同步成功',

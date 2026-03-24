@@ -1146,12 +1146,6 @@
                                                                                 <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) }}" class="form-control">
                                                                             </div>
                                                                         </div>
-                                                                        <div class="col-12">
-                                                                            <label class="checkbox-label">
-                                                                                <input type="checkbox" name="WHISPER_FALLBACK_TO_FIXED_CHUNKS" {% if config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False) %}checked{% endif %}>
-                                                                                VAD 失败时回退到固定分片
-                                                                            </label>
-                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             </div>

@@ -23,16 +23,6 @@ ADVISORY_MODE_HARD_FAIL_REASONS = {
     'noise_command_phrase',
     'template_like_phrase',
 }
-
-
-def _to_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
-
-
 def _to_int(value: Any, default: int) -> int:
     try:
         return int(float(str(value).strip()))

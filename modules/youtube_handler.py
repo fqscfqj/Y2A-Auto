@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from shutil import which as _which
-from urllib.parse import parse_qs, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse
 import re
 
 # 其他导入和常量定义
@@ -30,22 +30,6 @@ _YOUTUBE_USER_AGENT = (
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
-
-
-def _sanitize_url_for_logging(url):
-    """移除URL中的敏感信息（用户名、密码）用于安全日志记录"""
-    if not url:
-        return url
-    try:
-        parsed = urlparse(url)
-        if parsed.username or parsed.password:
-            # 重建URL，移除认证信息
-            sanitized = parsed._replace(netloc=f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname)
-            return urlunparse(sanitized)
-        return url
-    except Exception:
-        return "[URL]"
-
 
 def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
     """将 cookies_file_path 解析为安全的绝对路径。

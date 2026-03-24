@@ -108,23 +108,6 @@ WHISPER_LANGUAGES = {
     "yue": "cantonese",
 }
 
-# Alias map mirroring TO_LANGUAGE_CODE from Whisper (name -> code)
-WHISPER_LANGUAGE_ALIASES = {
-    **{language: code for code, language in WHISPER_LANGUAGES.items()},
-    "burmese": "my",
-    "valencian": "ca",
-    "flemish": "nl",
-    "haitian": "ht",
-    "letzeburgesch": "lb",
-    "pushto": "ps",
-    "panjabi": "pa",
-    "moldavian": "ro",
-    "moldovan": "ro",
-    "sinhalese": "si",
-    "castilian": "es",
-    "mandarin": "zh",
-}
-
 # Sorted list for UI dropdowns/datalists
 WHISPER_LANGUAGE_LIST = [
     {"code": code, "name": name.title()}

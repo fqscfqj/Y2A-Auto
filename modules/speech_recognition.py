@@ -92,16 +92,7 @@ class SpeechRecognitionConfig:
     subtitle_max_lines_enabled: bool = False
     max_retries: int = 3
     retry_delay_s: float = 2.0
-    fallback_to_fixed_chunks: bool = False
     request_timeout_s: float = 300.0
-
-
-class VadFailure(RuntimeError):
-    pass
-
-
-class WhisperFailure(RuntimeError):
-    pass
 
 
 class SpeechRecognizer:
@@ -222,9 +213,6 @@ class SpeechRecognizer:
                 file_obj.write(srt_text)
             self.logger.info("Subtitle range: %.2fs -> %.2fs", cue_dicts[0]['start'], cue_dicts[-1]['end'])
             return output_path
-        except WhisperFailure as exc:
-            self.last_error_message = self.last_error_message or str(exc)
-            return None
         except Exception as exc:
             self.last_error_message = self.last_error_message or f"Transcription failed: {exc}"
             self.logger.exception("Transcription failed")
@@ -553,7 +541,6 @@ def create_speech_recognizer_from_config(
             subtitle_max_lines_enabled=coerce_bool(app_config.get('SUBTITLE_MAX_LINES_ENABLED', False)),
             max_retries=max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
-            fallback_to_fixed_chunks=coerce_bool(app_config.get('WHISPER_FALLBACK_TO_FIXED_CHUNKS', False)),
             request_timeout_s=timeout_s,
         )
         return SpeechRecognizer(config, task_id)

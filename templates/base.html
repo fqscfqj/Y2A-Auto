@@ -99,28 +99,11 @@
         </div>
     </div>
     
-    <!-- 使用本地jQuery -->
-    <script src="{{ url_for('static', filename='lib/bootstrap/jquery.min.js') }}"></script>
     <!-- 使用本地Bootstrap JS Bundle -->
     <script src="{{ url_for('static', filename='lib/bootstrap/bootstrap.bundle.min.js') }}"></script>
     <!-- 自定义JS -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-    
-    <script>
-        // 使用传统页面刷新方式
-        $(document).ready(function() {
-            console.log('Y2A-Auto 已启动 - 使用传统页面刷新模式');
-            
-            // 可选：添加自动刷新功能
-            // setInterval(function() {
-            //     if (window.location.pathname.includes('/tasks') || 
-            //         window.location.pathname.includes('/manual_review')) {
-            //         location.reload();
-            //     }
-            // }, 30000); // 每30秒自动刷新一次
-        });
-    </script>
-    
+
     {% block extra_js %}{% endblock %}
 </body>
 </html> 

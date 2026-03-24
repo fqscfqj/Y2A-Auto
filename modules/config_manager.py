@@ -170,13 +170,9 @@ DEFAULT_CONFIG = {
     # 重试与回退策略
     "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
-    "WHISPER_FALLBACK_TO_FIXED_CHUNKS": False,  # VAD失败时回退到固定切分（默认关闭）
 }
 
 DEFAULT_CONFIG = inject_speech_pipeline_defaults(DEFAULT_CONFIG)
-
-CONFIG_FILE = "config.json"
-config = {}
 
 
 def _prune_unknown_config_keys(config_data):
@@ -329,21 +325,6 @@ def update_config(new_config):
     save_config(current_config, config_path)
     
     return current_config
-
-def reset_config():
-    """
-    重置配置为默认值
-    
-    Returns:
-        dict: 重置后的配置
-    """
-    config_path = os.path.join(get_app_subdir('config'), 'config.json')
-    
-    # 使用默认配置覆盖当前配置
-    save_config(DEFAULT_CONFIG, config_path)
-    
-    # 重新加载配置
-    return load_config()
 
 def reset_specific_config(keys):
     """

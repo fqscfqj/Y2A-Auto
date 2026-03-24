@@ -16,7 +16,6 @@ import shutil
 import subprocess
 import time
 import zipfile
-from dataclasses import dataclass
 from typing import Optional
 
 
@@ -27,16 +26,6 @@ from .config_manager import load_config
 from .utils import get_app_root_dir
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class FFmpegContext:
-    """Describes the resolved ffmpeg/ffprobe toolchain."""
-
-    ffmpeg: Optional[str]
-    ffprobe: Optional[str]
-    source: str
-    platform: str
 
 
 _BINARY_CACHE: dict[str, Optional[str]] = {"ffmpeg": None, "ffprobe": None}
@@ -477,26 +466,3 @@ def get_ffprobe_path(
     log_obj = logger or log
     log_obj.warning("No ffprobe binary found alongside ffmpeg")
     return None
-
-
-def get_ffmpeg_context(
-    *,
-    allow_system: bool = True,
-    force_refresh: bool = False,
-    logger: Optional[logging.Logger] = None
-) -> FFmpegContext:
-    ffmpeg_path = get_ffmpeg_path(allow_system=allow_system, force_refresh=force_refresh, logger=logger)
-    ffprobe_path = get_ffprobe_path(ffmpeg_path=ffmpeg_path, allow_system=allow_system, force_refresh=force_refresh, logger=logger)
-    return FFmpegContext(
-        ffmpeg=ffmpeg_path,
-        ffprobe=ffprobe_path,
-        source=_META_CACHE.get('source') or 'unknown',
-        platform=_META_CACHE.get('platform') or platform.platform(),
-    )
-
-
-def refresh_ffmpeg_cache(logger: Optional[logging.Logger] = None) -> FFmpegContext:
-    """Force a re-resolution of ffmpeg/ffprobe paths."""
-    _BINARY_CACHE['ffmpeg'] = None
-    _BINARY_CACHE['ffprobe'] = None
-    return get_ffmpeg_context(force_refresh=True, logger=logger)

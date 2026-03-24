@@ -1,6 +1,6 @@
 # Y2A-Auto Docker 管理工具
 
-.PHONY: help build up down logs restart clean build-local build-legacy build-local-legacy
+.PHONY: help build up down logs restart clean build-local
 
 # 默认目标
 help:
@@ -15,8 +15,6 @@ help:
 	@echo "构建相关:"
 	@echo "  make build                - 本地构建镜像 (默认，使用 Dockerfile)"
 	@echo "  make build-local          - 使用本地构建配置启动 (默认)"
-	@echo "  make build-legacy         - 兼容无 BuildKit 的构建 (使用 Dockerfile.nobuildkit)"
-	@echo "  make build-local-legacy   - 兼容无 BuildKit 的构建并启动"
 	@echo ""
 	@echo "健康检查和诊断:"
 	@echo "  make health      - 基础健康检查"
@@ -51,13 +49,6 @@ build:
 
 build-local:
 	docker-compose -f docker-compose-build.yml up -d
-
-# 兼容无 BuildKit 的构建
-build-legacy:
-	docker-compose -f docker-compose-build-legacy.yml build
-
-build-local-legacy:
-	docker-compose -f docker-compose-build-legacy.yml up -d
 
 # 清理命令
 clean:
