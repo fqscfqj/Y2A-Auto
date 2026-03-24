@@ -1678,7 +1678,7 @@ def _recommend_partition_core(
                     }
                 )
                 result_map[platform] = selection
-                logger.info("%s 分区推荐来源=fixed, id=%s", platform_label_map.get(platform, platform), fixed_pid)
+                logger.info("%s 分区推荐来源=fixed", platform_label_map.get(platform, platform))
                 continue
             logger.warning("配置的 %s 无效，已忽略", fixed_key)
 
