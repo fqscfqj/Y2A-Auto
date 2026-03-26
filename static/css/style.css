@@ -841,11 +841,11 @@ body {
 /* 表格列宽设置（总和≤100%，避免出现横向滚动条） */
 .tasks-table th.col-id { width: 7%; }
 .tasks-table th.col-title { width: 20%; }
-.tasks-table th.col-status { width: 8%; }
+.tasks-table th.col-status { width: 10%; }
 .tasks-table th.col-time { width: 10%; }
 .tasks-table th.col-platform { width: 6%; }
 .tasks-table th.col-partition { width: 11%; }
-.tasks-table th.col-tags { width: 12%; }
+.tasks-table th.col-tags { width: 10%; }
 .tasks-table th.col-result { width: 10%; }
 .tasks-table th.col-actions { width: 16%; }
 

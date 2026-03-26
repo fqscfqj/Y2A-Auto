@@ -91,8 +91,32 @@
                 <i class="bi bi-{{ icon }} me-1"></i>{{ task_status_display(task.status) }}
             </span>
             <small class="text-muted mt-1{% if not show_progress %} d-none{% endif %}" data-task-progress>{{ task.upload_progress or '' }}</small>
-            {% if task.subtitle_qc_failed %}
-                <span class="badge bg-warning text-dark mt-1" title="{{ qc_tooltip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+            {% if task.subtitle_qc_failed or task.asr_warning_message %}
+                {% if task.asr_warning_message %}
+                    {% set asr_w = task.asr_warning_message|trim %}
+                    {% if asr_w == 'vad_low_coverage' %}
+                        {% set asr_w_tip = 'VAD检测语音占比过低，字幕时间轴可能不准确' %}
+                    {% elif asr_w == 'asr_no_timestamps' %}
+                        {% set asr_w_tip = 'ASR返回结果中缺少时间戳，已尝试自动对齐' %}
+                    {% elif asr_w == 'vad_no_speech' %}
+                        {% set asr_w_tip = 'VAD未在音频中检测到语音活动' %}
+                    {% elif asr_w == 'vad_no_usable_window' %}
+                        {% set asr_w_tip = 'VAD分割的语音片段均不可用' %}
+                    {% elif asr_w.startswith('vad_failed') %}
+                        {% set asr_w_tip = 'VAD语音检测处理失败：' ~ asr_w %}
+                    {% elif asr_w == 'asr_failed' %}
+                        {% set asr_w_tip = 'ASR语音识别全部失败' %}
+                    {% else %}
+                        {% set asr_w_tip = 'ASR/VAD警告: ' ~ asr_w %}
+                    {% endif %}
+                {% endif %}
+                {% if task.subtitle_qc_failed and task.asr_warning_message %}
+                    <span class="badge bg-warning text-dark mt-1" title="{{ qc_tooltip }} | {{ asr_w_tip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                {% elif task.subtitle_qc_failed %}
+                    <span class="badge bg-warning text-dark mt-1" title="{{ qc_tooltip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                {% else %}
+                    <span class="badge bg-warning text-dark mt-1" title="{{ asr_w_tip }}" data-bs-toggle="tooltip" data-bs-placement="top">字幕异常</span>
+                {% endif %}
             {% endif %}
         </div>
     </td>

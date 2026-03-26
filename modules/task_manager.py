@@ -737,7 +737,8 @@ def init_db():
         pipeline_checkpoint TEXT,  -- JSON: 断点续跑已完成阶段
         upload_progress TEXT,  -- 上传进度
         acfun_upload_response TEXT,
-        bilibili_upload_response TEXT
+        bilibili_upload_response TEXT,
+        asr_warning_message TEXT  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
     )
     ''')
     
@@ -935,6 +936,43 @@ def init_db():
         else:
             logger.info("数据库升级：历史任务分区字段回填迁移已执行，跳过")
 
+        if 'asr_warning_message' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN asr_warning_message TEXT")
+            logger.info("数据库升级：添加asr_warning_message字段")
+            conn.commit()
+
+        # 数据迁移：将 error_message 中纯 ASR/VAD 警告 token 挪至 asr_warning_message，清空 error_message
+        cursor.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
+            ('asr_warning_message_migrate_v1',)
+        )
+        if cursor.fetchone() is None:
+            try:
+                _asr_warning_tokens = (
+                    'vad_low_coverage', 'vad_no_speech', 'vad_failed',
+                    'asr_no_timestamps', 'asr_failed', 'vad_no_usable_window',
+                )
+                for _token in _asr_warning_tokens:
+                    cursor.execute(
+                        """
+                        UPDATE tasks
+                        SET asr_warning_message = TRIM(error_message),
+                            error_message = NULL
+                        WHERE (asr_warning_message IS NULL OR TRIM(asr_warning_message) = '')
+                          AND TRIM(error_message) = ?
+                        """,
+                        (_token,)
+                    )
+                cursor.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_key) VALUES (?)",
+                    ('asr_warning_message_migrate_v1',)
+                )
+                conn.commit()
+                logger.info("数据库升级：ASR警告字段数据迁移完成")
+            except Exception as _em:
+                conn.rollback()
+                logger.warning("数据库升级：ASR警告字段数据迁移失败: %s", _em)
+
         # 兼容历史任务：空 upload_target 默认回填 acfun
         cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
         conn.commit()
@@ -1076,6 +1114,7 @@ def update_task(task_id, silent=False, **kwargs):
         'upload_progress': 'upload_progress = ?',
         'acfun_upload_response': 'acfun_upload_response = ?',
         'bilibili_upload_response': 'bilibili_upload_response = ?',
+        'asr_warning_message': 'asr_warning_message = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -2468,12 +2507,7 @@ class TaskProcessor:
                             asr_generated = True
                             task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
                             if getattr(recognizer, 'last_warning_message', ''):
-                                _t = get_task(task_id)
-                                prev_error = _t.get('error_message') if _t else None
-                                merged_error = (
-                                    f"{prev_error}\n{recognizer.last_warning_message}" if prev_error else recognizer.last_warning_message
-                                )
-                                update_task(task_id, error_message=merged_error)
+                                update_task(task_id, asr_warning_message=recognizer.last_warning_message)
                         else:
                             if getattr(recognizer, 'last_error_message', ''):
                                 _t = get_task(task_id)
