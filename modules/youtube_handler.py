@@ -113,9 +113,9 @@ def _append_yt_dlp_network_args(
         cmd.extend(['--proxy', proxy_url])
     if cookies_path and os.path.exists(cookies_path):
         cmd.extend(['--cookies', cookies_path])
-        # 限制 player client 为 ios，避免 web 等端点需要 PO token 而触发反机器人检测；
-        # ios 客户端使用不同的 INNERTUBE API 端点，不需要 PO token 且支持 cookies 认证
-        cmd.extend(['--extractor-args', 'youtube:player_client=ios'])
+        # 限制 player client 为 mweb（移动网页客户端），它支持 cookies 认证且
+        # fingerprinting 与桌面 web 不同，可有效降低 bot 检测触发概率
+        cmd.extend(['--extractor-args', 'youtube:player_client=mweb'])
     return cmd
 
 
