@@ -110,6 +110,7 @@ RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/arc
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        nodejs \
         libfontconfig1 \
         libfreetype6 \
         libfribidi0 \

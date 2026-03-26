@@ -117,6 +117,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        nodejs \
         libfontconfig1 \
         libfreetype6 \
         libfribidi0 \

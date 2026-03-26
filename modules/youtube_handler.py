@@ -68,6 +68,8 @@ def _detect_js_runtime_args() -> list[str]:
 def _get_youtube_runtime_args() -> list[str]:
     """统一 YouTube 运行时参数。"""
     args = _detect_js_runtime_args()
+    if not args:
+        logger.warning("未检测到 JavaScript 运行时（node/deno），yt-dlp 的 n challenge 求解可能失败")
     args.extend(['--remote-components', 'ejs:github'])
     return args
 
@@ -399,6 +401,7 @@ def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=N
         '--skip-download',
         '--no-warnings',
         '--no-playlist',
+        '--ignore-no-formats-error',
         '--print', '%(id)s\t%(title)s'
     ]
     
@@ -597,10 +600,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if skip_download:
             # “采集信息”阶段当前只依赖 metadata + cover；
             # 不要把字幕下载失败放大成整步失败。
+            # 使用 --ignore-no-formats-error 允许在无可用视频格式时仍然提取元数据和封面
             cmd.extend([
                 '--skip-download',
                 '--write-info-json',
                 '--write-thumbnail',
+                '--ignore-no-formats-error',
             ])
         elif only_video:
             cmd.extend([
