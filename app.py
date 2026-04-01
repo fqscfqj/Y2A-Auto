@@ -2905,6 +2905,13 @@ def youtube_monitor_run(config_id):
         flash(error_message, 'danger')
         return redirect(url_for('youtube_monitor_index'))
 
+    if not config:
+        fallback_message = '监控配置不存在'
+        if _is_ajax_request():
+            return jsonify({'success': False, 'message': fallback_message}), 404
+        flash(fallback_message, 'danger')
+        return redirect(url_for('youtube_monitor_index'))
+
     started_message = f"监控已在后台开始执行：{config['name']}"
     if _is_ajax_request():
         return jsonify({
