@@ -134,6 +134,9 @@ jobs:
         # 检查 yt-dlp 是否可用
         docker exec test-y2a-auto-dockerhub yt-dlp --version || exit 1
         
+        # 检查 VAD 依赖是否完整
+        docker exec test-y2a-auto-dockerhub python -c "import torch, torchaudio, silero_vad; print('VAD deps OK')" || exit 1
+        
         # 清理
         docker stop test-y2a-auto-dockerhub
 
@@ -172,6 +175,9 @@ jobs:
         
         # 检查 yt-dlp 是否可用
         docker exec test-y2a-auto-ghcr yt-dlp --version || exit 1
+        
+        # 检查 VAD 依赖是否完整
+        docker exec test-y2a-auto-ghcr python -c "import torch, torchaudio, silero_vad; print('VAD deps OK')" || exit 1
         
         # 清理
         docker stop test-y2a-auto-ghcr

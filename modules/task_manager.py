@@ -2491,6 +2491,7 @@ class TaskProcessor:
                                 asr_ext = '.srt'
                                 asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
                                 out_path = None
+                                update_task(task_id, asr_warning_message=None)
                                 out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                                 # 恢复到字幕翻译状态
                                 update_task(task_id, status=prev_status)
@@ -2506,9 +2507,15 @@ class TaskProcessor:
                             subtitle_files = [out_path]
                             asr_generated = True
                             task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
-                            if getattr(recognizer, 'last_warning_message', ''):
-                                update_task(task_id, asr_warning_message=recognizer.last_warning_message)
+                            update_task(
+                                task_id,
+                                asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                            )
                         else:
+                            update_task(
+                                task_id,
+                                asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                            )
                             if getattr(recognizer, 'last_error_message', ''):
                                 _t = get_task(task_id)
                                 prev_error = _t.get('error_message') if _t else None

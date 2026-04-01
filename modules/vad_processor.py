@@ -271,8 +271,9 @@ class VadProcessor:
             )
             self._set_run_state(False)
             return raw_pairs
-        except ImportError:
+        except ImportError as exc:
             self._set_run_state(True, "missing silero-vad or torch dependency")
+            self.logger.error("VAD dependency import failed: %s", exc)
             return None
         except Exception as exc:
             self._set_run_state(True, str(exc))

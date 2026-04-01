@@ -97,6 +97,8 @@
                             {% set asr_w_tip = 'VAD检测语音占比过低，字幕时间轴可能不准确' %}
                         {% elif asr_w == 'asr_no_timestamps' %}
                             {% set asr_w_tip = 'ASR返回结果中缺少时间戳，已尝试自动对齐' %}
+                        {% elif asr_w == 'missing silero-vad or torch dependency' %}
+                            {% set asr_w_tip = '运行环境缺少 silero-vad / torch 依赖，VAD 已跳过并回退到固定分片识别' %}
                         {% elif asr_w == 'vad_no_speech' %}
                             {% set asr_w_tip = 'VAD未在音频中检测到语音活动' %}
                         {% elif asr_w == 'vad_no_usable_window' %}

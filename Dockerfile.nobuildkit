@@ -119,6 +119,8 @@ RUN rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/cache/apt/arc
         libharfbuzz0b \
         libunistring5 \
         libxml2 \
+        libsndfile1 \
+        libsox3 \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
     && apt-get clean \
     && useradd --create-home --shell /bin/bash y2a
@@ -170,6 +172,9 @@ USER y2a
 
 # 验证 yt-dlp 在运行阶段可用
 RUN yt-dlp --version
+
+# 验证 VAD 依赖在运行阶段可导入，避免发布缺少 silero-vad/torch 的镜像
+RUN python -c "import torch, torchaudio, silero_vad; print('VAD deps OK')"
 
 EXPOSE 5000
 

@@ -199,6 +199,9 @@ USER y2a
 # 验证 yt-dlp 在运行阶段可用
 RUN yt-dlp --version
 
+# 验证 VAD 依赖在运行阶段可导入，避免发布缺少 silero-vad/torch 的镜像
+RUN python -c "import torch, torchaudio, silero_vad; print('VAD deps OK')"
+
 # 应用程序监听的端口
 EXPOSE 5000
 
