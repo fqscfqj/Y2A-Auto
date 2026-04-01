@@ -40,6 +40,7 @@ class VadProcessor:
     _silero_vad_model: Any = None
     _silero_vad_utils: Any = None
     _silero_vad_lock = threading.Lock()
+    _silero_vad_inference_lock = threading.Lock()
 
     def __init__(self, config: VadConfig, logger: Optional[logging.Logger] = None):
         self.config = config
@@ -242,17 +243,18 @@ class VadProcessor:
                 return None
 
             audio_tensor = torch.from_numpy(audio_array)
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor,
-                model,
-                threshold=config.threshold,
-                min_speech_duration_ms=config.min_speech_ms,
-                min_silence_duration_ms=config.min_silence_ms,
-                speech_pad_ms=config.speech_pad_ms,
-                max_speech_duration_s=self._effective_vad_max_speech_s(config),
-                sampling_rate=sample_rate,
-                return_seconds=True,
-            )
+            with VadProcessor._silero_vad_inference_lock:
+                speech_timestamps = get_speech_timestamps(
+                    audio_tensor,
+                    model,
+                    threshold=config.threshold,
+                    min_speech_duration_ms=config.min_speech_ms,
+                    min_silence_duration_ms=config.min_silence_ms,
+                    speech_pad_ms=config.speech_pad_ms,
+                    max_speech_duration_s=self._effective_vad_max_speech_s(config),
+                    sampling_rate=sample_rate,
+                    return_seconds=True,
+                )
             if not speech_timestamps:
                 self._set_run_state(False)
                 return []

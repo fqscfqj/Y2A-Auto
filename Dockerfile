@@ -26,9 +26,10 @@ COPY requirements.txt .
 
 # 安装Python依赖到本地目录
 # 先安装 CPU-only 版本的 torch 和 torchaudio（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
+# 固定版本至 2.6.0：该版本与 silero-vad 6.2.x 的 JIT 模型兼容；2.7.0 起切换至 manylinux_2_28 并引入 TorchScript 不兼容变更
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user --no-compile torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    pip install --user --no-compile "torch==2.6.0" "torchaudio==2.6.0" --index-url https://download.pytorch.org/whl/cpu \
     && pip install --user --no-compile -r requirements.txt
 
 # 验证 yt-dlp 安装
