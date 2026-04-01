@@ -57,6 +57,10 @@ DEFAULT_CONFIG = {
     "SUBTITLE_OPENAI_MODEL_NAME": "",
     "SUBTITLE_OPENAI_THINKING_ENABLED": False,
     "YOUTUBE_API_KEY": "",
+    "YOUTUBE_API_PROXY_ENABLED": False,  # 是否为 YouTube Data API 监控启用独立代理
+    "YOUTUBE_API_PROXY_URL": "",  # 监控 API 代理地址，格式：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+    "YOUTUBE_API_PROXY_USERNAME": "",  # 监控 API 代理用户名（可选）
+    "YOUTUBE_API_PROXY_PASSWORD": "",  # 监控 API 代理密码（可选）
     "ALIYUN_ACCESS_KEY_ID": "",
     "ALIYUN_ACCESS_KEY_SECRET": "",
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",

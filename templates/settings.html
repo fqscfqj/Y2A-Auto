@@ -437,14 +437,53 @@
                                                 </span>
                                             </div>
                                             <div class="settings-card-body">
-                                                <div class="form-group mb-0">
-                                                    <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
-                                                    <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
-                                                    <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
+                                                <div class="alert alert-info mb-3">
+                                                    <i class="bi bi-info-circle"></i>
+                                                    下载页中的“启用代理下载”只影响 `yt-dlp` 下载链路；这里的代理只影响 YouTube Data API 监控请求，且不会继承下载代理或环境变量代理。
+                                                </div>
+                                                <div class="row g-3">
+                                                    <div class="col-12">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
+                                                            <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
+                                                            <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="YOUTUBE_API_PROXY_ENABLED" {% if config.get('YOUTUBE_API_PROXY_ENABLED', False) %}checked{% endif %}>
+                                                            为 YouTube 监控 API 启用独立代理
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-8">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-url" class="form-label">监控 API 代理地址</label>
+                                                            <input type="text" id="youtube-api-proxy-url" name="YOUTUBE_API_PROXY_URL" value="{{ config.get('YOUTUBE_API_PROXY_URL', '') }}" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                                                            <p class="help-text">关闭时强制直连，不会回退到下载代理或 `HTTP_PROXY/HTTPS_PROXY`。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label class="form-label d-block">&nbsp;</label>
+                                                            <div class="text-muted small pt-2">如果服务器本身无法直连 YouTube Data API，请在这里单独填写代理。</div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-username" class="form-label">监控 API 代理用户名</label>
+                                                            <input type="text" id="youtube-api-proxy-username" name="YOUTUBE_API_PROXY_USERNAME" value="{{ config.get('YOUTUBE_API_PROXY_USERNAME', '') }}" class="form-control" placeholder="可选">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-password" class="form-label">监控 API 代理密码</label>
+                                                            <input type="password" id="youtube-api-proxy-password" name="YOUTUBE_API_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_API_PROXY_PASSWORD', '') }}" class="form-control" placeholder="可选">
+                                                        </div>
+                                                    </div>
                                                 </div>
                                                 {% if config.YOUTUBE_API_KEY %}
                                                 <div class="alert alert-success mt-3 mb-0">
-                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置，监控功能可正常使用。
+                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置；如服务器无法直连，请同时配置上方监控 API 代理。
                                                 </div>
                                                 {% else %}
                                                 <div class="alert alert-warning mt-3 mb-0">

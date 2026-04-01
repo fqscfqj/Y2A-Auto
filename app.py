@@ -165,6 +165,9 @@ def _get_acfun_qr_session(session_id: str):
 _SETTINGS_SAVE_OPERATIONS = {}
 _SETTINGS_SAVE_LOCK = threading.Lock()
 _SETTINGS_SAVE_TTL_SECONDS = 600
+_MONITOR_RUN_OPERATIONS = {}
+_MONITOR_RUN_LOCK = threading.Lock()
+_MONITOR_RUN_TTL_SECONDS = 600
 
 
 def _new_settings_save_state(operation_id: str) -> dict:
@@ -216,6 +219,104 @@ def _get_settings_save_progress(operation_id: str):
     with _SETTINGS_SAVE_LOCK:
         state = _SETTINGS_SAVE_OPERATIONS.get(operation_id)
         return dict(state) if state else None
+
+
+def _new_monitor_run_state(operation_id: str, config_id: int) -> dict:
+    now_ts = time.time()
+    return {
+        'operation_id': operation_id,
+        'config_id': config_id,
+        'message': '监控任务已创建',
+        'detail': '正在后台执行 YouTube 监控，请稍候。',
+        'done': False,
+        'level': 'info',
+        'success': None,
+        'created_at': now_ts,
+        'updated_at': now_ts,
+        'expires_at': None,
+    }
+
+
+def _cleanup_monitor_run_operations():
+    now_ts = time.time()
+    with _MONITOR_RUN_LOCK:
+        stale_ids = []
+        for operation_id, state in _MONITOR_RUN_OPERATIONS.items():
+            expires_at = state.get('expires_at')
+            if expires_at and now_ts >= float(expires_at):
+                stale_ids.append(operation_id)
+        for operation_id in stale_ids:
+            _MONITOR_RUN_OPERATIONS.pop(operation_id, None)
+
+
+def _update_monitor_run_progress(operation_id: str, config_id: int, **fields) -> dict:
+    _cleanup_monitor_run_operations()
+    with _MONITOR_RUN_LOCK:
+        state = dict(_MONITOR_RUN_OPERATIONS.get(operation_id) or _new_monitor_run_state(operation_id, config_id))
+        state.update(fields)
+        state['config_id'] = config_id
+        state['updated_at'] = time.time()
+        if state.get('done'):
+            state['expires_at'] = state['updated_at'] + _MONITOR_RUN_TTL_SECONDS
+        _MONITOR_RUN_OPERATIONS[operation_id] = state
+        return dict(state)
+
+
+def _get_monitor_run_progress(operation_id: str):
+    _cleanup_monitor_run_operations()
+    with _MONITOR_RUN_LOCK:
+        state = _MONITOR_RUN_OPERATIONS.get(operation_id)
+        return dict(state) if state else None
+
+
+def _finalize_monitor_run_operation(operation_id: str, config_id: int, success: bool, message: str, detail: str = ''):
+    _update_monitor_run_progress(
+        operation_id,
+        config_id,
+        message=message,
+        detail=detail or message,
+        done=True,
+        level='success' if success else 'error',
+        success=success,
+    )
+
+
+def _run_monitor_operation(operation_id: str, config_id: int):
+    try:
+        success, message = youtube_monitor.run_monitor(config_id)
+    except Exception as exc:
+        logger.exception("后台执行 YouTube 监控失败，配置ID: %s", config_id)
+        success = False
+        message = f"监控失败: {exc}"
+
+    detail = '监控记录已更新，可刷新页面查看最新结果。' if success else message
+    _finalize_monitor_run_operation(operation_id, config_id, success, message, detail)
+
+
+def _start_monitor_run_operation(config_id: int):
+    config = youtube_monitor.get_monitor_config(config_id)
+    if not config:
+        return None, None, "监控配置不存在"
+
+    operation_id = str(uuid.uuid4())
+    _update_monitor_run_progress(
+        operation_id,
+        config_id,
+        message=f"已启动监控任务：{config['name']}",
+        detail='正在后台执行 YouTube 监控，请稍候。',
+        done=False,
+        level='info',
+        success=None,
+    )
+
+    monitor_thread = threading.Thread(
+        target=_run_monitor_operation,
+        args=(operation_id, config_id),
+        daemon=True,
+        name=f'youtube-monitor-run-{config_id}-{operation_id[:8]}'
+    )
+    monitor_thread.start()
+    return operation_id, config, None
 
 
 def _append_settings_message(messages: list, category: str, text: str):
@@ -466,7 +567,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
             'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
             'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'password_protection_enabled',
+            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_PROXY_ENABLED', 'YOUTUBE_API_PROXY_ENABLED', 'password_protection_enabled',
             'SPEECH_RECOGNITION_ENABLED',
             'VAD_ENABLED',
             'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
@@ -624,11 +725,20 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             _append_settings_message(messages, 'warning', warning_msg)
             report('warning', 'FFmpeg 检查失败', warning_msg, level='warning')
 
-        if 'YOUTUBE_API_KEY' in form_data:
-            api_key = form_data['YOUTUBE_API_KEY']
-            if api_key:
-                youtube_monitor.set_api_key(api_key)
-                logger.info("YouTube API密钥已更新并同步到监控系统")
+        api_key = str(updated_config.get('YOUTUBE_API_KEY') or '').strip()
+        api_ready, api_detail = youtube_monitor.reload_api_client(updated_config)
+        if api_key:
+            if api_ready:
+                youtube_monitor.start_all_schedules()
+                logger.info("YouTube监控 API 已重建并同步到监控系统，网络模式: %s", api_detail)
+            else:
+                youtube_monitor.stop_all_schedules()
+                warning_msg = f'YouTube监控 API 初始化失败：{api_detail}'
+                logger.warning(warning_msg)
+                _append_settings_message(messages, 'warning', warning_msg)
+        else:
+            youtube_monitor.stop_all_schedules()
+            logger.info("YouTube API密钥未配置，已跳过监控系统初始化")
 
         _append_settings_message(messages, 'success', '配置已成功保存')
         final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'
@@ -2788,12 +2898,51 @@ def youtube_monitor_config_delete(config_id):
 @login_required
 def youtube_monitor_run(config_id):
     """立即执行一次监控任务"""
-    success, message = youtube_monitor.run_monitor(config_id)
-    if success:
-        flash(message or '监控已执行', 'success')
-    else:
-        flash(message or '监控执行失败', 'danger')
+    operation_id, config, error_message = _start_monitor_run_operation(config_id)
+    if error_message:
+        if _is_ajax_request():
+            return jsonify({'success': False, 'message': error_message}), 404
+        flash(error_message, 'danger')
+        return redirect(url_for('youtube_monitor_index'))
+
+    started_message = f"监控已在后台开始执行：{config['name']}"
+    if _is_ajax_request():
+        return jsonify({
+            'success': True,
+            'message': started_message,
+            'operation_id': operation_id,
+            'config_id': config_id,
+        })
+
+    flash(f'{started_message}，请稍后刷新查看结果。', 'info')
     return redirect(url_for('youtube_monitor_history', config_id=config_id))
+
+
+@app.route('/youtube_monitor/run-status/<operation_id>', methods=['GET'])
+@login_required
+def youtube_monitor_run_status(operation_id):
+    """查询后台监控任务的执行状态"""
+    progress = _get_monitor_run_progress(operation_id)
+    if not progress:
+        return jsonify({
+            'found': False,
+            'config_id': None,
+            'message': '',
+            'detail': '',
+            'done': True,
+            'level': 'error',
+            'success': False,
+        })
+
+    return jsonify({
+        'found': True,
+        'config_id': progress.get('config_id'),
+        'message': progress.get('message', ''),
+        'detail': progress.get('detail', ''),
+        'done': progress.get('done', False),
+        'level': progress.get('level', 'info'),
+        'success': progress.get('success'),
+    })
 
 @app.route('/youtube_monitor/history/<int:config_id>')
 @login_required
@@ -3034,9 +3183,12 @@ if __name__ == '__main__':
 
     # 初始化YouTube监控API
     if config.get('YOUTUBE_API_KEY'):
-        youtube_monitor.set_api_key(config['YOUTUBE_API_KEY'])
-        youtube_monitor.start_all_schedules()
-        logger.info("YouTube监控系统已初始化")
+        api_ready, api_detail = youtube_monitor.reload_api_client(config)
+        if api_ready:
+            youtube_monitor.start_all_schedules()
+            logger.info("YouTube监控系统已初始化，网络模式: %s", api_detail)
+        else:
+            logger.warning("YouTube监控系统初始化失败: %s", api_detail)
 
     # 配置应用
     configure_app(app, config)

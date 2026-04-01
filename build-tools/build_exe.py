@@ -145,11 +145,13 @@ hiddenimports = [
     'googleapiclient.discovery',
     'googleapiclient.errors',
     'googleapiclient.http',
+    'httplib2',
     'google_auth_oauthlib',
     'google.auth',
     'google.auth.transport',
     'google.oauth2',
     'google.oauth2.credentials',
+    'socks',
     
     # 加密相关
     'cryptography',

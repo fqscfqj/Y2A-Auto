@@ -23,4 +23,5 @@ alibabacloud_tea_openapi==0.3.15
 alibabacloud_tea_util==0.3.13
 bilibili-api-python~=17.4.1
 google-api-python-client>=2.116,<3.0
+PySocks~=1.7.1
 APScheduler~=3.11.0

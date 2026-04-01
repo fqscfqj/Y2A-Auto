@@ -93,7 +93,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h4><i class="bi bi-list"></i> 监控记录</h4>
     <div>
-        <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
+        <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline monitor-run-form">
             <button type="submit" class="btn btn-success">
                 <i class="bi bi-play-fill"></i> 立即运行
             </button>
@@ -240,7 +240,7 @@
 {% else %}
 <div class="alert alert-info">
     <i class="bi bi-info-circle"></i> 此配置还没有监控记录。
-    <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline">
+    <form method="POST" action="{{ url_for('youtube_monitor_run', config_id=config.id) }}" class="d-inline monitor-run-form">
         <button type="submit" class="btn btn-link p-0">点击这里立即运行一次监控</button>
     </form>
 </div>
@@ -250,6 +250,94 @@
 
 {% block extra_js %}
 <script>
+const monitorRunStatusEndpointTemplate = '{{ url_for("youtube_monitor_run_status", operation_id="__operation_id__") }}';
+
+function bindMonitorRunForms() {
+    document.querySelectorAll('.monitor-run-form').forEach((form) => {
+        if (form.dataset.monitorRunBound === '1') {
+            return;
+        }
+        form.dataset.monitorRunBound = '1';
+
+        form.addEventListener('submit', (event) => {
+            event.preventDefault();
+
+            const button = form.querySelector('button[type="submit"]');
+            if (!button || button.disabled) {
+                return;
+            }
+
+            const originalHtml = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+
+            fetch(form.action, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            })
+            .then((response) => {
+                return response.json().catch(() => {
+                    throw new Error('启动监控失败：响应不是有效的 JSON，请刷新页面后重试。');
+                }).then((data) => ({ ok: response.ok, data }));
+            })
+            .then(({ ok, data }) => {
+                if (!ok || !data.success || !data.operation_id) {
+                    throw new Error((data && data.message) ? data.message : '启动监控失败');
+                }
+
+                showAlert('info', data.message || '监控已在后台启动');
+                const statusUrl = monitorRunStatusEndpointTemplate.replace('__operation_id__', encodeURIComponent(data.operation_id));
+                const pollTimer = window.setInterval(() => {
+                    fetch(statusUrl, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    })
+                    .then((response) => {
+                        return response.json().catch(() => {
+                            throw new Error('监控状态查询失败：响应不是有效的 JSON。');
+                        }).then((payload) => ({ ok: response.ok, payload }));
+                    })
+                    .then(({ ok, payload }) => {
+                        if (!ok || !payload || payload.found === false) {
+                            throw new Error('监控状态不存在或已过期，请刷新页面后查看结果。');
+                        }
+
+                        if (!payload.done) {
+                            return;
+                        }
+
+                        window.clearInterval(pollTimer);
+                        if (payload.success) {
+                            button.innerHTML = '<i class="bi bi-check2"></i>';
+                            showAlert('success', payload.message || '监控执行完成');
+                            window.setTimeout(() => window.location.reload(), 900);
+                            return;
+                        }
+
+                        button.disabled = false;
+                        button.innerHTML = originalHtml;
+                        showAlert('danger', payload.message || '监控执行失败');
+                    })
+                    .catch((error) => {
+                        window.clearInterval(pollTimer);
+                        button.disabled = false;
+                        button.innerHTML = originalHtml;
+                        showAlert('danger', error.message || '查询监控状态失败，请重试');
+                    });
+                }, 1000);
+            })
+            .catch((error) => {
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+                showAlert('danger', error.message || '启动监控失败，请重试');
+            });
+        });
+    });
+}
+
 function addToTasks(videoId, configId) {
     if (!confirm('确定要将此视频添加到任务队列吗？')) {
         return;
@@ -313,6 +401,8 @@ function showAlert(type, message) {
         }
     }, 3000);
 }
+
+document.addEventListener('DOMContentLoaded', bindMonitorRunForms);
 </script>
 {% endblock %}
 

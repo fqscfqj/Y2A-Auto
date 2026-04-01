@@ -183,6 +183,7 @@ python app.py
 - `ACFUN_COOKIES_PATH`：AcFun Cookie 路径
 - `BILIBILI_COOKIES_PATH`：bilibili Cookie 路径
 - `YOUTUBE_PROXY_ENABLED` / `YOUTUBE_PROXY_URL`：YouTube 下载代理
+- `YOUTUBE_API_PROXY_ENABLED` / `YOUTUBE_API_PROXY_URL`：YouTube 监控 API 独立代理，不继承下载代理
 - `YOUTUBE_DOWNLOAD_THREADS`：下载线程数
 - `YOUTUBE_THROTTLED_RATE`：下载速度限制
 - `YOUTUBE_API_KEY`：YouTube Data API v3 密钥，监控功能需要
