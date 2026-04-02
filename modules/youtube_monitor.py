@@ -20,6 +20,7 @@ from urllib.parse import quote, urlsplit
 from apscheduler.schedulers.background import BackgroundScheduler
 from logging.handlers import RotatingFileHandler
 from modules.task_manager import add_task
+from .security_logging import describe_network_mode, strip_url_credentials
 from .config_manager import load_config
 from .utils import get_app_subdir
 
@@ -72,6 +73,7 @@ class YouTubeMonitor:
         self._last_fetch_had_errors = False
         self._api_proxy_enabled = False
         self._api_proxy_url: Optional[str] = None
+        self._api_proxy_display_url: Optional[str] = None
         self._last_api_init_error: Optional[str] = None
         self._init_database()
         self._init_youtube_api()
@@ -450,33 +452,32 @@ class YouTubeMonitor:
             return f"{protocol}://{auth}@{rest}"
         return normalized
 
-    def _resolve_api_proxy_url(self, runtime_config: Dict[str, Any]) -> Optional[str]:
-        """从配置中解析监控 API 独立代理。"""
+    def _resolve_api_proxy_urls(self, runtime_config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """从配置中解析监控 API 连接地址与日志展示地址。"""
         if not runtime_config.get('YOUTUBE_API_PROXY_ENABLED', False):
-            return None
+            return None, None
 
+        raw_proxy_url = str(runtime_config.get('YOUTUBE_API_PROXY_URL', '') or '')
         proxy_url = self._build_proxy_url_with_auth(
-            str(runtime_config.get('YOUTUBE_API_PROXY_URL', '') or ''),
+            raw_proxy_url,
             str(runtime_config.get('YOUTUBE_API_PROXY_USERNAME', '') or '').strip(),
             str(runtime_config.get('YOUTUBE_API_PROXY_PASSWORD', '') or '').strip(),
         )
         if not proxy_url:
-            return None
+            return None, None
 
         parsed = urlsplit(proxy_url)
         if not parsed.scheme or not parsed.hostname:
             raise ValueError("YouTube 监控 API 代理地址无效，请填写包含主机名的 http:// 或 socks5:// 地址")
 
-        return proxy_url
+        display_proxy_url = strip_url_credentials(self._normalize_proxy_url(raw_proxy_url))
+        return proxy_url, display_proxy_url
 
     def _describe_api_network_mode(self) -> str:
         """输出当前监控 API 的网络模式，避免在日志中泄漏代理凭据。"""
-        if not self._api_proxy_enabled or not self._api_proxy_url:
+        if not self._api_proxy_enabled:
             return "直连（不继承环境变量代理）"
-
-        parsed = urlsplit(self._api_proxy_url)
-        authority = parsed.netloc.rsplit('@', 1)[-1]
-        return f"代理 {parsed.scheme}://{authority}"
+        return describe_network_mode(self._api_proxy_display_url)
 
     def _build_youtube_http(self, runtime_config: Dict[str, Any]) -> httplib2.Http:
         """构造用于 YouTube Data API 的 HTTP transport。"""
@@ -484,9 +485,10 @@ class YouTubeMonitor:
         if http_timeout is None:
             http_timeout = DEFAULT_HTTP_TIMEOUT_SEC
 
-        proxy_url = self._resolve_api_proxy_url(runtime_config)
+        proxy_url, proxy_display_url = self._resolve_api_proxy_urls(runtime_config)
         self._api_proxy_enabled = bool(proxy_url)
         self._api_proxy_url = proxy_url
+        self._api_proxy_display_url = proxy_display_url
 
         if proxy_url:
             return httplib2.Http(
@@ -504,6 +506,7 @@ class YouTubeMonitor:
         self.youtube_http = None
         self._api_proxy_enabled = False
         self._api_proxy_url = None
+        self._api_proxy_display_url = None
         self._last_api_init_error = None
 
         if not self.api_key:
@@ -526,9 +529,13 @@ class YouTubeMonitor:
         except Exception as e:
             self.youtube = None
             self.youtube_http = None
-            self._last_api_init_error = str(e)
-            logger.error(f"YouTube API初始化失败: {str(e)}")
-            return False, str(e)
+            safe_error_message = (
+                f"YouTube监控 API 初始化失败（{type(e).__name__}）。"
+                "请检查 API 密钥、代理配置与网络连通性。"
+            )
+            self._last_api_init_error = safe_error_message
+            logger.error("%s 当前网络模式: %s", safe_error_message, self._describe_api_network_mode())
+            return False, safe_error_message
 
     def reload_api_client(self, runtime_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """根据当前配置重建监控 API 客户端。"""
