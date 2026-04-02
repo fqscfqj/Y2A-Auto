@@ -105,15 +105,6 @@ def _describe_youtube_api_status(status_code: str) -> str:
 def _build_startup_config_log_summary(config: dict | None) -> dict:
     normalized = dict(config or {})
 
-    def is_configured(value) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        return bool(str(value).strip())
-
     return {
         'feature_flags': {
             'AUTO_MODE_ENABLED': bool(normalized.get('AUTO_MODE_ENABLED', False)),
@@ -123,23 +114,6 @@ def _build_startup_config_log_summary(config: dict | None) -> dict:
             'YOUTUBE_API_PROXY_ENABLED': bool(normalized.get('YOUTUBE_API_PROXY_ENABLED', False)),
             'SUBTITLE_TRANSLATION_ENABLED': bool(normalized.get('SUBTITLE_TRANSLATION_ENABLED', False)),
             'SPEECH_RECOGNITION_ENABLED': bool(normalized.get('SPEECH_RECOGNITION_ENABLED', False)),
-        },
-        'credentials_configured': {
-            'password': is_configured(normalized.get('password')),
-            'OPENAI_API_KEY': is_configured(normalized.get('OPENAI_API_KEY')),
-            'SUBTITLE_OPENAI_API_KEY': is_configured(normalized.get('SUBTITLE_OPENAI_API_KEY')),
-            'SUBTITLE_QC_API_KEY': is_configured(normalized.get('SUBTITLE_QC_API_KEY')),
-            'WHISPER_API_KEY': is_configured(normalized.get('WHISPER_API_KEY')),
-            'VOXTRAL_API_KEY': is_configured(normalized.get('VOXTRAL_API_KEY')),
-            'FIREREDASR_API_KEY': is_configured(normalized.get('FIREREDASR_API_KEY')),
-            'YOUTUBE_API_KEY': is_configured(normalized.get('YOUTUBE_API_KEY')),
-            'ALIYUN_ACCESS_KEY_ID': is_configured(normalized.get('ALIYUN_ACCESS_KEY_ID')),
-            'ALIYUN_ACCESS_KEY_SECRET': is_configured(normalized.get('ALIYUN_ACCESS_KEY_SECRET')),
-        },
-        'path_configured': {
-            'YOUTUBE_COOKIES_PATH': is_configured(normalized.get('YOUTUBE_COOKIES_PATH')),
-            'ACFUN_COOKIES_PATH': is_configured(normalized.get('ACFUN_COOKIES_PATH')),
-            'BILIBILI_COOKIES_PATH': is_configured(normalized.get('BILIBILI_COOKIES_PATH')),
         },
         'config_keys_total': len(normalized),
     }

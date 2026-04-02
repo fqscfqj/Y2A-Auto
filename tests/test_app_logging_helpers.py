@@ -48,10 +48,8 @@ class AppLoggingHelperTests(unittest.TestCase):
         serialized = json.dumps(summary, ensure_ascii=False)
 
         self.assertTrue(summary["feature_flags"]["AUTO_MODE_ENABLED"])
-        self.assertTrue(summary["credentials_configured"]["password"])
-        self.assertTrue(summary["credentials_configured"]["OPENAI_API_KEY"])
-        self.assertTrue(summary["credentials_configured"]["YOUTUBE_API_KEY"])
-        self.assertTrue(summary["path_configured"]["YOUTUBE_COOKIES_PATH"])
+        self.assertNotIn("credentials_configured", summary)
+        self.assertNotIn("path_configured", summary)
         self.assertNotIn("super-secret", serialized)
         self.assertNotIn("sk-secret", serialized)
         self.assertNotIn("yt-secret", serialized)
