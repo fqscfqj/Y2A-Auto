@@ -62,10 +62,6 @@ docs/_build/
 site/ 
 
 tests/
-!tests/
-tests/*
-!tests/test_security_logging.py
-!tests/test_youtube_monitor_security_logging.py
 .uv-cache/
 .uv-python/
 build-tools/Y2A-Auto.spec

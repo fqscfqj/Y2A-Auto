@@ -26,7 +26,6 @@ from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
-from modules.security_logging import build_config_summary_for_logging
 from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_CHECKBOXES,
     SPEECH_PIPELINE_FLOAT_FIELDS,
@@ -3177,8 +3176,7 @@ if __name__ == '__main__':
     # 加载配置
     config = load_config()
     app.config['Y2A_SETTINGS'] = config
-    config_log_summary = build_config_summary_for_logging(config)
-    logger.info("配置已加载（脱敏摘要）: %s", json.dumps(config_log_summary, ensure_ascii=False))
+    logger.info(f"配置已加载: {json.dumps(config, ensure_ascii=False, indent=2)}")
 
     # 初始化全局任务处理器，确保并发控制生效
     from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
