@@ -62,6 +62,22 @@ def setup_youtube_monitor_logger():
 
 logger = setup_youtube_monitor_logger()
 
+API_INIT_STATUS_DIRECT_READY = 'direct_ready'
+API_INIT_STATUS_PROXY_READY = 'proxy_ready'
+API_INIT_STATUS_MISSING_API_KEY = 'missing_api_key'
+API_INIT_STATUS_INIT_FAILED = 'init_failed'
+
+
+def get_api_init_status_message(status_code: Optional[str]) -> str:
+    messages = {
+        API_INIT_STATUS_DIRECT_READY: 'YouTube API 初始化成功，当前为直连模式',
+        API_INIT_STATUS_PROXY_READY: 'YouTube API 初始化成功，独立代理已启用',
+        API_INIT_STATUS_MISSING_API_KEY: 'YouTube API 密钥未配置，请先在设置页完成接入。',
+        API_INIT_STATUS_INIT_FAILED: 'YouTube API 初始化失败，请检查 API 密钥、代理配置与网络连通性。',
+    }
+    return messages.get(status_code, 'YouTube API 未初始化，请检查设置。')
+
+
 class YouTubeMonitor:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -71,7 +87,6 @@ class YouTubeMonitor:
         self.db_path = os.path.join(get_app_subdir('db'), 'youtube_monitor.db')
         self._last_fetch_had_errors = False
         self._api_proxy_enabled = False
-        self._api_proxy_url: Optional[str] = None
         self._last_api_init_error: Optional[str] = None
         self._init_database()
         self._init_youtube_api()
@@ -469,14 +484,8 @@ class YouTubeMonitor:
 
         return proxy_url
 
-    def _describe_api_network_mode(self) -> str:
-        """输出当前监控 API 的网络模式，避免在日志中泄漏代理凭据。"""
-        if not self._api_proxy_enabled or not self._api_proxy_url:
-            return "直连（不继承环境变量代理）"
-
-        parsed = urlsplit(self._api_proxy_url)
-        authority = parsed.netloc.rsplit('@', 1)[-1]
-        return f"代理 {parsed.scheme}://{authority}"
+    def _get_api_init_success_status(self) -> str:
+        return API_INIT_STATUS_PROXY_READY if self._api_proxy_enabled else API_INIT_STATUS_DIRECT_READY
 
     def _build_youtube_http(self, runtime_config: Dict[str, Any]) -> httplib2.Http:
         """构造用于 YouTube Data API 的 HTTP transport。"""
@@ -486,7 +495,6 @@ class YouTubeMonitor:
 
         proxy_url = self._resolve_api_proxy_url(runtime_config)
         self._api_proxy_enabled = bool(proxy_url)
-        self._api_proxy_url = proxy_url
 
         if proxy_url:
             return httplib2.Http(
@@ -503,13 +511,12 @@ class YouTubeMonitor:
         self.youtube = None
         self.youtube_http = None
         self._api_proxy_enabled = False
-        self._api_proxy_url = None
         self._last_api_init_error = None
 
         if not self.api_key:
             logger.info("YouTube API密钥未配置，跳过监控 API 初始化")
-            self._last_api_init_error = "YouTube API密钥未配置，请先在设置页完成接入。"
-            return False, self._last_api_init_error
+            self._last_api_init_error = API_INIT_STATUS_MISSING_API_KEY
+            return False, API_INIT_STATUS_MISSING_API_KEY
 
         try:
             self.youtube_http = self._build_youtube_http(config)
@@ -519,16 +526,19 @@ class YouTubeMonitor:
                 developerKey=self.api_key,
                 http=self.youtube_http,
             )
-            detail = self._describe_api_network_mode()
+            status_code = self._get_api_init_success_status()
             self._last_api_init_error = None
-            logger.info(f"YouTube API初始化成功，网络模式: {detail}")
-            return True, detail
-        except Exception as e:
+            if status_code == API_INIT_STATUS_PROXY_READY:
+                logger.info('YouTube API 初始化成功，独立代理已启用')
+                return True, API_INIT_STATUS_PROXY_READY
+            logger.info('YouTube API 初始化成功，当前为直连模式')
+            return True, API_INIT_STATUS_DIRECT_READY
+        except Exception:
             self.youtube = None
             self.youtube_http = None
-            self._last_api_init_error = str(e)
-            logger.error(f"YouTube API初始化失败: {str(e)}")
-            return False, str(e)
+            self._last_api_init_error = API_INIT_STATUS_INIT_FAILED
+            logger.error('YouTube API 初始化失败，请检查 API 密钥、代理配置与网络连通性。')
+            return False, API_INIT_STATUS_INIT_FAILED
 
     def reload_api_client(self, runtime_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """根据当前配置重建监控 API 客户端。"""
@@ -905,9 +915,15 @@ class YouTubeMonitor:
         # 添加调试日志 - 检查 YouTube API 对象状态
         logger.debug(f"YouTube API 对象状态: {type(self.youtube)}, 值: {self.youtube}")
         if not self.youtube:
-            init_error = self._last_api_init_error or "YouTube API未初始化"
-            logger.error("YouTube API未初始化: %s", init_error)
-            return False, f"监控失败：{init_error}"
+            init_status = self._last_api_init_error or API_INIT_STATUS_INIT_FAILED
+            if init_status == API_INIT_STATUS_MISSING_API_KEY:
+                init_message = 'YouTube API 密钥未配置，请先在设置页完成接入。'
+            elif init_status == API_INIT_STATUS_INIT_FAILED:
+                init_message = 'YouTube API 初始化失败，请检查 API 密钥、代理配置与网络连通性。'
+            else:
+                init_message = 'YouTube API 未初始化，请检查设置。'
+            logger.error("YouTube API未初始化: %s", init_message)
+            return False, f"监控失败：{init_message}"
         
         config = self.get_monitor_config(config_id)
         if not config:

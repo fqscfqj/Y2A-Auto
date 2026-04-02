@@ -92,6 +92,59 @@ def _save_security_state(state):
         return False
 
 
+def _describe_youtube_api_status(status_code: str) -> str:
+    messages = {
+        'direct_ready': 'YouTube API 初始化成功，当前为直连模式',
+        'proxy_ready': 'YouTube API 初始化成功，独立代理已启用',
+        'missing_api_key': 'YouTube API 密钥未配置，请先在设置页完成接入。',
+        'init_failed': 'YouTube监控 API 初始化失败，请检查 API 密钥、代理配置与网络连通性。',
+    }
+    return messages.get(status_code, 'YouTube监控 API 状态未知，请检查设置。')
+
+
+def _build_startup_config_log_summary(config: dict | None) -> dict:
+    normalized = dict(config or {})
+
+    def is_configured(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return bool(str(value).strip())
+
+    return {
+        'feature_flags': {
+            'AUTO_MODE_ENABLED': bool(normalized.get('AUTO_MODE_ENABLED', False)),
+            'password_protection_enabled': bool(normalized.get('password_protection_enabled', False)),
+            'CONTENT_MODERATION_ENABLED': bool(normalized.get('CONTENT_MODERATION_ENABLED', False)),
+            'YOUTUBE_PROXY_ENABLED': bool(normalized.get('YOUTUBE_PROXY_ENABLED', False)),
+            'YOUTUBE_API_PROXY_ENABLED': bool(normalized.get('YOUTUBE_API_PROXY_ENABLED', False)),
+            'SUBTITLE_TRANSLATION_ENABLED': bool(normalized.get('SUBTITLE_TRANSLATION_ENABLED', False)),
+            'SPEECH_RECOGNITION_ENABLED': bool(normalized.get('SPEECH_RECOGNITION_ENABLED', False)),
+        },
+        'credentials_configured': {
+            'password': is_configured(normalized.get('password')),
+            'OPENAI_API_KEY': is_configured(normalized.get('OPENAI_API_KEY')),
+            'SUBTITLE_OPENAI_API_KEY': is_configured(normalized.get('SUBTITLE_OPENAI_API_KEY')),
+            'SUBTITLE_QC_API_KEY': is_configured(normalized.get('SUBTITLE_QC_API_KEY')),
+            'WHISPER_API_KEY': is_configured(normalized.get('WHISPER_API_KEY')),
+            'VOXTRAL_API_KEY': is_configured(normalized.get('VOXTRAL_API_KEY')),
+            'FIREREDASR_API_KEY': is_configured(normalized.get('FIREREDASR_API_KEY')),
+            'YOUTUBE_API_KEY': is_configured(normalized.get('YOUTUBE_API_KEY')),
+            'ALIYUN_ACCESS_KEY_ID': is_configured(normalized.get('ALIYUN_ACCESS_KEY_ID')),
+            'ALIYUN_ACCESS_KEY_SECRET': is_configured(normalized.get('ALIYUN_ACCESS_KEY_SECRET')),
+        },
+        'path_configured': {
+            'YOUTUBE_COOKIES_PATH': is_configured(normalized.get('YOUTUBE_COOKIES_PATH')),
+            'ACFUN_COOKIES_PATH': is_configured(normalized.get('ACFUN_COOKIES_PATH')),
+            'BILIBILI_COOKIES_PATH': is_configured(normalized.get('BILIBILI_COOKIES_PATH')),
+        },
+        'config_keys_total': len(normalized),
+    }
+
+
 def _cleanup_bilibili_qr_sessions():
     now_ts = time.time()
     with _BILIBILI_QR_SESSION_LOCK:
@@ -726,14 +779,20 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             report('warning', 'FFmpeg 检查失败', warning_msg, level='warning')
 
         api_key = str(updated_config.get('YOUTUBE_API_KEY') or '').strip()
-        api_ready, api_detail = youtube_monitor.reload_api_client(updated_config)
+        api_ready, api_status = youtube_monitor.reload_api_client(updated_config)
         if api_key:
             if api_ready:
                 youtube_monitor.start_all_schedules()
-                logger.info("YouTube监控 API 已重建并同步到监控系统，网络模式: %s", api_detail)
+                if api_status == 'proxy_ready':
+                    logger.info("YouTube监控 API 已重建并同步到监控系统，独立代理已启用")
+                else:
+                    logger.info("YouTube监控 API 已重建并同步到监控系统，当前为直连模式")
             else:
                 youtube_monitor.stop_all_schedules()
-                warning_msg = f'YouTube监控 API 初始化失败：{api_detail}'
+                if api_status == 'missing_api_key':
+                    warning_msg = 'YouTube API 密钥未配置，请先在设置页完成接入。'
+                else:
+                    warning_msg = 'YouTube监控 API 初始化失败，请检查 API 密钥、代理配置与网络连通性。'
                 logger.warning(warning_msg)
                 _append_settings_message(messages, 'warning', warning_msg)
         else:
@@ -3176,7 +3235,10 @@ if __name__ == '__main__':
     # 加载配置
     config = load_config()
     app.config['Y2A_SETTINGS'] = config
-    logger.info(f"配置已加载: {json.dumps(config, ensure_ascii=False, indent=2)}")
+    logger.info(
+        "配置已加载（摘要）: %s",
+        json.dumps(_build_startup_config_log_summary(config), ensure_ascii=False)
+    )
 
     # 初始化全局任务处理器，确保并发控制生效
     from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
@@ -3190,12 +3252,18 @@ if __name__ == '__main__':
 
     # 初始化YouTube监控API
     if config.get('YOUTUBE_API_KEY'):
-        api_ready, api_detail = youtube_monitor.reload_api_client(config)
+        api_ready, api_status = youtube_monitor.reload_api_client(config)
         if api_ready:
             youtube_monitor.start_all_schedules()
-            logger.info("YouTube监控系统已初始化，网络模式: %s", api_detail)
+            if api_status == 'proxy_ready':
+                logger.info("YouTube监控系统已初始化，独立代理已启用")
+            else:
+                logger.info("YouTube监控系统已初始化，当前为直连模式")
         else:
-            logger.warning("YouTube监控系统初始化失败: %s", api_detail)
+            if api_status == 'missing_api_key':
+                logger.warning('YouTube API 密钥未配置，请先在设置页完成接入。')
+            else:
+                logger.warning('YouTube监控 API 初始化失败，请检查 API 密钥、代理配置与网络连通性。')
 
     # 配置应用
     configure_app(app, config)
