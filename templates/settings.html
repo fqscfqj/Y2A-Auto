@@ -404,6 +404,28 @@
                                                     </div>
                                                     <div class="col-md-6">
                                                         <div class="form-group">
+                                                            <label for="youtube-download-quality-mode" class="form-label">画质模式</label>
+                                                            <select id="youtube-download-quality-mode" name="YOUTUBE_DOWNLOAD_QUALITY_MODE" class="form-select">
+                                                                <option value="highest" {% if config.get('YOUTUBE_DOWNLOAD_QUALITY_MODE', 'highest') == 'highest' %}selected{% endif %}>始终最高</option>
+                                                                <option value="manual" {% if config.get('YOUTUBE_DOWNLOAD_QUALITY_MODE', 'highest') == 'manual' %}selected{% endif %}>手动选择</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6{% if config.get('YOUTUBE_DOWNLOAD_QUALITY_MODE', 'highest') != 'manual' %} d-none{% endif %}" id="youtube-download-max-height-group">
+                                                        <div class="form-group">
+                                                            <label for="youtube-download-max-height" class="form-label">手动画质</label>
+                                                            <select id="youtube-download-max-height" name="YOUTUBE_DOWNLOAD_MAX_HEIGHT" class="form-select">
+                                                                <option value="2160" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '2160' %}selected{% endif %}>2160p</option>
+                                                                <option value="1440" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '1440' %}selected{% endif %}>1440p</option>
+                                                                <option value="1080" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '1080' %}selected{% endif %}>1080p</option>
+                                                                <option value="720" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '720' %}selected{% endif %}>720p</option>
+                                                                <option value="480" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '480' %}selected{% endif %}>480p</option>
+                                                                <option value="360" {% if config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT', '1080') == '360' %}selected{% endif %}>360p</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
                                                             <label for="youtube-proxy-username" class="form-label">代理用户名</label>
                                                             <input type="text" id="youtube-proxy-username" name="YOUTUBE_PROXY_USERNAME" value="{{ config.get('YOUTUBE_PROXY_USERNAME', '') }}" class="form-control" placeholder="可选">
                                                         </div>
@@ -419,6 +441,9 @@
                                                             <label for="youtube-throttled-rate" class="form-label">下载速度限制</label>
                                                             <input type="text" id="youtube-throttled-rate" name="YOUTUBE_THROTTLED_RATE" value="{{ config.get('YOUTUBE_THROTTLED_RATE', '') }}" class="form-control" placeholder="如：1M、500K、2.5M">
                                                         </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <p class="help-text mb-0">手动模式会下载不高于所选分辨率的最高可用版本，不保证精确命中。</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1554,6 +1579,8 @@
 document.addEventListener('DOMContentLoaded', function () {
     const navLinks = document.querySelectorAll('.settings-nav .nav-link[data-bs-toggle="pill"]');
     const summaryCards = document.querySelectorAll('[data-settings-target]');
+    const youtubeQualityModeSelect = document.getElementById('youtube-download-quality-mode');
+    const youtubeQualityMaxHeightGroup = document.getElementById('youtube-download-max-height-group');
 
     const showTabBySelector = function (selector) {
         if (!selector || !selector.startsWith('#')) {
@@ -1600,6 +1627,19 @@ document.addEventListener('DOMContentLoaded', function () {
     window.addEventListener('hashchange', function () {
         activateTabFromHash();
     });
+
+    const syncYoutubeQualityFields = function () {
+        if (!youtubeQualityModeSelect || !youtubeQualityMaxHeightGroup) {
+            return;
+        }
+        const isManual = youtubeQualityModeSelect.value === 'manual';
+        youtubeQualityMaxHeightGroup.classList.toggle('d-none', !isManual);
+    };
+
+    if (youtubeQualityModeSelect) {
+        youtubeQualityModeSelect.addEventListener('change', syncYoutubeQualityFields);
+        syncYoutubeQualityFields();
+    }
 
     const resetBtn = document.getElementById('reset-settings-btn');
     if (resetBtn) {

@@ -11,7 +11,11 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
-from modules.config_manager import load_config
+from modules.config_manager import (
+    load_config,
+    normalize_youtube_download_max_height,
+    normalize_youtube_download_quality_mode,
+)
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
@@ -119,6 +123,62 @@ def _append_yt_dlp_network_args(
         # web          → 最后回退，有时仍可用
         cmd.extend(['--extractor-args', 'youtube:player_client=tv_embedded,web_creator,web'])
     return cmd
+
+
+def _build_quality_retry_strategies(config: dict[str, Any] | None, has_ffmpeg: bool) -> dict[str, Any]:
+    mode = normalize_youtube_download_quality_mode((config or {}).get('YOUTUBE_DOWNLOAD_QUALITY_MODE'))
+    max_height = normalize_youtube_download_max_height((config or {}).get('YOUTUBE_DOWNLOAD_MAX_HEIGHT'))
+    manual = mode == 'manual'
+
+    if manual:
+        primary_selector = f'bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]'
+        fallback_selector = f'best[height<={max_height}]'
+    else:
+        primary_selector = 'bestvideo+bestaudio/best'
+        fallback_selector = 'best'
+
+    strategies: list[dict[str, Any]] = []
+    if has_ffmpeg:
+        strategies.append({
+            'selector': primary_selector,
+            'merge_output_format': 'mp4',
+            'label': 'bestvideo+bestaudio',
+        })
+    strategies.append({
+        'selector': fallback_selector,
+        'merge_output_format': None,
+        'label': 'best',
+    })
+    return {
+        'mode': mode,
+        'max_height': max_height if manual else None,
+        'strategies': strategies,
+    }
+
+
+def _build_quality_format_selector(config: dict[str, Any] | None, has_ffmpeg: bool) -> str:
+    plan = _build_quality_retry_strategies(config, has_ffmpeg)
+    strategies = plan.get('strategies') or []
+    if not strategies:
+        return 'best'
+    return str(strategies[0].get('selector') or 'best')
+
+
+def _set_yt_dlp_format_options(
+    cmd: list[str],
+    selector: str,
+    *,
+    merge_output_format: str | None = None,
+) -> None:
+    while '--format' in cmd:
+        idx = cmd.index('--format')
+        del cmd[idx:idx + 2]
+    while '--merge-output-format' in cmd:
+        idx = cmd.index('--merge-output-format')
+        del cmd[idx:idx + 2]
+    cmd.extend(['--format', selector])
+    if merge_output_format:
+        cmd.extend(['--merge-output-format', merge_output_format])
 
 
 def _is_format_selection_error(error_text: str | None) -> bool:
@@ -585,21 +645,25 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if throttled_rate:
             cmd.extend(['--throttled-rate', throttled_rate])
             logger.info(f"启用下载速度限制: {throttled_rate}")
-        
-        # 添加格式选择策略：优先下载最高画质视频 + 最高音质音频
+
+        has_ffmpeg = bool(ffmpeg_location) or is_docker_env()
+        quality_plan: dict[str, Any] | None = None
+        quality_strategy_index = 0
         if not skip_download:
-            has_ffmpeg = bool(ffmpeg_location) or is_docker_env()
-            if has_ffmpeg:
-                # 有可用 ffmpeg（内置或 Docker 环境）：优先分离的最佳视频+最佳音频并合并
-                cmd.extend([
-                    '--format', 'bestvideo+bestaudio/best',
-                    '--merge-output-format', 'mp4'
-                ])
-            else:
-                # 无 ffmpeg：避免触发合并，直接选择最佳单文件
-                cmd.extend([
-                    '--format', 'best'
-                ])
+            quality_plan = _build_quality_retry_strategies(config, has_ffmpeg)
+            quality_strategy = quality_plan['strategies'][quality_strategy_index]
+            _set_yt_dlp_format_options(
+                cmd,
+                cast(str, quality_strategy['selector']),
+                merge_output_format=cast(str | None, quality_strategy.get('merge_output_format'))
+            )
+            logger.info(
+                "YouTube 下载画质策略: mode=%s, target_height=%s, format_selector=%s, has_ffmpeg=%s",
+                quality_plan['mode'],
+                quality_plan['max_height'] or 'unlimited',
+                quality_strategy['selector'],
+                has_ffmpeg,
+            )
         
         # 根据参数调整命令（不再进行缩略图格式转换，直接使用原生格式）
         if skip_download:
@@ -797,23 +861,35 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
 
                 if "Requested format is not available" in combined_error or "Only images are available" in combined_error:
                     if attempt < max_retries - 1:
-                        # 降级格式选择策略
-                        if '--format' in cmd:
-                            format_index = cmd.index('--format')
-                            if attempt == 0:
-                                # 第二次尝试：改为最佳单文件，降低对分离流/封装格式的要求
-                                cmd[format_index + 1] = 'best'
-                                logger.info("使用降级格式策略: best")
-                            elif attempt == 1:
-                                # 第三次尝试：移除格式限制
-                                cmd.pop(format_index + 1)  # 移除格式参数
-                                cmd.pop(format_index)      # 移除--format
-                                if '--merge-output-format' in cmd:
-                                    merge_index = cmd.index('--merge-output-format')
-                                    cmd.pop(merge_index + 1)
-                                    cmd.pop(merge_index)
-                                logger.info("移除格式限制，使用默认格式")
-                        
+                        strategy_switched = False
+                        if quality_plan is not None:
+                            strategies = cast(list[dict[str, Any]], quality_plan.get('strategies') or [])
+                            if quality_strategy_index + 1 < len(strategies):
+                                quality_strategy_index += 1
+                                next_strategy = strategies[quality_strategy_index]
+                                _set_yt_dlp_format_options(
+                                    cmd,
+                                    cast(str, next_strategy['selector']),
+                                    merge_output_format=cast(str | None, next_strategy.get('merge_output_format'))
+                                )
+                                logger.info(
+                                    "使用降级格式策略: mode=%s, target_height=%s, format_selector=%s",
+                                    quality_plan.get('mode'),
+                                    quality_plan.get('max_height') or 'unlimited',
+                                    next_strategy['selector'],
+                                )
+                                strategy_switched = True
+                        if not strategy_switched and quality_plan is not None:
+                            current_selector = None
+                            strategies = cast(list[dict[str, Any]], quality_plan.get('strategies') or [])
+                            if quality_strategy_index < len(strategies):
+                                current_selector = strategies[quality_strategy_index].get('selector')
+                            logger.warning(
+                                "当前画质策略已无更多回退候选，将保留现有格式限制重试: mode=%s, target_height=%s, format_selector=%s",
+                                quality_plan.get('mode'),
+                                quality_plan.get('max_height') or 'unlimited',
+                                current_selector or _build_quality_format_selector(config, has_ffmpeg),
+                            )
                         time.sleep(2)  # 等待2秒后重试
                         continue
                 

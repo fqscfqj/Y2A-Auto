@@ -13,6 +13,11 @@ from .speech_pipeline_settings import (
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
 
+_YOUTUBE_DOWNLOAD_QUALITY_MODES = ('highest', 'manual')
+_YOUTUBE_DOWNLOAD_MAX_HEIGHT_VALUES = ('2160', '1440', '1080', '720', '480', '360')
+_YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT = 'highest'
+_YOUTUBE_DOWNLOAD_MAX_HEIGHT_DEFAULT = '1080'
+
 # 默认配置
 DEFAULT_CONFIG = {
     "AUTO_MODE_ENABLED": False, # 无人值守自动投稿总开关
@@ -72,6 +77,8 @@ DEFAULT_CONFIG = {
     "YOUTUBE_PROXY_USERNAME": "",  # 代理用户名（可选）
     "YOUTUBE_PROXY_PASSWORD": "",  # 代理密码（可选）
     "YOUTUBE_DOWNLOAD_THREADS": 4,  # yt-dlp下载线程数（并发片段数）
+    "YOUTUBE_DOWNLOAD_QUALITY_MODE": _YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT,  # highest|manual
+    "YOUTUBE_DOWNLOAD_MAX_HEIGHT": _YOUTUBE_DOWNLOAD_MAX_HEIGHT_DEFAULT,  # 手动画质上限
     "YOUTUBE_THROTTLED_RATE": "",  # 限制下载速度，格式如：1M、500K等，留空不限制
     # 外部工具路径
     "FFMPEG_LOCATION": "",  # 可选：覆盖 ffmpeg 可执行文件路径；留空则使用项目内置版本
@@ -179,6 +186,20 @@ DEFAULT_CONFIG = {
 DEFAULT_CONFIG = inject_speech_pipeline_defaults(DEFAULT_CONFIG)
 
 
+def normalize_youtube_download_quality_mode(value):
+    normalized = str(value or _YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT).strip().lower()
+    if normalized not in _YOUTUBE_DOWNLOAD_QUALITY_MODES:
+        return _YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT
+    return normalized
+
+
+def normalize_youtube_download_max_height(value):
+    normalized = str(value or _YOUTUBE_DOWNLOAD_MAX_HEIGHT_DEFAULT).strip()
+    if normalized not in _YOUTUBE_DOWNLOAD_MAX_HEIGHT_VALUES:
+        return _YOUTUBE_DOWNLOAD_MAX_HEIGHT_DEFAULT
+    return normalized
+
+
 def _prune_unknown_config_keys(config_data):
     clean_config = {}
     removed_keys = []
@@ -234,6 +255,18 @@ def load_config():
                     upload_target_normalized = 'acfun'
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
+
+                quality_mode_before = config.get('YOUTUBE_DOWNLOAD_QUALITY_MODE')
+                config['YOUTUBE_DOWNLOAD_QUALITY_MODE'] = normalize_youtube_download_quality_mode(
+                    quality_mode_before
+                )
+                quality_mode_changed = config['YOUTUBE_DOWNLOAD_QUALITY_MODE'] != quality_mode_before
+
+                quality_height_before = config.get('YOUTUBE_DOWNLOAD_MAX_HEIGHT')
+                config['YOUTUBE_DOWNLOAD_MAX_HEIGHT'] = normalize_youtube_download_max_height(
+                    quality_height_before
+                )
+                quality_height_changed = config['YOUTUBE_DOWNLOAD_MAX_HEIGHT'] != quality_height_before
                 removed_unknown_keys = bool(removed_keys)
 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
@@ -241,6 +274,8 @@ def load_config():
                     missing_keys
                     or encoder_changed
                     or upload_target_changed
+                    or quality_mode_changed
+                    or quality_height_changed
                     or migrated_legacy_speech
                     or removed_unknown_keys
                 ):
@@ -320,6 +355,10 @@ def update_config(new_config):
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
                 current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'
+            elif key == 'YOUTUBE_DOWNLOAD_QUALITY_MODE':
+                current_config[key] = normalize_youtube_download_quality_mode(new_config[key])
+            elif key == 'YOUTUBE_DOWNLOAD_MAX_HEIGHT':
+                current_config[key] = normalize_youtube_download_max_height(new_config[key])
             else:
                 current_config[key] = new_config[key]
 
