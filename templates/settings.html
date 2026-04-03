@@ -1851,6 +1851,28 @@ document.addEventListener('DOMContentLoaded', function () {
         saveProgressFooter.classList.toggle('d-none', !isClosable);
     };
 
+    const forceHideSettingsSaveModal = function () {
+        if (saveProgressModal) {
+            try {
+                saveProgressModal.hide();
+            } catch (error) {
+            }
+        }
+        if (!saveProgressModalEl) {
+            return;
+        }
+        saveProgressModalEl.classList.remove('show');
+        saveProgressModalEl.style.display = 'none';
+        saveProgressModalEl.setAttribute('aria-hidden', 'true');
+        saveProgressModalEl.removeAttribute('aria-modal');
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+        document.querySelectorAll('.modal-backdrop').forEach(function (backdrop) {
+            backdrop.remove();
+        });
+    };
+
     const setSettingsSaveProgressUi = function (data) {
         if (!saveProgressTitle || !saveProgressMessage || !saveProgressDetail || !saveProgressBar) {
             return;
@@ -1907,7 +1929,7 @@ document.addEventListener('DOMContentLoaded', function () {
             saveProgressBar.classList.add('bg-danger');
         }
 
-        setSettingsSaveModalClosable(isDone && level !== 'success');
+        setSettingsSaveModalClosable(isDone);
     };
 
     const finishSettingsSaveOperation = function (data) {
@@ -1935,10 +1957,8 @@ document.addEventListener('DOMContentLoaded', function () {
         const level = data && data.level ? data.level : 'info';
         if (level === 'success') {
             window.setTimeout(function () {
-                if (saveProgressModal) {
-                    saveProgressModal.hide();
-                }
-            }, 100);
+                forceHideSettingsSaveModal();
+            }, 150);
         }
     };
 
