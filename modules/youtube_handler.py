@@ -117,11 +117,6 @@ def _append_yt_dlp_network_args(
         cmd.extend(['--proxy', proxy_url])
     if cookies_path and os.path.exists(cookies_path):
         cmd.extend(['--cookies', cookies_path])
-        # 使用多 client 回退策略：
-        # tv_embedded → 嵌入式 TV 客户端，无需 PO token，支持 cookies
-        # web_creator → YouTube Studio 客户端，认证路径不同，支持 cookies
-        # web          → 最后回退，有时仍可用
-        cmd.extend(['--extractor-args', 'youtube:player_client=tv_embedded,web_creator,web'])
     return cmd
 
 
@@ -851,7 +846,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         idx = cmd.index('--cookies')
                         cmd.pop(idx + 1)
                         cmd.pop(idx)
-                        # 移除 --extractor-args <value>（player_client 限制随 cookies 一同注入）
+                        # 兼容旧命令模板：若存在残留 extractor-args，一并移除后重试
                         if '--extractor-args' in cmd:
                             idx = cmd.index('--extractor-args')
                             cmd.pop(idx + 1)
