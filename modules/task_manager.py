@@ -2375,11 +2375,6 @@ class TaskProcessor:
         Returns:
             恢复后的封面文件路径，或空字符串（恢复失败时）。
         """
-        if cover_path and os.path.exists(cover_path):
-            return cover_path
-
-        task_logger.info("检测到封面文件缺失，尝试恢复封面...")
-
         # 目录边界校验：防止符号链接/路径遍历将 cover_path_local 指向 downloads 目录外
         downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
 
@@ -2389,6 +2384,13 @@ class TaskProcessor:
                 return os.path.commonpath([downloads_dir_real, path_real]) == downloads_dir_real, path_real
             except ValueError:
                 return False, path_real
+
+        if cover_path:
+            cover_ok, cover_real = _is_within_downloads(cover_path)
+            if cover_ok and os.path.isfile(cover_real):
+                return cover_real
+
+        task_logger.info("检测到封面文件缺失，尝试恢复封面...")
 
         task_dir_ok, task_dir = _is_within_downloads(os.path.join(DOWNLOADS_DIR, task_id))
         if not task_dir_ok:
@@ -6394,7 +6396,7 @@ class TaskProcessor:
             cover_path = task.get('cover_path_local', '') if task else ''
         
         # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
-        if not cover_path or not os.path.exists(cover_path):
+        if not cover_path or not os.path.isfile(cover_path):
             cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
         
         if not subtitle_prepared:
@@ -6466,7 +6468,7 @@ class TaskProcessor:
         missing_params = []
         if not video_path or not os.path.exists(video_path):
             missing_params.append("video_path (视频文件)")
-        if not cover_path or not os.path.exists(cover_path):
+        if not cover_path or not os.path.isfile(cover_path):
             missing_params.append("cover_path (封面文件)")
         if not title:
             missing_params.append("title (视频标题)")
@@ -6594,7 +6596,7 @@ class TaskProcessor:
             cover_path = task.get('cover_path_local', '') if task else ''
 
         # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
-        if not cover_path or not os.path.exists(cover_path):
+        if not cover_path or not os.path.isfile(cover_path):
             cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
 
         if not subtitle_prepared:
@@ -6698,7 +6700,7 @@ class TaskProcessor:
         missing_params = []
         if not video_path or not os.path.exists(video_path):
             missing_params.append("video_path (视频文件)")
-        if not cover_path or not os.path.exists(cover_path):
+        if not cover_path or not os.path.isfile(cover_path):
             missing_params.append("cover_path (封面文件)")
         if not title:
             missing_params.append("title (视频标题)")
