@@ -2365,7 +2365,120 @@ class TaskProcessor:
         else:
             task_logger.error(f"视频文件下载失败: {result}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载视频失败: {result}")
-    
+
+    def _recover_cover_path(self, task_id, cover_path, task_logger):
+        """尝试恢复缺失的封面文件路径。
+
+        当封面路径为空或文件不存在时（例如直播预告被监控捕获后初始下载失败），
+        先在任务目录中搜索已有的封面文件，若仍未找到则从 YouTube 重新采集封面。
+
+        Returns:
+            恢复后的封面文件路径，或空字符串（恢复失败时）。
+        """
+        if cover_path and os.path.exists(cover_path):
+            return cover_path
+
+        task_logger.info("检测到封面文件缺失，尝试恢复封面...")
+        task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+
+        # 1) 尝试在任务目录中搜索已有的封面文件
+        if os.path.isdir(task_dir):
+            cover_candidates = [
+                'cover.jpg', 'cover.png', 'cover.webp',
+                'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp',
+            ]
+            for name in cover_candidates:
+                candidate = os.path.join(task_dir, name)
+                if os.path.isfile(candidate):
+                    task_logger.info(f"在任务目录中找到封面文件: {name}")
+                    update_task(task_id, cover_path_local=candidate, silent=True)
+                    return candidate
+            # 搜索任意图片文件
+            for entry in os.scandir(task_dir):
+                if entry.is_file() and entry.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    task_logger.info(f"在任务目录中找到图片文件作为封面: {entry.name}")
+                    update_task(task_id, cover_path_local=entry.path, silent=True)
+                    return entry.path
+
+        # 2) 从 YouTube 重新采集封面（仅下载缩略图，不清空任务目录）
+        task = get_task(task_id)
+        youtube_url = task.get('youtube_url', '') if task else ''
+        if not youtube_url:
+            task_logger.warning("无法获取YouTube URL，无法重新采集封面")
+            return ''
+
+        task_logger.info(f"从 YouTube 重新采集封面: {youtube_url}")
+        try:
+            from modules.youtube_handler import _find_yt_dlp_command, build_proxy_url, \
+                _append_yt_dlp_network_args, _resolve_safe_cookies_path
+
+            os.makedirs(task_dir, exist_ok=True)
+            thumbnail_output = os.path.join(task_dir, 'cover.jpg')
+
+            yt_dlp_cmd = _find_yt_dlp_command(task_logger)
+            cmd = yt_dlp_cmd + [
+                '-o', os.path.join(task_dir, 'video.%(ext)s'),
+                '--write-thumbnail',
+                '--convert-thumbnails', 'jpg',
+                '--skip-download',
+                '--no-write-info-json',
+                '--no-playlist',
+                '--ignore-no-formats-error',
+                youtube_url,
+            ]
+
+            cookies_filename = os.path.basename(self.config.get('YOUTUBE_COOKIES_PATH', 'cookies.txt'))
+            config_cookies_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', cookies_filename
+            )
+            if os.path.exists(config_cookies_path):
+                cookies_path = config_cookies_path
+            else:
+                cookies_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    self.config.get('YOUTUBE_COOKIES_PATH', ''),
+                )
+                if not os.path.exists(cookies_path):
+                    cookies_path = None
+
+            if cookies_path:
+                cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
+
+            config = self.config
+            proxy_url = build_proxy_url(config)
+            _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+
+            import subprocess
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120,
+                encoding='utf-8', errors='replace',
+            )
+            task_logger.debug(f"yt-dlp 封面采集输出: {proc.stdout}")
+            if proc.returncode != 0:
+                task_logger.warning(f"yt-dlp 封面采集返回非零状态: {proc.returncode}, stderr: {proc.stderr}")
+
+            # 查找下载到的封面文件
+            if os.path.isfile(thumbnail_output):
+                task_logger.info(f"成功从 YouTube 重新采集到封面: {thumbnail_output}")
+                update_task(task_id, cover_path_local=thumbnail_output, silent=True)
+                return thumbnail_output
+
+            # yt-dlp 使用 -o video.%(ext)s 模板，缩略图可能保存为 video.jpg / video.webp 等
+            if os.path.isdir(task_dir):
+                import shutil as _shutil
+                for name in ['video.jpg', 'video.webp', 'video.png']:
+                    candidate = os.path.join(task_dir, name)
+                    if os.path.isfile(candidate):
+                        _shutil.copy(candidate, thumbnail_output)
+                        task_logger.info(f"将 {name} 复制为 cover.jpg 作为封面")
+                        update_task(task_id, cover_path_local=thumbnail_output, silent=True)
+                        return thumbnail_output
+
+            task_logger.warning("从 YouTube 重新采集封面未获取到文件")
+        except Exception as e:
+            task_logger.warning(f"重新采集封面时发生异常: {e}")
+        return ''
+
     def _translate_content(self, task_id, task_logger):
         """翻译视频标题和描述"""
         from modules.ai_enhancer import translate_video_metadata
@@ -6262,6 +6375,11 @@ class TaskProcessor:
             # 重新获取任务信息
             task = get_task(task_id)
             video_path = task.get('video_path_local', '') if task else ''
+            cover_path = task.get('cover_path_local', '') if task else ''
+        
+        # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
+        if not cover_path or not os.path.exists(cover_path):
+            cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
         
         if not subtitle_prepared:
             task = self._prepare_subtitle_for_upload(task_id, task_logger) or task
@@ -6457,6 +6575,11 @@ class TaskProcessor:
             self._download_video_file(task_id, youtube_url, task_logger)
             task = get_task(task_id)
             video_path = task.get('video_path_local', '') if task else ''
+            cover_path = task.get('cover_path_local', '') if task else ''
+
+        # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
+        if not cover_path or not os.path.exists(cover_path):
+            cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
 
         if not subtitle_prepared:
             task = self._prepare_subtitle_for_upload(task_id, task_logger) or task
