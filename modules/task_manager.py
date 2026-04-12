@@ -2484,15 +2484,36 @@ class TaskProcessor:
             if proc.returncode != 0:
                 task_logger.warning(f"yt-dlp 封面采集返回非零状态: {proc.returncode}, stderr: {proc.stderr}")
 
-            # yt-dlp 使用 -o video.%(ext)s 模板，缩略图可能保存为 video.jpg / video.webp / video.png。
-            # 不要将非 JPG 文件直接复制为 cover.jpg，否则会导致文件内容与扩展名不一致。
+            # yt-dlp 使用 -o video.%(ext)s 模板，但缩略图扩展名/文件名并不一定严格固定。
+            # 重新扫描任务目录，优先匹配 video*.{jpg,jpeg,png,webp}，再回退到目录内其他图片文件。
             if os.path.isdir(task_dir):
-                for name in ['video.jpg', 'video.webp', 'video.png']:
+                allowed_exts = {'.jpg', '.jpeg', '.png', '.webp'}
+                try:
+                    dir_entries = sorted(os.listdir(task_dir))
+                except OSError as scan_error:
+                    task_logger.warning(f"扫描任务目录中的封面文件失败: {scan_error}")
+                    dir_entries = []
+
+                preferred_names = []
+                fallback_names = []
+                for name in dir_entries:
+                    candidate_ok, candidate = _is_within_downloads(os.path.join(task_dir, name))
+                    if not candidate_ok or not os.path.isfile(candidate):
+                        continue
+                    _, ext = os.path.splitext(name)
+                    if ext.lower() not in allowed_exts:
+                        continue
+                    if os.path.splitext(name)[0].lower().startswith('video'):
+                        preferred_names.append(name)
+                    else:
+                        fallback_names.append(name)
+
+                for name in preferred_names + fallback_names:
                     candidate_ok, candidate = _is_within_downloads(os.path.join(task_dir, name))
                     if not candidate_ok:
                         continue
                     if os.path.isfile(candidate):
-                        task_logger.info(f"找到 {name}，直接作为封面使用: {candidate}")
+                        task_logger.info(f"找到封面文件 {name}，直接作为封面使用: {candidate}")
                         update_task(task_id, cover_path_local=candidate, silent=True)
                         return candidate
 
