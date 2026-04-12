@@ -2448,7 +2448,6 @@ class TaskProcessor:
             proxy_url = build_proxy_url(config)
             _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
 
-            import subprocess
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120,
                 encoding='utf-8', errors='replace',
@@ -2465,11 +2464,10 @@ class TaskProcessor:
 
             # yt-dlp 使用 -o video.%(ext)s 模板，缩略图可能保存为 video.jpg / video.webp 等
             if os.path.isdir(task_dir):
-                import shutil as _shutil
                 for name in ['video.jpg', 'video.webp', 'video.png']:
                     candidate = os.path.join(task_dir, name)
                     if os.path.isfile(candidate):
-                        _shutil.copy(candidate, thumbnail_output)
+                        shutil.copy(candidate, thumbnail_output)
                         task_logger.info(f"将 {name} 复制为 cover.jpg 作为封面")
                         update_task(task_id, cover_path_local=thumbnail_output, silent=True)
                         return thumbnail_output
