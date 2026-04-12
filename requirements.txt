@@ -25,3 +25,4 @@ bilibili-api-python~=17.4.1
 google-api-python-client>=2.116,<3.0
 PySocks~=1.7.1
 APScheduler~=3.11.0
+cryptography>=46.0.7,<47.0
