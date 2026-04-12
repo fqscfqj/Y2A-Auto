@@ -2413,15 +2413,19 @@ class TaskProcessor:
                     update_task(task_id, cover_path_local=candidate, silent=True)
                     return candidate
             # 搜索任意图片文件
-            for entry in os.scandir(task_dir):
-                entry_ok, entry_path = _is_within_downloads(entry.path)
-                if not entry_ok:
-                    task_logger.warning(f"检测到越界图片路径，已跳过: {entry.name}")
-                    continue
-                if entry.is_file() and entry.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) and os.path.isfile(entry_path):
-                    task_logger.info(f"在任务目录中找到图片文件作为封面: {entry.name}")
-                    update_task(task_id, cover_path_local=entry_path, silent=True)
-                    return entry_path
+            try:
+                with os.scandir(task_dir) as entries:
+                    for entry in entries:
+                        entry_ok, entry_path = _is_within_downloads(entry.path)
+                        if not entry_ok:
+                            task_logger.warning(f"检测到越界图片路径，已跳过: {entry.name}")
+                            continue
+                        if entry.is_file() and entry.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) and os.path.isfile(entry_path):
+                            task_logger.info(f"在任务目录中找到图片文件作为封面: {entry.name}")
+                            update_task(task_id, cover_path_local=entry_path, silent=True)
+                            return entry_path
+            except OSError as e:
+                task_logger.warning(f"扫描任务目录封面失败，将尝试从 YouTube 重新采集: {task_dir}, error: {e}")
 
         # 2) 从 YouTube 重新采集封面（仅下载缩略图，不清空任务目录）
         task = get_task(task_id)
@@ -6395,9 +6399,11 @@ class TaskProcessor:
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
         
-        # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
-        if not cover_path or not os.path.isfile(cover_path):
-            cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
+        # 无论封面文件当前是否存在，都先统一做一次恢复/校验：
+        # _recover_cover_path() 内部已包含 realpath + commonpath 的 downloads 目录边界检查，
+        # 可阻止路径遍历或 symlink 指向 downloads 外部的情况；对于合法且已存在的路径，
+        # 其 fast-return 会直接返回已校验过的路径，不改变原有功能。
+        cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
         
         if not subtitle_prepared:
             task = self._prepare_subtitle_for_upload(task_id, task_logger) or task
@@ -6595,9 +6601,11 @@ class TaskProcessor:
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
 
-        # 如果封面文件缺失，尝试恢复（例如直播预告初始下载失败的场景）
-        if not cover_path or not os.path.isfile(cover_path):
-            cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
+        # 无论封面文件当前是否存在，都先统一做一次恢复/校验：
+        # _recover_cover_path() 内部已包含 realpath + commonpath 的 downloads 目录边界检查，
+        # 可阻止路径遍历或 symlink 指向 downloads 外部的情况；对于合法且已存在的路径，
+        # 其 fast-return 会直接返回已校验过的路径，不改变原有功能。
+        cover_path = self._recover_cover_path(task_id, cover_path, task_logger)
 
         if not subtitle_prepared:
             task = self._prepare_subtitle_for_upload(task_id, task_logger) or task
