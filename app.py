@@ -448,13 +448,11 @@ def _replace_task_cover(task: dict, uploaded_file):
     os.makedirs(task_dir_real, exist_ok=True)
 
     current_cover_path = _get_current_cover_path(task, task_dir_real)
-    if not current_cover_path:
-        raise ValueError('当前任务没有可替换的原始封面')
 
     ext = _validate_cover_upload(uploaded_file)
     original_backup = _find_original_cover_backup(task_dir_real)
 
-    if not original_backup:
+    if not original_backup and current_cover_path:
         current_ext, _ = _get_cover_file_info(current_cover_path)
         if current_ext not in ALLOWED_COVER_EXTENSIONS:
             raise ValueError('当前原始封面格式不受支持，无法创建恢复备份')
