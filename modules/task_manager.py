@@ -2413,13 +2413,11 @@ class TaskProcessor:
                 _append_yt_dlp_network_args, _resolve_safe_cookies_path
 
             os.makedirs(task_dir, exist_ok=True)
-            thumbnail_output = os.path.join(task_dir, 'cover.jpg')
 
             yt_dlp_cmd = _find_yt_dlp_command(task_logger)
             cmd = yt_dlp_cmd + [
                 '-o', os.path.join(task_dir, 'video.%(ext)s'),
                 '--write-thumbnail',
-                '--convert-thumbnails', 'jpg',
                 '--skip-download',
                 '--no-write-info-json',
                 '--no-playlist',
@@ -2456,21 +2454,15 @@ class TaskProcessor:
             if proc.returncode != 0:
                 task_logger.warning(f"yt-dlp 封面采集返回非零状态: {proc.returncode}, stderr: {proc.stderr}")
 
-            # 查找下载到的封面文件
-            if os.path.isfile(thumbnail_output):
-                task_logger.info(f"成功从 YouTube 重新采集到封面: {thumbnail_output}")
-                update_task(task_id, cover_path_local=thumbnail_output, silent=True)
-                return thumbnail_output
-
-            # yt-dlp 使用 -o video.%(ext)s 模板，缩略图可能保存为 video.jpg / video.webp 等
+            # yt-dlp 使用 -o video.%(ext)s 模板，缩略图可能保存为 video.jpg / video.webp / video.png。
+            # 不要将非 JPG 文件直接复制为 cover.jpg，否则会导致文件内容与扩展名不一致。
             if os.path.isdir(task_dir):
                 for name in ['video.jpg', 'video.webp', 'video.png']:
                     candidate = os.path.join(task_dir, name)
                     if os.path.isfile(candidate):
-                        shutil.copy(candidate, thumbnail_output)
-                        task_logger.info(f"将 {name} 复制为 cover.jpg 作为封面")
-                        update_task(task_id, cover_path_local=thumbnail_output, silent=True)
-                        return thumbnail_output
+                        task_logger.info(f"找到 {name}，直接作为封面使用: {candidate}")
+                        update_task(task_id, cover_path_local=candidate, silent=True)
+                        return candidate
 
             task_logger.warning("从 YouTube 重新采集封面未获取到文件")
         except Exception as e:
