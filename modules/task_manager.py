@@ -2379,26 +2379,47 @@ class TaskProcessor:
             return cover_path
 
         task_logger.info("检测到封面文件缺失，尝试恢复封面...")
-        task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+
+        # 目录边界校验：防止符号链接/路径遍历将 cover_path_local 指向 downloads 目录外
+        downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
+
+        def _is_within_downloads(path):
+            path_real = os.path.realpath(path)
+            try:
+                return os.path.commonpath([downloads_dir_real, path_real]) == downloads_dir_real, path_real
+            except ValueError:
+                return False, path_real
+
+        task_dir_ok, task_dir = _is_within_downloads(os.path.join(DOWNLOADS_DIR, task_id))
+        if not task_dir_ok:
+            task_logger.warning(f"任务目录越界，跳过本地封面恢复: {task_id}")
+            task_dir = ''
 
         # 1) 尝试在任务目录中搜索已有的封面文件
-        if os.path.isdir(task_dir):
+        if task_dir and os.path.isdir(task_dir):
             cover_candidates = [
                 'cover.jpg', 'cover.png', 'cover.webp',
                 'thumbnail.jpg', 'thumbnail.png', 'thumbnail.webp',
             ]
             for name in cover_candidates:
-                candidate = os.path.join(task_dir, name)
+                candidate_ok, candidate = _is_within_downloads(os.path.join(task_dir, name))
+                if not candidate_ok:
+                    task_logger.warning(f"检测到越界封面候选路径，已跳过: {name}")
+                    continue
                 if os.path.isfile(candidate):
                     task_logger.info(f"在任务目录中找到封面文件: {name}")
                     update_task(task_id, cover_path_local=candidate, silent=True)
                     return candidate
             # 搜索任意图片文件
             for entry in os.scandir(task_dir):
-                if entry.is_file() and entry.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                entry_ok, entry_path = _is_within_downloads(entry.path)
+                if not entry_ok:
+                    task_logger.warning(f"检测到越界图片路径，已跳过: {entry.name}")
+                    continue
+                if entry.is_file() and entry.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) and os.path.isfile(entry_path):
                     task_logger.info(f"在任务目录中找到图片文件作为封面: {entry.name}")
-                    update_task(task_id, cover_path_local=entry.path, silent=True)
-                    return entry.path
+                    update_task(task_id, cover_path_local=entry_path, silent=True)
+                    return entry_path
 
         # 2) 从 YouTube 重新采集封面（仅下载缩略图，不清空任务目录）
         task = get_task(task_id)
@@ -2412,7 +2433,11 @@ class TaskProcessor:
             from modules.youtube_handler import _find_yt_dlp_command, build_proxy_url, \
                 _append_yt_dlp_network_args, _resolve_safe_cookies_path
 
-            os.makedirs(task_dir, exist_ok=True)
+            if task_dir:
+                os.makedirs(task_dir, exist_ok=True)
+            else:
+                task_logger.warning("任务目录越界，跳过从 YouTube 重新采集封面")
+                return ''
 
             yt_dlp_cmd = _find_yt_dlp_command(task_logger)
             cmd = yt_dlp_cmd + [
@@ -2425,19 +2450,18 @@ class TaskProcessor:
                 youtube_url,
             ]
 
-            cookies_filename = os.path.basename(self.config.get('YOUTUBE_COOKIES_PATH', 'cookies.txt'))
-            config_cookies_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', cookies_filename
-            )
-            if os.path.exists(config_cookies_path):
-                cookies_path = config_cookies_path
-            else:
-                cookies_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    self.config.get('YOUTUBE_COOKIES_PATH', ''),
-                )
-                if not os.path.exists(cookies_path):
-                    cookies_path = None
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            configured_cookies_path = self.config.get('YOUTUBE_COOKIES_PATH', '')
+            cookies_path = None
+            if configured_cookies_path:
+                cookies_filename = os.path.basename(configured_cookies_path)
+                config_cookies_path = os.path.join(project_root, 'config', cookies_filename)
+                if os.path.isfile(config_cookies_path):
+                    cookies_path = config_cookies_path
+                else:
+                    candidate_cookies_path = os.path.join(project_root, configured_cookies_path)
+                    if os.path.isfile(candidate_cookies_path):
+                        cookies_path = candidate_cookies_path
 
             if cookies_path:
                 cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
@@ -2458,7 +2482,9 @@ class TaskProcessor:
             # 不要将非 JPG 文件直接复制为 cover.jpg，否则会导致文件内容与扩展名不一致。
             if os.path.isdir(task_dir):
                 for name in ['video.jpg', 'video.webp', 'video.png']:
-                    candidate = os.path.join(task_dir, name)
+                    candidate_ok, candidate = _is_within_downloads(os.path.join(task_dir, name))
+                    if not candidate_ok:
+                        continue
                     if os.path.isfile(candidate):
                         task_logger.info(f"找到 {name}，直接作为封面使用: {candidate}")
                         update_task(task_id, cover_path_local=candidate, silent=True)
