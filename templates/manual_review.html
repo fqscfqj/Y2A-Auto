@@ -25,6 +25,12 @@
                         {% endif %}
                         
                         <div class="card-body">
+                            {% if task.error_message %}
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i> {{ task.error_message }}
+                            </div>
+                            {% endif %}
+
                             <h5 class="card-title">
                                 {% if task.video_title_translated %}
                                     {{ task.video_title_translated }}

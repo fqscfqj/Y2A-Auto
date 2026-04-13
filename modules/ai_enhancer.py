@@ -332,6 +332,8 @@ _LANGUAGE_NAME_MAP = {
     "ko": "한국어",
 }
 _DESCRIPTION_ONLY_RETRY_REASONS = frozenset({"empty_output", "description_not_natural"})
+METADATA_TRANSLATION_MAX_ATTEMPTS = 3
+METADATA_TRANSLATION_RETRY_DELAY_SECONDS = 2
 
 
 def _normalize_target_language(target_language: str) -> str:
@@ -623,6 +625,75 @@ def _should_use_description_only_retry(reasons: Sequence[str]) -> bool:
     return bool(_DESCRIPTION_ONLY_RETRY_REASONS.intersection(reasons or ()))
 
 
+def _is_retryable_metadata_failure(reason: str) -> bool:
+    normalized = safe_str(reason).strip().lower()
+    if not normalized:
+        return False
+    non_retryable_reasons = {
+        "missing_openai_config",
+        "no_meaningful_content_after_preclean",
+    }
+    if normalized in non_retryable_reasons:
+        return False
+    return True
+
+
+def _should_retry_metadata_translation_attempt(failed_fields: Dict[str, Sequence[str]]) -> bool:
+    for reasons in (failed_fields or {}).values():
+        for reason in reasons or ():
+            if _is_retryable_metadata_failure(reason):
+                return True
+    return False
+
+
+def _humanize_metadata_failure_reason(reason: str) -> str:
+    normalized = safe_str(reason).strip()
+    lowered = normalized.lower()
+
+    if lowered == "empty_output":
+        return "输出为空"
+    if lowered == "description_not_natural":
+        return "简介格式不自然"
+    if lowered == "contains_promo_signal":
+        return "含有导流或外链残留"
+    if lowered == "identical_to_source":
+        return "与原文相同"
+    if lowered == "unexpected_output":
+        return "返回了非预期内容"
+    if lowered == "no_meaningful_content_after_preclean":
+        return "预清洗后无可用内容"
+    if lowered == "missing_openai_config":
+        return "缺少 OpenAI 配置"
+    if lowered.startswith("too_similar:"):
+        score = normalized.split(":", 1)[1] if ":" in normalized else ""
+        return f"与原文过于相似{f'（相似度 {score}）' if score else ''}"
+    if lowered.startswith("exception:"):
+        exc_name = normalized.split(":", 1)[1] if ":" in normalized else "unknown"
+        return f"请求异常（{exc_name}）"
+    return normalized or "未知原因"
+
+
+def _build_metadata_failure_message(failed_fields: Dict[str, Sequence[str]]) -> str:
+    if not failed_fields:
+        return ""
+
+    field_names = {
+        "title": "标题",
+        "description": "简介",
+    }
+    parts = []
+    for field_name in ("title", "description"):
+        reasons = list(failed_fields.get(field_name) or [])
+        if not reasons:
+            continue
+        reason_text = "、".join(_humanize_metadata_failure_reason(reason) for reason in reasons)
+        parts.append(f"{field_names.get(field_name, field_name)}：{reason_text}")
+
+    if not parts:
+        return "自动翻译失败，任务已转入人工审核。"
+    return "自动翻译失败，" + "；".join(parts) + "。任务已转入人工审核。"
+
+
 def _log_description_field_state(logger, phase: str, raw_value: Any, sanitized_value: str) -> None:
     raw_text = safe_str(raw_value).strip()
     sanitized_text = safe_str(sanitized_value).strip()
@@ -673,8 +744,147 @@ def _request_translated_metadata_fields(
             description_log_phase,
             raw_description,
             translated_fields["description"],
-        )
+    )
     return translated_fields
+
+
+def _translate_video_metadata_once(
+    *,
+    client,
+    model_name: str,
+    target_language: str,
+    thinking_enabled: bool,
+    cleaned_title: str,
+    cleaned_description: str,
+    requested_fields: Sequence[str],
+    logger,
+) -> Dict[str, Any]:
+    translated_fields = {
+        "title": "",
+        "description": "",
+    }
+    failed_fields: Dict[str, List[str]] = {}
+
+    requestable_fields: List[str] = []
+    for field_name, source_text in (
+        ("title", cleaned_title),
+        ("description", cleaned_description),
+    ):
+        if field_name not in requested_fields:
+            continue
+        if not source_text:
+            failed_fields[field_name] = ["no_meaningful_content_after_preclean"]
+            continue
+        requestable_fields.append(field_name)
+
+    if not requestable_fields:
+        return {
+            "translated_fields": translated_fields,
+            "failed_fields": failed_fields,
+        }
+
+    payload = _build_metadata_translation_payload(
+        cleaned_title,
+        cleaned_description,
+        target_language=target_language,
+        translate_title="title" in requestable_fields,
+        translate_description="description" in requestable_fields,
+    )
+    cleaned_sources = {
+        "title": cleaned_title if "title" in requestable_fields else "",
+        "description": cleaned_description if "description" in requestable_fields else "",
+    }
+
+    translated_fields = _request_translated_metadata_fields(
+        client=client,
+        model_name=model_name,
+        system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False),
+        payload=payload,
+        max_tokens=_estimate_metadata_max_tokens(requestable_fields),
+        thinking_enabled=thinking_enabled,
+        scene_name="ai_enhancer_metadata_translate",
+        logger=logger,
+        description_max_blocks=None,
+        description_log_phase="首轮",
+    )
+    invalid_fields = _collect_invalid_metadata_fields(
+        cleaned_sources,
+        translated_fields,
+        description_max_blocks=None,
+    )
+
+    if invalid_fields:
+        logger.info(f"元数据首轮输出未通过校验，失败字段: {invalid_fields}")
+
+        if "title" in invalid_fields:
+            retry_payload = _build_metadata_translation_payload(
+                cleaned_title,
+                "",
+                target_language=target_language,
+                translate_title=True,
+                translate_description=False,
+            )
+            retry_fields = _request_translated_metadata_fields(
+                client=client,
+                model_name=model_name,
+                system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True),
+                payload=retry_payload,
+                max_tokens=_estimate_metadata_max_tokens(["title"]),
+                thinking_enabled=thinking_enabled,
+                scene_name="ai_enhancer_metadata_translate_title_retry",
+                logger=logger,
+                description_max_blocks=None,
+            )
+            translated_fields["title"] = retry_fields["title"]
+
+        if "description" in invalid_fields:
+            description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True)
+            description_retry_scene = "ai_enhancer_metadata_translate_retry"
+            if _should_use_description_only_retry(invalid_fields["description"]):
+                logger.info(
+                    f"description 字段触发定向重试，失败原因: {invalid_fields['description']}"
+                )
+                description_retry_prompt = _build_description_retry_system_prompt(target_language)
+                description_retry_scene = "ai_enhancer_metadata_translate_description_retry"
+
+            description_retry_payload = _build_metadata_translation_payload(
+                "",
+                cleaned_description,
+                target_language=target_language,
+                translate_title=False,
+                translate_description=True,
+            )
+            retry_fields = _request_translated_metadata_fields(
+                client=client,
+                model_name=model_name,
+                system_prompt=description_retry_prompt,
+                payload=description_retry_payload,
+                max_tokens=_estimate_metadata_max_tokens(["description"]),
+                thinking_enabled=thinking_enabled,
+                scene_name=description_retry_scene,
+                logger=logger,
+                description_max_blocks=None,
+                description_log_phase="重试",
+            )
+            translated_fields["description"] = retry_fields["description"]
+
+        invalid_fields = _collect_invalid_metadata_fields(
+            cleaned_sources,
+            translated_fields,
+            description_max_blocks=None,
+        )
+        if invalid_fields:
+            logger.warning(f"元数据重试后仍有失败字段: {invalid_fields}")
+
+    for field_name in requestable_fields:
+        if field_name in invalid_fields or not translated_fields.get(field_name):
+            failed_fields[field_name] = list(invalid_fields.get(field_name) or ["empty_output"])
+            translated_fields[field_name] = ""
+
+    return {
+        "translated_fields": translated_fields,
+        "failed_fields": failed_fields,
+    }
 
 
 def translate_video_metadata(
@@ -686,7 +896,7 @@ def translate_video_metadata(
     translate_title: bool = True,
     translate_description: bool = True,
 ):
-    """一次请求翻译视频标题和简介，返回结构化 JSON 字段。"""
+    """翻译视频标题和简介，返回带状态与诊断信息的结构化结果。"""
     logger = setup_task_logger(task_id or "unknown")
     raw_title = safe_str(title)
     raw_description = safe_str(description)
@@ -717,26 +927,36 @@ def translate_video_metadata(
     ):
         logger.info("已在提示阶段前执行结构化预清洗（去导流/站外信息/列表化噪声）")
 
-    title_fallback = _build_fallback_text(cleaned_title, "title", logger=logger) if translate_title else ''
-    final_result = {
-        "title": title_fallback if translate_title else '',
-        "description": '',
-    }
+    requested_fields = []
+    if translate_title and raw_title:
+        requested_fields.append("title")
+    if translate_description and raw_description:
+        requested_fields.append("description")
 
-    payload = _build_metadata_translation_payload(
-        cleaned_title,
-        cleaned_description,
-        target_language=target_language,
-        translate_title=translate_title,
-        translate_description=translate_description and bool(cleaned_description),
-    )
-    requested_fields = [name for name in ("title", "description") if name in payload]
+    final_result = {
+        "success": False,
+        "attempts": 0,
+        "requested_fields": requested_fields,
+        "failed_fields": {},
+        "error_message": "",
+        "translated_fields": {
+            "title": "",
+            "description": "",
+        },
+        "title": "",
+        "description": "",
+    }
     if not requested_fields:
         logger.info("没有可发送给模型的有效元数据字段，直接返回清洗结果")
+        final_result["success"] = True
         return final_result
 
     if not openai_config or not openai_config.get('OPENAI_API_KEY'):
-        logger.warning("缺少OpenAI配置或API密钥，直接回退到清洗结果")
+        logger.warning("缺少OpenAI配置或API密钥，无法执行元数据翻译")
+        final_result["failed_fields"] = {
+            field_name: ["missing_openai_config"] for field_name in requested_fields
+        }
+        final_result["error_message"] = _build_metadata_failure_message(final_result["failed_fields"])
         return final_result
 
     try:
@@ -745,112 +965,78 @@ def translate_video_metadata(
         thinking_enabled = openai_config.get('OPENAI_THINKING_ENABLED', False)
 
         start_time = time.time()
-        translated_fields = _request_translated_metadata_fields(
-            client=client,
-            model_name=model_name,
-            system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False),
-            payload=payload,
-            max_tokens=_estimate_metadata_max_tokens(requested_fields),
-            thinking_enabled=thinking_enabled,
-            scene_name='ai_enhancer_metadata_translate',
-            logger=logger,
-            description_max_blocks=None,
-            description_log_phase="首轮",
-        )
-        cleaned_sources = {
-            "title": cleaned_title if "title" in payload else '',
-            "description": cleaned_description if "description" in payload else '',
-        }
-        invalid_fields = _collect_invalid_metadata_fields(
-            cleaned_sources,
-            translated_fields,
-            description_max_blocks=None,
-        )
+        last_attempt_result = None
 
-        if invalid_fields:
-            logger.info(f"元数据首轮输出未通过校验，失败字段: {invalid_fields}")
-
-            if "title" in invalid_fields:
-                retry_payload = _build_metadata_translation_payload(
-                    cleaned_title,
-                    '',
-                    target_language=target_language,
-                    translate_title=True,
-                    translate_description=False,
-                )
-                retry_fields = _request_translated_metadata_fields(
+        for attempt in range(1, METADATA_TRANSLATION_MAX_ATTEMPTS + 1):
+            final_result["attempts"] = attempt
+            try:
+                attempt_result = _translate_video_metadata_once(
                     client=client,
                     model_name=model_name,
-                    system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True),
-                    payload=retry_payload,
-                    max_tokens=_estimate_metadata_max_tokens(["title"]),
-                    thinking_enabled=thinking_enabled,
-                    scene_name='ai_enhancer_metadata_translate_title_retry',
-                    logger=logger,
-                    description_max_blocks=None,
-                )
-                translated_fields["title"] = retry_fields["title"]
-
-            if "description" in invalid_fields:
-                description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True)
-                description_retry_scene = 'ai_enhancer_metadata_translate_retry'
-                if _should_use_description_only_retry(invalid_fields["description"]):
-                    logger.info(
-                        f"description 字段触发定向重试，失败原因: {invalid_fields['description']}"
-                    )
-                    description_retry_prompt = _build_description_retry_system_prompt(target_language)
-                    description_retry_scene = 'ai_enhancer_metadata_translate_description_retry'
-
-                description_retry_payload = _build_metadata_translation_payload(
-                    '',
-                    cleaned_description,
                     target_language=target_language,
-                    translate_title=False,
-                    translate_description=True,
-                )
-                retry_fields = _request_translated_metadata_fields(
-                    client=client,
-                    model_name=model_name,
-                    system_prompt=description_retry_prompt,
-                    payload=description_retry_payload,
-                    max_tokens=_estimate_metadata_max_tokens(["description"]),
                     thinking_enabled=thinking_enabled,
-                    scene_name=description_retry_scene,
+                    cleaned_title=cleaned_title,
+                    cleaned_description=cleaned_description,
+                    requested_fields=requested_fields,
                     logger=logger,
-                    description_max_blocks=None,
-                    description_log_phase="重试",
                 )
-                translated_fields["description"] = retry_fields["description"]
+            except Exception as exc:
+                logger.error(f"第 {attempt} 次元数据翻译尝试发生异常: {exc}")
+                logger.error(traceback.format_exc())
+                attempt_result = {
+                    "translated_fields": {
+                        "title": "",
+                        "description": "",
+                    },
+                    "failed_fields": {
+                        field_name: [f"exception:{exc.__class__.__name__}"]
+                        for field_name in requested_fields
+                    },
+                }
 
-            invalid_fields = _collect_invalid_metadata_fields(
-                cleaned_sources,
-                translated_fields,
-                description_max_blocks=None,
+            last_attempt_result = attempt_result
+            translated_fields = dict(attempt_result.get("translated_fields") or {})
+            failed_fields = dict(attempt_result.get("failed_fields") or {})
+
+            final_result["translated_fields"] = {
+                "title": translated_fields.get("title", ""),
+                "description": translated_fields.get("description", ""),
+            }
+            final_result["title"] = final_result["translated_fields"]["title"]
+            final_result["description"] = final_result["translated_fields"]["description"]
+            final_result["failed_fields"] = failed_fields
+            final_result["error_message"] = _build_metadata_failure_message(failed_fields)
+
+            if not failed_fields:
+                final_result["success"] = True
+                break
+
+            logger.warning(
+                f"第 {attempt} 次元数据翻译仍有失败字段: {failed_fields}"
             )
-            if invalid_fields:
-                logger.warning(f"元数据重试后仍有失败字段: {invalid_fields}")
-
-        for field_name in ("title", "description"):
-            if field_name not in payload:
-                continue
-            if field_name in invalid_fields or not translated_fields.get(field_name):
-                if field_name == "description":
-                    final_result[field_name] = ''
-                    logger.warning("简介翻译失败，按策略置空，不回退原语言文本")
-                else:
-                    final_result[field_name] = title_fallback
+            if (
+                attempt < METADATA_TRANSLATION_MAX_ATTEMPTS
+                and _should_retry_metadata_translation_attempt(failed_fields)
+            ):
+                time.sleep(METADATA_TRANSLATION_RETRY_DELAY_SECONDS)
             else:
-                final_result[field_name] = translated_fields[field_name]
+                break
 
         elapsed = time.time() - start_time
         logger.info(f"元数据翻译完成，耗时: {elapsed:.2f}秒")
         logger.info(f"翻译标题: {final_result['title'][:100]}...")
         logger.info(f"翻译简介长度: {len(final_result['description'])} 字符")
+        if final_result["failed_fields"]:
+            logger.warning(f"元数据翻译最终失败字段: {final_result['failed_fields']}")
         return final_result
 
     except Exception as e:
         logger.error(f"翻译视频元数据时发生错误: {str(e)}")
         logger.error(traceback.format_exc())
+        final_result["failed_fields"] = {
+            field_name: [f"exception:{e.__class__.__name__}"] for field_name in requested_fields
+        }
+        final_result["error_message"] = _build_metadata_failure_message(final_result["failed_fields"])
         return final_result
 
 def generate_acfun_tags(title, description, openai_config=None, task_id=None):

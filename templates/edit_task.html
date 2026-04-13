@@ -179,11 +179,20 @@
                             编辑视频信息
                         </div>
                         <div class="card-body">
+                            {% if task.error_message %}
+                                <div class="alert alert-warning">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>{{ task.error_message }}
+                                </div>
+                            {% endif %}
                             <div class="mb-3">
                                 <label for="video_title_translated" class="form-label">视频标题</label>
                                 <input type="text" class="form-control" id="video_title_translated" name="video_title_translated" 
                                        value="{{ task.video_title_translated or task.video_title_original }}" required>
-                                {% if task.video_title_original %}
+                                {% if not task.video_title_translated and task.video_title_original %}
+                                    <div class="form-text text-warning">
+                                        当前显示的是原标题。自动翻译未成功，请确认或手动修改后再上传。
+                                    </div>
+                                {% elif task.video_title_original %}
                                     <div class="form-text">原始标题: {{ task.video_title_original }}</div>
                                 {% endif %}
                             </div>
@@ -192,6 +201,11 @@
                                 <label for="description_translated" class="form-label">视频描述</label>
                                 <textarea class="form-control" id="description_translated" name="description_translated" 
                                           rows="10">{{ task.description_translated or task.description_original }}</textarea>
+                                {% if not task.description_translated and task.description_original %}
+                                    <div class="form-text text-warning">
+                                        当前显示的是原始简介。自动翻译未成功，请确认或手动修改后再上传。
+                                    </div>
+                                {% endif %}
                                 {% if (upload_target|default('acfun')) in ['bilibili', 'both'] %}
                                     <div class="form-text" id="bilibili-description-hint">
                                         bilibili 投稿简介上限为 200 字，超出部分会在上传 bilibili 时自动截断。

@@ -25,6 +25,18 @@ logger = logging.getLogger('subtitle_translator')
 
 # Pre-compiled regex for Chinese character detection (performance optimization)
 _CHINESE_CHAR_RE = re.compile(r'[\u4e00-\u9fff]')
+SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD = 0.15
+SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD = 3
+
+
+def _should_fail_translation_residue(total_items: int, unresolved_count: int) -> bool:
+    if total_items <= 0 or unresolved_count <= 0:
+        return False
+    unresolved_ratio = unresolved_count / max(1, total_items)
+    return (
+        unresolved_count > SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD
+        and unresolved_ratio > SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD
+    )
 
 def setup_task_logger(task_id):
     """
@@ -368,8 +380,10 @@ class LLMRequester:
     
     def translate_batch(self, texts: List[str], target_language: str, batch_id: str = "") -> List[str]:
         """批量翻译文本，使用结构化JSON输出"""
-        if not self.client or not texts:
-            return texts
+        if not texts:
+            return []
+        if not self.client:
+            raise RuntimeError("OpenAI客户端未初始化")
         
         try:
             self._batch_counter += 1
@@ -427,7 +441,7 @@ class LLMRequester:
                 self.logger.error(f"批次 {batch_id} 翻译请求失败: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
-            return texts  # 返回原文本
+            raise
 
     def _should_log_batch(self, batch_id: str) -> bool:
         """控制批次日志的详细程度，减少日志文件体积。"""
@@ -442,8 +456,10 @@ class LLMRequester:
 
     def translate_batch_strict(self, texts: List[str], target_language: str, batch_id: str = "") -> List[str]:
         """严格模式批量翻译：用于补救仍未译的条目，强制全中文输出。"""
-        if not self.client or not texts:
-            return texts
+        if not texts:
+            return []
+        if not self.client:
+            raise RuntimeError("OpenAI客户端未初始化")
         try:
             system_prompt = self._build_strict_structured_system_prompt(target_language)
             user_prompt = self._build_structured_user_prompt(texts)
@@ -477,7 +493,7 @@ class LLMRequester:
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"严格模式批次 {batch_id} 翻译失败: {e}")
-            return texts
+            raise
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
         """构建结构化系统提示词。"""
@@ -815,6 +831,16 @@ class SubtitleTranslator:
                         for j, translation in enumerate(translations):
                             if j < len(batch_items):
                                 batch_items[j].translated_text = self._sanitize_translated_text(translation)
+
+                        invalid_translations = [
+                            idx for idx, batch_item in enumerate(batch_items)
+                            if self._likely_untranslated(
+                                batch_item.source_text,
+                                batch_item.translated_text,
+                            )
+                        ]
+                        if len(invalid_translations) == len(batch_items):
+                            raise RuntimeError("整批译文均未通过有效性检查")
                         
                         # 更新进度
                         update_progress(len(batch_items))
@@ -828,9 +854,9 @@ class SubtitleTranslator:
                         if retry < self.config.max_retries - 1:
                             time.sleep(self.config.retry_delay)
                         else:
-                            # 最后一次重试失败，使用原文
+                            # 最后一次重试失败，保留空译文，交由后续补翻/验收决定是否继续
                             for j in range(len(batch_items)):
-                                batch_items[j].translated_text = batch_items[j].source_text
+                                batch_items[j].translated_text = ""
                             update_progress(len(batch_items))
                             return False
             
@@ -869,6 +895,9 @@ class SubtitleTranslator:
             
             # 二次修复：补翻漏译项（例如返回空串或仍是英文）
             self._repair_untranslated_items(items)
+
+            if not self._finalize_residual_untranslated_items(items):
+                return False
 
             # 输出翻译后的文件
             return self._write_translated_file(items, output_path)
@@ -919,10 +948,52 @@ class SubtitleTranslator:
         except Exception:
             return False
 
+    def _collect_untranslated_indices(self, items: List[SubtitleItem]) -> List[int]:
+        try:
+            return [
+                i for i, item in enumerate(items)
+                if self._likely_untranslated(item.source_text, item.translated_text)
+            ]
+        except Exception:
+            return []
+
+    def _finalize_residual_untranslated_items(self, items: List[SubtitleItem]) -> bool:
+        unresolved_indices = self._collect_untranslated_indices(items)
+        unresolved_count = len(unresolved_indices)
+        total_items = len(items)
+        if unresolved_count == 0:
+            return True
+
+        unresolved_ratio = unresolved_count / max(1, total_items)
+        sample_indices = unresolved_indices[:5]
+        if _should_fail_translation_residue(total_items, unresolved_count):
+            self.logger.error(
+                "字幕翻译验收失败：仍有 %s/%s 条疑似未翻译（%.1f%%），样本索引=%s",
+                unresolved_count,
+                total_items,
+                unresolved_ratio * 100.0,
+                sample_indices,
+            )
+            return False
+
+        self.logger.warning(
+            "字幕翻译验收保留少量原文：%s/%s 条疑似未翻译（%.1f%%），样本索引=%s",
+            unresolved_count,
+            total_items,
+            unresolved_ratio * 100.0,
+            sample_indices,
+        )
+        for idx in unresolved_indices:
+            try:
+                items[idx].translated_text = items[idx].source_text
+            except Exception:
+                pass
+        return True
+
     def _repair_untranslated_items(self, items: List[SubtitleItem]):
         """对疑似未翻译的条目进行小批量补翻，最大化消除漏翻。"""
         try:
-            to_fix_indices: List[int] = [i for i, it in enumerate(items) if self._likely_untranslated(it.source_text, it.translated_text)]
+            to_fix_indices = self._collect_untranslated_indices(items)
             if not to_fix_indices:
                 return
             self.logger.info(f"检测到 {len(to_fix_indices)} 条疑似未翻译条目，开始补翻...")
@@ -945,7 +1016,7 @@ class SubtitleTranslator:
                         pass
 
             # 再次扫描仍未译的条目，使用严格模式再尝试一次
-            still_untranslated: List[int] = [i for i, it in enumerate(items) if self._likely_untranslated(it.source_text, it.translated_text)]
+            still_untranslated = self._collect_untranslated_indices(items)
             if not still_untranslated:
                 return
             self.logger.info(f"仍有 {len(still_untranslated)} 条未充分翻译，启动严格模式补救...")

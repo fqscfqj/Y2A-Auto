@@ -394,6 +394,37 @@ def _as_int(value, default, minimum=None):
     return result
 
 
+def _normalize_task_text(value) -> str:
+    return str(value or '').strip()
+
+
+def _get_missing_required_translation_fields(task, config) -> list:
+    if not task:
+        return []
+
+    missing_fields = []
+    if _as_bool(config.get('TRANSLATE_TITLE', True)) and _normalize_task_text(task.get('video_title_original')):
+        if not _normalize_task_text(task.get('video_title_translated')):
+            missing_fields.append('title')
+
+    if _as_bool(config.get('TRANSLATE_DESCRIPTION', True)) and _normalize_task_text(task.get('description_original')):
+        if not _normalize_task_text(task.get('description_translated')):
+            missing_fields.append('description')
+
+    return missing_fields
+
+
+def _build_missing_translation_review_message(field_names) -> str:
+    labels = {
+        'title': '标题',
+        'description': '简介',
+    }
+    readable = [labels.get(field_name, field_name) for field_name in (field_names or [])]
+    if not readable:
+        return "自动翻译未完成，任务已转入人工审核。"
+    return f"自动翻译未完成：{'、'.join(readable)}仍缺少有效译文，任务已转入人工审核。"
+
+
 def _is_asr_enabled(config: dict) -> bool:
     """ASR总开关：兼容传统ASR开关与FireRedASR2S开关。"""
     return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False)) or _as_bool(config.get('FIREREDASR_ENABLED', False))
@@ -1975,8 +2006,15 @@ class TaskProcessor:
                     task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
                 else:
                     ok = self._translate_content(task_id, task_logger)
+                    task = get_task(task_id)
                     if ok:
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_TRANSLATE_CONTENT)
+                    elif task is not None and task['status'] == TASK_STATES['AWAITING_REVIEW']:
+                        task_logger.info("元数据翻译失败，任务已转入人工审核")
+                        return
+                    elif task is not None and task['status'] == TASK_STATES['FAILED']:
+                        task_logger.error("元数据翻译失败，终止任务处理")
+                        return
                 _raise_if_cancelled(task_id, task_logger)
 
             if self.config.get('GENERATE_TAGS', True):
@@ -2061,6 +2099,9 @@ class TaskProcessor:
                     _raise_if_cancelled(task_id, task_logger)
                     task = get_task(task_id)
                     upload_target = _get_task_upload_target(task)
+                    if task and task.get('status') == TASK_STATES['AWAITING_REVIEW']:
+                        task_logger.info("上传前校验发现缺失译文，任务已转入人工审核")
+                        return
                     if task and (_task_has_upload_response(task, upload_target) or task.get('status') == TASK_STATES['COMPLETED']):
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_UPLOAD_TO_ACFUN)
 
@@ -2068,7 +2109,9 @@ class TaskProcessor:
             task = get_task(task_id)
             if task is not None:
                 upload_target = _get_task_upload_target(task)
-                if task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
+                if task['status'] == TASK_STATES['AWAITING_REVIEW']:
+                    task_logger.info("任务当前处于人工审核状态，保留待审核状态")
+                elif task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
                     # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
                     if not self.config.get('AUTO_MODE_ENABLED', False) or not _task_has_upload_response(task, upload_target):
                         update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
@@ -2562,15 +2605,48 @@ class TaskProcessor:
         )
 
         updates = {}
-        if translate_title:
+        requested_fields = set(translated.get('requested_fields') or [])
+        if translate_title and 'title' in requested_fields:
             updates['video_title_translated'] = translated.get('title', '')
-        if translate_description:
+        if translate_description and 'description' in requested_fields:
             updates['description_translated'] = translated.get('description', '')
-        if updates:
-            update_task(task_id, **updates)
-        
-        task_logger.info("翻译完成")
-        return True
+
+        if translated.get('success'):
+            if updates:
+                updates['error_message'] = None
+                update_task(task_id, **updates)
+            task_logger.info("翻译完成")
+            return True
+
+        review_message = translated.get('error_message') or _build_missing_translation_review_message(requested_fields)
+        updates.update({
+            'status': TASK_STATES['AWAITING_REVIEW'],
+            'error_message': review_message,
+        })
+        update_task(task_id, **updates)
+        task_logger.warning(review_message)
+        return False
+
+    def _ensure_required_translations_ready(self, task_id, task, task_logger, allow_missing_translations=False):
+        missing_fields = _get_missing_required_translation_fields(task, self.config)
+        if not missing_fields:
+            return True
+
+        missing_message = _build_missing_translation_review_message(missing_fields)
+        if allow_missing_translations:
+            task_logger.warning(
+                f"{missing_message} 当前为强制上传路径，将继续回退原文执行上传。"
+            )
+            return True
+
+        task_logger.warning(missing_message)
+        update_task(
+            task_id,
+            status=TASK_STATES['AWAITING_REVIEW'],
+            error_message=missing_message,
+            upload_progress=None,
+        )
+        return False
     
     def _translate_subtitle(self, task_id, task_logger, embed_in_video_override=None):
         """翻译字幕文件"""
@@ -2761,6 +2837,14 @@ class TaskProcessor:
             translator = create_translator_from_config(self.config, task_id)
             if not translator:
                 task_logger.error("无法创建字幕翻译器，请检查API配置")
+                update_task(
+                    task_id,
+                    subtitle_path_original=subtitle_file,
+                    subtitle_path_translated=None,
+                    subtitle_language_detected=subtitle_lang,
+                    upload_progress=None,
+                    silent=True,
+                )
                 return False
             
             # 检测字幕语言（简单实现）
@@ -2834,9 +2918,16 @@ class TaskProcessor:
                 task_logger.info("字幕翻译处理完成")
                 return True
             else:
-                task_logger.error("字幕翻译失败")
+                task_logger.warning("字幕翻译失败，按策略跳过字幕产物并继续后续上传")
                 # 清除进度显示
-                update_task(task_id, upload_progress=None, silent=True)
+                update_task(
+                    task_id,
+                    subtitle_path_original=subtitle_file,
+                    subtitle_path_translated=None,
+                    subtitle_language_detected=subtitle_lang,
+                    upload_progress=None,
+                    silent=True,
+                )
                 return False
                 
         except Exception as e:
@@ -2844,7 +2935,12 @@ class TaskProcessor:
             import traceback
             task_logger.error(traceback.format_exc())
             # 清除进度显示
-            update_task(task_id, upload_progress=None, silent=True)
+            update_task(
+                task_id,
+                subtitle_path_translated=None,
+                upload_progress=None,
+                silent=True,
+            )
             return False
 
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
@@ -6248,11 +6344,19 @@ class TaskProcessor:
 
         return get_task(task_id)
     
-    def _upload_to_target(self, task_id, task_logger):
+    def _upload_to_target(self, task_id, task_logger, allow_missing_translations=False):
         """按任务平台分发上传实现。"""
         task = get_task(task_id)
         if not task:
             task_logger.error("任务不存在")
+            return
+
+        if not self._ensure_required_translations_ready(
+            task_id,
+            task,
+            task_logger,
+            allow_missing_translations=allow_missing_translations,
+        ):
             return
 
         upload_target = _get_task_upload_target(task)
@@ -6395,6 +6499,11 @@ class TaskProcessor:
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
         partition_id = _get_task_partition_id(task, UPLOAD_TARGET_ACFUN, prefer_selected=True) if task else ''
+        missing_translation_fields = _get_missing_required_translation_fields(task, self.config)
+        if missing_translation_fields:
+            task_logger.warning(
+                f"当前上传路径存在缺失译文字段 {missing_translation_fields}，将回退原文继续上传"
+            )
         fixed_acfun_pid = str(self.config.get('FIXED_PARTITION_ID', '') or '').strip()
         if fixed_acfun_pid:
             partition_id = fixed_acfun_pid
@@ -6603,6 +6712,11 @@ class TaskProcessor:
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
         partition_id = ''
+        missing_translation_fields = _get_missing_required_translation_fields(task, self.config)
+        if missing_translation_fields:
+            task_logger.warning(
+                f"当前上传路径存在缺失译文字段 {missing_translation_fields}，将回退原文继续上传"
+            )
 
         if not video_path or not os.path.exists(video_path):
             task_logger.info("检测到视频文件缺失，开始下载视频文件...")
@@ -6930,7 +7044,7 @@ def force_upload_task(task_id, config=None):
     
     try:
         # 直接执行上传步骤
-        processor._upload_to_target(task_id, task_logger)
+        processor._upload_to_target(task_id, task_logger, allow_missing_translations=True)
 
         # 上传流程（强制路径）不会进入 process_task 的 finally，需手动唤醒队列
         try:
