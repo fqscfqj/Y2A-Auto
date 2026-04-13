@@ -45,11 +45,34 @@ body {
     transform: none;
 }
 
+.navbar-utility {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.navbar-logout-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+    font-weight: 600;
+    border-color: rgba(255, 255, 255, 0.45);
+}
+
+.navbar-logout-btn:hover,
+.navbar-logout-btn:focus {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.65);
+}
+
 @media (min-width: 992px) {
     .navbar-shell {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
+        column-gap: 1rem;
     }
 
     .navbar-shell .navbar-brand {
@@ -71,15 +94,10 @@ body {
         justify-content: center;
     }
 
-    .navbar-balance {
+    .navbar-shell .navbar-utility {
         grid-column: 3;
         justify-self: end;
-        visibility: hidden;
-        pointer-events: none;
-        -webkit-user-select: none;
-        user-select: none;
-        font-weight: 700;
-        font-size: 1.4rem;
+        margin-left: 0 !important;
     }
 }
 

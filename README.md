@@ -174,6 +174,7 @@ python app.py
 - `password_protection_enabled`：Web 密码保护，默认 `false`
 - `LOGIN_MAX_FAILED_ATTEMPTS`：连续错误次数上限，默认 `5`
 - `LOGIN_LOCKOUT_MINUTES`：锁定时长，默认 `15`
+- `LOGIN_SESSION_TIMEOUT_MINUTES`：登录空闲超时时长，默认 `30` 分钟，最小 `1`，访问受保护页面会自动续期
 - `UPLOAD_TARGET_DEFAULT`：默认投稿平台，支持 `acfun`、`bilibili`、`both`
 - `UPLOAD_APPEND_REPOST_NOTICE`：是否自动追加转载声明，默认 `true`
 

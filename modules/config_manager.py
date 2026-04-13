@@ -58,6 +58,7 @@ DEFAULT_CONFIG = {
     # 登录安全控制
     "LOGIN_MAX_FAILED_ATTEMPTS": 5,  # 达到该失败次数后触发锁定
     "LOGIN_LOCKOUT_MINUTES": 15,     # 被锁定后持续的分钟数
+    "LOGIN_SESSION_TIMEOUT_MINUTES": 30,  # 登录空闲超时时长（分钟）
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
@@ -218,6 +219,14 @@ def normalize_youtube_download_max_height(value):
     return normalized
 
 
+def normalize_login_session_timeout_minutes(value):
+    try:
+        normalized = int(str(value).strip())
+    except (AttributeError, TypeError, ValueError):
+        return 30
+    return max(1, normalized)
+
+
 def _prune_unknown_config_keys(config_data):
     clean_config = {}
     removed_keys = []
@@ -285,6 +294,14 @@ def load_config():
                     quality_height_before
                 )
                 quality_height_changed = config['YOUTUBE_DOWNLOAD_MAX_HEIGHT'] != quality_height_before
+
+                session_timeout_before = config.get('LOGIN_SESSION_TIMEOUT_MINUTES')
+                config['LOGIN_SESSION_TIMEOUT_MINUTES'] = normalize_login_session_timeout_minutes(
+                    session_timeout_before
+                )
+                session_timeout_changed = (
+                    config['LOGIN_SESSION_TIMEOUT_MINUTES'] != session_timeout_before
+                )
                 removed_unknown_keys = bool(removed_keys)
 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
@@ -294,6 +311,7 @@ def load_config():
                     or upload_target_changed
                     or quality_mode_changed
                     or quality_height_changed
+                    or session_timeout_changed
                     or migrated_legacy_speech
                     or removed_unknown_keys
                 ):
@@ -377,6 +395,8 @@ def update_config(new_config):
                 current_config[key] = normalize_youtube_download_quality_mode(new_config[key])
             elif key == 'YOUTUBE_DOWNLOAD_MAX_HEIGHT':
                 current_config[key] = normalize_youtube_download_max_height(new_config[key])
+            elif key == 'LOGIN_SESSION_TIMEOUT_MINUTES':
+                current_config[key] = normalize_login_session_timeout_minutes(new_config[key])
             else:
                 current_config[key] = new_config[key]
 

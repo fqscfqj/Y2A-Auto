@@ -21,9 +21,17 @@
                 <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
                     <span>Y2A-Auto</span>
                 </a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-label="切换导航菜单">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
+                <div class="navbar-utility ms-auto d-flex align-items-center gap-2">
+                    {% if show_logout_in_nav %}
+                        <a class="btn btn-outline-light btn-sm navbar-logout-btn" href="{{ url_for('logout') }}">
+                            <i class="bi bi-box-arrow-right"></i>
+                            <span>退出登录</span>
+                        </a>
+                    {% endif %}
+                    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-label="切换导航菜单">
+                        <span class="navbar-toggler-icon"></span>
+                    </button>
+                </div>
                 <div class="collapse navbar-collapse" id="navbarNav">
                     <ul class="navbar-nav">
                         <li class="nav-item">
@@ -52,9 +60,6 @@
                             </a>
                         </li>
                     </ul>
-                </div>
-                <div class="navbar-balance d-none d-lg-flex align-items-center" aria-hidden="true">
-                    <span>Y2A-Auto</span>
                 </div>
             </div>
         </nav>

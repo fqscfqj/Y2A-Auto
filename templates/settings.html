@@ -1647,7 +1647,7 @@
                                 <div class="settings-section-header">
                                     <div>
                                         <h3 class="mb-1">安全</h3>
-                                        <p class="section-lead mb-0">保护 Web 控制台访问，约束密码暴力尝试。</p>
+                                        <p class="section-lead mb-0">保护 Web 控制台访问，约束密码暴力尝试并控制空闲会话时长。</p>
                                     </div>
                                 </div>
                                 <article class="settings-card">
@@ -1686,16 +1686,23 @@
                                             </div>
                                         </div>
                                         <div class="row g-3 mt-1">
-                                            <div class="col-md-6">
+                                            <div class="col-md-4">
                                                 <div class="form-group">
                                                     <label for="login-max-attempts" class="form-label">最大连续错误次数</label>
                                                     <input type="number" id="login-max-attempts" name="LOGIN_MAX_FAILED_ATTEMPTS" value="{{ config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) }}" min="1" max="20" class="form-control">
                                                 </div>
                                             </div>
-                                            <div class="col-md-6">
-                                                <div class="form-group mb-0">
+                                            <div class="col-md-4">
+                                                <div class="form-group">
                                                     <label for="login-lock-minutes" class="form-label">锁定时长（分钟）</label>
                                                     <input type="number" id="login-lock-minutes" name="LOGIN_LOCKOUT_MINUTES" value="{{ config.get('LOGIN_LOCKOUT_MINUTES', 15) }}" min="1" max="1440" class="form-control">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <div class="form-group mb-0">
+                                                    <label for="login-session-timeout-minutes" class="form-label">会话超时（分钟）</label>
+                                                    <input type="number" id="login-session-timeout-minutes" name="LOGIN_SESSION_TIMEOUT_MINUTES" value="{{ config.get('LOGIN_SESSION_TIMEOUT_MINUTES', 30) }}" min="1" max="10080" class="form-control">
+                                                    <div class="form-text">连续无操作超过该时长后自动退出，访问受保护页面会自动续期。</div>
                                                 </div>
                                             </div>
                                         </div>

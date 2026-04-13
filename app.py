@@ -52,6 +52,19 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
 app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
 
+
+@app.context_processor
+def inject_app_settings():
+    app_settings = app.config.get('Y2A_SETTINGS', {})
+    if not isinstance(app_settings, dict):
+        app_settings = {}
+    return {
+        'app_settings': app_settings,
+        'show_logout_in_nav': bool(
+            app_settings.get('password_protection_enabled') and session.get('logged_in')
+        ),
+    }
+
 ALLOWED_COVER_EXTENSIONS = {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
@@ -716,7 +729,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
             'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
             'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
-            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES',
+            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
             'VAD_SILERO_MIN_SPEECH_MS',
             'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
             'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
@@ -733,7 +746,10 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                 try:
                     print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                     original_value = form_data[field]
-                    form_data[field] = str(int(form_data[field]))
+                    normalized_value = int(original_value)
+                    if field == 'LOGIN_SESSION_TIMEOUT_MINUTES':
+                        normalized_value = max(1, normalized_value)
+                    form_data[field] = str(normalized_value)
                     print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                 except (ValueError, TypeError) as e:
                     print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
@@ -750,6 +766,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'YOUTUBE_DOWNLOAD_MAX_HEIGHT': 1080,
                         'LOGIN_MAX_FAILED_ATTEMPTS': 5,
                         'LOGIN_LOCKOUT_MINUTES': 15,
+                        'LOGIN_SESSION_TIMEOUT_MINUTES': 30,
                         'VAD_SILERO_MIN_SPEECH_MS': 300,
                         'VAD_SILERO_MIN_SILENCE_MS': 320,
                         'VAD_SILERO_MAX_SPEECH_S': 120,
@@ -810,7 +827,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
 
         try:
             from modules.task_manager import get_global_task_processor
-            app.config['Y2A_SETTINGS'] = updated_config
+            configure_app(app, updated_config)
             get_global_task_processor(updated_config)
             logger.info("配置已更新并同步到任务处理器")
         except Exception as e:
@@ -1324,7 +1341,7 @@ def login():
 
 @app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
+    session.clear()
     flash('您已成功退出。', 'info')
     return redirect(url_for('login'))
 
@@ -2856,6 +2873,16 @@ def configure_app(app, config):
                 app.config['MAX_CONTENT_LENGTH'] = int(max_content) * 1024 * 1024
             except Exception:
                 pass
+
+        timeout_minutes = 30
+        if isinstance(config, dict):
+            timeout_value = config.get('LOGIN_SESSION_TIMEOUT_MINUTES', 30)
+            try:
+                timeout_minutes = int(timeout_value)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+        app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=max(1, timeout_minutes))
+        app.config['SESSION_REFRESH_EACH_REQUEST'] = True
 
         # 允许覆盖的内容
         app.config['Y2A_SETTINGS'] = config
