@@ -2546,9 +2546,15 @@ def settings_test_notification():
             'success': True,
             'message': f'{CHANNEL_LABELS.get(channel, channel)} 测试消息已发送'
         })
-    except Exception as e:
-        logger.warning(f"测试通知发送失败，渠道={channel}: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 400
+    except ValueError:
+        logger.warning("测试通知发送失败，渠道=%s", channel, exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'{CHANNEL_LABELS.get(channel, channel)} 配置不完整，请检查后重试'
+        }), 400
+    except Exception:
+        logger.exception("测试通知发送失败，渠道=%s", channel)
+        return jsonify({'success': False, 'message': '测试通知发送失败，请稍后重试'}), 500
 
 
 @app.route('/settings/acfun/qrcode/start', methods=['POST'])
