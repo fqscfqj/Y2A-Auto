@@ -6658,7 +6658,10 @@ class TaskProcessor:
 
         # bilibili 转载页会单独展示 source，这里只保留说明文案和正文，避免 URL 重复出现。
         try:
-            from modules.bilibili_uploader import format_bilibili_description
+            from modules.bilibili_uploader import (
+                BILIBILI_DESCRIPTION_LIMIT,
+                format_bilibili_description,
+            )
 
             description = format_bilibili_description(
                 base_desc=description,
@@ -6666,7 +6669,7 @@ class TaskProcessor:
                 original_uploader=original_uploader,
                 original_upload_date=original_upload_date,
                 append_repost_notice=bool(self.config.get('UPLOAD_APPEND_REPOST_NOTICE', True)),
-                max_len=2000,
+                max_len=BILIBILI_DESCRIPTION_LIMIT,
             )
         except Exception as e:
             task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")

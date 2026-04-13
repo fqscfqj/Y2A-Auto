@@ -16,6 +16,8 @@ from bilibili_api.exceptions import ArgsException, ResponseCodeException
 from .bilibili_auth import load_credential_from_file
 from .utils import get_app_subdir
 
+BILIBILI_DESCRIPTION_LIMIT = 200
+
 
 def setup_task_logger(task_id):
     log_dir = get_app_subdir("logs")
@@ -107,7 +109,7 @@ def format_bilibili_description(
     original_uploader: str = "",
     original_upload_date: str = "",
     append_repost_notice: bool = True,
-    max_len: int = 2000,
+    max_len: int = BILIBILI_DESCRIPTION_LIMIT,
 ) -> str:
     summary = _remove_redundant_original_url(base_desc, original_url)
     is_repost = bool(original_url or original_uploader or original_upload_date)
@@ -213,7 +215,7 @@ class BilibiliUploader:
             safe_title = _compact_text(title or "", 80)
             safe_desc = _truncate_multiline_text(
                 _remove_redundant_original_url(description or "", youtube_url or ""),
-                2000,
+                BILIBILI_DESCRIPTION_LIMIT,
             )
             safe_tags = [str(t).strip()[:20] for t in (tags or []) if str(t).strip()]
             safe_tags = safe_tags[:12]

@@ -192,6 +192,11 @@
                                 <label for="description_translated" class="form-label">视频描述</label>
                                 <textarea class="form-control" id="description_translated" name="description_translated" 
                                           rows="10">{{ task.description_translated or task.description_original }}</textarea>
+                                {% if (upload_target|default('acfun')) in ['bilibili', 'both'] %}
+                                    <div class="form-text" id="bilibili-description-hint">
+                                        bilibili 投稿简介上限为 200 字，超出部分会在上传 bilibili 时自动截断。
+                                    </div>
+                                {% endif %}
                                 {% if task.description_original %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary mt-2" data-bs-toggle="collapse" 
                                             data-bs-target="#original-description">
@@ -345,6 +350,24 @@
 {% block extra_js %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        {% if (upload_target|default('acfun')) in ['bilibili', 'both'] %}
+        const descriptionTextarea = document.getElementById('description_translated');
+        const bilibiliDescriptionHint = document.getElementById('bilibili-description-hint');
+        if (descriptionTextarea && bilibiliDescriptionHint) {
+            const limit = 200;
+            const baseText = 'bilibili 投稿简介上限为 200 字，超出部分会在上传 bilibili 时自动截断。';
+
+            function updateDescriptionHint() {
+                const length = descriptionTextarea.value.length;
+                bilibiliDescriptionHint.textContent = `${baseText} 当前 ${length}/${limit}。`;
+                bilibiliDescriptionHint.classList.toggle('text-warning', length > limit);
+            }
+
+            descriptionTextarea.addEventListener('input', updateDescriptionHint);
+            updateDescriptionHint();
+        }
+        {% endif %}
+
         // 标签管理
         const tagInputs = document.querySelectorAll('.tag-input');
         const tagsJsonField = document.getElementById('tags_json');
