@@ -114,6 +114,10 @@
                     <i class="bi bi-tools"></i>
                     <span>监控与维护</span>
                 </a>
+                <a class="nav-link" id="vtab-notifications-tab" data-bs-toggle="pill" href="#vtab-notifications" role="tab" aria-controls="vtab-notifications" aria-selected="false">
+                    <i class="bi bi-bell"></i>
+                    <span>消息推送</span>
+                </a>
                 <a class="nav-link" id="vtab-security-tab" data-bs-toggle="pill" href="#vtab-security" role="tab" aria-controls="vtab-security" aria-selected="false">
                     <i class="bi bi-shield-lock"></i>
                     <span>安全</span>
@@ -1465,6 +1469,178 @@
                         </div>
                     </div>
 
+                    <div class="tab-pane fade" id="vtab-notifications" role="tabpanel" aria-labelledby="vtab-notifications-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">消息推送</h3>
+                                        <p class="section-lead mb-0">将任务新增、完成、报错和关键登录事件推送到企业微信、Server酱或 message-pusher。</p>
+                                    </div>
+                                </div>
+                                <div class="row g-4 settings-pane-grid">
+                                    <div class="col-xl-5">
+                                        <article class="settings-card h-100">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">总控</span>
+                                                    <h4>通知策略</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if config.get('NOTIFY_ENABLED', False) else 'is-neutral' }}">
+                                                    {{ '已启用' if config.get('NOTIFY_ENABLED', False) else '未启用' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <label class="checkbox-label mb-3">
+                                                    <input type="checkbox" name="NOTIFY_ENABLED" {% if config.get('NOTIFY_ENABLED', False) %}checked{% endif %}>
+                                                    启用主动消息推送
+                                                </label>
+                                                <div class="settings-inline-options">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_TASK_ADDED" {% if config.get('NOTIFY_EVENT_TASK_ADDED', True) %}checked{% endif %}>
+                                                        任务新增
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_TASK_COMPLETED" {% if config.get('NOTIFY_EVENT_TASK_COMPLETED', True) %}checked{% endif %}>
+                                                        任务完成
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_TASK_FAILED" {% if config.get('NOTIFY_EVENT_TASK_FAILED', True) %}checked{% endif %}>
+                                                        任务报错
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_LOGIN_SUCCESS" {% if config.get('NOTIFY_EVENT_LOGIN_SUCCESS', True) %}checked{% endif %}>
+                                                        后台登录成功
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_LOGIN_LOCKED" {% if config.get('NOTIFY_EVENT_LOGIN_LOCKED', True) %}checked{% endif %}>
+                                                        登录锁定
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_QR_LOGIN_SUCCESS" {% if config.get('NOTIFY_EVENT_QR_LOGIN_SUCCESS', True) %}checked{% endif %}>
+                                                        扫码登录成功
+                                                    </label>
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="NOTIFY_EVENT_QR_LOGIN_FAILED" {% if config.get('NOTIFY_EVENT_QR_LOGIN_FAILED', True) %}checked{% endif %}>
+                                                        扫码登录失败
+                                                    </label>
+                                                </div>
+                                                <p class="help-text mt-3 mb-0">事件开关为全局共享。已启用但凭据不完整的渠道不会阻塞主流程，只会跳过发送。</p>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-xl-7">
+                                        <div class="row g-4">
+                                            <div class="col-12">
+                                                <article class="settings-card">
+                                                    <div class="settings-card-header">
+                                                        <div>
+                                                            <span class="section-eyebrow">企业微信</span>
+                                                            <h4>群机器人</h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="settings-card-body">
+                                                        <label class="checkbox-label mb-3">
+                                                            <input type="checkbox" name="NOTIFY_WECOM_ENABLED" {% if config.get('NOTIFY_WECOM_ENABLED', False) %}checked{% endif %}>
+                                                            启用企业微信群机器人通知
+                                                        </label>
+                                                        <div class="form-group mb-3">
+                                                            <label for="notify-wecom-webhook" class="form-label">Webhook URL</label>
+                                                            <input type="url" id="notify-wecom-webhook" name="NOTIFY_WECOM_WEBHOOK_URL" value="{{ config.get('NOTIFY_WECOM_WEBHOOK_URL', '') }}" class="form-control" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+                                                        </div>
+                                                        <div class="settings-inline-actions">
+                                                            <button type="button" class="btn btn-outline-primary notify-test-btn" data-channel="wecom">
+                                                                <i class="bi bi-send"></i> 发送测试消息
+                                                            </button>
+                                                            <span class="help-text">使用已保存的配置发送，不读取当前未保存表单内容。</span>
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            </div>
+
+                                            <div class="col-12">
+                                                <article class="settings-card">
+                                                    <div class="settings-card-header">
+                                                        <div>
+                                                            <span class="section-eyebrow">Server酱</span>
+                                                            <h4>Turbo 通道</h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="settings-card-body">
+                                                        <label class="checkbox-label mb-3">
+                                                            <input type="checkbox" name="NOTIFY_SERVERCHAN_ENABLED" {% if config.get('NOTIFY_SERVERCHAN_ENABLED', False) %}checked{% endif %}>
+                                                            启用 Server酱 通知
+                                                        </label>
+                                                        <div class="form-group mb-3">
+                                                            <label for="notify-serverchan-sendkey" class="form-label">SendKey</label>
+                                                            <input type="password" id="notify-serverchan-sendkey" name="NOTIFY_SERVERCHAN_SENDKEY" value="{{ config.get('NOTIFY_SERVERCHAN_SENDKEY', '') }}" class="form-control" autocomplete="off" placeholder="SCTxxxxxxxxxxxxxxxx">
+                                                        </div>
+                                                        <div class="settings-inline-actions">
+                                                            <button type="button" class="btn btn-outline-primary notify-test-btn" data-channel="serverchan">
+                                                                <i class="bi bi-send"></i> 发送测试消息
+                                                            </button>
+                                                            <span class="help-text">将以标题 + Markdown 正文的形式发送。</span>
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            </div>
+
+                                            <div class="col-12">
+                                                <article class="settings-card">
+                                                    <div class="settings-card-header">
+                                                        <div>
+                                                            <span class="section-eyebrow">message-pusher</span>
+                                                            <h4>自建消息网关</h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="settings-card-body">
+                                                        <label class="checkbox-label mb-3">
+                                                            <input type="checkbox" name="NOTIFY_MESSAGE_PUSHER_ENABLED" {% if config.get('NOTIFY_MESSAGE_PUSHER_ENABLED', False) %}checked{% endif %}>
+                                                            启用 message-pusher 通知
+                                                        </label>
+                                                        <div class="row g-3">
+                                                            <div class="col-md-6">
+                                                                <div class="form-group">
+                                                                    <label for="notify-message-pusher-server" class="form-label">服务地址</label>
+                                                                    <input type="url" id="notify-message-pusher-server" name="NOTIFY_MESSAGE_PUSHER_SERVER" value="{{ config.get('NOTIFY_MESSAGE_PUSHER_SERVER', '') }}" class="form-control" placeholder="https://push.example.com">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <div class="form-group">
+                                                                    <label for="notify-message-pusher-username" class="form-label">用户名</label>
+                                                                    <input type="text" id="notify-message-pusher-username" name="NOTIFY_MESSAGE_PUSHER_USERNAME" value="{{ config.get('NOTIFY_MESSAGE_PUSHER_USERNAME', '') }}" class="form-control" placeholder="admin">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <div class="form-group">
+                                                                    <label for="notify-message-pusher-token" class="form-label">Token</label>
+                                                                    <input type="password" id="notify-message-pusher-token" name="NOTIFY_MESSAGE_PUSHER_TOKEN" value="{{ config.get('NOTIFY_MESSAGE_PUSHER_TOKEN', '') }}" class="form-control" autocomplete="off">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <div class="form-group">
+                                                                    <label for="notify-message-pusher-channel" class="form-label">通道名（可选）</label>
+                                                                    <input type="text" id="notify-message-pusher-channel" name="NOTIFY_MESSAGE_PUSHER_CHANNEL" value="{{ config.get('NOTIFY_MESSAGE_PUSHER_CHANNEL', '') }}" class="form-control" placeholder="corp / email / 自定义通道名">
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="settings-inline-actions mt-3">
+                                                            <button type="button" class="btn btn-outline-primary notify-test-btn" data-channel="message_pusher">
+                                                                <i class="bi bi-send"></i> 发送测试消息
+                                                            </button>
+                                                            <span class="help-text">留空通道名时使用服务端默认通道。</span>
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+
                     <div class="tab-pane fade" id="vtab-security" role="tabpanel" aria-labelledby="vtab-security-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
@@ -1797,6 +1973,45 @@ document.addEventListener('DOMContentLoaded', function () {
         }, { once: true });
         bootstrap.Toast.getOrCreateInstance(toastEl, { delay: 4500 }).show();
     };
+
+    const notificationTestEndpoint = '{{ url_for("settings_test_notification") }}';
+    document.querySelectorAll('.notify-test-btn').forEach(function (button) {
+        button.addEventListener('click', function () {
+            const channel = button.getAttribute('data-channel');
+            if (!channel) {
+                return;
+            }
+            button.disabled = true;
+            fetch(notificationTestEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ channel: channel })
+            })
+                .then(function (response) {
+                    return response.json().then(function (data) {
+                        return {
+                            ok: response.ok,
+                            data: data || {}
+                        };
+                    });
+                })
+                .then(function (result) {
+                    if (!result.ok || !result.data.success) {
+                        throw new Error(result.data.message || '测试消息发送失败');
+                    }
+                    showSettingsToast('success', result.data.message || '测试消息已发送');
+                })
+                .catch(function (error) {
+                    showSettingsToast('error', error.message || '测试消息发送失败');
+                })
+                .finally(function () {
+                    button.disabled = false;
+                });
+        });
+    });
 
     const settingsForm = document.getElementById('settings-form');
     const saveSettingsBtn = document.getElementById('save-settings-btn');

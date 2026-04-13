@@ -21,6 +21,13 @@ from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
+from .notifications import (
+    EVENT_TASK_ADDED,
+    EVENT_TASK_COMPLETED,
+    EVENT_TASK_FAILED,
+    NotificationEvent,
+    emit_notification_event,
+)
 import subprocess
 from typing import Any, Dict
 
@@ -297,6 +304,23 @@ def _task_has_platform_upload_response(task, platform):
     if p == UPLOAD_TARGET_BILIBILI:
         return bool(task.get('bilibili_upload_response'))
     return bool(task.get('acfun_upload_response'))
+
+
+def _build_task_notification_payload(task, overrides=None) -> dict:
+    merged_task = dict(task or {})
+    if overrides:
+        merged_task.update(overrides)
+    return {
+        'task_id': str(merged_task.get('id') or '').strip(),
+        'youtube_url': str(merged_task.get('youtube_url') or '').strip(),
+        'upload_target': normalize_upload_target(merged_task.get('upload_target')),
+        'status': str(merged_task.get('status') or '').strip(),
+        'video_title_original': str(merged_task.get('video_title_original') or '').strip(),
+        'video_title_translated': str(merged_task.get('video_title_translated') or '').strip(),
+        'error_message': str(merged_task.get('error_message') or '').strip(),
+        'acfun_uploaded': bool(merged_task.get('acfun_upload_response')),
+        'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')),
+    }
 
 
 def _get_upload_platforms_for_target(upload_target):
@@ -1042,10 +1066,10 @@ def add_task(youtube_url, upload_target=None):
         task_id: 新创建的任务ID
     """
     task_id = str(uuid.uuid4())
+    normalized_target = normalize_upload_target(upload_target)
     conn = get_db_connection()
     
     try:
-        normalized_target = normalize_upload_target(upload_target)
         if not upload_target:
             try:
                 from modules.config_manager import load_config
@@ -1086,6 +1110,16 @@ def add_task(youtube_url, upload_target=None):
         conn.close()
     if task_id:
         publish_task_event('task_added', {'task_id': task_id})
+        emit_notification_event(
+            NotificationEvent(
+                event_type=EVENT_TASK_ADDED,
+                payload={
+                    'task_id': task_id,
+                    'youtube_url': youtube_url,
+                    'upload_target': normalized_target,
+                },
+            )
+        )
 
     return task_id
 
@@ -1164,6 +1198,9 @@ def update_task(task_id, silent=False, **kwargs):
     try:
         for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
             try:
+                existing_row = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,)).fetchone()
+                existing_task = dict(existing_row) if existing_row else None
+                previous_status = existing_task.get('status') if existing_task else None
                 conn.execute(
                     f'UPDATE tasks SET {set_clause} WHERE id = ?',
                     values
@@ -1195,6 +1232,27 @@ def update_task(task_id, silent=False, **kwargs):
                     }
 
                 publish_task_event(event_type, event_payload)
+                if (
+                    status_changed
+                    and previous_status != filtered_kwargs.get('status')
+                    and filtered_kwargs.get('status') in (TASK_STATES['COMPLETED'], TASK_STATES['FAILED'])
+                ):
+                    merged_task = dict(existing_task or {})
+                    merged_task.update(filtered_kwargs)
+                    merged_task['id'] = task_id
+                    emit_notification_event(
+                        NotificationEvent(
+                            event_type=(
+                                EVENT_TASK_COMPLETED
+                                if filtered_kwargs.get('status') == TASK_STATES['COMPLETED']
+                                else EVENT_TASK_FAILED
+                            ),
+                            payload=_build_task_notification_payload(
+                                merged_task,
+                                overrides={'previous_status': previous_status},
+                            ),
+                        )
+                    )
                 if not silent:  # 只有非静默模式才记录到主日志
                     logger.info(f"任务 {task_id} 更新成功: {filtered_kwargs}")
                 return True

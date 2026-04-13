@@ -31,6 +31,21 @@ from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_FLOAT_FIELDS,
     SPEECH_PIPELINE_INT_FIELDS,
 )
+from modules.notifications import (
+    CHANNEL_LABELS,
+    CHANNEL_MESSAGE_PUSHER,
+    CHANNEL_SERVERCHAN,
+    CHANNEL_WECOM,
+    EVENT_LOGIN_LOCKED,
+    EVENT_LOGIN_SUCCESS,
+    EVENT_QR_LOGIN_FAILED,
+    EVENT_QR_LOGIN_SUCCESS,
+    NotificationEvent,
+    emit_notification_event,
+    get_global_notification_service,
+    iter_enabled_channel_ids,
+    validate_channel_config_fields,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
@@ -108,6 +123,7 @@ def _build_startup_config_log_summary(config: dict | None) -> dict:
     return {
         'feature_flags': {
             'AUTO_MODE_ENABLED': bool(normalized.get('AUTO_MODE_ENABLED', False)),
+            'NOTIFY_ENABLED': bool(normalized.get('NOTIFY_ENABLED', False)),
             'password_protection_enabled': bool(normalized.get('password_protection_enabled', False)),
             'CONTENT_MODERATION_ENABLED': bool(normalized.get('CONTENT_MODERATION_ENABLED', False)),
             'YOUTUBE_PROXY_ENABLED': bool(normalized.get('YOUTUBE_PROXY_ENABLED', False)),
@@ -117,6 +133,42 @@ def _build_startup_config_log_summary(config: dict | None) -> dict:
         },
         'config_keys_total': len(normalized),
     }
+
+
+def _sync_notification_service(config: dict | None = None):
+    effective_config = dict(config or load_config())
+    try:
+        get_global_notification_service(effective_config)
+        logger.info("通知服务配置已同步")
+    except Exception as e:
+        logger.warning(f"同步通知服务配置失败: {e}")
+
+
+def _append_notification_config_warnings(messages: list, config: dict | None):
+    effective_config = dict(config or {})
+    if not effective_config.get('NOTIFY_ENABLED'):
+        return
+    for channel_id in iter_enabled_channel_ids(effective_config):
+        missing_fields = validate_channel_config_fields(channel_id, effective_config)
+        if missing_fields:
+            readable_fields = '、'.join(missing_fields)
+            channel_label = CHANNEL_LABELS.get(channel_id, channel_id)
+            _append_settings_message(
+                messages,
+                'warning',
+                f'已启用 {channel_label} 通知，但缺少配置：{readable_fields}。该渠道会暂时跳过发送。'
+            )
+
+
+def _get_request_ip_address() -> str:
+    forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return str(request.remote_addr or 'unknown').strip() or 'unknown'
+
+
+def _emit_login_event(event_type: str, payload: dict):
+    emit_notification_event(NotificationEvent(event_type=event_type, payload=payload))
 
 
 def _cleanup_bilibili_qr_sessions():
@@ -139,6 +191,8 @@ def _create_bilibili_qr_session():
         _BILIBILI_QR_SESSIONS[session_id] = {
             'created_at': time.time(),
             'session': session_obj,
+            'success_notified': False,
+            'failure_notified': False,
         }
     return session_id, session_obj
 
@@ -174,6 +228,8 @@ def _create_acfun_qr_session():
         _ACFUN_QR_SESSIONS[session_id] = {
             'created_at': time.time(),
             'session': session_obj,
+            'success_notified': False,
+            'failure_notified': False,
         }
     return session_id, session_obj
 
@@ -187,6 +243,38 @@ def _get_acfun_qr_session(session_id: str):
     if not item:
         return None
     return item.get('session')
+
+
+def _mark_qr_notification_sent(session_store: dict, lock: threading.Lock, session_id: str, success: bool) -> bool:
+    flag_name = 'success_notified' if success else 'failure_notified'
+    with lock:
+        item = session_store.get(session_id)
+        if not item or item.get(flag_name):
+            return False
+        item[flag_name] = True
+        return True
+
+
+def _emit_qr_login_event_once(
+    session_store: dict,
+    lock: threading.Lock,
+    session_id: str,
+    platform: str,
+    status_data: dict,
+):
+    status = str((status_data or {}).get('status') or '').strip().lower()
+    if status not in ('done', 'failed'):
+        return
+    is_success = status == 'done'
+    if not _mark_qr_notification_sent(session_store, lock, session_id, is_success):
+        return
+    _emit_login_event(
+        EVENT_QR_LOGIN_SUCCESS if is_success else EVENT_QR_LOGIN_FAILED,
+        {
+            'platform': platform,
+            'message': str((status_data or {}).get('message') or ('Cookies 已保存' if is_success else '登录失败')).strip(),
+        }
+    )
 
 
 _SETTINGS_SAVE_OPERATIONS = {}
@@ -603,7 +691,18 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
             'VIDEO_CUSTOM_PARAMS_ENABLED',
             'FIREREDASR_ENABLED',
-            'VOXTRAL_DIARIZE'
+            'VOXTRAL_DIARIZE',
+            'NOTIFY_ENABLED',
+            'NOTIFY_EVENT_TASK_ADDED',
+            'NOTIFY_EVENT_TASK_COMPLETED',
+            'NOTIFY_EVENT_TASK_FAILED',
+            'NOTIFY_EVENT_LOGIN_SUCCESS',
+            'NOTIFY_EVENT_LOGIN_LOCKED',
+            'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
+            'NOTIFY_EVENT_QR_LOGIN_FAILED',
+            'NOTIFY_WECOM_ENABLED',
+            'NOTIFY_SERVERCHAN_ENABLED',
+            'NOTIFY_MESSAGE_PUSHER_ENABLED',
         ]
         for checkbox in SPEECH_PIPELINE_CHECKBOXES:
             if checkbox not in checkboxes:
@@ -716,6 +815,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             logger.info("配置已更新并同步到任务处理器")
         except Exception as e:
             logger.warning(f"同步任务处理器配置失败: {e}")
+
+        _sync_notification_service(updated_config)
+        _append_notification_config_warnings(messages, updated_config)
 
         try:
             need_ffmpeg = False
@@ -1184,6 +1286,12 @@ def login():
             # 登录成功，重置失败计数与锁定
             sec.update({'failed_attempts': 0, 'locked_until': 0, 'last_attempt': now_ts})
             _save_security_state(sec)
+            _emit_login_event(
+                EVENT_LOGIN_SUCCESS,
+                {
+                    'ip_address': _get_request_ip_address(),
+                }
+            )
             flash('登录成功', 'success')
             return redirect(url_for('index'))
         else:
@@ -1197,6 +1305,15 @@ def login():
             if failed >= max_attempts:
                 sec['locked_until'] = now_ts + lock_minutes * 60
                 _save_security_state(sec)
+                _emit_login_event(
+                    EVENT_LOGIN_LOCKED,
+                    {
+                        'ip_address': _get_request_ip_address(),
+                        'failed_attempts': failed,
+                        'max_attempts': max_attempts,
+                        'lock_minutes': lock_minutes,
+                    }
+                )
                 flash(f'密码错误次数过多（{failed}/{max_attempts}），已锁定 {lock_minutes} 分钟。', 'danger')
             else:
                 _save_security_state(sec)
@@ -2390,6 +2507,33 @@ def settings_save_progress(operation_id):
         'messages': progress.get('messages', [])
     })
 
+
+@app.route('/settings/notifications/test', methods=['POST'])
+@login_required
+def settings_test_notification():
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        channel = str(data.get('channel') or '').strip()
+    else:
+        channel = str(request.form.get('channel') or '').strip()
+
+    if channel not in (CHANNEL_WECOM, CHANNEL_SERVERCHAN, CHANNEL_MESSAGE_PUSHER):
+        return jsonify({'success': False, 'message': '不支持的通知渠道'}), 400
+
+    try:
+        config = load_config()
+        _sync_notification_service(config)
+        service = get_global_notification_service(config)
+        service.send_test_message(channel)
+        return jsonify({
+            'success': True,
+            'message': f'{CHANNEL_LABELS.get(channel, channel)} 测试消息已发送'
+        })
+    except Exception as e:
+        logger.warning(f"测试通知发送失败，渠道={channel}: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+
 @app.route('/settings/acfun/qrcode/start', methods=['POST'])
 @login_required
 def acfun_qrcode_start():
@@ -2438,6 +2582,13 @@ def acfun_qrcode_status(session_id):
 
     try:
         status_data = qr_session.check_status(cookie_file=cookie_path)
+        _emit_qr_login_event_once(
+            _ACFUN_QR_SESSIONS,
+            _ACFUN_QR_SESSION_LOCK,
+            session_id,
+            'AcFun',
+            status_data,
+        )
         status = status_data.get('status')
         # done/failed 状态保留到 TTL 自动清理，避免前端再次检查时立刻报“会话过期”
         # 仅 timeout（QR码确实过期）时立即移除
@@ -2488,6 +2639,13 @@ def bilibili_qrcode_status(session_id):
 
     try:
         status_data = qr_session.check_status(cookie_file=cookie_path)
+        _emit_qr_login_event_once(
+            _BILIBILI_QR_SESSIONS,
+            _BILIBILI_QR_SESSION_LOCK,
+            session_id,
+            'bilibili',
+            status_data,
+        )
         status = status_data.get('status')
         if status in ('done', 'timeout', 'failed'):
             with _BILIBILI_QR_SESSION_LOCK:
@@ -3214,6 +3372,7 @@ if __name__ == '__main__':
         "配置已加载（摘要）: %s",
         json.dumps(_build_startup_config_log_summary(config), ensure_ascii=False)
     )
+    _sync_notification_service(config)
 
     # 初始化全局任务处理器，确保并发控制生效
     from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
