@@ -16,7 +16,8 @@ from bilibili_api.exceptions import ArgsException, ResponseCodeException
 from .bilibili_auth import load_credential_from_file
 from .utils import get_app_subdir
 
-BILIBILI_DESCRIPTION_LIMIT = 200
+BILIBILI_TITLE_LIMIT = 80
+BILIBILI_DESCRIPTION_LIMIT = 2000
 
 
 def setup_task_logger(task_id):
@@ -212,7 +213,7 @@ class BilibiliUploader:
 
             credential = load_credential_from_file(self.cookie_file)
 
-            safe_title = _compact_text(title or "", 80)
+            safe_title = _compact_text(title or "", BILIBILI_TITLE_LIMIT)
             safe_desc = _truncate_multiline_text(
                 _remove_redundant_original_url(description or "", youtube_url or ""),
                 BILIBILI_DESCRIPTION_LIMIT,

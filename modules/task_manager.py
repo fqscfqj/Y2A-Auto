@@ -2805,6 +2805,15 @@ class TaskProcessor:
         
         task_logger.info("开始翻译视频标题和描述")
         update_task(task_id, status=TASK_STATES['TRANSLATING'])
+        upload_target = _get_task_upload_target(task)
+
+        if upload_target == UPLOAD_TARGET_BILIBILI:
+            translate_title_limit = 80
+            translate_description_limit = 2000
+        else:
+            # both 任务当前共享一套标题/简介，先按更严格的 AcFun 限额生成，避免双平台内容不一致。
+            translate_title_limit = 50
+            translate_description_limit = 1000
         
         # 构建OpenAI配置
         openai_config = {
@@ -2831,6 +2840,8 @@ class TaskProcessor:
             task_id=task_id,
             translate_title=translate_title,
             translate_description=translate_description,
+            title_limit=translate_title_limit,
+            description_limit=translate_description_limit,
         )
 
         updates = {}

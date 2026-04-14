@@ -18,6 +18,9 @@ from .utils import get_app_subdir
 
 from modules.utils import process_cover
 
+ACFUN_TITLE_LIMIT = 50
+ACFUN_DESCRIPTION_LIMIT = 1000
+
 
 def setup_task_logger(task_id):
     """
@@ -67,7 +70,7 @@ def build_upload_description(
     original_uploader: str = "",
     original_upload_date: str = "",
     append_repost_notice: bool = True,
-    max_len: int = 1000
+    max_len: int = ACFUN_DESCRIPTION_LIMIT
 ) -> str:
     """
     构建最终投稿简介：
@@ -849,9 +852,11 @@ class AcfunUploader:
             
             # 应用AcFun字符限制
             # 1. 标题限制50个字符
-            if len(title) > 50:
-                self.log(f"标题超过限制(50字符)，将被截断: {len(title)} -> 50")
-                title = title[:50]
+            if len(title) > ACFUN_TITLE_LIMIT:
+                self.log(
+                    f"标题超过限制({ACFUN_TITLE_LIMIT}字符)，将被截断: {len(title)} -> {ACFUN_TITLE_LIMIT}"
+                )
+                title = title[:ACFUN_TITLE_LIMIT]
             
             # 2. 标签限制为6个
             if len(tags) > 6:
@@ -859,7 +864,7 @@ class AcfunUploader:
                 tags = tags[:6]
 
             # 3. 网页端限制：简介 1000 字、粉丝动态 233 字
-            max_desc = 1000
+            max_desc = ACFUN_DESCRIPTION_LIMIT
             max_fans_only_desc = 233
 
             full_description = build_upload_description(

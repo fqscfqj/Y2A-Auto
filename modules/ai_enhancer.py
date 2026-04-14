@@ -447,24 +447,47 @@ def _validate_output(
 
     return len(reasons) == 0, reasons
 
-def _apply_output_limits(text: str, content_type: str = "description", logger=None) -> str:
+def _apply_output_limits(
+    text: str,
+    content_type: str = "description",
+    logger=None,
+    *,
+    title_limit: int = 50,
+    description_limit: int = 1000,
+) -> str:
     limited = text or ''
     ct_lower = str(content_type).lower().strip()
-    if ct_lower == 'title' and len(limited) > 50:
+    if ct_lower == 'title' and len(limited) > title_limit:
         if logger:
-            logger.info(f"标题超过AcFun限制(50字符)，将被截断: {len(limited)} -> 50")
-        limited = limited[:50]
-    if ct_lower != 'title' and len(limited) > 1000:
+            logger.info(f"标题超过限制({title_limit}字符)，将被截断: {len(limited)} -> {title_limit}")
+        limited = limited[:title_limit]
+    if ct_lower != 'title' and len(limited) > description_limit:
         if logger:
-            logger.info(f"描述超过AcFun限制(1000字符)，将被截断: {len(limited)} -> 1000")
-        limited = limited[:997] + "..."
+            logger.info(
+                f"描述超过限制({description_limit}字符)，将被截断: {len(limited)} -> {description_limit}"
+            )
+        limited = limited[: max(0, description_limit - 3)] + "..." if description_limit > 3 else limited[:description_limit]
     return limited
 
-def _build_fallback_text(source_clean: str, content_type: str, logger=None, max_blocks: Optional[int] = 2) -> str:
+def _build_fallback_text(
+    source_clean: str,
+    content_type: str,
+    logger=None,
+    max_blocks: Optional[int] = 2,
+    *,
+    title_limit: int = 50,
+    description_limit: int = 1000,
+) -> str:
     if not source_clean:
         return ''
     fallback = _post_clean(source_clean, content_type=content_type, max_blocks=max_blocks)
-    return _apply_output_limits(fallback, content_type=content_type, logger=logger)
+    return _apply_output_limits(
+        fallback,
+        content_type=content_type,
+        logger=logger,
+        title_limit=title_limit,
+        description_limit=description_limit,
+    )
 
 
 def _build_metadata_translation_system_prompt(target_language: str, retry: bool = False) -> str:
@@ -577,9 +600,18 @@ def _sanitize_metadata_field(
     content_type: str,
     logger=None,
     max_blocks: Optional[int] = 2,
+    *,
+    title_limit: int = 50,
+    description_limit: int = 1000,
 ) -> str:
     cleaned = _post_clean(safe_str(value), content_type=content_type, max_blocks=max_blocks)
-    return _apply_output_limits(cleaned, content_type=content_type, logger=logger)
+    return _apply_output_limits(
+        cleaned,
+        content_type=content_type,
+        logger=logger,
+        title_limit=title_limit,
+        description_limit=description_limit,
+    )
 
 
 def _estimate_metadata_max_tokens(field_names: Sequence[str]) -> int:
@@ -715,6 +747,8 @@ def _request_translated_metadata_fields(
     scene_name: str,
     description_max_blocks: Optional[int] = 2,
     description_log_phase: Optional[str] = None,
+    title_limit: int = 50,
+    description_limit: int = 1000,
 ) -> Dict[str, str]:
     parsed = _request_json_object(
         client=client,
@@ -730,12 +764,20 @@ def _request_translated_metadata_fields(
     raw_title = (parsed or {}).get("title", '')
     raw_description = (parsed or {}).get("description", '')
     translated_fields = {
-        "title": _sanitize_metadata_field(raw_title, "title", logger=logger),
+        "title": _sanitize_metadata_field(
+            raw_title,
+            "title",
+            logger=logger,
+            title_limit=title_limit,
+            description_limit=description_limit,
+        ),
         "description": _sanitize_metadata_field(
             raw_description,
             "description",
             logger=logger,
             max_blocks=description_max_blocks,
+            title_limit=title_limit,
+            description_limit=description_limit,
         ),
     }
     if description_log_phase and "description" in payload:
@@ -758,6 +800,8 @@ def _translate_video_metadata_once(
     cleaned_description: str,
     requested_fields: Sequence[str],
     logger,
+    title_limit: int = 50,
+    description_limit: int = 1000,
 ) -> Dict[str, Any]:
     translated_fields = {
         "title": "",
@@ -806,6 +850,8 @@ def _translate_video_metadata_once(
         logger=logger,
         description_max_blocks=None,
         description_log_phase="首轮",
+        title_limit=title_limit,
+        description_limit=description_limit,
     )
     invalid_fields = _collect_invalid_metadata_fields(
         cleaned_sources,
@@ -834,6 +880,8 @@ def _translate_video_metadata_once(
                 scene_name="ai_enhancer_metadata_translate_title_retry",
                 logger=logger,
                 description_max_blocks=None,
+                title_limit=title_limit,
+                description_limit=description_limit,
             )
             translated_fields["title"] = retry_fields["title"]
 
@@ -865,6 +913,8 @@ def _translate_video_metadata_once(
                 logger=logger,
                 description_max_blocks=None,
                 description_log_phase="重试",
+                title_limit=title_limit,
+                description_limit=description_limit,
             )
             translated_fields["description"] = retry_fields["description"]
 
@@ -895,6 +945,8 @@ def translate_video_metadata(
     task_id=None,
     translate_title: bool = True,
     translate_description: bool = True,
+    title_limit: int = 50,
+    description_limit: int = 1000,
 ):
     """翻译视频标题和简介，返回带状态与诊断信息的结构化结果。"""
     logger = setup_task_logger(task_id or "unknown")
@@ -979,6 +1031,8 @@ def translate_video_metadata(
                     cleaned_description=cleaned_description,
                     requested_fields=requested_fields,
                     logger=logger,
+                    title_limit=title_limit,
+                    description_limit=description_limit,
                 )
             except Exception as exc:
                 logger.error(f"第 {attempt} 次元数据翻译尝试发生异常: {exc}")

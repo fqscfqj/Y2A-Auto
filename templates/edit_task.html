@@ -188,6 +188,9 @@
                                 <label for="video_title_translated" class="form-label">视频标题</label>
                                 <input type="text" class="form-control" id="video_title_translated" name="video_title_translated" 
                                        value="{{ task.video_title_translated or task.video_title_original }}" required>
+                                {% if (upload_target|default('acfun')) in ['acfun', 'bilibili', 'both'] %}
+                                    <div class="form-text" id="metadata-title-hint"></div>
+                                {% endif %}
                                 {% if not task.video_title_translated and task.video_title_original %}
                                     <div class="form-text text-warning">
                                         当前显示的是原标题。自动翻译未成功，请确认或手动修改后再上传。
@@ -206,10 +209,8 @@
                                         当前显示的是原始简介。自动翻译未成功，请确认或手动修改后再上传。
                                     </div>
                                 {% endif %}
-                                {% if (upload_target|default('acfun')) in ['bilibili', 'both'] %}
-                                    <div class="form-text" id="bilibili-description-hint">
-                                        bilibili 投稿简介上限为 200 字，超出部分会在上传 bilibili 时自动截断。
-                                    </div>
+                                {% if (upload_target|default('acfun')) in ['acfun', 'bilibili', 'both'] %}
+                                    <div class="form-text" id="metadata-description-hint"></div>
                                 {% endif %}
                                 {% if task.description_original %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary mt-2" data-bs-toggle="collapse" 
@@ -364,21 +365,68 @@
 {% block extra_js %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        {% if (upload_target|default('acfun')) in ['bilibili', 'both'] %}
+        {% if (upload_target|default('acfun')) in ['acfun', 'bilibili', 'both'] %}
+        const titleInput = document.getElementById('video_title_translated');
         const descriptionTextarea = document.getElementById('description_translated');
-        const bilibiliDescriptionHint = document.getElementById('bilibili-description-hint');
-        if (descriptionTextarea && bilibiliDescriptionHint) {
-            const limit = 200;
-            const baseText = 'bilibili 投稿简介上限为 200 字，超出部分会在上传 bilibili 时自动截断。';
+        const titleHint = document.getElementById('metadata-title-hint');
+        const descriptionHint = document.getElementById('metadata-description-hint');
+        {% if (upload_target|default('acfun')) == 'both' %}
+        const titleSoftLimit = 50;
+        const titleHardLimit = 80;
+        const descriptionSoftLimit = 1000;
+        const descriptionHardLimit = 2000;
+        const titleBaseText = '标题限制：AcFun 50 字，bilibili 80 字。超出对应平台限制的部分会在上传时自动截断。';
+        const descriptionBaseText = '简介限制：AcFun 1000 字，bilibili 2000 字。超出对应平台限制的部分会在上传时自动截断。';
+        {% elif (upload_target|default('acfun')) == 'bilibili' %}
+        const titleSoftLimit = 80;
+        const titleHardLimit = 80;
+        const descriptionSoftLimit = 2000;
+        const descriptionHardLimit = 2000;
+        const titleBaseText = 'bilibili 标题上限为 80 字，超出部分会在上传时自动截断。';
+        const descriptionBaseText = 'bilibili 简介上限为 2000 字，超出部分会在上传时自动截断。';
+        {% else %}
+        const titleSoftLimit = 50;
+        const titleHardLimit = 50;
+        const descriptionSoftLimit = 1000;
+        const descriptionHardLimit = 1000;
+        const titleBaseText = 'AcFun 标题上限为 50 字，超出部分会在上传时自动截断。';
+        const descriptionBaseText = 'AcFun 简介上限为 1000 字，超出部分会在上传时自动截断。';
+        {% endif %}
 
-            function updateDescriptionHint() {
-                const length = descriptionTextarea.value.length;
-                bilibiliDescriptionHint.textContent = `${baseText} 当前 ${length}/${limit}。`;
-                bilibiliDescriptionHint.classList.toggle('text-warning', length > limit);
+        function updateLimitHint(field, hintEl, baseText, softLimit, hardLimit) {
+            if (!field || !hintEl) {
+                return;
             }
+            const length = field.value.length;
+            hintEl.textContent = `${baseText} 当前 ${length}。`;
+            hintEl.classList.toggle('text-warning', length > softLimit);
+            hintEl.classList.toggle('text-danger', length > hardLimit);
+        }
 
-            descriptionTextarea.addEventListener('input', updateDescriptionHint);
-            updateDescriptionHint();
+        if (titleInput && titleHint) {
+            titleInput.addEventListener('input', function() {
+                updateLimitHint(titleInput, titleHint, titleBaseText, titleSoftLimit, titleHardLimit);
+            });
+            updateLimitHint(titleInput, titleHint, titleBaseText, titleSoftLimit, titleHardLimit);
+        }
+
+        if (descriptionTextarea && descriptionHint) {
+            descriptionTextarea.addEventListener('input', function() {
+                updateLimitHint(
+                    descriptionTextarea,
+                    descriptionHint,
+                    descriptionBaseText,
+                    descriptionSoftLimit,
+                    descriptionHardLimit
+                );
+            });
+            updateLimitHint(
+                descriptionTextarea,
+                descriptionHint,
+                descriptionBaseText,
+                descriptionSoftLimit,
+                descriptionHardLimit
+            );
         }
         {% endif %}
 
