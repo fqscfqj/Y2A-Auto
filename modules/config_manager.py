@@ -104,6 +104,7 @@ DEFAULT_CONFIG = {
     "FFMPEG_AUTO_DOWNLOAD": True,  # 仅在 Windows 且缺失时尝试联网补齐 ffmpeg/ 目录
     # 字幕翻译相关配置
     "SUBTITLE_TRANSLATION_ENABLED": False,  # 是否启用字幕翻译
+    "YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": False,  # 下载 YouTube 自动生成字幕（可选）
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
     "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
     "SUBTITLE_FONT_NAME": "SourceHanSansHWSC-VF.otf",  # 烧录字幕使用的内置字体文件名

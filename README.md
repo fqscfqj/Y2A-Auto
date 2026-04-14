@@ -205,6 +205,7 @@ python app.py
 ### 字幕处理
 
 - `SUBTITLE_TRANSLATION_ENABLED`：启用字幕翻译，默认 `false`
+- `YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED`：下载 YouTube 自动生成字幕，默认 `false`
 - `SUBTITLE_SOURCE_LANGUAGE`：源语言，默认 `auto`
 - `SUBTITLE_TARGET_LANGUAGE`：目标语言，默认 `zh`
 - `SUBTITLE_FONT_NAME`：烧录字幕字体名，默认 `SourceHanSansHWSC-VF.otf`
