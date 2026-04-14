@@ -15,7 +15,7 @@ numpy>=1.24,<3.0
 silero-vad~=6.2.1
 
 # Media/image helpers.
-Pillow~=12.1.1
+Pillow~=12.2.0
 
 # Platform SDKs: stay on the verified release line unless tested otherwise.
 alibabacloud_green20220302==2.20.4
