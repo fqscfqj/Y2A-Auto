@@ -75,6 +75,8 @@ def get_api_init_status_message(status_code: Optional[str]) -> str:
         API_INIT_STATUS_MISSING_API_KEY: 'YouTube API 密钥未配置，请先在设置页完成接入。',
         API_INIT_STATUS_INIT_FAILED: 'YouTube API 初始化失败，请检查 API 密钥、代理配置与网络连通性。',
     }
+    if status_code is None:
+        return 'YouTube API 未初始化，请检查设置。'
     return messages.get(status_code, 'YouTube API 未初始化，请检查设置。')
 
 
