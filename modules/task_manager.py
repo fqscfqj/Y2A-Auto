@@ -6,6 +6,7 @@ import time
 import json
 import uuid
 import sqlite3
+import html
 import logging
 import shutil
 import threading
@@ -70,6 +71,171 @@ DB_CONNECT_TIMEOUT_SECONDS = 10
 DB_BUSY_TIMEOUT_MS = 30000
 DB_WRITE_RETRY_TIMES = 5
 DB_WRITE_RETRY_SLEEP_SECONDS = 0.2
+
+
+def _convert_vtt_text_to_srt_text(vtt_content: str) -> str:
+    """将普通/YouTube 自动字幕 VTT 文本稳健转换为 SRT 文本。"""
+    import re
+
+    def _normalize_newlines(text: str) -> str:
+        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
+        if normalized.startswith('\ufeff'):
+            normalized = normalized[1:]
+        return normalized
+
+    def _time_to_ms(value: str) -> int:
+        hours, minutes, seconds = str(value).split(':')
+        whole_seconds, milliseconds = str(seconds).split('.')
+        return (
+            int(hours) * 3600000
+            + int(minutes) * 60000
+            + int(whole_seconds) * 1000
+            + int(milliseconds)
+        )
+
+    def _clean_text_line(line: str) -> str:
+        text = html.unescape(str(line or ''))
+        text = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', text)
+        text = re.sub(r'</?[^>]+>', '', text)
+        text = re.sub(r'{[^}]*}', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def _dedupe_lines(lines):
+        result = []
+        seen = set()
+        for line in lines:
+            normalized = str(line or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
+
+    def _select_cue_text(cleaned_lines):
+        unique_lines = _dedupe_lines(cleaned_lines)
+        if not unique_lines:
+            return ''
+        if len(unique_lines) == 1:
+            return unique_lines[0]
+
+        longest_line = max(unique_lines, key=lambda item: (len(item), item))
+        if all(line in longest_line for line in unique_lines):
+            return longest_line
+        return '\n'.join(unique_lines)
+
+    content = _normalize_newlines(vtt_content)
+    blocks = re.split(r'\n\s*\n+', content.strip())
+    cues = []
+
+    for block in blocks:
+        lines = [line.rstrip() for line in block.split('\n')]
+        if not lines:
+            continue
+
+        first_line = lines[0].strip()
+        upper_first_line = first_line.upper()
+        if (
+            upper_first_line.startswith('WEBVTT')
+            or first_line.startswith('Kind:')
+            or first_line.startswith('Language:')
+            or first_line.startswith('X-TIMESTAMP-MAP=')
+            or upper_first_line.startswith('NOTE')
+            or upper_first_line == 'STYLE'
+            or upper_first_line == 'REGION'
+        ):
+            continue
+
+        time_line_index = None
+        for index, line in enumerate(lines):
+            if '-->' in line:
+                time_line_index = index
+                break
+        if time_line_index is None:
+            continue
+
+        time_match = re.search(
+            r'(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})',
+            lines[time_line_index],
+        )
+        if not time_match:
+            continue
+
+        payload_lines = lines[time_line_index + 1:]
+        has_inline_timestamps = any(
+            re.search(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', raw_line or '')
+            for raw_line in payload_lines
+        )
+        cleaned_lines = [_clean_text_line(line) for line in payload_lines]
+        text = _select_cue_text(cleaned_lines)
+        if not text:
+            continue
+
+        start = time_match.group('start')
+        end = time_match.group('end')
+        cues.append({
+            'start': start,
+            'end': end,
+            'text': text,
+            'has_inline_timestamps': has_inline_timestamps,
+            'duration_ms': max(0, _time_to_ms(end) - _time_to_ms(start)),
+        })
+
+    if not cues:
+        return ''
+
+    optimized_cues = []
+    consumed_indices = set()
+    youtube_like = any(cue['has_inline_timestamps'] for cue in cues)
+
+    if youtube_like:
+        for index, cue in enumerate(cues):
+            if cue['has_inline_timestamps'] or cue['duration_ms'] > 120 or index == 0:
+                continue
+            previous_cue = cues[index - 1]
+            if not previous_cue['has_inline_timestamps']:
+                continue
+            optimized_cues.append({
+                'start': previous_cue['start'],
+                'end': cue['end'],
+                'text': cue['text'],
+            })
+            consumed_indices.add(index - 1)
+            consumed_indices.add(index)
+
+        for index, cue in enumerate(cues):
+            if index in consumed_indices or not cue['text']:
+                continue
+            optimized_cues.append({
+                'start': cue['start'],
+                'end': cue['end'],
+                'text': cue['text'],
+            })
+    else:
+        optimized_cues = [
+            {'start': cue['start'], 'end': cue['end'], 'text': cue['text']}
+            for cue in cues
+            if cue['text']
+        ]
+
+    optimized_cues.sort(key=lambda cue: (_time_to_ms(cue['start']), _time_to_ms(cue['end'])))
+
+    deduped_cues = []
+    for cue in optimized_cues:
+        if deduped_cues and deduped_cues[-1]['text'] == cue['text']:
+            if _time_to_ms(cue['end']) > _time_to_ms(deduped_cues[-1]['end']):
+                deduped_cues[-1]['end'] = cue['end']
+            continue
+        deduped_cues.append(cue)
+
+    srt_blocks = []
+    for index, cue in enumerate(deduped_cues, 1):
+        srt_blocks.append(
+            f"{index}\n"
+            f"{cue['start'].replace('.', ',')} --> {cue['end'].replace('.', ',')}\n"
+            f"{cue['text']}"
+        )
+    return '\n\n'.join(srt_blocks).strip()
 
 
 class TaskCancelledError(Exception):
@@ -3546,66 +3712,22 @@ class TaskProcessor:
     def _convert_vtt_to_srt(self, vtt_path, task_logger):
         """将VTT字幕文件转换为SRT格式（FFmpeg对SRT支持更好）"""
         try:
-            import re
             import os
             
             # 生成SRT文件路径
-            srt_path = vtt_path.replace('.vtt', '.srt')
+            base_path, _ = os.path.splitext(vtt_path)
+            srt_path = f"{base_path}.srt"
             
             with open(vtt_path, 'r', encoding='utf-8') as vtt_file:
                 vtt_content = vtt_file.read()
-            
-            # 删除VTT头部
-            vtt_content = re.sub(r'^WEBVTT\n\n?', '', vtt_content)
-            
-            # 删除NOTE行
-            vtt_content = re.sub(r'NOTE.*\n', '', vtt_content)
-            
-            # 删除样式和位置信息
-            vtt_content = re.sub(r'<[^>]*>', '', vtt_content)
-            vtt_content = re.sub(r'{[^}]*}', '', vtt_content)
-            
-            # 处理时间戳格式：VTT使用 "." 分隔毫秒，SRT使用 ","
-            vtt_content = re.sub(r'(\d{2}:\d{2}:\d{2})\.(\d{3})', r'\1,\2', vtt_content)
-            
-            # 分割成字幕块
-            subtitle_blocks = re.split(r'\n\s*\n', vtt_content.strip())
-            
-            srt_content = []
-            subtitle_index = 1
-            
-            for block in subtitle_blocks:
-                if not block.strip():
-                    continue
-                    
-                lines = block.strip().split('\n')
-                if len(lines) >= 2:
-                    time_line_index = 0
-                    if '-->' not in lines[0] and len(lines) >= 3 and '-->' in lines[1]:
-                        time_line_index = 1
-                    time_line = lines[time_line_index]
-                    if '-->' in time_line:
-                        time_match = re.search(
-                            r'(\d{2}:\d{2}:\d{2})[,.](\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2})[,.](\d{3})',
-                            time_line,
-                        )
-                        if not time_match:
-                            continue
-                        # 添加序号
-                        srt_content.append(str(subtitle_index))
-                        # 添加时间戳（已转换格式）
-                        srt_content.append(
-                            f"{time_match.group(1)},{time_match.group(2)} --> "
-                            f"{time_match.group(3)},{time_match.group(4)}"
-                        )
-                        # 添加字幕文本
-                        srt_content.extend(lines[time_line_index + 1:])
-                        srt_content.append('')  # 空行分隔
-                        subtitle_index += 1
+            srt_content = _convert_vtt_text_to_srt_text(vtt_content)
+            if not srt_content:
+                task_logger.error(f"VTT未解析出有效字幕: {vtt_path}")
+                return None
             
             # 写入SRT文件
             with open(srt_path, 'w', encoding='utf-8') as srt_file:
-                srt_file.write('\n'.join(srt_content))
+                srt_file.write(srt_content)
             
             task_logger.info(f"VTT转换为SRT成功: {srt_path}")
             return srt_path
