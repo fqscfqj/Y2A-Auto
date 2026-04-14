@@ -8,7 +8,7 @@ import time
 import json
 import base64
 import traceback
-from typing import Any, Collection, Dict, List, Optional, Sequence
+from typing import Any, Collection, Dict, List, Mapping, Optional, Sequence
 from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
 from .utils import (
@@ -638,7 +638,7 @@ def _is_retryable_metadata_failure(reason: str) -> bool:
     return True
 
 
-def _should_retry_metadata_translation_attempt(failed_fields: Dict[str, Sequence[str]]) -> bool:
+def _should_retry_metadata_translation_attempt(failed_fields: Mapping[str, Sequence[str]]) -> bool:
     for reasons in (failed_fields or {}).values():
         for reason in reasons or ():
             if _is_retryable_metadata_failure(reason):
@@ -673,7 +673,7 @@ def _humanize_metadata_failure_reason(reason: str) -> str:
     return normalized or "未知原因"
 
 
-def _build_metadata_failure_message(failed_fields: Dict[str, Sequence[str]]) -> str:
+def _build_metadata_failure_message(failed_fields: Mapping[str, Sequence[str]]) -> str:
     if not failed_fields:
         return ""
 
