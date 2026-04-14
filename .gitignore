@@ -61,8 +61,8 @@ desktop.ini
 docs/_build/
 site/ 
 
-tests/
+tests/*
+!tests/*.py
 .uv-cache/
 .uv-python/
 build-tools/Y2A-Auto.spec
-

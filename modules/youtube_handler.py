@@ -176,6 +176,24 @@ def _set_yt_dlp_format_options(
         cmd.extend(['--merge-output-format', merge_output_format])
 
 
+def _build_subtitle_download_args(
+    config: dict[str, Any] | None,
+    *,
+    include_subtitles: bool,
+) -> list[str]:
+    if not include_subtitles:
+        return ['--no-write-subs']
+
+    args = [
+        '--write-subs',
+        '--all-subs',
+        '--convert-subs', 'srt',
+    ]
+    if bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
+        args.append('--write-auto-subs')
+    return args
+
+
 def _is_format_selection_error(error_text: str | None) -> bool:
     """判断是否属于格式选择失败，而非视频不可访问。"""
     if not error_text:
@@ -672,20 +690,22 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 '--ignore-no-formats-error',
             ])
         elif only_video:
+            subtitle_download_enabled = bool(config.get('SUBTITLE_TRANSLATION_ENABLED', False))
             cmd.extend([
                 '--no-write-info-json',
                 '--no-write-thumbnail',
-                '--no-write-subs',
             ])
+            cmd.extend(_build_subtitle_download_args(
+                config,
+                include_subtitles=subtitle_download_enabled,
+            ))
         else:
             # 默认全下载
             cmd.extend([
                 '--write-info-json',
                 '--write-thumbnail',
-                '--write-subs',
-                '--all-subs',
-                '--convert-subs', 'srt',
             ])
+            cmd.extend(_build_subtitle_download_args(config, include_subtitles=True))
 
         # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）
         if ffmpeg_location and os.path.isabs(ffmpeg_location):
@@ -1141,5 +1161,4 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     except Exception as e:
         logger.error(f"extract_video_urls_from_playlist异常: {str(e)}")
     return video_urls
-
 

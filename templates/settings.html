@@ -778,6 +778,12 @@
                                                         </label>
                                                     </div>
                                                     <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED" {% if config.get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False) %}checked{% endif %}>
+                                                            下载 YouTube 自动生成字幕
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="subtitle-source-lang" class="form-label">源语言</label>
                                                             <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang" class="form-select">
@@ -805,6 +811,9 @@
                                                             <label for="subtitle-font-name" class="form-label">烧录字体文件</label>
                                                             <input type="text" id="subtitle-font-name" name="SUBTITLE_FONT_NAME" value="{{ config.get('SUBTITLE_FONT_NAME', 'SourceHanSansHWSC-VF.otf') }}" class="form-control" placeholder="SourceHanSansHWSC-VF.otf">
                                                         </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <p class="help-text mb-0">自动化流程在开启字幕翻译时会下载字幕；勾选后还会额外尝试下载 YouTube 自动生成字幕，适用于原视频没有人工字幕的情况。</p>
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">
