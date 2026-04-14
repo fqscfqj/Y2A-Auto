@@ -12,7 +12,7 @@ import shutil
 import threading
 import gc
 import shlex
-from datetime import datetime
+from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 import re
 import unicodedata
@@ -609,7 +609,12 @@ def _build_missing_translation_review_message(field_names) -> str:
         'title': '标题',
         'description': '简介',
     }
-    readable = [labels.get(field_name, field_name) for field_name in (field_names or [])]
+    normalized_fields = [
+        str(field_name).strip()
+        for field_name in (field_names or [])
+        if field_name is not None and str(field_name).strip()
+    ]
+    readable = [labels.get(field_name, field_name) for field_name in normalized_fields]
     if not readable:
         return "自动翻译未完成，任务已转入人工审核。"
     return f"自动翻译未完成：{'、'.join(readable)}仍缺少有效译文，任务已转入人工审核。"
@@ -3056,6 +3061,10 @@ class TaskProcessor:
             # 没有中文：优先选择英文，否则退回第一个文件
             subtitle_file = en_candidates[0] if en_candidates else subtitle_files[0]
             task_logger.info(f"找到字幕文件: {os.path.basename(subtitle_file)}")
+            subtitle_lang = self._detect_subtitle_language(subtitle_file)
+            task_logger.info(f"检测到字幕语言: {subtitle_lang}")
+            if en_candidates and subtitle_file in en_candidates:
+                task_logger.info("优先使用英文字幕进行翻译")
             
             # 创建翻译器（此时需要翻译为中文）
             translator = create_translator_from_config(self.config, task_id)
@@ -3070,12 +3079,6 @@ class TaskProcessor:
                     silent=True,
                 )
                 return False
-            
-            # 检测字幕语言（简单实现）
-            subtitle_lang = self._detect_subtitle_language(subtitle_file)
-            task_logger.info(f"检测到字幕语言: {subtitle_lang}")
-            if en_candidates and subtitle_file in en_candidates:
-                task_logger.info("优先使用英文字幕进行翻译")
             
             # 生成翻译后的文件路径
             # 强制使用 .srt 格式
