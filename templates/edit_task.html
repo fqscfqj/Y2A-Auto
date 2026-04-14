@@ -372,11 +372,11 @@
         const descriptionHint = document.getElementById('metadata-description-hint');
         {% if (upload_target|default('acfun')) == 'both' %}
         const titleSoftLimit = 50;
-        const titleHardLimit = 80;
+        const titleHardLimit = 50;
         const descriptionSoftLimit = 1000;
-        const descriptionHardLimit = 2000;
-        const titleBaseText = '标题限制：AcFun 50 字，bilibili 80 字。超出对应平台限制的部分会在上传时自动截断。';
-        const descriptionBaseText = '简介限制：AcFun 1000 字，bilibili 2000 字。超出对应平台限制的部分会在上传时自动截断。';
+        const descriptionHardLimit = 1000;
+        const titleBaseText = '已开启双平台投稿，标题按共同最低限制 50 字执行，超出部分会在上传时自动截断。';
+        const descriptionBaseText = '已开启双平台投稿，简介按共同最低限制 1000 字执行，超出部分会在上传时自动截断。';
         {% elif (upload_target|default('acfun')) == 'bilibili' %}
         const titleSoftLimit = 80;
         const titleHardLimit = 80;

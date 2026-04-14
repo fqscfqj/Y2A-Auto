@@ -201,6 +201,8 @@ class BilibiliUploader:
         youtube_url: str = "",
         task_id: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        title_limit: int = BILIBILI_TITLE_LIMIT,
+        description_limit: int = BILIBILI_DESCRIPTION_LIMIT,
     ) -> Tuple[bool, Union[dict, str]]:
         self.task_id = task_id
         self.logger = setup_task_logger(task_id or "unknown")
@@ -213,10 +215,12 @@ class BilibiliUploader:
 
             credential = load_credential_from_file(self.cookie_file)
 
-            safe_title = _compact_text(title or "", BILIBILI_TITLE_LIMIT)
+            safe_title_limit = int(title_limit or BILIBILI_TITLE_LIMIT)
+            safe_desc_limit = int(description_limit or BILIBILI_DESCRIPTION_LIMIT)
+            safe_title = _compact_text(title or "", safe_title_limit)
             safe_desc = _truncate_multiline_text(
                 _remove_redundant_original_url(description or "", youtube_url or ""),
-                BILIBILI_DESCRIPTION_LIMIT,
+                safe_desc_limit,
             )
             safe_tags = [str(t).strip()[:20] for t in (tags or []) if str(t).strip()]
             safe_tags = safe_tags[:12]

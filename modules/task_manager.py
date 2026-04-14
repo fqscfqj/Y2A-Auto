@@ -498,6 +498,26 @@ def _get_upload_platforms_for_target(upload_target):
     return [UPLOAD_TARGET_ACFUN]
 
 
+def _get_effective_metadata_limits(upload_target):
+    """返回当前任务应执行的标题/简介限制。
+
+    规则：
+    - both：按双平台共同最低限制执行
+    - bilibili：按 bilibili 限制执行
+    - acfun / 其他：按 AcFun 限制执行
+    """
+    target = normalize_upload_target(upload_target)
+    if target == UPLOAD_TARGET_BILIBILI:
+        return {
+            'title_limit': 80,
+            'description_limit': 2000,
+        }
+    return {
+        'title_limit': 50,
+        'description_limit': 1000,
+    }
+
+
 def _get_pending_upload_platforms(task, upload_target=None):
     if not task:
         return []
@@ -2806,14 +2826,7 @@ class TaskProcessor:
         task_logger.info("开始翻译视频标题和描述")
         update_task(task_id, status=TASK_STATES['TRANSLATING'])
         upload_target = _get_task_upload_target(task)
-
-        if upload_target == UPLOAD_TARGET_BILIBILI:
-            translate_title_limit = 80
-            translate_description_limit = 2000
-        else:
-            # both 任务当前共享一套标题/简介，先按更严格的 AcFun 限额生成，避免双平台内容不一致。
-            translate_title_limit = 50
-            translate_description_limit = 1000
+        effective_limits = _get_effective_metadata_limits(upload_target)
         
         # 构建OpenAI配置
         openai_config = {
@@ -2840,8 +2853,8 @@ class TaskProcessor:
             task_id=task_id,
             translate_title=translate_title,
             translate_description=translate_description,
-            title_limit=translate_title_limit,
-            description_limit=translate_description_limit,
+            title_limit=effective_limits['title_limit'],
+            description_limit=effective_limits['description_limit'],
         )
 
         updates = {}
@@ -6905,6 +6918,8 @@ class TaskProcessor:
         cover_path = task.get('cover_path_local', '') if task else ''
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
         description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
+        upload_target = _get_task_upload_target(task)
+        effective_limits = _get_effective_metadata_limits(upload_target)
         partition_id = ''
         missing_translation_fields = _get_missing_required_translation_fields(task, self.config)
         if missing_translation_fields:
@@ -6966,10 +6981,7 @@ class TaskProcessor:
 
         # bilibili 转载页会单独展示 source，这里只保留说明文案和正文，避免 URL 重复出现。
         try:
-            from modules.bilibili_uploader import (
-                BILIBILI_DESCRIPTION_LIMIT,
-                format_bilibili_description,
-            )
+            from modules.bilibili_uploader import format_bilibili_description
 
             description = format_bilibili_description(
                 base_desc=description,
@@ -6977,7 +6989,7 @@ class TaskProcessor:
                 original_uploader=original_uploader,
                 original_upload_date=original_upload_date,
                 append_repost_notice=bool(self.config.get('UPLOAD_APPEND_REPOST_NOTICE', True)),
-                max_len=BILIBILI_DESCRIPTION_LIMIT,
+                max_len=effective_limits['description_limit'],
             )
         except Exception as e:
             task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")
@@ -7125,6 +7137,8 @@ class TaskProcessor:
                 youtube_url=original_url,
                 task_id=task_id,
                 progress_callback=_on_progress,
+                title_limit=effective_limits['title_limit'],
+                description_limit=effective_limits['description_limit'],
             )
 
             if success:
