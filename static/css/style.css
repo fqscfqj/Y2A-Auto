@@ -76,13 +76,17 @@ body {
     }
 
     .navbar-shell .navbar-brand {
+        grid-column: 1;
+        justify-self: start;
         margin-right: 0;
     }
 
     .navbar-shell .navbar-collapse {
         grid-column: 2;
         display: flex !important;
-        justify-content: center;
+        width: 100%;
+        justify-content: flex-end;
+        justify-self: stretch;
     }
 
     .navbar-shell .navbar-nav {
