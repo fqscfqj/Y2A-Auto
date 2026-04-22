@@ -508,7 +508,10 @@ class YouTubeMonitor:
 
     def _init_youtube_api(self, runtime_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """初始化 YouTube API，并显式控制是否走独立代理。"""
-        config = dict(runtime_config or load_config() or {})
+        if runtime_config is None:
+            config = dict(load_config() or {})
+        else:
+            config = dict(runtime_config)
         self.api_key = str(config.get('YOUTUBE_API_KEY') or self.api_key or '').strip()
         self.youtube = None
         self.youtube_http = None
