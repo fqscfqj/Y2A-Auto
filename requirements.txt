@@ -16,6 +16,7 @@ silero-vad~=6.2.1
 
 # Media/image helpers.
 Pillow~=12.2.0
+lxml>=6.1.0,<7.0
 
 # Platform SDKs: stay on the verified release line unless tested otherwise.
 alibabacloud_green20220302==2.20.4
