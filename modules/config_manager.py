@@ -117,7 +117,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MAX_WORKERS": 2,  # 字幕翻译最大并发线程数
 
     # ASR 源字幕预检（可选）
-    "SUBTITLE_QC_ENABLED": False,  # 失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
+    "SUBTITLE_QC_ENABLED": True,  # 质量优先：失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
     "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
     "SUBTITLE_QC_BASE_URL": "",  # 留空则回退到 SUBTITLE_OPENAI_BASE_URL / OPENAI_BASE_URL
     "SUBTITLE_QC_API_KEY": "",  # 留空则回退到 SUBTITLE_OPENAI_API_KEY / OPENAI_API_KEY
@@ -141,6 +141,7 @@ DEFAULT_CONFIG = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
+    "WHISPER_TIMESTAMP_GRANULARITIES": "segment,word",
     # Voxtral（Mistral /v1/audio/transcriptions）配置
     "VOXTRAL_API_KEY": "",
     "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",

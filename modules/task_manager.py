@@ -3379,10 +3379,10 @@ class TaskProcessor:
         (2560.0, 84.0),
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
-        (720.0, 24.0),
-        (1080.0, 24.0),
-        (1440.0, 26.0),
-        (2160.0, 28.0),
+        (720.0, 36.0),
+        (1080.0, 54.0),
+        (1440.0, 72.0),
+        (2160.0, 108.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
         (1280.0, 120.0),
@@ -3400,12 +3400,12 @@ class TaskProcessor:
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.82
     _ASS_OVERRIDE_FONT_SIZE_MIN = 38.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
-    _ASS_OUTLINE_RATIO = 0.019
-    _ASS_OUTLINE_MIN = 0.8
-    _ASS_OUTLINE_MAX = 1.4
-    _ASS_OVERRIDE_OUTLINE_RATIO = 0.023
-    _ASS_OVERRIDE_OUTLINE_MIN = 1.0
-    _ASS_OVERRIDE_OUTLINE_MAX = 1.6
+    _ASS_OUTLINE_RATIO = 0.033
+    _ASS_OUTLINE_MIN = 1.45
+    _ASS_OUTLINE_MAX = 3.4
+    _ASS_OVERRIDE_OUTLINE_RATIO = 0.035
+    _ASS_OVERRIDE_OUTLINE_MIN = 1.25
+    _ASS_OVERRIDE_OUTLINE_MAX = 3.0
     _STREAMING_SRT_TEMPLATE_HEIGHTS = (720, 1080, 1440, 2160)
     _STREAMING_SRT_STYLE_TEMPLATES = {
         720: {
@@ -3898,8 +3898,8 @@ class TaskProcessor:
             )
             margin_v = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_MARGIN_V_ANCHORS),
-                30.0,
-                102.0,
+                36.0,
+                132.0,
             )
             side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 48.0, 160.0)
 
@@ -4856,6 +4856,27 @@ class TaskProcessor:
 
         matched_font = self._find_bundled_font_by_name(configured_font_name, task_logger)
         if not matched_font:
+            for fallback_path in self._iter_bundled_font_paths():
+                try:
+                    display_names = self._read_font_display_names(fallback_path)
+                except Exception as exc:
+                    if task_logger:
+                        task_logger.warning(f"读取内置字体信息失败，已跳过 {os.path.basename(fallback_path)}: {exc}")
+                    continue
+                primary_name = display_names[0] if display_names else os.path.basename(fallback_path)
+                family_name = display_names[1] if len(display_names) > 1 else primary_name
+                matched_font = {
+                    'font_path': fallback_path,
+                    'font_name': primary_name,
+                    'font_family': family_name,
+                }
+                if task_logger:
+                    task_logger.warning(
+                        f"未在内置字体目录中找到匹配字体: {configured_font_name}，已改用内置字体: {primary_name}"
+                    )
+                break
+
+        if not matched_font:
             if task_logger:
                 task_logger.warning(
                     f"未在内置字体目录中找到匹配字体: {configured_font_name}，将继续使用系统字体解析"
@@ -5202,27 +5223,25 @@ class TaskProcessor:
                         "charenc=UTF-8",
                     ]
                 else:
-                    render_subtitle_ext = '.srt'
-                    render_subtitle_name = "sub.srt"
+                    render_subtitle_ext = '.ass'
+                    render_subtitle_name = "sub.ass"
                     render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
-                    if not self._build_streaming_srt_file(
+                    if not self._convert_srt_to_ass(
                         subtitle_path,
                         render_subtitle_path,
                         task_logger,
                         video_width=input_width,
                         video_height=input_height,
+                        font_family=font_family,
                     ):
-                        task_logger.error("生成流媒体SRT样式失败，无法继续嵌入字幕流程")
+                        task_logger.error("生成清晰ASS字幕失败，无法继续嵌入字幕流程")
                         update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                         return None
-                    task_logger.info("已为非ASS字幕生成统一流媒体样式的SRT临时文件")
+                    task_logger.info("已为非ASS字幕生成统一底部居中ASS临时文件")
                     filter_segments = [
-                        self._build_streaming_srt_filter(
-                            render_subtitle_name,
-                            font_family,
-                            input_width,
-                            input_height,
-                        )
+                        f"subtitles={render_subtitle_name}",
+                        "fontsdir=fonts",
+                        "charenc=UTF-8",
                     ]
                 vf_filter = ':'.join(filter_segments)
 

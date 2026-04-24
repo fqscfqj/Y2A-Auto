@@ -37,6 +37,18 @@ _LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
 _CJK_CHAR_RE = re.compile(r'[\u3400-\u9fff]')
 _VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 _HALLUCINATION_RE = re.compile(r'(.{2,30}?)(?:\s*\1){2,}', re.IGNORECASE)
+_CREDIT_LIKE_RE = re.compile(
+    r'\b(?:transcription|transcribed|subtitled|subtitle|captioned|captions?)\s+by\b',
+    re.IGNORECASE,
+)
+_NOISE_COMMAND_RE = re.compile(
+    r'^\s*(?:ignore noise|click|tap|beep|mouse click|keyboard click|background noise|noise only)[.!。！]?\s*$',
+    re.IGNORECASE,
+)
+_NOISE_TAG_RE = re.compile(
+    r'^\s*[\[\(（【]\s*(?:music|noise|applause|laughter|silence|background noise|音乐|噪声|掌声|笑声|静音)\s*[\]\)）】]\s*$',
+    re.IGNORECASE,
+)
 
 _MIN_GAP_S = 0.01
 _MIN_VISIBLE_DUR_S = 0.05
@@ -88,6 +100,35 @@ class SrtTransformEngine:
         if safe_duration < 15.0 and metrics['visible_chars'] > 420:
             return True
         if chars_per_second > 45.0 or units_per_second > 8.0:
+            return True
+        return False
+
+    @staticmethod
+    def _visual_char_units(char: str) -> float:
+        if not char:
+            return 0.0
+        if char.isspace():
+            return 0.35
+        if _CJK_CHAR_RE.match(char):
+            return 1.0
+        if char.isascii():
+            if char.isalnum():
+                return 0.6
+            return 0.45
+        return 0.8
+
+    @classmethod
+    def _visual_text_units(cls, text: str) -> float:
+        return sum(cls._visual_char_units(char) for char in str(text or ''))
+
+    @classmethod
+    def _is_suspicious_hallucination_text(cls, text: str) -> bool:
+        normalized = str(text or '').strip()
+        if not normalized:
+            return False
+        if _CREDIT_LIKE_RE.search(normalized):
+            return True
+        if _NOISE_COMMAND_RE.match(normalized) or _NOISE_TAG_RE.match(normalized):
             return True
         return False
 
@@ -411,6 +452,8 @@ class SrtTransformEngine:
             if not text:
                 continue
             duration = max(float(cue.get('end', 0.0)) - float(cue.get('start', 0.0)), 0.0)
+            if self._is_suspicious_hallucination_text(text):
+                continue
             if self._is_implausibly_dense_cue(text, duration):
                 continue
             collapsed = _HALLUCINATION_RE.sub(r'\1', text).strip()
@@ -429,22 +472,63 @@ class SrtTransformEngine:
         normalized_cues = sorted(self._coerce_cue_dicts(cues), key=lambda cue: (cue['start'], cue['end']))
         if not normalized_cues:
             return []
-        for idx in range(len(normalized_cues) - 1):
-            current = normalized_cues[idx]
-            nxt = normalized_cues[idx + 1]
-            if current['end'] > nxt['start']:
-                current['end'] = nxt['start']
-            if current['end'] <= current['start']:
-                room = nxt['start'] - current['start']
-                if room > _MIN_VISIBLE_DUR_S:
-                    current['end'] = current['start'] + min(_MIN_VISIBLE_DUR_S, room - _MIN_GAP_S)
-                else:
-                    current['end'] = nxt['start']
+        max_merge_chars = int(self.config.max_line_length) * int(self.config.max_lines)
+        resolved: List[Dict[str, Any]] = []
+        for cue in normalized_cues:
+            if not resolved:
+                resolved.append(cue)
+                continue
+            prev = resolved[-1]
+            if float(prev['end']) <= float(cue['start']):
+                resolved.append(cue)
+                continue
+
+            prev_text = str(prev.get('text') or '').strip()
+            cue_text = str(cue.get('text') or '').strip()
+            if self._normalize_compare_text(prev_text) == self._normalize_compare_text(cue_text):
+                prev['end'] = max(float(prev['end']), float(cue['end']))
+                prev['alignment_confidence'] = max(
+                    float(prev.get('alignment_confidence', 0.0)),
+                    float(cue.get('alignment_confidence', 0.0)),
+                )
+                continue
+
+            continuity = self._merge_text_with_overlap(prev_text, cue_text)
+            if continuity and (max_merge_chars <= 0 or len(continuity) <= max_merge_chars):
+                prev['text'] = continuity
+                prev['end'] = max(float(prev['end']), float(cue['end']))
+                prev['alignment_confidence'] = max(
+                    float(prev.get('alignment_confidence', 0.0)),
+                    float(cue.get('alignment_confidence', 0.0)),
+                )
+                continue
+
+            boundary = (float(prev['end']) + float(cue['start'])) / 2.0
+            next_start = boundary + _MIN_GAP_S
+            if boundary - float(prev['start']) >= _MIN_VISIBLE_DUR_S and float(cue['end']) - next_start >= _MIN_VISIBLE_DUR_S:
+                prev['end'] = boundary
+                cue['start'] = next_start
+                resolved.append(cue)
+                continue
+            if float(cue['end']) - (float(prev['end']) + _MIN_GAP_S) >= _MIN_VISIBLE_DUR_S:
+                cue['start'] = float(prev['end']) + _MIN_GAP_S
+                resolved.append(cue)
+                continue
+            if float(cue['start']) - float(prev['start']) >= _MIN_VISIBLE_DUR_S:
+                prev['end'] = float(cue['start'])
+                resolved.append(cue)
+                continue
+
+            prev_conf = float(prev.get('alignment_confidence', 0.0))
+            cue_conf = float(cue.get('alignment_confidence', 0.0))
+            if cue_conf > prev_conf:
+                resolved[-1] = cue
+
         if total_duration_s > 0:
-            for cue in normalized_cues:
+            for cue in resolved:
                 cue['start'] = min(cue['start'], total_duration_s)
                 cue['end'] = min(cue['end'], total_duration_s)
-        return normalized_cues
+        return resolved
 
     def _normalize_text_line(self, text: str) -> str:
         text = _WHITESPACE_RE.sub(' ', text).strip()
@@ -478,7 +562,8 @@ class SrtTransformEngine:
         max_line = int(self.config.max_line_length)
         max_lines = int(self.config.max_lines)
         max_total = max_line * max_lines
-        if len(text) <= max_line or len(text) <= max_total:
+        text_units = self._visual_text_units(text)
+        if text_units <= max_line or text_units <= max_total:
             return [cue]
 
         sentences = [part for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
@@ -495,21 +580,21 @@ class SrtTransformEngine:
         result: List[Dict[str, Any]] = []
         current_text = ''
         start_time = cue['start']
-        total_chars = max(1, len(text))
+        total_units = max(1.0, text_units)
         duration = cue['end'] - cue['start']
         for sentence in joined:
             sentence = sentence.strip()
             if not sentence:
                 continue
             test = (current_text + ' ' + sentence).strip() if current_text else sentence
-            if len(test) > max_total and current_text:
-                chars_in = len(current_text)
-                frac = chars_in / total_chars
+            if self._visual_text_units(test) > max_total and current_text:
+                units_in = self._visual_text_units(current_text)
+                frac = units_in / total_units
                 cue_duration = max(duration * frac, 0.5)
                 cue_duration = min(cue_duration, cue['end'] - start_time)
                 result.append({'start': start_time, 'end': start_time + cue_duration, 'text': current_text})
                 start_time += cue_duration
-                total_chars -= chars_in
+                total_units = max(1.0, total_units - units_in)
                 duration -= cue_duration
                 current_text = sentence
             else:

@@ -69,6 +69,7 @@ class SpeechRecognitionConfig:
     language: str = ''
     prompt: str = ''
     translate: bool = False
+    whisper_timestamp_granularities: str = 'segment,word'
     voxtral_timestamp_granularities: str = 'segment,word'
     voxtral_diarize: bool = False
     voxtral_context_bias: str = ''
@@ -138,7 +139,7 @@ class SpeechRecognizer:
                 timestamp_granularities=(
                     config.voxtral_timestamp_granularities
                     if config.api_provider == 'voxtral'
-                    else 'segment'
+                    else config.whisper_timestamp_granularities
                 ),
                 diarize=config.voxtral_diarize,
                 context_bias=config.voxtral_context_bias,
@@ -294,6 +295,8 @@ class SpeechRecognizer:
 
     def _pick_failure_token(self, results: List[AsrTranscriptionResult]) -> str:
         for result in results:
+            if result.fallback_token:
+                return result.fallback_token
             if result.failure_token:
                 return result.failure_token
             if result.timestamp_mode == 'srt':
@@ -510,6 +513,7 @@ def create_speech_recognizer_from_config(
             language=language,
             prompt=prompt,
             translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral else False,
+            whisper_timestamp_granularities=app_config.get('WHISPER_TIMESTAMP_GRANULARITIES') or 'segment,word',
             voxtral_timestamp_granularities=app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment,word',
             voxtral_diarize=coerce_bool(app_config.get('VOXTRAL_DIARIZE', False)),
             voxtral_context_bias=app_config.get('VOXTRAL_CONTEXT_BIAS') or '',

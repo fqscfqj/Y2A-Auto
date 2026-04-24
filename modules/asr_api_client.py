@@ -201,7 +201,7 @@ class AsrApiClient:
             "ASR API incompatible: unable to negotiate a supported transcription format."
         )
 
-    def _parse_voxtral_requested_granularities(self) -> Tuple[str, ...]:
+    def _parse_requested_granularities(self) -> Tuple[str, ...]:
         raw = str(self.config.timestamp_granularities or '').strip()
         if not raw:
             return ('segment',)
@@ -217,8 +217,26 @@ class AsrApiClient:
             result.insert(0, 'segment')
         return tuple(result)
 
+    def _parse_voxtral_requested_granularities(self) -> Tuple[str, ...]:
+        return self._parse_requested_granularities()
+
     def _whisper_granularity_candidates(self) -> List[Tuple[str, ...]]:
-        return [('segment',), tuple()]
+        requested = self._parse_requested_granularities()
+        candidates: List[Tuple[str, ...]] = []
+        if requested:
+            candidates.append(requested)
+        segment_only = tuple(gran for gran in requested if gran == 'segment')
+        if segment_only and segment_only not in candidates:
+            candidates.append(segment_only)
+        if ('segment',) not in candidates:
+            candidates.append(('segment',))
+        candidates.append(tuple())
+        deduped: List[Tuple[str, ...]] = []
+        for candidate in candidates:
+            normalized = tuple(gran for gran in candidate if gran)
+            if normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
 
     def _probe_capabilities(
         self,
@@ -746,22 +764,29 @@ class AsrApiClient:
     def detect_language(self, wav_path: str) -> str:
         if self.config.provider == 'voxtral':
             return self._detect_language_voxtral(wav_path)
-        try:
-            response = self._request_whisper_response(
-                wav_path,
-                self.config.model_name or 'whisper-1',
-                'verbose_json',
-                granularities=('segment',),
-                temperature=0,
-                include_language_hint=False,
-                include_prompt=False,
-                use_translation_endpoint=False,
-            )
-            data = self._as_dict(response) or {}
-            return self._extract_language_from_data(data)
-        except Exception as exc:
-            self.logger.warning("Language detection failed: %s", exc)
-            return ''
+        last_error: Optional[Exception] = None
+        for granularities in (('segment',), tuple()):
+            try:
+                response = self._request_whisper_response(
+                    wav_path,
+                    self.config.model_name or 'whisper-1',
+                    'verbose_json',
+                    granularities=granularities,
+                    temperature=0,
+                    include_language_hint=False,
+                    include_prompt=False,
+                    use_translation_endpoint=False,
+                )
+                data = self._as_dict(response) or {}
+                return self._extract_language_from_data(data)
+            except Exception as exc:
+                last_error = exc
+                if self._is_format_error(exc) and granularities:
+                    continue
+                break
+        if last_error:
+            self.logger.warning("Language detection failed: %s", last_error)
+        return ''
 
     def detect_language_from_segments(
         self,
@@ -781,21 +806,36 @@ class AsrApiClient:
         if not normalized_segments:
             return ''
         sorted_segments = sorted(normalized_segments, key=lambda segment: segment[0])
-        picks = [sorted_segments[0]]
-        if len(sorted_segments) > 1:
-            picks.append(sorted_segments[-1])
+        pick_indices = {0, len(sorted_segments) // 2, len(sorted_segments) - 1}
+        picks = [sorted_segments[index] for index in sorted(pick_indices) if 0 <= index < len(sorted_segments)]
 
-        detected: List[str] = []
+        detected: List[Tuple[str, float]] = []
         for start_s, end_s in picks:
             clip = extract_clip_fn(audio_wav, start_s, end_s)
             if not clip:
                 continue
             lang = self.detect_language(clip)
             if lang:
-                detected.append(lang)
-        if len(detected) >= 2 and detected[0] == detected[1]:
-            return detected[0]
-        return detected[0] if len(detected) == 1 else ''
+                detected.append((lang, max(0.0, float(end_s) - float(start_s))))
+        if not detected:
+            return ''
+
+        counts: Dict[str, int] = {}
+        durations: Dict[str, float] = {}
+        first_seen: Dict[str, int] = {}
+        for index, (lang, duration_s) in enumerate(detected):
+            normalized_lang = str(lang or '').strip()
+            if not normalized_lang:
+                continue
+            counts[normalized_lang] = counts.get(normalized_lang, 0) + 1
+            durations[normalized_lang] = durations.get(normalized_lang, 0.0) + float(duration_s)
+            first_seen.setdefault(normalized_lang, index)
+        if not counts:
+            return ''
+        return sorted(
+            counts,
+            key=lambda lang: (-counts[lang], -durations.get(lang, 0.0), first_seen.get(lang, 0)),
+        )[0]
 
     def _payload_to_transcription_result(
         self,

@@ -37,6 +37,7 @@ SPEECH_PIPELINE_DEFAULTS: Dict[str, Any] = {
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
+    "WHISPER_TIMESTAMP_GRANULARITIES": "segment,word",
     "VOXTRAL_API_KEY": "",
     "VOXTRAL_BASE_URL": "https://api.mistral.ai/v1",
     "VOXTRAL_MODEL_NAME": "voxtral-mini-latest",

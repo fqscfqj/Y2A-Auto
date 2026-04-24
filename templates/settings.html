@@ -1050,6 +1050,13 @@
                                                                     </datalist>
                                                                 </div>
                                                             </div>
+                                                            <div class="col-md-4">
+                                                                <div class="form-group">
+                                                                    <label for="whisper-timestamp-granularities" class="form-label">时间戳粒度</label>
+                                                                    <input type="text" id="whisper-timestamp-granularities" name="WHISPER_TIMESTAMP_GRANULARITIES" value="{{ config.get('WHISPER_TIMESTAMP_GRANULARITIES', 'segment,word') }}" class="form-control" placeholder="segment,word">
+                                                                    <p class="help-text mb-0">优先请求词级时间戳；OpenAI 兼容或 LocalAI 后端不支持时会自动回退。</p>
+                                                                </div>
+                                                            </div>
                                                             <div class="col-md-8">
                                                                 <div class="form-group">
                                                                     <label for="whisper-prompt" class="form-label">提示词</label>
