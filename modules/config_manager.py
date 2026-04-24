@@ -152,12 +152,6 @@ DEFAULT_CONFIG = {
     "VOXTRAL_MAX_AUDIO_DURATION_S": 10800,
     "VOXTRAL_LONG_AUDIO_MARGIN_S": 5,
     "VOXTRAL_ENFORCE_MAX_DURATION": True,
-    # FireRedASR2S（/v1/process_all）配置
-    "FIREREDASR_ENABLED": False,
-    "FIREREDASR_BASE_URL": "http://localhost:8000",
-    "FIREREDASR_API_KEY": "",
-    "FIREREDASR_TIMEOUT": 300,
-    "FIREREDASR_MAX_RETRIES": 3,
     # 语音活动检测（VAD）
     "VAD_ENABLED": True,
     "VAD_PROVIDER": "silero-vad",
@@ -191,7 +185,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MIN_CUE_DURATION_S": 0.6,  # 每条字幕最短时长（秒）
     "SUBTITLE_MERGE_GAP_S": 0.3,  # 若相邻间隙不超过该值则合并
     "SUBTITLE_MIN_TEXT_LENGTH": 2,  # 文本长度不足时进行合并/丢弃
-    # 字幕后处理启用开关（仅对Whisper生效，FireRedASR2S不使用）
+    # 字幕后处理启用开关（仅对Whisper生效）
     "SUBTITLE_TIME_OFFSET_ENABLED": False,
     "SUBTITLE_MIN_CUE_DURATION_ENABLED": False,
     "SUBTITLE_MERGE_GAP_ENABLED": False,

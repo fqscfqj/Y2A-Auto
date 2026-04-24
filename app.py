@@ -704,7 +704,6 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'SUBTITLE_QC_ENABLED',
             'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
             'VIDEO_CUSTOM_PARAMS_ENABLED',
-            'FIREREDASR_ENABLED',
             'VOXTRAL_DIARIZE',
             'NOTIFY_ENABLED',
             'NOTIFY_EVENT_TASK_ADDED',
@@ -736,8 +735,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
             'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
             'SUBTITLE_MIN_TEXT_LENGTH',
-            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
-            'FIREREDASR_TIMEOUT', 'FIREREDASR_MAX_RETRIES'
+            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
         ]
         for field in SPEECH_PIPELINE_INT_FIELDS:
             if field not in numeric_fields:
@@ -774,9 +772,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'VAD_SILERO_SPEECH_PAD_MS': 120,
                         'VAD_MAX_SEGMENT_S': 15,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000,
-                        'FIREREDASR_TIMEOUT': 300,
-                        'FIREREDASR_MAX_RETRIES': 3
+                        'SUBTITLE_QC_MAX_CHARS': 9000
                     }
                     defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
@@ -840,8 +836,6 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         try:
             need_ffmpeg = False
             if str(updated_config.get('SPEECH_RECOGNITION_ENABLED', False)).lower() in ['true', '1', 'on']:
-                need_ffmpeg = True
-            if str(updated_config.get('FIREREDASR_ENABLED', False)).lower() in ['true', '1', 'on']:
                 need_ffmpeg = True
             if str(updated_config.get('SUBTITLE_EMBED_IN_VIDEO', False)).lower() in ['true', '1', 'on']:
                 need_ffmpeg = True

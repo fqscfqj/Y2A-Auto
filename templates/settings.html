@@ -918,7 +918,6 @@
                                                             <label for="asr-provider" class="form-label">默认 ASR 服务</label>
                                                             <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
                                                                 <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI 兼容）</option>
-                                                                <option value="fireredasr" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'fireredasr' %}selected{% endif %}>FireRedASR2S</option>
                                                                 <option value="voxtral" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'voxtral' %}selected{% endif %}>Voxtral（Mistral）</option>
                                                             </select>
                                                         </div>
@@ -1258,44 +1257,6 @@
                                         </article>
                                     </div>
 
-                                    <div class="col-12" id="fireredasr-config">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">FireRedASR2S 服务</span>
-                                                    <h4>FireRedASR2S 配置</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="row g-3">
-                                                    <div class="col-md-8">
-                                                        <div class="form-group">
-                                                            <label for="fireredasr-base-url" class="form-label">接口地址</label>
-                                                            <input type="text" id="fireredasr-base-url" name="FIREREDASR_BASE_URL" value="{{ config.get('FIREREDASR_BASE_URL', 'http://localhost:8000') }}" class="form-control" placeholder="http://localhost:8000">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="fireredasr-timeout" class="form-label">请求超时（秒）</label>
-                                                            <input type="number" id="fireredasr-timeout" name="FIREREDASR_TIMEOUT" value="{{ config.get('FIREREDASR_TIMEOUT', 300) }}" min="30" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="fireredasr-api-key" class="form-label">API 密钥</label>
-                                                            <input type="password" id="fireredasr-api-key" name="FIREREDASR_API_KEY" value="{{ config.get('FIREREDASR_API_KEY', '') }}" class="form-control" placeholder="如果服务需要鉴权">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="fireredasr-max-retries" class="form-label">最大重试次数</label>
-                                                            <input type="number" id="fireredasr-max-retries" name="FIREREDASR_MAX_RETRIES" value="{{ config.get('FIREREDASR_MAX_RETRIES', 3) }}" min="1" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
                                 </div>
                             </section>
                         </div>
@@ -1892,18 +1853,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const asrProvider = document.getElementById('asr-provider');
     const whisperConfig = document.getElementById('whisper-config');
-    const fireredasrConfig = document.getElementById('fireredasr-config');
     const voxtralConfig = document.getElementById('voxtral-config');
     const sharedVadConfig = document.getElementById('shared-vad-config');
     const sharedVadProviderPill = document.getElementById('shared-vad-provider-pill');
     const sharedVadProviderCopy = document.getElementById('shared-vad-provider-copy');
 
-    if (asrProvider && whisperConfig && fireredasrConfig && voxtralConfig && sharedVadConfig) {
+    if (asrProvider && whisperConfig && voxtralConfig && sharedVadConfig) {
         const toggleAsrProvider = function () {
             const provider = asrProvider.value;
             if (provider === 'whisper') {
                 whisperConfig.style.display = 'block';
-                fireredasrConfig.style.display = 'none';
                 voxtralConfig.style.display = 'none';
                 sharedVadConfig.style.display = 'block';
                 if (sharedVadProviderPill) {
@@ -1912,14 +1871,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (sharedVadProviderCopy) {
                     sharedVadProviderCopy.textContent = '当前为 Whisper 模式，扫描窗、segment 时间戳和失败回退会共同决定最终字幕时间轴。';
                 }
-            } else if (provider === 'fireredasr') {
-                whisperConfig.style.display = 'none';
-                fireredasrConfig.style.display = 'block';
-                voxtralConfig.style.display = 'none';
-                sharedVadConfig.style.display = 'none';
             } else if (provider === 'voxtral') {
                 whisperConfig.style.display = 'none';
-                fireredasrConfig.style.display = 'none';
                 voxtralConfig.style.display = 'block';
                 sharedVadConfig.style.display = 'block';
                 if (sharedVadProviderPill) {

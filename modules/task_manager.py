@@ -641,8 +641,8 @@ def _build_missing_translation_review_message(field_names) -> str:
 
 
 def _is_asr_enabled(config: dict) -> bool:
-    """ASR总开关：兼容传统ASR开关与FireRedASR2S开关。"""
-    return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False)) or _as_bool(config.get('FIREREDASR_ENABLED', False))
+    """ASR总开关。"""
+    return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False))
 
 
 def _parse_pipeline_checkpoint(raw_value):

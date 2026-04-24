@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -100,11 +100,11 @@ class AsrApiClient:
         self._language_hint = str(lang or '').strip()
 
     def _init_client(self):
-        if not self.config.api_key and self.config.provider not in ('fireredasr2s',):
+        if not self.config.api_key:
             self.logger.error("Missing ASR API key - ASR client not initialised")
             return
         try:
-            if self.config.provider in ('fireredasr2s', 'voxtral'):
+            if self.config.provider == 'voxtral':
                 if not self.config.base_url:
                     self.logger.error("Missing ASR base URL - ASR client not initialised")
                     return
@@ -413,8 +413,6 @@ class AsrApiClient:
         window: Optional[DetectedSpeechWindow] = None,
         segment_info: Optional[str] = None,
     ) -> AsrTranscriptionResult:
-        if self.config.provider == 'fireredasr2s':
-            return self._transcribe_segment_firered(wav_path, window=window, segment_info=segment_info)
         if self.config.provider == 'voxtral':
             return self._transcribe_segment_voxtral(wav_path, window=window, segment_info=segment_info)
 
@@ -660,52 +658,6 @@ class AsrApiClient:
             failure_token='asr_failed',
         )
 
-    def _transcribe_segment_firered(
-        self,
-        wav_path: str,
-        *,
-        window: Optional[DetectedSpeechWindow],
-        segment_info: Optional[str] = None,
-    ) -> AsrTranscriptionResult:
-        endpoint_url = self._build_firered_process_all_url(self.config.base_url)
-        if not endpoint_url:
-            return AsrTranscriptionResult(
-                provider='fireredasr2s',
-                response_format='',
-                timestamp_mode='none',
-                window=window,
-                failure_token='asr_failed',
-            )
-        headers: Dict[str, str] = {}
-        if self.config.api_key:
-            headers['X-API-Key'] = self.config.api_key
-        for attempt in range(self.config.max_retries):
-            try:
-                with open(wav_path, 'rb') as file_obj:
-                    response = requests.post(
-                        endpoint_url,
-                        headers=headers,
-                        files={'file': (os.path.basename(wav_path), file_obj, 'audio/wav')},
-                        timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
-                    )
-                if response.status_code != 200:
-                    raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
-                payload = response.json()
-                return self._firered_payload_to_result(payload, window=window)
-            except Exception as exc:
-                if attempt >= self.config.max_retries - 1:
-                    self.logger.error("FireRed request failed: %s", exc)
-                    break
-                delay = min(self.config.retry_delay_s * (2 ** attempt), 30.0)
-                time.sleep(delay)
-        return AsrTranscriptionResult(
-            provider='fireredasr2s',
-            response_format='json',
-            timestamp_mode='none',
-            window=window,
-            failure_token='asr_failed',
-        )
-
     def transcribe_segment(self, wav_path: str, segment_info: Optional[str] = None) -> Optional[str]:
         result = self.transcribe_window(wav_path, window=None, segment_info=segment_info)
         return self._render_result_to_srt(result)
@@ -792,8 +744,6 @@ class AsrApiClient:
         return ordered
 
     def detect_language(self, wav_path: str) -> str:
-        if self.config.provider == 'fireredasr2s':
-            return ''
         if self.config.provider == 'voxtral':
             return self._detect_language_voxtral(wav_path)
         try:
@@ -947,35 +897,6 @@ class AsrApiClient:
             window=window,
             failure_token='' if segments or text else 'asr_failed',
             metadata={'granularities': list(granularities), 'timing_scale': timing_scale},
-        )
-
-    def _firered_payload_to_result(
-        self,
-        payload: Dict[str, Any],
-        *,
-        window: Optional[DetectedSpeechWindow],
-    ) -> AsrTranscriptionResult:
-        sentences = payload.get('sentences') or []
-        segments: List[AsrSegmentTiming] = []
-        for sentence in sentences:
-            if not isinstance(sentence, dict):
-                continue
-            text = str(sentence.get('text') or '').strip()
-            if not text:
-                continue
-            start_s = float(sentence.get('start_ms', 0.0) or 0.0) / 1000.0
-            end_s = float(sentence.get('end_ms', 0.0) or 0.0) / 1000.0
-            if end_s <= start_s:
-                end_s = start_s + 0.5
-            segments.append(AsrSegmentTiming(start_s=start_s, end_s=end_s, text=text))
-        return AsrTranscriptionResult(
-            provider='fireredasr2s',
-            response_format='json',
-            timestamp_mode='segment',
-            text=' '.join(segment.text for segment in segments).strip(),
-            segments=segments,
-            window=window,
-            language=str(payload.get('language') or '').strip(),
         )
 
     @staticmethod
@@ -1224,32 +1145,6 @@ class AsrApiClient:
         return deduped
 
     @staticmethod
-    def _build_firered_process_all_url(base_url: str) -> str:
-        raw = (base_url or '').strip()
-        if not raw:
-            return ''
-        if '://' not in raw:
-            raw = f"http://{raw}"
-        parsed = urlparse(raw)
-        if not parsed.scheme or not parsed.netloc:
-            return ''
-        path = parsed.path or ''
-        query = parse_qs(parsed.query, keep_blank_values=True)
-        if path.endswith('/v1/process_all'):
-            normalized_path = path
-        else:
-            normalized_path = f"{path.rstrip('/')}/v1/process_all".replace('//', '/')
-        if 'force_refresh' not in query:
-            query['force_refresh'] = ['false']
-        return urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            normalized_path,
-            parsed.params,
-            urlencode(query, doseq=True),
-            parsed.fragment,
-        ))
-
     @staticmethod
     def _build_voxtral_transcriptions_url(base_url: str) -> str:
         raw = (base_url or '').strip()

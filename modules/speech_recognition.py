@@ -104,7 +104,7 @@ class SpeechRecognizer:
         self.last_error_message: str = ''
         self._temp_dirs: List[str] = []
 
-        if config.provider not in ('whisper', 'fireredasr', 'voxtral'):
+        if config.provider not in ('whisper', 'voxtral'):
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
 
         self._vad = VadProcessor(
@@ -463,19 +463,11 @@ def create_speech_recognizer_from_config(
             return None
 
         provider = str(app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').strip().lower()
-        use_fireredasr = provider == 'fireredasr'
+        if provider not in ('whisper', 'voxtral'):
+            provider = 'whisper'
         use_voxtral = provider == 'voxtral'
 
-        if use_fireredasr:
-            api_provider = 'fireredasr2s'
-            api_key = app_config.get('FIREREDASR_API_KEY') or ''
-            base_url = app_config.get('FIREREDASR_BASE_URL') or ''
-            model_name = ''
-            language = ''
-            prompt = ''
-            max_retries = int(app_config.get('FIREREDASR_MAX_RETRIES', 3) or 3)
-            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
-        elif use_voxtral:
+        if use_voxtral:
             api_provider = 'voxtral'
             api_key = app_config.get('VOXTRAL_API_KEY') or ''
             base_url = app_config.get('VOXTRAL_BASE_URL') or 'https://api.mistral.ai/v1'
@@ -483,7 +475,7 @@ def create_speech_recognizer_from_config(
             language = app_config.get('VOXTRAL_LANGUAGE') or ''
             prompt = ''
             max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
-            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
+            timeout_s = float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600.0)
         else:
             api_provider = 'whisper'
             api_key = app_config.get('WHISPER_API_KEY') or app_config.get('OPENAI_API_KEY', '')
@@ -492,7 +484,7 @@ def create_speech_recognizer_from_config(
             language = app_config.get('WHISPER_LANGUAGE') or ''
             prompt = app_config.get('WHISPER_PROMPT') or ''
             max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
-            timeout_s = float(app_config.get('FIREREDASR_TIMEOUT', 300) or 300.0)
+            timeout_s = float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600.0)
 
         config = SpeechRecognitionConfig(
             provider=provider,
@@ -517,7 +509,7 @@ def create_speech_recognizer_from_config(
             vad_min_speech_coverage_ratio=float(app_config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) or 0.015),
             language=language,
             prompt=prompt,
-            translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral and not use_fireredasr else False,
+            translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral else False,
             voxtral_timestamp_granularities=app_config.get('VOXTRAL_TIMESTAMP_GRANULARITIES') or 'segment,word',
             voxtral_diarize=coerce_bool(app_config.get('VOXTRAL_DIARIZE', False)),
             voxtral_context_bias=app_config.get('VOXTRAL_CONTEXT_BIAS') or '',
