@@ -3389,9 +3389,9 @@ class TaskProcessor:
         (1920.0, 160.0),
         (2560.0, 200.0),
     )
-    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.035
     _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.11
-    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.68
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.86
     _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.86
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 30.0
@@ -3412,32 +3412,32 @@ class TaskProcessor:
             'FontSize': 18.0,
             'Outline': 0.4,
             'Shadow': 0.6,
-            'MarginL': 60,
-            'MarginR': 60,
+            'MarginL': 42,
+            'MarginR': 42,
             'MarginV': 16,
         },
         1080: {
             'FontSize': 18.0,
             'Outline': 0.4,
             'Shadow': 0.6,
-            'MarginL': 60,
-            'MarginR': 60,
+            'MarginL': 42,
+            'MarginR': 42,
             'MarginV': 16,
         },
         1440: {
             'FontSize': 18.0,
             'Outline': 0.4,
             'Shadow': 0.6,
-            'MarginL': 60,
-            'MarginR': 60,
+            'MarginL': 42,
+            'MarginR': 42,
             'MarginV': 16,
         },
         2160: {
             'FontSize': 18.0,
             'Outline': 0.4,
             'Shadow': 0.6,
-            'MarginL': 60,
-            'MarginR': 60,
+            'MarginL': 42,
+            'MarginR': 42,
             'MarginV': 16,
         },
     }
@@ -3901,7 +3901,7 @@ class TaskProcessor:
                 36.0,
                 132.0,
             )
-            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 48.0, 160.0)
+            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 36.0, 120.0)
 
         style.update({
             'FontSize': font_size,
@@ -4009,7 +4009,7 @@ class TaskProcessor:
             max_line_length = int(cls._clamp(max_line_length, 12.0, 18.0))
             max_lines = 3
         else:
-            max_line_length = int(cls._clamp(max_line_length, 16.0, 22.0))
+            max_line_length = int(cls._clamp(max_line_length, 20.0, 26.0))
             max_lines = 2
         return max_line_length, max_lines
 
@@ -4197,7 +4197,7 @@ class TaskProcessor:
         if is_portrait:
             max_line_length = int(cls._clamp(max_line_length, 10.0, 14.0))
         else:
-            max_line_length = int(cls._clamp(max_line_length, 16.0, 20.0))
+            max_line_length = int(cls._clamp(max_line_length, 20.0, 26.0))
         return max_line_length, 2
 
     @staticmethod
