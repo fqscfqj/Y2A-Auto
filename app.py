@@ -1520,6 +1520,57 @@ def task_fragment(task_id):
         'success': True,
         **_render_task_fragments(task, config)
     })
+
+
+def _missing_upload_partition_labels(task, config):
+    upload_target = str(task.get('upload_target') or 'acfun').lower()
+    recommend_enabled = str(config.get('RECOMMEND_PARTITION', False)).strip().lower() in ('true', '1', 'on', 'yes')
+    missing = []
+
+    if upload_target in ('acfun', 'both'):
+        fixed_acfun_pid = str(config.get('FIXED_PARTITION_ID', '') or '').strip()
+        acfun_partition = str(
+            task.get('selected_partition_id_acfun')
+            or task.get('recommended_partition_id_acfun')
+            or task.get('selected_partition_id')
+            or task.get('recommended_partition_id')
+            or ''
+        ).strip()
+        if not fixed_acfun_pid and not acfun_partition and not recommend_enabled:
+            missing.append('AcFun 分区')
+
+    if upload_target in ('bilibili', 'both'):
+        fixed_bili_pid = str(config.get('FIXED_PARTITION_ID_BILIBILI', '') or '').strip()
+        bili_partition = str(
+            task.get('selected_partition_id_bilibili')
+            or task.get('recommended_partition_id_bilibili')
+            or task.get('selected_partition_id')
+            or task.get('recommended_partition_id')
+            or ''
+        ).strip()
+        if not fixed_bili_pid and not bili_partition and not recommend_enabled:
+            missing.append('bilibili 分区')
+
+    return missing
+
+
+def _start_background_force_upload(task_id, config, platform_name):
+    logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
+
+    def background_force_upload():
+        try:
+            success = force_upload_task(task_id, config)
+            if success:
+                logger.info(f"任务 {task_id} 后台强制上传成功")
+            else:
+                logger.error(f"任务 {task_id} 后台强制上传失败")
+        except Exception as e:
+            logger.error(f"任务 {task_id} 后台强制上传出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    upload_thread = threading.Thread(target=background_force_upload, daemon=True)
+    upload_thread.start()
     
 @app.route('/tasks/stream')
 @login_required
@@ -1655,6 +1706,19 @@ def edit_task(task_id):
             print(f"DEBUG: update_task调用失败: {e}")
         logger.info(f"任务 {task_id} 信息已更新")
         updated_task = get_task(task_id)
+        if action == 'force_upload':
+            config = load_config()
+            upload_target = str((updated_task or task).get('upload_target') or 'acfun').lower()
+            platform_name = '双平台' if upload_target == 'both' else ('bilibili' if upload_target == 'bilibili' else 'AcFun')
+            missing_partitions = _missing_upload_partition_labels(updated_task or task, config)
+            if missing_partitions:
+                flash(f'请先选择{ "、".join(missing_partitions) }，或开启分区推荐后再继续上传。', 'danger')
+                return redirect(redirect_target)
+
+            _start_background_force_upload(task_id, config, platform_name)
+            flash(f'已保存当前修改，并启动强制上传到{platform_name}，正在后台处理...', 'info')
+            return redirect(url_for('manual_review'))
+
         if updated_task and updated_task['status'] == TASK_STATES['READY_FOR_UPLOAD']:
             flash('任务已保存，当前可单独执行上传。', 'success')
         else:
@@ -1968,29 +2032,15 @@ def force_upload_task_route(task_id):
     config = load_config()
     upload_target = str(task.get('upload_target') or 'acfun').lower()
     platform_name = '双平台' if upload_target == 'both' else ('bilibili' if upload_target == 'bilibili' else 'AcFun')
+    missing_partitions = _missing_upload_partition_labels(task, config)
+    if missing_partitions:
+        flash(f'请先选择{ "、".join(missing_partitions) }，或开启分区推荐后再继续上传。', 'danger')
+        return redirect(request.form.get('next') or url_for('edit_task', task_id=task_id))
     
     # 启动后台强制上传
-    logger.info(f"开始后台强制上传任务 {task_id} 到{platform_name}")
     flash(f'已启动强制上传到{platform_name}，正在后台处理...', 'info')
-    
-    def background_force_upload():
-        """后台强制上传函数"""
-        try:
-            # 调用上传函数
-            success = force_upload_task(task_id, config)
-                
-            if success:
-                logger.info(f"任务 {task_id} 后台强制上传成功")
-            else:
-                logger.error(f"任务 {task_id} 后台强制上传失败")
-        except Exception as e:
-            logger.error(f"任务 {task_id} 后台强制上传出错: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
-    # 启动后台线程
-    upload_thread = threading.Thread(target=background_force_upload, daemon=True)
-    upload_thread.start()
+
+    _start_background_force_upload(task_id, config, platform_name)
 
     return redirect(url_for('manual_review'))
 

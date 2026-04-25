@@ -580,6 +580,18 @@ def _safe_json_loads(value, default):
         return default
 
 
+def _normalize_tags_list(value):
+    parsed = _safe_json_loads(value, [])
+    if not isinstance(parsed, list):
+        return []
+    tags = []
+    for tag in parsed:
+        tag_text = str(tag or '').strip()
+        if tag_text:
+            tags.append(tag_text)
+    return tags
+
+
 def _as_bool(value):
     """将配置值稳健转换为布尔值（兼容 bool/int/str）。"""
     if isinstance(value, bool):
@@ -6065,14 +6077,9 @@ class TaskProcessor:
         description_original = task.get('description_original', '') or ''
         title_translated = task.get('video_title_translated', '') or ''
         description_translated = task.get('description_translated', '') or ''
-        tags_generated = []
-        if task.get('tags_generated'):
-            try:
-                parsed_tags = json.loads(task.get('tags_generated', '[]'))
-                if isinstance(parsed_tags, list):
-                    tags_generated = parsed_tags
-            except json.JSONDecodeError:
-                task_logger.warning("解析 AI 标签失败，分区推荐将忽略标签上下文")
+        tags_generated = _normalize_tags_list(task.get('tags_generated'))
+        if task.get('tags_generated') and not tags_generated:
+            task_logger.warning("解析 AI 标签失败或标签为空，分区推荐将忽略标签上下文")
         upload_target = _get_task_upload_target(task)
 
         openai_config = {
@@ -6585,6 +6592,9 @@ class TaskProcessor:
         ):
             return
 
+        if allow_missing_translations:
+            task = self._ensure_force_upload_metadata_ready(task_id, task_logger) or task
+
         upload_target = _get_task_upload_target(task)
         pending_platforms = _get_pending_upload_platforms(task, upload_target)
         task_logger.info(f"上传分发目标平台: {upload_target}")
@@ -6631,6 +6641,48 @@ class TaskProcessor:
             self._upload_to_acfun(task_id, task_logger)
         else:
             task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
+
+    def _ensure_force_upload_metadata_ready(self, task_id, task_logger):
+        """强制上传前补齐可自动生成的标签和分区。"""
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在，无法补全上传元数据")
+            return None
+
+        from modules.utils import safe_str
+        title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
+        description = safe_str(task.get('description_translated') or task.get('description_original'))
+
+        tags = _normalize_tags_list(task.get('tags_generated'))
+        if self.config.get('GENERATE_TAGS', True) and not tags:
+            if title or description:
+                task_logger.info("强制上传前检测到标签缺失，开始补生成标签")
+                self._generate_tags(task_id, task_logger)
+                task = get_task(task_id) or task
+            else:
+                task_logger.warning("强制上传前标签缺失，但缺少标题和简介，无法补生成标签")
+                update_task(task_id, tags_generated=json.dumps([], ensure_ascii=False), silent=True)
+                task = get_task(task_id) or task
+
+        if self.config.get('RECOMMEND_PARTITION', False):
+            task = get_task(task_id) or task
+            upload_target = _get_task_upload_target(task)
+            missing_partition_platforms = [
+                platform
+                for platform in _get_upload_platforms_for_target(upload_target)
+                if not _get_task_partition_id(task, platform, prefer_selected=True)
+            ]
+            if missing_partition_platforms:
+                if title or description:
+                    task_logger.info(
+                        f"强制上传前检测到分区缺失 {missing_partition_platforms}，开始补推荐分区"
+                    )
+                    self._recommend_partition(task_id, task_logger)
+                    task = get_task(task_id) or task
+                else:
+                    task_logger.warning("强制上传前分区缺失，但缺少标题和简介，无法补推荐分区")
+
+        return get_task(task_id) or task
 
     def _upload_to_bilibili(self, task_id, task_logger, subtitle_prepared=False):
         """上传到 Bilibili - 带并发控制"""
@@ -6769,12 +6821,7 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['UPLOADING'])
 
         # 解析标签
-        tags = []
-        try:
-            tags_json = task.get('tags_generated', '[]') if task else '[]'
-            tags = json.loads(tags_json)
-        except Exception as e:
-            task_logger.error(f"解析标签失败: {str(e)}")
+        tags = _normalize_tags_list(task.get('tags_generated') if task else None)
         
         # 获取元数据
         metadata_path = task.get('metadata_json_path_local', '') if task else ''
@@ -6977,11 +7024,7 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['UPLOADING'], upload_progress='0.0%')
 
         tags = []
-        try:
-            tags_json = task.get('tags_generated', '[]') if task else '[]'
-            tags = json.loads(tags_json)
-        except Exception as e:
-            task_logger.error(f"解析标签失败: {str(e)}")
+        tags = _normalize_tags_list(task.get('tags_generated') if task else None)
 
         metadata_path = task.get('metadata_json_path_local', '') if task else ''
         original_url = task.get('youtube_url', '') if task else ''

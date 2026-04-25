@@ -331,7 +331,7 @@
                             <button type="submit" class="btn btn-primary">
                                 <i class="bi bi-floppy me-1"></i> 保存修改
                             </button>
-                            <button type="submit" form="task-upload-form" class="btn btn-success" {% if not can_upload %}disabled{% endif %}>
+                            <button type="submit" name="action" value="force_upload" class="btn btn-success" {% if not can_upload %}disabled{% endif %}>
                                 <i class="bi bi-cloud-upload me-1"></i> 上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}
                             </button>
                         </div>
@@ -340,7 +340,7 @@
                     
                     <div class="mt-3">
                         <div class="alert alert-info small mb-0">
-                            <i class="bi bi-info-circle"></i> “保存修改”只更新标题、描述、分区和标签；“上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}”会单独在后台启动上传。
+                            <i class="bi bi-info-circle"></i> “保存修改”只更新标题、描述、分区和标签；“上传到{{ '双平台' if (upload_target|default('acfun')) == 'both' else ('bilibili' if (upload_target|default('acfun')) == 'bilibili' else 'AcFun') }}”会先保存当前修改，再在后台启动上传。
                             {% if can_upload %}
                                 <br><strong>当前状态：{{ task_status_display(task.status) }}，可以直接上传。</strong>
                             {% else %}
@@ -348,9 +348,6 @@
                             {% endif %}
                         </div>
                     </div>
-                </form>
-                <form method="post" action="{{ url_for('force_upload_task_route', task_id=task.id) }}" id="task-upload-form" class="d-none">
-                    <input type="hidden" name="next" value="{{ url_for('edit_task', task_id=task.id) }}">
                 </form>
             </div>
         </div>
