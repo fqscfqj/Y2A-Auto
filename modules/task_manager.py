@@ -6593,7 +6593,9 @@ class TaskProcessor:
             return
 
         if allow_missing_translations:
-            task = self._ensure_force_upload_metadata_ready(task_id, task_logger) or task
+            task = self._ensure_force_upload_metadata_ready(task_id, task_logger)
+            if not task:
+                return
 
         upload_target = _get_task_upload_target(task)
         pending_platforms = _get_pending_upload_platforms(task, upload_target)
@@ -6643,26 +6645,32 @@ class TaskProcessor:
             task_logger.info("检测到已有 AcFun 上传结果，跳过 AcFun 上传")
 
     def _ensure_force_upload_metadata_ready(self, task_id, task_logger):
-        """强制上传前补齐可自动生成的标签和分区。"""
+        """强制上传前继续未完成的 AI 处理阶段。"""
         task = get_task(task_id)
         if not task:
-            task_logger.error("任务不存在，无法补全上传元数据")
+            task_logger.error("任务不存在，无法继续上传前 AI 处理流程")
             return None
 
         from modules.utils import safe_str
-        title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
-        description = safe_str(task.get('description_translated') or task.get('description_original'))
+        completed_stages = _get_completed_stages(task)
+
+        def _has_usable_text(current_task):
+            title_text = safe_str(current_task.get('video_title_translated') or current_task.get('video_title_original'))
+            description_text = safe_str(current_task.get('description_translated') or current_task.get('description_original'))
+            return bool(title_text or description_text)
 
         tags = _normalize_tags_list(task.get('tags_generated'))
         if self.config.get('GENERATE_TAGS', True) and not tags:
-            if title or description:
-                task_logger.info("强制上传前检测到标签缺失，开始补生成标签")
+            if _has_usable_text(task):
+                task_logger.info("强制上传前检测到标签为空，继续执行标签生成阶段")
                 self._generate_tags(task_id, task_logger)
                 task = get_task(task_id) or task
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
             else:
                 task_logger.warning("强制上传前标签缺失，但缺少标题和简介，无法补生成标签")
                 update_task(task_id, tags_generated=json.dumps([], ensure_ascii=False), silent=True)
                 task = get_task(task_id) or task
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
 
         if self.config.get('RECOMMEND_PARTITION', False):
             task = get_task(task_id) or task
@@ -6673,14 +6681,26 @@ class TaskProcessor:
                 if not _get_task_partition_id(task, platform, prefer_selected=True)
             ]
             if missing_partition_platforms:
-                if title or description:
+                if _has_usable_text(task):
                     task_logger.info(
-                        f"强制上传前检测到分区缺失 {missing_partition_platforms}，开始补推荐分区"
+                        f"强制上传前检测到分区缺失 {missing_partition_platforms}，继续执行分区推荐阶段"
                     )
                     self._recommend_partition(task_id, task_logger)
                     task = get_task(task_id) or task
+                    completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_RECOMMEND_PARTITION)
                 else:
                     task_logger.warning("强制上传前分区缺失，但缺少标题和简介，无法补推荐分区")
+
+        if self.config.get('CONTENT_MODERATION_ENABLED', False):
+            task = get_task(task_id) or task
+            if not task.get('moderation_result'):
+                task_logger.info("强制上传前检测到内容审核未完成，继续执行内容审核阶段")
+                self._moderate_content(task_id, task_logger)
+                task = get_task(task_id) or task
+                if task.get('status') == TASK_STATES['AWAITING_REVIEW']:
+                    task_logger.info("内容审核需要人工处理，暂停强制上传")
+                    return None
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_MODERATE_CONTENT)
 
         return get_task(task_id) or task
 

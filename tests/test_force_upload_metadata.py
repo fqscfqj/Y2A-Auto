@@ -55,6 +55,7 @@ class ForceUploadMetadataTests(unittest.TestCase):
         processor = tm.TaskProcessor({
             'GENERATE_TAGS': True,
             'RECOMMEND_PARTITION': True,
+            'CONTENT_MODERATION_ENABLED': True,
         })
         processor._generate_tags = MagicMock(side_effect=lambda *_args: task.update({
             'tags_generated': '["ASMR", "配对游戏"]'
@@ -65,6 +66,9 @@ class ForceUploadMetadataTests(unittest.TestCase):
             'recommended_partition_id_bilibili': '2001',
             'selected_partition_id_bilibili': '2001',
         }) or True)
+        processor._moderate_content = MagicMock(side_effect=lambda *_args: task.update({
+            'moderation_result': '{"overall_pass": true}'
+        }) or True)
 
         with patch.object(tm, 'get_task', side_effect=fake_get_task), \
              patch.object(tm, 'update_task', side_effect=fake_update_task):
@@ -73,8 +77,10 @@ class ForceUploadMetadataTests(unittest.TestCase):
         self.assertEqual(result['tags_generated'], '["ASMR", "配对游戏"]')
         self.assertEqual(result['selected_partition_id_acfun'], '1001')
         self.assertEqual(result['selected_partition_id_bilibili'], '2001')
+        self.assertEqual(result['moderation_result'], '{"overall_pass": true}')
         processor._generate_tags.assert_called_once()
         processor._recommend_partition.assert_called_once()
+        processor._moderate_content.assert_called_once()
 
     def test_force_upload_respects_existing_tags_and_partitions(self):
         task_id = 'task-existing-metadata'
@@ -90,14 +96,17 @@ class ForceUploadMetadataTests(unittest.TestCase):
             'recommended_partition_id_acfun': '',
             'selected_partition_id_bilibili': '2001',
             'recommended_partition_id_bilibili': '',
+            'moderation_result': '{"overall_pass": true}',
         }
 
         processor = tm.TaskProcessor({
             'GENERATE_TAGS': True,
             'RECOMMEND_PARTITION': True,
+            'CONTENT_MODERATION_ENABLED': True,
         })
         processor._generate_tags = MagicMock()
         processor._recommend_partition = MagicMock()
+        processor._moderate_content = MagicMock()
 
         with patch.object(tm, 'get_task', return_value=dict(task)):
             result = processor._ensure_force_upload_metadata_ready(task_id, MagicMock())
@@ -107,6 +116,38 @@ class ForceUploadMetadataTests(unittest.TestCase):
         self.assertEqual(result['selected_partition_id_bilibili'], '2001')
         processor._generate_tags.assert_not_called()
         processor._recommend_partition.assert_not_called()
+        processor._moderate_content.assert_not_called()
+
+    def test_force_upload_pauses_when_moderation_requires_review(self):
+        task_id = 'task-moderation-review'
+        task = {
+            'id': task_id,
+            'upload_target': 'acfun',
+            'status': tm.TASK_STATES['READY_FOR_UPLOAD'],
+            'video_title_original': 'Original title',
+            'description_original': 'Original description',
+            'tags_generated': '["tag"]',
+            'selected_partition_id_acfun': '1001',
+            'recommended_partition_id_acfun': '',
+            'moderation_result': None,
+        }
+
+        processor = tm.TaskProcessor({
+            'GENERATE_TAGS': True,
+            'RECOMMEND_PARTITION': True,
+            'CONTENT_MODERATION_ENABLED': True,
+        })
+        processor._moderate_content = MagicMock(side_effect=lambda *_args: task.update({
+            'status': tm.TASK_STATES['AWAITING_REVIEW'],
+            'moderation_result': '{"overall_pass": false}',
+        }) or True)
+
+        with patch.object(tm, 'get_task', side_effect=lambda _task_id: dict(task)), \
+             patch.object(tm, 'update_task', side_effect=lambda _task_id, **kwargs: True):
+            result = processor._ensure_force_upload_metadata_ready(task_id, MagicMock())
+
+        self.assertIsNone(result)
+        processor._moderate_content.assert_called_once()
 
     def test_partition_precheck_blocks_only_when_no_recommendation_or_fixed_partition(self):
         missing_upload_partition_labels = _load_app_partition_helper()
