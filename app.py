@@ -529,13 +529,14 @@ def _get_current_cover_path(task: dict, task_dir_real: str):
             return candidate
 
     if os.path.isdir(task_dir_real):
-        for entry in os.scandir(task_dir_real):
-            if not entry.is_file():
-                continue
-            if entry.name.lower().endswith(tuple(ALLOWED_COVER_EXTENSIONS.keys())):
-                candidate = _safe_join_task_dir(task_dir_real, entry.name)
-                if candidate and os.path.exists(candidate):
-                    return candidate
+        with os.scandir(task_dir_real) as entries:
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                if entry.name.lower().endswith(tuple(ALLOWED_COVER_EXTENSIONS.keys())):
+                    candidate = _safe_join_task_dir(task_dir_real, entry.name)
+                    if candidate and os.path.exists(candidate):
+                        return candidate
 
     return ''
 
