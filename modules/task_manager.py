@@ -3380,10 +3380,10 @@ class TaskProcessor:
         'BackColour': '&H64000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
-        (720.0, 44.0),
-        (1080.0, 61.0),
-        (1440.0, 76.0),
-        (2160.0, 132.0),
+        (720.0, 48.0),
+        (1080.0, 68.0),
+        (1440.0, 84.0),
+        (2160.0, 144.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
         (1280.0, 70.0),
@@ -3403,7 +3403,7 @@ class TaskProcessor:
     )
     _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.035
     _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.11
-    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.86
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.92
     _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.86
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 30.0

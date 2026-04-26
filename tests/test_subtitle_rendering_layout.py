@@ -36,6 +36,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(style['MarginV'], 50.0)
         self.assertLessEqual(style['MarginL'], 70.0)
         self.assertLessEqual(style['MarginR'], 70.0)
+        self.assertGreaterEqual(style['FontSize'], 68.0)
         self.assertGreaterEqual(style['Outline'], 1.9)
         self.assertEqual(style['Alignment'], 2)
 
