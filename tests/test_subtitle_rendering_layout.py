@@ -36,7 +36,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(style['MarginV'], 50.0)
         self.assertLessEqual(style['MarginL'], 70.0)
         self.assertLessEqual(style['MarginR'], 70.0)
-        self.assertGreaterEqual(style['FontSize'], 68.0)
+        self.assertGreaterEqual(style['FontSize'], 74.0)
         self.assertGreaterEqual(style['Outline'], 1.9)
         self.assertEqual(style['Alignment'], 2)
 
@@ -44,7 +44,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1920, 1080)
 
         self.assertEqual(max_lines, 2)
-        self.assertGreaterEqual(max_line_length, 24)
+        self.assertGreaterEqual(max_line_length, 22)
 
     def test_portrait_ass_style_keeps_higher_vertical_margin(self):
         style = TaskProcessor._build_streaming_ass_style(1080, 1920)

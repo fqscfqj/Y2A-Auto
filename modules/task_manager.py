@@ -3380,10 +3380,10 @@ class TaskProcessor:
         'BackColour': '&H64000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
-        (720.0, 48.0),
-        (1080.0, 68.0),
-        (1440.0, 84.0),
-        (2160.0, 144.0),
+        (720.0, 52.0),
+        (1080.0, 74.0),
+        (1440.0, 91.0),
+        (2160.0, 157.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
         (1280.0, 70.0),
