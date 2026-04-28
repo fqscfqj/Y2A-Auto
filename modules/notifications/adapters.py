@@ -110,10 +110,11 @@ class WeComNotifier(Notifier):
                 return
             raise NotificationSendError(str(data.get("errmsg") or "企业微信 Markdown 推送失败"))
         except Exception:
+            fallback_text = f"{message.title}\n{message.summary}"
             fallback = {
                 "msgtype": "text",
                 "text": {
-                    "content": f"{message.title}\n{message.summary}",
+                    "content": fallback_text,
                 },
             }
             response = requests.post(webhook, json=fallback, timeout=10)

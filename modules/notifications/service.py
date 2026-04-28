@@ -192,15 +192,17 @@ class NotificationService:
             raise ValueError(f"{CHANNEL_LABELS.get(channel_id, channel_id)} 配置不完整：缺少 {readable}")
 
         now_text = _current_ts()
+        channel_label = CHANNEL_LABELS.get(channel_id, channel_id)
         message = NotificationMessage(
-            title="Y2A-Auto 测试消息",
-            summary=f"{CHANNEL_LABELS.get(channel_id, channel_id)} 测试发送成功触发",
+            title=f"Y2A-Auto 🔔 测试消息",
+            summary=f"{channel_label} 测试发送成功触发",
             markdown="\n".join(
                 (
-                    "**Y2A-Auto 测试消息**",
-                    f"> 渠道：{CHANNEL_LABELS.get(channel_id, channel_id)}",
-                    f"> 时间：{now_text}",
-                    "> 说明：如果你收到这条消息，说明当前渠道配置可用。",
+                    "**🔔 Y2A-Auto 测试消息**",
+                    "",
+                    f"> **推送渠道：**{channel_label}",
+                    f"> **发送时间：**{now_text}",
+                    f"> **说明：**如果你收到这条消息，说明当前渠道配置可用。",
                 )
             ),
         )
