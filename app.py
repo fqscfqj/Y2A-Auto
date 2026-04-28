@@ -16,7 +16,6 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
-from urllib.parse import urlparse
 from werkzeug.security import safe_join
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
@@ -2037,13 +2036,7 @@ def force_upload_task_route(task_id):
     missing_partitions = _missing_upload_partition_labels(task, config)
     if missing_partitions:
         flash(f'请先选择{ "、".join(missing_partitions) }，或开启分区推荐后再继续上传。', 'danger')
-        target = request.form.get('next', '')
-        if target:
-            target = target.replace('\\', '/')
-            parsed = urlparse(target)
-            if parsed.netloc or parsed.scheme:
-                target = ''
-        return redirect(target or url_for('edit_task', task_id=task_id))
+        return redirect(url_for('edit_task', task_id=task_id))
     
     # 启动后台强制上传
     flash(f'已启动强制上传到{platform_name}，正在后台处理...', 'info')
