@@ -80,6 +80,43 @@ def get_api_init_status_message(status_code: Optional[str]) -> str:
     return messages.get(status_code, 'YouTube API 未初始化，请检查设置。')
 
 
+MONITOR_CONFIG_FIELD_DEFAULTS: Dict[str, Any] = {
+    'name': None,
+    'enabled': True,
+    'monitor_type': 'youtube_search',
+    'channel_mode': 'latest',
+    'region_code': 'US',
+    'category_id': '0',
+    'time_period': 7,
+    'max_results': 10,
+    'min_view_count': 0,
+    'min_like_count': 0,
+    'min_comment_count': 0,
+    'keywords': '',
+    'exclude_keywords': '',
+    'channel_ids': '',
+    'channel_keywords': '',
+    'exclude_channel_ids': '',
+    'min_duration': 0,
+    'max_duration': 0,
+    'schedule_type': 'manual',
+    'schedule_interval': 120,
+    'order_by': 'viewCount',
+    'start_date': '',
+    'end_date': '',
+    'latest_days': 7,
+    'latest_max_results': 20,
+    'rate_limit_requests': 100,
+    'rate_limit_window': 60,
+    'auto_add_to_tasks': False,
+    'historical_progress_date': '',
+    'historical_offset': 0,
+    'video_types': 'video,short,live',
+}
+
+MONITOR_CONFIG_DB_FIELDS: Tuple[str, ...] = tuple(MONITOR_CONFIG_FIELD_DEFAULTS.keys())
+
+
 class YouTubeMonitor:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -320,103 +357,11 @@ class YouTubeMonitor:
                 if cursor.fetchone():
                     logger.warning(f"ID {target_id} 已存在，使用自动分配的ID")
                     target_id = None
-                
+
                 if target_id:
-                    # 尝试使用指定的ID
-                    cursor.execute('''
-                        INSERT INTO monitor_configs (
-                            id, name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
-                            min_view_count, min_like_count, min_comment_count, keywords,
-                            exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
-                            min_duration, max_duration, schedule_type, schedule_interval,
-                            order_by, start_date, end_date, latest_days, latest_max_results,
-                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
-                            video_types
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        target_id,
-                        config_data.get('name'),
-                        config_data.get('enabled', True),
-                        config_data.get('monitor_type', 'youtube_search'),
-                        config_data.get('channel_mode', 'latest'),
-                        config_data.get('region_code', 'US'),
-                        config_data.get('category_id', '0'),
-                        config_data.get('time_period', 7),
-                        config_data.get('max_results', 10),
-                        config_data.get('min_view_count', 0),
-                        config_data.get('min_like_count', 0),
-                        config_data.get('min_comment_count', 0),
-                        config_data.get('keywords', ''),
-                        config_data.get('exclude_keywords', ''),
-                        config_data.get('channel_ids', ''),
-                        config_data.get('channel_keywords', ''),
-                        config_data.get('exclude_channel_ids', ''),
-                        config_data.get('min_duration', 0),
-                        config_data.get('max_duration', 0),
-                        config_data.get('schedule_type', 'manual'),
-                        config_data.get('schedule_interval', 120),
-                        config_data.get('order_by', 'viewCount'),
-                        config_data.get('start_date', ''),
-                        config_data.get('end_date', ''),
-                        config_data.get('latest_days', 7),
-                        config_data.get('latest_max_results', 20),
-                        config_data.get('rate_limit_requests', 100),
-                        config_data.get('rate_limit_window', 60),
-                        config_data.get('auto_add_to_tasks', False),
-                        config_data.get('historical_progress_date', ''),
-                        config_data.get('historical_offset', 0),
-                        config_data.get('video_types', 'video,short,live')
-                    ))
-                    
-                    # 使用指定的ID
-                    config_id = target_id
+                    config_id = self._insert_monitor_config_record(cursor, config_data, target_id=target_id)
                 else:
-                    # 使用自动分配的ID
-                    cursor.execute('''
-                        INSERT INTO monitor_configs (
-                            name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
-                            min_view_count, min_like_count, min_comment_count, keywords,
-                            exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
-                            min_duration, max_duration, schedule_type, schedule_interval,
-                            order_by, start_date, end_date, latest_days, latest_max_results,
-                            rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
-                            video_types
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        config_data.get('name'),
-                        config_data.get('enabled', True),
-                        config_data.get('monitor_type', 'youtube_search'),
-                        config_data.get('channel_mode', 'latest'),
-                        config_data.get('region_code', 'US'),
-                        config_data.get('category_id', '0'),
-                        config_data.get('time_period', 7),
-                        config_data.get('max_results', 10),
-                        config_data.get('min_view_count', 0),
-                        config_data.get('min_like_count', 0),
-                        config_data.get('min_comment_count', 0),
-                        config_data.get('keywords', ''),
-                        config_data.get('exclude_keywords', ''),
-                        config_data.get('channel_ids', ''),
-                        config_data.get('channel_keywords', ''),
-                        config_data.get('exclude_channel_ids', ''),
-                        config_data.get('min_duration', 0),
-                        config_data.get('max_duration', 0),
-                        config_data.get('schedule_type', 'manual'),
-                        config_data.get('schedule_interval', 120),
-                        config_data.get('order_by', 'viewCount'),
-                        config_data.get('start_date', ''),
-                        config_data.get('end_date', ''),
-                        config_data.get('latest_days', 7),
-                        config_data.get('latest_max_results', 20),
-                        config_data.get('rate_limit_requests', 100),
-                        config_data.get('rate_limit_window', 60),
-                        config_data.get('auto_add_to_tasks', False),
-                        config_data.get('historical_progress_date', ''),
-                        config_data.get('historical_offset', 0),
-                        config_data.get('video_types', 'video,short,live')
-                    ))
-                    
-                    config_id = cursor.lastrowid
+                    config_id = self._insert_monitor_config_record(cursor, config_data)
                 
                 conn.commit()
                 return config_id
@@ -593,6 +538,58 @@ class YouTubeMonitor:
             )
 
         return f"监控失败: {str(error)}"
+
+    def _collect_monitor_config_values(
+        self,
+        config_data: Dict[str, Any],
+        field_default_overrides: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """按统一字段顺序生成监控配置 SQL 参数，避免多处手写字段列表。"""
+        defaults = dict(MONITOR_CONFIG_FIELD_DEFAULTS)
+        if field_default_overrides:
+            defaults.update(field_default_overrides)
+        return [
+            config_data.get(field, defaults[field])
+            for field in MONITOR_CONFIG_DB_FIELDS
+        ]
+
+    def _insert_monitor_config_record(
+        self,
+        cursor: sqlite3.Cursor,
+        config_data: Dict[str, Any],
+        target_id: Optional[int] = None,
+        field_default_overrides: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """插入监控配置记录，可选保留指定 ID 用于恢复旧配置。"""
+        fields = list(MONITOR_CONFIG_DB_FIELDS)
+        values = self._collect_monitor_config_values(config_data, field_default_overrides)
+
+        if target_id is not None:
+            fields.insert(0, 'id')
+            values.insert(0, target_id)
+
+        columns_sql = ', '.join(fields)
+        placeholders_sql = ', '.join(['?'] * len(fields))
+        cursor.execute(
+            f'INSERT INTO monitor_configs ({columns_sql}) VALUES ({placeholders_sql})',
+            tuple(values)
+        )
+        return target_id if target_id is not None else cursor.lastrowid
+
+    def _update_monitor_config_record(
+        self,
+        cursor: sqlite3.Cursor,
+        config_id: int,
+        config_data: Dict[str, Any],
+        field_default_overrides: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """按统一字段顺序更新监控配置记录。"""
+        assignments_sql = ', '.join(f'{field} = ?' for field in MONITOR_CONFIG_DB_FIELDS)
+        values = self._collect_monitor_config_values(config_data, field_default_overrides)
+        cursor.execute(
+            f'UPDATE monitor_configs SET {assignments_sql}, updated_time = CURRENT_TIMESTAMP WHERE id = ?',
+            tuple(values + [config_id])
+        )
     
     def create_monitor_config(self, config_data):
         """创建监控配置"""
@@ -601,52 +598,8 @@ class YouTubeMonitor:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-                    INSERT INTO monitor_configs (
-                        name, enabled, monitor_type, channel_mode, region_code, category_id, time_period, max_results,
-                        min_view_count, min_like_count, min_comment_count, keywords,
-                        exclude_keywords, channel_ids, channel_keywords, exclude_channel_ids,
-                        min_duration, max_duration, schedule_type, schedule_interval,
-                        order_by, start_date, end_date, latest_days, latest_max_results,
-                        rate_limit_requests, rate_limit_window, auto_add_to_tasks, historical_progress_date, historical_offset,
-                        video_types
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    config_data.get('name'),
-                    config_data.get('enabled', True),
-                    config_data.get('monitor_type', 'youtube_search'),
-                    config_data.get('channel_mode', 'latest'),
-                    config_data.get('region_code', 'US'),
-                    config_data.get('category_id', '0'),
-                    config_data.get('time_period', 7),
-                    config_data.get('max_results', 10),
-                    config_data.get('min_view_count', 0),
-                    config_data.get('min_like_count', 0),
-                    config_data.get('min_comment_count', 0),
-                    config_data.get('keywords', ''),
-                    config_data.get('exclude_keywords', ''),
-                    config_data.get('channel_ids', ''),
-                    config_data.get('channel_keywords', ''),
-                    config_data.get('exclude_channel_ids', ''),
-                    config_data.get('min_duration', 0),
-                    config_data.get('max_duration', 0),
-                    config_data.get('schedule_type', 'manual'),
-                    config_data.get('schedule_interval', 120),
-                    config_data.get('order_by', 'viewCount'),
-                    config_data.get('start_date', ''),
-                    config_data.get('end_date', ''),
-                    config_data.get('latest_days', 7),
-                    config_data.get('latest_max_results', 20),
-                    config_data.get('rate_limit_requests', 100),
-                    config_data.get('rate_limit_window', 60),
-                    config_data.get('auto_add_to_tasks', False),
-                    config_data.get('historical_progress_date', ''),
-                    config_data.get('historical_offset', 0),
-                    config_data.get('video_types', 'video,short,live')
-                ))
-                
-                config_id = cursor.lastrowid
+
+                config_id = self._insert_monitor_config_record(cursor, config_data)
                 conn.commit()
                 
                 # 如果为频道监控的持续跟进最新模式，则在创建时将基准时间设为当前时间
@@ -673,11 +626,10 @@ class YouTubeMonitor:
                 self._schedule_monitor(config_id, config_data.get('schedule_interval', 120))
             
             return config_id
-                
         except Exception as e:
-            logger.error(f"创建监控配置失败: {str(e)}")
-            raise
-    
+                logger.error(f"创建监控配置失败: {str(e)}")
+                raise
+
     def _save_config_to_file(self, config_id, config_data):
         """保存配置到文件"""
         try:
@@ -704,7 +656,7 @@ class YouTubeMonitor:
             logger.info(f"监控配置已保存到文件: {config_file_real}")
         except Exception as e:
             logger.error(f"保存配置文件失败: {str(e)}")
-    
+
     def _load_config_from_file(self, config_id):
         """从文件加载配置"""
         try:
@@ -724,7 +676,7 @@ class YouTubeMonitor:
         except Exception as e:
             logger.error(f"加载配置文件失败: {str(e)}")
         return None
-    
+
     def _delete_config_file(self, config_id):
         """删除配置文件"""
         try:
@@ -743,27 +695,27 @@ class YouTubeMonitor:
                 logger.info(f"配置文件已删除: {config_file_real}")
         except Exception as e:
             logger.error(f"删除配置文件失败: {str(e)}")
-    
+
     def get_monitor_configs(self):
         """获取所有监控配置"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM monitor_configs ORDER BY created_time DESC')
-            
+
             columns = [description[0] for description in cursor.description]
             configs = []
             for row in cursor.fetchall():
                 config = dict(zip(columns, row))
                 configs.append(config)
-            
+
             return configs
-    
+
     def get_monitor_config(self, config_id):
         """获取指定监控配置"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM monitor_configs WHERE id = ?', (config_id,))
-            
+
             row = cursor.fetchone()
             if row:
                 columns = [description[0] for description in cursor.description]
@@ -798,53 +750,12 @@ class YouTubeMonitor:
                 # 如果需要重置偏移量，将其设为0
                 if should_reset_offset:
                     config_data['historical_offset'] = 0
-                
-                cursor.execute('''
-                    UPDATE monitor_configs SET
-                        name = ?, enabled = ?, monitor_type = ?, channel_mode = ?, region_code = ?, category_id = ?,
-                        time_period = ?, max_results = ?, min_view_count = ?,
-                        min_like_count = ?, min_comment_count = ?, keywords = ?,
-                        exclude_keywords = ?, channel_ids = ?, channel_keywords = ?, exclude_channel_ids = ?,
-                        min_duration = ?, max_duration = ?, schedule_type = ?,
-                        schedule_interval = ?, order_by = ?, start_date = ?, end_date = ?,
-                        latest_days = ?, latest_max_results = ?,
-                        rate_limit_requests = ?, rate_limit_window = ?, auto_add_to_tasks = ?,
-                        historical_progress_date = ?, historical_offset = ?, video_types = ?, updated_time = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (
-                    config_data.get('name'),
-                    config_data.get('enabled', True),
-                    config_data.get('monitor_type', 'youtube_search'),
-                    config_data.get('channel_mode', 'latest'),
-                    config_data.get('region_code', 'US'),
-                    config_data.get('category_id', '0'),
-                    config_data.get('time_period', 7),
-                    config_data.get('max_results', 10),
-                    config_data.get('min_view_count', 0),
-                    config_data.get('min_like_count', 0),
-                    config_data.get('min_comment_count', 0),
-                    config_data.get('keywords', ''),
-                    config_data.get('exclude_keywords', ''),
-                    config_data.get('channel_ids', ''),
-                    config_data.get('channel_keywords', ''),
-                    config_data.get('exclude_channel_ids', ''),
-                    config_data.get('min_duration', 0),
-                    config_data.get('max_duration', 0),
-                    config_data.get('schedule_type', 'manual'),
-                    config_data.get('schedule_interval', 120),
-                    config_data.get('order_by', 'viewCount'),
-                    config_data.get('start_date', ''),
-                    config_data.get('end_date', ''),
-                    config_data.get('latest_days', 7),
-                    config_data.get('latest_max_results', 20),
-                    config_data.get('rate_limit_requests', 100),
-                    config_data.get('rate_limit_window', 60),
-                    config_data.get('auto_add_to_tasks', False),
-                    config_data.get('historical_progress_date', ''),
-                    config_data.get('historical_offset', old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0),
-                    config_data.get('video_types', old_config.get('video_types', 'video,short,live') if old_config else 'video,short,live'),
-                    config_id
-                ))
+
+                update_field_defaults = {
+                    'historical_offset': old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0,
+                    'video_types': old_config.get('video_types', 'video,short,live') if old_config else 'video,short,live',
+                }
+                self._update_monitor_config_record(cursor, config_id, config_data, update_field_defaults)
                 
                 conn.commit()
                 
