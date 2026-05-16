@@ -2914,10 +2914,20 @@ def cleanup_downloads(hours: int):
 def configure_app(app, config):
     """为Flask app应用一些基础配置值（如 secret_key、上传限制等）"""
     try:
-        # 使用配置中的SECRET_KEY提高会话安全
+        # 使用配置中的SECRET_KEY提高会话安全，首次运行时自动生成并持久化
         secret = config.get('SECRET_KEY') if isinstance(config, dict) else None
         if secret:
             app.secret_key = secret
+        elif isinstance(config, dict):
+            import secrets
+            new_secret = secrets.token_hex(32)
+            config['SECRET_KEY'] = new_secret
+            app.secret_key = new_secret
+            try:
+                update_config({'SECRET_KEY': new_secret})
+                logger.info("已自动生成并保存SECRET_KEY")
+            except Exception as e:
+                logger.warning(f"保存自动生成的SECRET_KEY失败: {e}")
 
         max_content = config.get('MAX_CONTENT_LENGTH_MB', None) if isinstance(config, dict) else None
         if max_content:
