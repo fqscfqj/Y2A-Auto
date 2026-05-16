@@ -434,6 +434,13 @@ class SrtTransformEngine:
 
         left_tokens = left_text.split(' ')
         right_tokens = right_text.split(' ')
+        # CJK文本通常没有空格分词，使用字符级重叠检测作为回退
+        if len(left_tokens) <= 1 and len(right_tokens) <= 1 and len(left_text) > 1 and len(right_text) > 1:
+            max_char_overlap = min(len(left_text), len(right_text), 20)
+            for overlap in range(max_char_overlap, 0, -1):
+                if left_text[-overlap:] == right_text[:overlap]:
+                    return left_text + right_text[overlap:]
+            return ''
         max_overlap = min(len(left_tokens), len(right_tokens), 8)
         for overlap in range(max_overlap, 0, -1):
             left_tail = ' '.join(left_tokens[-overlap:])
