@@ -409,8 +409,7 @@ class AcfunUploader:
                 if attempt > 0:
                     time.sleep(2 ** attempt)  # 指数退避
                 
-                # 第一次尝试使用标准SSL
-                verify_ssl = True if attempt == 0 else False
+                # 始终验证SSL证书，不因重试而降级安全策略
                 
                 response = upload_session.post(
                     self.FRAGMENT_URL,
@@ -421,7 +420,7 @@ class AcfunUploader:
                     data=block,
                     headers=headers,
                     timeout=(30, 120),  # (连接超时, 读取超时)
-                    verify=verify_ssl,  # 第一次验证SSL，后续尝试跳过验证
+                    verify=True,
                     stream=False
                 )
                 
