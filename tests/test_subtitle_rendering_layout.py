@@ -33,11 +33,11 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         self.assertEqual(style['PlayResX'], 1920)
         self.assertEqual(style['PlayResY'], 1080)
-        self.assertGreaterEqual(style['MarginV'], 50.0)
-        self.assertLessEqual(style['MarginL'], 70.0)
-        self.assertLessEqual(style['MarginR'], 70.0)
-        self.assertGreaterEqual(style['FontSize'], 74.0)
-        self.assertGreaterEqual(style['Outline'], 1.9)
+        self.assertGreaterEqual(style['MarginV'], 68.0)
+        self.assertGreaterEqual(style['MarginL'], 96.0)
+        self.assertGreaterEqual(style['MarginR'], 96.0)
+        self.assertGreaterEqual(style['FontSize'], 66.0)
+        self.assertGreaterEqual(style['Outline'], 2.0)
         self.assertEqual(style['Alignment'], 2)
 
     def test_landscape_layout_uses_wider_lines(self):
@@ -51,8 +51,22 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         self.assertEqual(style['PlayResX'], 1080)
         self.assertEqual(style['PlayResY'], 1920)
-        self.assertGreaterEqual(style['MarginV'], 150.0)
+        self.assertGreaterEqual(style['MarginV'], 200.0)
+        self.assertGreaterEqual(style['FontSize'], 66.0)
         self.assertGreaterEqual(style['Outline'], 2.0)
+
+    def test_portrait_layout_uses_three_lines_and_stays_safe(self):
+        max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1080, 1920)
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '短视频竖屏场景下，字幕不应过宽，也不应压得太低，否则会和互动区、底部贴纸或字幕机位发生冲突。',
+            1080,
+            1920,
+            return_meta=True,
+        )
+
+        self.assertEqual(max_lines, 3)
+        self.assertLessEqual(text.count(r'\N') + 1, 5)
+        self.assertFalse(meta.get('overflow_warning'))
 
     def test_wrap_subtitle_text_for_ass_balances_long_cjk_text(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
@@ -64,6 +78,32 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         self.assertTrue(text)
         self.assertIn(r'\N', text)
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_long_landscape_wrap_avoids_breaking_common_phrases(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '这是一条用于测试超长字幕烧录样式的中文文案，需要在保证商业观感的前提下，兼顾信息完整、停顿自然、底部安全区充足以及整体版式的呼吸感。',
+            1920,
+            1080,
+            return_meta=True,
+        )
+
+        self.assertTrue(text)
+        self.assertNotIn('前\\N提', text)
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_mixed_language_wrap_keeps_latin_words_intact(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '如果一句字幕里同时出现 RTX 5090、YouTube Shorts 和 AI workflow，这种中英混排也要保持节奏稳定、不要切碎英文词组。',
+            1920,
+            1080,
+            return_meta=True,
+        )
+
+        normalized = text.replace(r'\N', '')
+        self.assertIn('workflow', normalized)
+        self.assertNotIn('w\\Norkflow', text)
+        self.assertNotIn('You\\NTube', text)
         self.assertFalse(meta.get('overflow_warning'))
 
 

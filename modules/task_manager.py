@@ -3384,44 +3384,44 @@ class TaskProcessor:
         'BackColour': '&H64000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
-        (720.0, 52.0),
-        (1080.0, 74.0),
-        (1440.0, 91.0),
-        (2160.0, 157.0),
+        (720.0, 48.0),
+        (1080.0, 68.0),
+        (1440.0, 84.0),
+        (2160.0, 126.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
-        (1280.0, 70.0),
-        (1920.0, 76.0),
-        (2560.0, 84.0),
+        (1280.0, 60.0),
+        (1920.0, 68.0),
+        (2560.0, 76.0),
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
-        (720.0, 36.0),
-        (1080.0, 54.0),
-        (1440.0, 72.0),
-        (2160.0, 108.0),
+        (720.0, 48.0),
+        (1080.0, 72.0),
+        (1440.0, 96.0),
+        (2160.0, 150.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
-        (1280.0, 120.0),
-        (1920.0, 160.0),
-        (2560.0, 200.0),
+        (1280.0, 156.0),
+        (1920.0, 220.0),
+        (2560.0, 292.0),
     )
-    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.035
-    _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.11
-    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.92
-    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.86
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 24.0
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 30.0
-    _ASS_PORTRAIT_LAYOUT_DENSITY = 0.95
-    _ASS_SAFE_WIDTH_RATIO = 0.94
-    _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.82
-    _ASS_OVERRIDE_FONT_SIZE_MIN = 38.0
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.055
+    _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.125
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.89
+    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.85
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 22.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 28.0
+    _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
+    _ASS_SAFE_WIDTH_RATIO = 0.93
+    _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
+    _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
-    _ASS_OUTLINE_RATIO = 0.033
-    _ASS_OUTLINE_MIN = 1.45
-    _ASS_OUTLINE_MAX = 3.4
-    _ASS_OVERRIDE_OUTLINE_RATIO = 0.035
+    _ASS_OUTLINE_RATIO = 0.031
+    _ASS_OUTLINE_MIN = 1.55
+    _ASS_OUTLINE_MAX = 3.35
+    _ASS_OVERRIDE_OUTLINE_RATIO = 0.033
     _ASS_OVERRIDE_OUTLINE_MIN = 1.25
-    _ASS_OVERRIDE_OUTLINE_MAX = 3.0
+    _ASS_OVERRIDE_OUTLINE_MAX = 2.8
     _STREAMING_SRT_TEMPLATE_HEIGHTS = (720, 1080, 1440, 2160)
     _STREAMING_SRT_STYLE_TEMPLATES = {
         720: {
@@ -3897,27 +3897,27 @@ class TaskProcessor:
         if is_portrait:
             font_size = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_PORTRAIT_FONT_SIZE_ANCHORS),
-                70.0,
-                85.0,
+                58.0,
+                80.0,
             )
             margin_v = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_PORTRAIT_MARGIN_V_ANCHORS),
-                120.0,
-                200.0,
+                150.0,
+                320.0,
             )
-            side_margin = cls._clamp(width * cls._ASS_PORTRAIT_SIDE_MARGIN_RATIO, 84.0, 156.0)
+            side_margin = cls._clamp(width * cls._ASS_PORTRAIT_SIDE_MARGIN_RATIO, 108.0, 184.0)
         else:
             font_size = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_FONT_SIZE_ANCHORS),
-                38.0,
+                46.0,
                 132.0,
             )
             margin_v = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_MARGIN_V_ANCHORS),
-                36.0,
-                132.0,
+                46.0,
+                156.0,
             )
-            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 36.0, 120.0)
+            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 56.0, 160.0)
 
         style.update({
             'FontSize': font_size,
@@ -3926,7 +3926,7 @@ class TaskProcessor:
                 cls._ASS_OUTLINE_MIN,
                 cls._ASS_OUTLINE_MAX,
             ),
-            'Shadow': cls._clamp(font_size * 0.014, 0.5, 1.1),
+            'Shadow': cls._clamp(font_size * 0.0125, 0.55, 1.25),
             'MarginV': margin_v,
             'MarginL': side_margin,
             'MarginR': side_margin,
@@ -4211,10 +4211,12 @@ class TaskProcessor:
         density = cls._ASS_PORTRAIT_LAYOUT_DENSITY if is_portrait else cls._ASS_LANDSCAPE_LAYOUT_DENSITY
         max_line_length = int(round(usable_width / font_size * density))
         if is_portrait:
-            max_line_length = int(cls._clamp(max_line_length, 10.0, 14.0))
+            max_line_length = int(cls._clamp(max_line_length, 8.0, 12.0))
+            max_lines = 3
         else:
-            max_line_length = int(cls._clamp(max_line_length, 20.0, 26.0))
-        return max_line_length, 2
+            max_line_length = int(cls._clamp(max_line_length, 18.0, 24.0))
+            max_lines = 2
+        return max_line_length, max_lines
 
     @staticmethod
     def _is_cjk_like_char(char):
@@ -4257,11 +4259,45 @@ class TaskProcessor:
         if len(filtered_lines) <= max_lines:
             return filtered_lines
 
-        visible_lines = filtered_lines[:max_lines - 1]
-        remainder = cls._merge_subtitle_text_parts(filtered_lines[max_lines - 1:])
-        if remainder:
-            visible_lines.append(remainder)
-        return [line for line in visible_lines if line]
+        if max_lines >= 4:
+            visible_lines = filtered_lines[:max_lines - 1]
+            remainder = cls._merge_subtitle_text_parts(filtered_lines[max_lines - 1:])
+            if remainder:
+                visible_lines.append(remainder)
+            return [line for line in visible_lines if line]
+
+        merged_text = cls._merge_subtitle_text_parts(filtered_lines)
+        if not merged_text or max_lines <= 1:
+            return filtered_lines[:max_lines]
+
+        rebalanced_lines = []
+        remaining_text = merged_text
+        remaining_slots = int(max_lines)
+
+        while remaining_slots > 1 and remaining_text:
+            remaining_units = cls._estimate_subtitle_text_units(remaining_text)
+            target_line_length = max(6.0, remaining_units / remaining_slots)
+            split_index = cls._find_balanced_wrap_index(remaining_text, target_line_length)
+            if split_index <= 0:
+                fallback_lines = cls._wrap_subtitle_segment_greedily(remaining_text, target_line_length)
+                if len(fallback_lines) <= 1:
+                    break
+                current_line = str(fallback_lines[0] or '').strip()
+                next_text = cls._merge_subtitle_text_parts(fallback_lines[1:])
+            else:
+                current_line = remaining_text[:split_index].strip()
+                next_text = remaining_text[split_index:].strip()
+
+            if not current_line or not next_text:
+                break
+
+            rebalanced_lines.append(current_line)
+            remaining_text = next_text
+            remaining_slots -= 1
+
+        if remaining_text:
+            rebalanced_lines.append(remaining_text.strip())
+        return [line for line in rebalanced_lines[:max_lines] if line]
 
     @classmethod
     def _build_wrapped_lines_for_ass(
@@ -4361,6 +4397,12 @@ class TaskProcessor:
         if max_lines <= 1 or cls._estimate_subtitle_text_units(merged_text) <= max_line_length:
             return [merged_text]
 
+        if max_lines > 2:
+            return cls._limit_wrapped_lines(
+                cls._wrap_subtitle_segment_greedily(merged_text, max_line_length),
+                max_lines,
+            )
+
         split_index = cls._find_balanced_wrap_index(merged_text, max_line_length)
         if split_index > 0:
             return cls._limit_wrapped_lines(
@@ -4403,7 +4445,7 @@ class TaskProcessor:
             cls._ASS_OVERRIDE_OUTLINE_MIN,
             cls._ASS_OVERRIDE_OUTLINE_MAX,
         )
-        adjusted_shadow = cls._clamp(target_font_size * 0.018, 0.8, 1.5)
+        adjusted_shadow = cls._clamp(target_font_size * 0.016, 0.7, 1.35)
         adjusted_fits, _, _, _ = cls._check_ass_lines_width_safety(
             lines,
             usable_width,
@@ -4421,10 +4463,81 @@ class TaskProcessor:
             return True
         return char in '.,!?;:，。！？；：、)]}】）》」』'
 
+    @staticmethod
+    def _is_latin_word_char(char):
+        if not char:
+            return False
+        return char.isascii() and (char.isalnum() or char in "'#&+_./-")
+
+    @classmethod
+    def _is_disallowed_wrap_pair(cls, left_char, right_char):
+        if not left_char or not right_char:
+            return False
+        if cls._is_latin_word_char(left_char) and cls._is_latin_word_char(right_char):
+            return True
+        if left_char in '([{【（《“‘' or right_char in ')]}】）》」』”’':
+            return True
+        if left_char.isdigit() and right_char.isascii() and right_char.isalpha():
+            return True
+        if cls._is_latin_word_char(left_char) and right_char == '%':
+            return True
+        return False
+
+    @classmethod
+    def _should_keep_ascii_phrase_together(cls, text, split_index):
+        segment = str(text or '')
+        if split_index <= 0 or split_index >= len(segment):
+            return False
+        if not segment[split_index - 1].isspace():
+            return False
+
+        left_end = split_index - 1
+        left_start = left_end - 1
+        while left_start >= 0 and cls._is_latin_word_char(segment[left_start]):
+            left_start -= 1
+        left_token = segment[left_start + 1:left_end].strip()
+
+        right_end = split_index
+        while right_end < len(segment) and cls._is_latin_word_char(segment[right_end]):
+            right_end += 1
+        right_token = segment[split_index:right_end].strip()
+
+        if not left_token or not right_token:
+            return False
+
+        combined_length = len(left_token) + len(right_token) + 1
+        if combined_length <= 18:
+            return True
+        if left_token.isupper() and len(left_token) <= 4:
+            return True
+        return False
+
+    @classmethod
+    def _collect_candidate_wrap_indices(cls, segment):
+        preferred = []
+        fallback = []
+        for idx in range(1, len(segment)):
+            left_char = segment[idx - 1]
+            right_char = segment[idx]
+            if cls._is_disallowed_wrap_pair(left_char, right_char):
+                continue
+            if left_char.isspace() and cls._should_keep_ascii_phrase_together(segment, idx):
+                continue
+            right_text = segment[idx:].strip()
+            if cls._is_preferred_wrap_boundary(left_char) or cls._semantic_wrap_bonus(right_text) > 0.0:
+                preferred.append(idx)
+            else:
+                fallback.append(idx)
+        return preferred + fallback
+
     @classmethod
     def _find_wrap_boundary(cls, chars):
+        joined_chars = ''.join(chars)
         for idx in range(len(chars) - 1, -1, -1):
-            if cls._is_preferred_wrap_boundary(chars[idx]):
+            right_char = chars[idx + 1] if idx + 1 < len(chars) else ''
+            if chars[idx].isspace() and cls._should_keep_ascii_phrase_together(joined_chars, idx + 1):
+                continue
+            if cls._is_preferred_wrap_boundary(chars[idx]) and not cls._is_disallowed_wrap_pair(chars[idx], right_char):
                 return idx
         return -1
 
@@ -4486,11 +4599,12 @@ class TaskProcessor:
 
         strong_prefixes = (
             '而不是', '而非', '并不是', '不是', '但是', '不过', '然而', '因此', '所以',
-            '因为', '如果', '虽然', '并且', '或者', '还是', '以及', '然后',
+            '因为', '如果', '虽然', '并且', '或者', '还是', '以及', '然后', '兼顾',
+            '保持', '避免', '确保', '否则',
             'rather than', 'instead of', 'because', 'however', 'therefore', 'although',
         )
         weak_prefixes = (
-            '而', '但', '却', '并', '或', '和', '与', '及',
+            '而', '但', '却', '并', '或',
             'and', 'but', 'or', 'if', 'when', 'while', 'that', 'which',
         )
 
@@ -4532,8 +4646,15 @@ class TaskProcessor:
                     line_chars = chars[:break_at + 1]
                     remainder = ''.join(chars[break_at + 1:]).strip()
                 else:
-                    line_chars = chars
-                    remainder = ''
+                    tail_start = len(chars)
+                    while tail_start > 0 and cls._is_latin_word_char(chars[tail_start - 1]):
+                        tail_start -= 1
+                    if 0 < tail_start < len(chars):
+                        line_chars = chars[:tail_start]
+                        remainder = ''.join(chars[tail_start:]).strip()
+                    else:
+                        line_chars = chars
+                        remainder = ''
 
                 line = ''.join(line_chars).strip()
                 if line:
@@ -4556,7 +4677,11 @@ class TaskProcessor:
         best_index = -1
         best_score = None
 
-        for idx in range(1, len(segment)):
+        candidate_indices = cls._collect_candidate_wrap_indices(segment)
+        if not candidate_indices:
+            return -1
+
+        for idx in candidate_indices:
             left = segment[:idx].strip()
             right = segment[idx:].strip()
             if not left or not right:
@@ -4569,7 +4694,11 @@ class TaskProcessor:
             score = abs(left_units - right_units) + overflow * 8.0
 
             if not cls._is_preferred_wrap_boundary(boundary_char):
-                score += 2.5
+                score += 4.5
+            elif boundary_char.isspace():
+                score -= 1.5
+            else:
+                score -= 4.0
             if cls._is_short_orphan_tail(right):
                 score += 15.0
             if left_units <= 3.0:
@@ -4673,10 +4802,6 @@ class TaskProcessor:
             aggressive=False,
         )
 
-        if is_portrait:
-            ass_text = cls._compose_ass_dialogue_text(wrapped_lines)
-            return (ass_text, wrap_meta) if return_meta else ass_text
-
         fits, _, _, _ = cls._check_ass_lines_width_safety(
             wrapped_lines,
             usable_width,
@@ -4699,6 +4824,51 @@ class TaskProcessor:
                 candidate_lines = hard_wrap_lines
                 wrap_meta['forced_wrap'] = candidate_lines != wrapped_lines
             fits = hard_wrap_fits
+
+        if not fits and is_portrait and max_lines < 5:
+            portrait_rescue_lines, portrait_rescue_fits = cls._find_safe_hard_wrap_lines(
+                normalized,
+                max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                max_lines=5,
+                usable_width=usable_width,
+                font_size=font_size,
+                outline=outline,
+                shadow=shadow,
+            )
+            if portrait_rescue_lines:
+                candidate_lines = portrait_rescue_lines
+                wrap_meta['forced_wrap'] = True
+                fits = portrait_rescue_fits
+
+        if not fits and not is_portrait and max_lines < 3:
+            rescue_lines, rescue_fits = cls._find_safe_hard_wrap_lines(
+                normalized,
+                max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                max_lines=3,
+                usable_width=usable_width,
+                font_size=font_size,
+                outline=outline,
+                shadow=shadow,
+            )
+            if rescue_lines:
+                candidate_lines = rescue_lines
+                wrap_meta['forced_wrap'] = True
+                fits = rescue_fits
+
+        if not fits and not is_portrait and max_lines < 4:
+            deep_rescue_lines, deep_rescue_fits = cls._find_safe_hard_wrap_lines(
+                normalized,
+                max_line_length=max(max_line_length - 2, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                max_lines=4,
+                usable_width=usable_width,
+                font_size=font_size,
+                outline=outline,
+                shadow=shadow,
+            )
+            if deep_rescue_lines:
+                candidate_lines = deep_rescue_lines
+                wrap_meta['forced_wrap'] = True
+                fits = deep_rescue_fits
 
         override_font_size = None
         if not fits and candidate_lines:
