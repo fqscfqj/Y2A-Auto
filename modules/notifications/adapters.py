@@ -109,7 +109,9 @@ class WeComNotifier(Notifier):
             if int(data.get("errcode", -1)) == 0:
                 return
             raise NotificationSendError(str(data.get("errmsg") or "企业微信 Markdown 推送失败"))
-        except Exception:
+        except NotificationSendError:
+            raise
+        except Exception as original_exc:
             fallback_text = f"{message.title}\n{message.summary}"
             fallback = {
                 "msgtype": "text",
@@ -117,11 +119,16 @@ class WeComNotifier(Notifier):
                     "content": fallback_text,
                 },
             }
-            response = requests.post(webhook, json=fallback, timeout=10)
-            self._raise_for_http_error(response)
-            data = response.json()
-            if int(data.get("errcode", -1)) != 0:
-                raise NotificationSendError(str(data.get("errmsg") or "企业微信推送失败"))
+            try:
+                response = requests.post(webhook, json=fallback, timeout=10)
+                self._raise_for_http_error(response)
+                data = response.json()
+                if int(data.get("errcode", -1)) != 0:
+                    raise NotificationSendError(str(data.get("errmsg") or "企业微信推送失败")) from original_exc
+            except NotificationSendError:
+                raise
+            except Exception as fallback_exc:
+                raise NotificationSendError(f"企业微信推送失败(含回退): {fallback_exc}") from original_exc
 
 
 class ServerChanNotifier(Notifier):
