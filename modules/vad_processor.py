@@ -229,8 +229,8 @@ class VadProcessor:
             if duration_from_wav < 0.5:
                 reason = f"audio too short: {duration_from_wav:.3f}s"
                 self._set_run_state(True, reason)
-                self.logger.warning("Audio too short for VAD: %s", reason)
-                return None
+                self.logger.info("Audio too short for VAD, treating as no speech: %s", reason)
+                return []  # 返回空列表表示无语音，而非None表示检测失败
 
             if sample_width == 2:
                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
