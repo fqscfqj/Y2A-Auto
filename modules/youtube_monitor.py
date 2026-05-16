@@ -574,7 +574,13 @@ class YouTubeMonitor:
             f'INSERT INTO monitor_configs ({columns_sql}) VALUES ({placeholders_sql})',
             tuple(values)
         )
-        return target_id if target_id is not None else cursor.lastrowid
+        if target_id is not None:
+            return target_id
+
+        lastrowid = cursor.lastrowid
+        if lastrowid is None:
+            raise RuntimeError('插入监控配置记录失败：未获取到新记录 ID')
+        return lastrowid
 
     def _update_monitor_config_record(
         self,
