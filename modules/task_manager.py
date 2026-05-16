@@ -31,6 +31,7 @@ from .notifications import (
 )
 import subprocess
 from typing import Any, Dict
+from werkzeug.security import safe_join
 
 # 导入其他模块
 # 这些导入会在函数内部使用，避免循环导入问题
@@ -1672,6 +1673,25 @@ def clear_all_tasks(delete_files=True):
     finally:
         conn.close()
 
+
+def _get_task_download_dir_real(task_id):
+    """返回任务下载目录的规范绝对路径，并确保其位于 downloads 根目录内。"""
+    downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
+    try:
+        normalized_task_id = str(uuid.UUID(str(task_id or '').strip()))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("任务ID格式无效") from exc
+
+    safe_task_dir = safe_join(downloads_dir_real, normalized_task_id)
+    if not safe_task_dir:
+        raise ValueError("任务目录非法")
+
+    task_dir_real = os.path.realpath(safe_task_dir)
+    if os.path.commonpath([task_dir_real, downloads_dir_real]) != downloads_dir_real:
+        raise ValueError("任务目录非法")
+
+    return task_dir_real
+
 def retry_failed_tasks(config=None):
     """重新调度所有失败的任务。"""
     failed_tasks = get_tasks_by_status(TASK_STATES['FAILED'])
@@ -1747,23 +1767,8 @@ def delete_task_files(task_id):
     Returns:
         success: 删除是否成功
     """
-    # 验证 task_id 为合法 UUID，防止路径注入
     try:
-        uuid.UUID(str(task_id))
-    except (ValueError, AttributeError):
-        logger.error("任务ID格式无效，拒绝删除文件")
-        return False
-
-    # 删除下载目录
-    task_dir = os.path.join(DOWNLOADS_DIR, task_id)
-
-    # 防止路径遍历攻击：验证路径在downloads目录内
-    try:
-        task_dir_real = os.path.realpath(task_dir)
-        downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
-        if os.path.commonpath([task_dir_real, downloads_dir_real]) != downloads_dir_real:
-            logger.error(f"任务 {task_id} 的路径不在downloads目录内，拒绝删除")
-            return False
+        task_dir_real = _get_task_download_dir_real(task_id)
     except (ValueError, OSError) as e:
         logger.error(f"验证任务 {task_id} 路径失败: {str(e)}")
         return False
