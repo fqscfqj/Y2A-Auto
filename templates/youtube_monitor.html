@@ -129,7 +129,7 @@
                                 <a href="{{ url_for('youtube_monitor_config_edit', config_id=config.id) }}" class="btn btn-outline-warning btn-icon" title="编辑">
                                     <i class="bi bi-pencil"></i>
                                 </a>
-                                <form method="POST" action="{{ url_for('youtube_monitor_config_delete', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要删除监控配置 {{ config.name }} 吗？')">
+                                <form method="POST" action="{{ url_for('youtube_monitor_config_delete', config_id=config.id) }}" class="d-inline" onsubmit="return confirm('确定要删除监控配置 ' + {{ config.name|tojson }} + ' 吗？')">
                                     <button type="submit" class="btn btn-outline-danger btn-icon" title="删除">
                                         <i class="bi bi-trash"></i>
                                     </button>
