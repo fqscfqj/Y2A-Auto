@@ -2094,7 +2094,8 @@ def get_directory_size(path):
                 if os.path.exists(fp):
                     total_size += os.path.getsize(fp)
         return round(total_size / 1024 / 1024, 2)
-    except:
+    except Exception as e:
+        logger.warning(f"获取目录大小失败 {path}: {e}")
         return 0
 
 def get_database_info():
