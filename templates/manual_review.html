@@ -185,12 +185,16 @@
                                     <i class="bi bi-pencil"></i> 修改后上传
                                 </a>
                                 <button type="button" class="btn btn-success" 
-                                        onclick="confirmForceUpload('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
+                                        data-task-id="{{ task.id }}"
+                                        data-task-title="{{ task.video_title_translated or task.video_title_original }}"
+                                        onclick="confirmForceUpload(this.dataset.taskId, this.dataset.taskTitle)">
                                     {% set target = (task.upload_target or 'acfun')|lower %}
                                     <i class="bi bi-upload"></i> 强制上传到{{ '双平台' if target == 'both' else ('bilibili' if target == 'bilibili' else 'AcFun') }}
                                 </button>
                                 <button type="button" class="btn btn-outline-danger"
-                                        onclick="confirmAbandon('{{ task.id }}', '{{ task.video_title_translated or task.video_title_original }}')">
+                                        data-task-id="{{ task.id }}"
+                                        data-task-title="{{ task.video_title_translated or task.video_title_original }}"
+                                        onclick="confirmAbandon(this.dataset.taskId, this.dataset.taskTitle)">
                                     <i class="bi bi-trash"></i> 放弃任务
                                 </button>
                             </div>
