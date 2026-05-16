@@ -265,6 +265,7 @@ def extract_chat_message_json(message, expected_type=dict):
 
 
 _THINKING_FALLBACK_WARNED_SCENES = set()
+_THINKING_FALLBACK_WARNED_SCENES_MAX = 128
 
 
 def _coerce_bool(value, default=False):
@@ -344,6 +345,9 @@ def openai_chat_create_with_thinking_control(
                     "模型不支持 thinking 控制参数，已降级为普通请求"
                 )
                 _THINKING_FALLBACK_WARNED_SCENES.add(warn_key)
+                # 防止集合无限增长
+                if len(_THINKING_FALLBACK_WARNED_SCENES) > _THINKING_FALLBACK_WARNED_SCENES_MAX:
+                    _THINKING_FALLBACK_WARNED_SCENES.clear()
             else:
                 logger.debug(
                     "thinking 控制参数不受支持，继续普通请求"
