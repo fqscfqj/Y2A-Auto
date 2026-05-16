@@ -26,7 +26,9 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         settingsForm.addEventListener('submit', function(event) {
-            if (newPassword && confirmPassword && newPassword.value !== confirmPassword.value) {
+            // 仅在启用密码保护时才校验密码匹配
+            if (passwordProtectionEnabled && passwordProtectionEnabled.checked &&
+                newPassword && confirmPassword && newPassword.value !== confirmPassword.value) {
                 event.preventDefault(); // 阻止表单提交
                 if (passwordError) {
                     passwordError.style.display = 'block';
