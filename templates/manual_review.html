@@ -335,13 +335,16 @@
         document.getElementById('abandonTaskTitle').textContent = taskTitle;
         document.getElementById('abandonTaskForm').action = "{{ url_for('abandon_task_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
         
-        // 绑定复选框变化
-        document.getElementById('abandonDeleteFiles').addEventListener('change', function() {
-            document.getElementById('abandonDeleteFilesInput').value = this.checked ? 'true' : 'false';
-        });
-        
         // 显示模态框
         new bootstrap.Modal(document.getElementById('abandonTaskModal')).show();
+    }
+    
+    // 绑定复选框变化（仅绑定一次）
+    const abandonDeleteFiles = document.getElementById('abandonDeleteFiles');
+    if (abandonDeleteFiles) {
+        abandonDeleteFiles.addEventListener('change', function() {
+            document.getElementById('abandonDeleteFilesInput').value = this.checked ? 'true' : 'false';
+        });
     }
 </script>
 {% endblock %} 
