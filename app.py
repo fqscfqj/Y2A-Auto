@@ -2805,8 +2805,15 @@ def cleanup_logs(hours: int):
                         os.remove(path)
                         files_removed += 1
                     elif os.path.isdir(path):
+                        # 统计目录内实际文件数和大小
+                        for dirpath, dirnames, dir_filenames in os.walk(path):
+                            for df in dir_filenames:
+                                try:
+                                    bytes_freed += os.path.getsize(os.path.join(dirpath, df))
+                                except Exception:
+                                    pass
+                                files_removed += 1
                         shutil.rmtree(path)
-                        files_removed += 1
             except Exception:
                 continue
 
