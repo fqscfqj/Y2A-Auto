@@ -3417,8 +3417,12 @@ class TaskProcessor:
         (1920.0, 220.0),
         (2560.0, 292.0),
     )
-    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.055
-    _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.125
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
+    _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 56.0
+    _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 160.0
+    _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.095
+    _ASS_PORTRAIT_SIDE_MARGIN_MIN = 82.0
+    _ASS_PORTRAIT_SIDE_MARGIN_MAX = 156.0
     _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.89
     _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.85
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 22.0
@@ -3428,6 +3432,7 @@ class TaskProcessor:
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
     _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
+    _ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX = 16.0
     _ASS_OUTLINE_RATIO = 0.031
     _ASS_OUTLINE_MIN = 1.55
     _ASS_OUTLINE_MAX = 3.35
@@ -3917,7 +3922,11 @@ class TaskProcessor:
                 150.0,
                 320.0,
             )
-            side_margin = cls._clamp(width * cls._ASS_PORTRAIT_SIDE_MARGIN_RATIO, 108.0, 184.0)
+            side_margin = cls._clamp(
+                width * cls._ASS_PORTRAIT_SIDE_MARGIN_RATIO,
+                cls._ASS_PORTRAIT_SIDE_MARGIN_MIN,
+                cls._ASS_PORTRAIT_SIDE_MARGIN_MAX,
+            )
         else:
             font_size = cls._clamp(
                 cls._interpolate_anchor_value(height, cls._ASS_LANDSCAPE_FONT_SIZE_ANCHORS),
@@ -3929,7 +3938,11 @@ class TaskProcessor:
                 46.0,
                 156.0,
             )
-            side_margin = cls._clamp(width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO, 56.0, 160.0)
+            side_margin = cls._clamp(
+                width * cls._ASS_LANDSCAPE_SIDE_MARGIN_RATIO,
+                cls._ASS_LANDSCAPE_SIDE_MARGIN_MIN,
+                cls._ASS_LANDSCAPE_SIDE_MARGIN_MAX,
+            )
 
         style.update({
             'FontSize': font_size,
@@ -4361,6 +4374,257 @@ class TaskProcessor:
         return max_width <= safe_width, max_width, safe_width, line_widths
 
     @classmethod
+    def _estimate_safe_line_units(cls, usable_width, font_size, outline, shadow):
+        safe_width = max(1.0, float(usable_width) * cls._ASS_SAFE_WIDTH_RATIO)
+        padding = max(6.0, float(outline) * 4.0 + float(shadow) * 2.0 + float(font_size) * 0.08)
+        return max(
+            float(cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+            (safe_width - padding) / max(1.0, float(font_size)),
+        )
+
+    @classmethod
+    def _can_lines_fit_with_font_override(cls, lines, usable_width, font_size, outline, shadow):
+        fits, _, _, _ = cls._check_ass_lines_width_safety(
+            lines,
+            usable_width,
+            font_size,
+            outline,
+            shadow,
+        )
+        if fits:
+            return True
+
+        _, override_fits = cls._resolve_safe_override_font_size(
+            lines,
+            usable_width,
+            font_size,
+            outline,
+            shadow,
+        )
+        return override_fits
+
+    @classmethod
+    def _score_partition_line(cls, line, target_units, max_line_length, *, is_last):
+        stripped = str(line or '').strip()
+        if not stripped:
+            return float('inf')
+
+        units = cls._estimate_subtitle_text_units(stripped)
+        score = (abs(units - float(target_units)) ** 2) * 1.3
+        if units > float(max_line_length):
+            score += (units - float(max_line_length)) ** 2 * 36.0
+
+        minimum_units = max(4.5, float(target_units) * (0.60 if is_last else 0.72))
+        if units < minimum_units:
+            score += (minimum_units - units) ** 2 * (8.0 if is_last else 16.0)
+
+        if stripped[0] in '.,!?;:，。！？；：、)]}】）》」』':
+            score += 25.0
+        if stripped[-1] in '([{【（《“‘':
+            score += 25.0
+        if not is_last and cls._is_short_orphan_tail(stripped):
+            score += 10.0
+        return score
+
+    @classmethod
+    def _build_optimal_multiline_partition(
+        cls,
+        normalized,
+        *,
+        max_line_length,
+        min_lines,
+        max_lines,
+    ):
+        from functools import lru_cache
+
+        raw_segments = [segment.strip() for segment in str(normalized or '').split('\n') if segment.strip()]
+        merged_text = cls._merge_subtitle_text_parts(raw_segments)
+        if not merged_text:
+            return []
+
+        minimum_lines = max(1, int(min_lines))
+        maximum_lines = max(minimum_lines, int(max_lines))
+
+        preferred_points = cls._collect_candidate_wrap_indices(merged_text, include_fallback=False)
+        all_points = cls._collect_candidate_wrap_indices(merged_text, include_fallback=True)
+        candidate_points = preferred_points if len(preferred_points) >= max(1, minimum_lines - 1) else all_points
+
+        points = [0] + sorted(set(idx for idx in candidate_points if 0 < idx < len(merged_text))) + [len(merged_text)]
+        if len(points) < minimum_lines + 1:
+            points = [0] + sorted(set(idx for idx in all_points if 0 < idx < len(merged_text))) + [len(merged_text)]
+
+        if len(points) < 2:
+            return [merged_text]
+
+        total_units = cls._estimate_subtitle_text_units(merged_text)
+        best_score = None
+        best_lines = []
+
+        for line_count in range(minimum_lines, maximum_lines + 1):
+            target_units = max(6.0, total_units / max(1, line_count))
+
+            @lru_cache(maxsize=None)
+            def solve(start_idx, lines_left):
+                remaining_text = merged_text[points[start_idx]:].strip()
+                if not remaining_text:
+                    return float('inf'), tuple()
+
+                if lines_left == 1:
+                    line_score = cls._score_partition_line(
+                        remaining_text,
+                        target_units,
+                        max_line_length,
+                        is_last=True,
+                    )
+                    if line_score == float('inf'):
+                        return float('inf'), tuple()
+                    return line_score, (remaining_text,)
+
+                best_local = float('inf'), tuple()
+                max_next_index = len(points) - lines_left
+                for next_idx in range(start_idx + 1, max_next_index + 1):
+                    line = merged_text[points[start_idx]:points[next_idx]].strip()
+                    if not line:
+                        continue
+
+                    current_score = cls._score_partition_line(
+                        line,
+                        target_units,
+                        max_line_length,
+                        is_last=False,
+                    )
+                    if current_score == float('inf'):
+                        continue
+
+                    tail_score, tail_lines = solve(next_idx, lines_left - 1)
+                    total_score = current_score + tail_score
+                    if total_score < best_local[0]:
+                        best_local = total_score, (line,) + tail_lines
+
+                return best_local
+
+            score, lines = solve(0, line_count)
+            if not lines:
+                continue
+
+            score += max(0, line_count - minimum_lines) * 3.0
+            if best_score is None or score < best_score:
+                best_score = score
+                best_lines = list(lines)
+
+        return best_lines
+
+    @classmethod
+    def _find_portrait_rescue_lines(
+        cls,
+        normalized,
+        *,
+        max_line_length,
+        usable_width,
+        font_size,
+        outline,
+        shadow,
+    ):
+        rescue_font_size = max(
+            float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
+            float(font_size) * float(cls._ASS_OVERRIDE_FONT_SIZE_RATIO_MIN),
+        )
+        rescue_outline = cls._clamp(
+            rescue_font_size * cls._ASS_OVERRIDE_OUTLINE_RATIO,
+            cls._ASS_OVERRIDE_OUTLINE_MIN,
+            cls._ASS_OVERRIDE_OUTLINE_MAX,
+        )
+        rescue_shadow = cls._clamp(rescue_font_size * 0.016, 0.7, 1.35)
+        rescue_line_length = int(round(
+            cls._estimate_safe_line_units(
+                usable_width,
+                rescue_font_size,
+                rescue_outline,
+                rescue_shadow,
+            )
+        ))
+        rescue_line_length = int(cls._clamp(
+            rescue_line_length,
+            max_line_length + 1,
+            cls._ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX,
+        ))
+
+        best_lines = []
+        for line_count in (4, 5):
+            candidate_lines = cls._build_optimal_multiline_partition(
+                normalized,
+                max_line_length=rescue_line_length,
+                min_lines=line_count,
+                max_lines=line_count,
+            )
+            if not candidate_lines:
+                continue
+
+            if cls._can_lines_fit_with_font_override(
+                candidate_lines,
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            ):
+                return candidate_lines, True
+
+            if not best_lines:
+                best_lines = candidate_lines
+
+        return best_lines, False
+
+    @classmethod
+    def _find_landscape_rescue_lines(
+        cls,
+        normalized,
+        *,
+        max_line_length,
+        usable_width,
+        font_size,
+        outline,
+        shadow,
+    ):
+        rescue_line_length = int(round(
+            cls._estimate_safe_line_units(
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            )
+        ))
+        rescue_line_length = int(cls._clamp(
+            rescue_line_length,
+            max_line_length,
+            cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
+        ))
+
+        best_lines = []
+        for line_count in (3, 4):
+            candidate_lines = cls._build_optimal_multiline_partition(
+                normalized,
+                max_line_length=rescue_line_length,
+                min_lines=line_count,
+                max_lines=line_count,
+            )
+            if not candidate_lines:
+                continue
+
+            if cls._can_lines_fit_with_font_override(
+                candidate_lines,
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            ):
+                return candidate_lines, True
+
+            if not best_lines:
+                best_lines = candidate_lines
+
+        return best_lines, False
+
+    @classmethod
     def _find_safe_hard_wrap_lines(
         cls,
         normalized,
@@ -4525,7 +4789,7 @@ class TaskProcessor:
         return False
 
     @classmethod
-    def _collect_candidate_wrap_indices(cls, segment):
+    def _collect_candidate_wrap_indices(cls, segment, include_fallback=True):
         preferred = []
         fallback = []
         for idx in range(1, len(segment)):
@@ -4540,6 +4804,8 @@ class TaskProcessor:
                 preferred.append(idx)
             else:
                 fallback.append(idx)
+        if not include_fallback:
+            return preferred
         return preferred + fallback
 
     @classmethod
@@ -4838,10 +5104,9 @@ class TaskProcessor:
             fits = hard_wrap_fits
 
         if not fits and is_portrait and max_lines < 5:
-            portrait_rescue_lines, portrait_rescue_fits = cls._find_safe_hard_wrap_lines(
+            portrait_rescue_lines, portrait_rescue_fits = cls._find_portrait_rescue_lines(
                 normalized,
-                max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                max_lines=5,
+                max_line_length=max_line_length,
                 usable_width=usable_width,
                 font_size=font_size,
                 outline=outline,
@@ -4851,36 +5116,63 @@ class TaskProcessor:
                 candidate_lines = portrait_rescue_lines
                 wrap_meta['forced_wrap'] = True
                 fits = portrait_rescue_fits
-
-        if not fits and not is_portrait and max_lines < 3:
-            rescue_lines, rescue_fits = cls._find_safe_hard_wrap_lines(
-                normalized,
-                max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                max_lines=3,
-                usable_width=usable_width,
-                font_size=font_size,
-                outline=outline,
-                shadow=shadow,
-            )
-            if rescue_lines:
-                candidate_lines = rescue_lines
-                wrap_meta['forced_wrap'] = True
-                fits = rescue_fits
+            elif not portrait_rescue_lines:
+                portrait_fallback_lines, portrait_fallback_fits = cls._find_safe_hard_wrap_lines(
+                    normalized,
+                    max_line_length=max(max_line_length, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                    max_lines=5,
+                    usable_width=usable_width,
+                    font_size=font_size,
+                    outline=outline,
+                    shadow=shadow,
+                )
+                if portrait_fallback_lines:
+                    candidate_lines = portrait_fallback_lines
+                    wrap_meta['forced_wrap'] = True
+                    fits = portrait_fallback_fits
 
         if not fits and not is_portrait and max_lines < 4:
-            deep_rescue_lines, deep_rescue_fits = cls._find_safe_hard_wrap_lines(
+            landscape_rescue_lines, landscape_rescue_fits = cls._find_landscape_rescue_lines(
                 normalized,
-                max_line_length=max(max_line_length - 2, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                max_lines=4,
+                max_line_length=max_line_length,
                 usable_width=usable_width,
                 font_size=font_size,
                 outline=outline,
                 shadow=shadow,
             )
-            if deep_rescue_lines:
-                candidate_lines = deep_rescue_lines
+            if landscape_rescue_lines:
+                candidate_lines = landscape_rescue_lines
                 wrap_meta['forced_wrap'] = True
-                fits = deep_rescue_fits
+                fits = landscape_rescue_fits
+            elif not landscape_rescue_lines:
+                rescue_lines, rescue_fits = cls._find_safe_hard_wrap_lines(
+                    normalized,
+                    max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                    max_lines=3,
+                    usable_width=usable_width,
+                    font_size=font_size,
+                    outline=outline,
+                    shadow=shadow,
+                )
+                if rescue_lines:
+                    candidate_lines = rescue_lines
+                    wrap_meta['forced_wrap'] = True
+                    fits = rescue_fits
+
+            if not fits and not landscape_rescue_lines:
+                deep_rescue_lines, deep_rescue_fits = cls._find_safe_hard_wrap_lines(
+                    normalized,
+                    max_line_length=max(max_line_length - 2, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
+                    max_lines=4,
+                    usable_width=usable_width,
+                    font_size=font_size,
+                    outline=outline,
+                    shadow=shadow,
+                )
+                if deep_rescue_lines:
+                    candidate_lines = deep_rescue_lines
+                    wrap_meta['forced_wrap'] = True
+                    fits = deep_rescue_fits
 
         override_font_size = None
         if not fits and candidate_lines:

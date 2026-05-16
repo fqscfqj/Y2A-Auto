@@ -28,6 +28,15 @@ TaskProcessor = _load_task_processor_class()
 
 
 class SubtitleRenderingLayoutTests(unittest.TestCase):
+    @staticmethod
+    def _extract_ass_lines(text):
+        normalized = str(text or '')
+        if normalized.startswith(r'{\fs'):
+            closing_index = normalized.find('}')
+            if closing_index >= 0:
+                normalized = normalized[closing_index + 1:]
+        return [line for line in normalized.split(r'\N') if line]
+
     def test_landscape_ass_style_uses_clear_bottom_safe_area(self):
         style = TaskProcessor._build_streaming_ass_style(1920, 1080)
 
@@ -101,9 +110,42 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         )
 
         normalized = text.replace(r'\N', '')
+        lines = self._extract_ass_lines(text)
         self.assertIn('workflow', normalized)
         self.assertNotIn('w\\Norkflow', text)
         self.assertNotIn('You\\NTube', text)
+        self.assertLessEqual(len(lines), 3)
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_portrait_mixed_language_wrap_stays_balanced(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '在 720×1280 的竖屏里，Release notes、workflow status 这类英文短语也应该完整保留，避免断开后显得很廉价。',
+            720,
+            1280,
+            return_meta=True,
+        )
+
+        lines = self._extract_ass_lines(text)
+        self.assertTrue(text)
+        self.assertGreaterEqual(len(lines), 4)
+        self.assertLessEqual(len(lines), 5)
+        self.assertTrue(any('Release notes' in line for line in lines))
+        self.assertTrue(any('workflow status' in line for line in lines))
+        self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_portrait_long_wrap_prefers_fewer_balanced_lines(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '竖屏短视频场景下，字幕必须避开互动区和底部贴纸，长句也要往上收，不能把视觉重心压得太低。',
+            1080,
+            1920,
+            return_meta=True,
+        )
+
+        lines = self._extract_ass_lines(text)
+        self.assertTrue(text)
+        self.assertLessEqual(len(lines), 4)
+        self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
         self.assertFalse(meta.get('overflow_warning'))
 
 
