@@ -19,7 +19,13 @@ logger = logging.getLogger("bilibili_auth")
 
 def _run_async(coro):
     """Run async coroutine in sync context."""
-    return asyncio.run(coro)
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        # 已有事件循环时（如嵌套调用），在新线程中运行
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
 
 def _parse_cookies_text(content: str) -> Dict[str, str]:
