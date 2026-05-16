@@ -1468,6 +1468,10 @@ def update_task(task_id, silent=False, **kwargs):
                     or 'busy' in err_msg
                 )
                 if is_locked and attempt < DB_WRITE_RETRY_TIMES:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     time.sleep(DB_WRITE_RETRY_SLEEP_SECONDS * attempt)
                     continue
                 logger.error(
