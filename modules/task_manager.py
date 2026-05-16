@@ -345,6 +345,22 @@ TASK_STATES = {
     'FAILED': 'failed'                    # 任务失败
 }
 
+# 所有"处理中"状态，用于 reset_stuck_tasks 和 recover_interrupted_tasks_to_pending
+PROCESSING_STATES = [
+    'fetching_info',
+    'info_fetched',
+    TASK_STATES['TRANSLATING'],
+    TASK_STATES['TAGGING'],
+    TASK_STATES['PARTITIONING'],
+    TASK_STATES['MODERATING'],
+    TASK_STATES['DOWNLOADING'],
+    TASK_STATES['DOWNLOADED'],
+    TASK_STATES['ASR_TRANSCRIBING'],
+    TASK_STATES['TRANSLATING_SUBTITLE'],
+    TASK_STATES['ENCODING_VIDEO'],
+    TASK_STATES['UPLOADING'],
+]
+
 # 任务流水线断点续跑（checkpoint）
 # - 目标：进程异常退出后，重启可从“最后已完成阶段”继续。
 # - 存储：tasks 表新增 pipeline_checkpoint 字段，避免 downloads 目录被清空导致断点丢失。
@@ -755,20 +771,7 @@ def _mark_stage_done(task_id, completed_stages, stage):
 
 def recover_interrupted_tasks_to_pending():
     """将进程意外退出后卡在“处理中状态”的任务恢复为 pending，以便重启后自动续跑。"""
-    processing_states = [
-        'fetching_info',
-        'info_fetched',
-        TASK_STATES['TRANSLATING'],
-        TASK_STATES['TAGGING'],
-        TASK_STATES['PARTITIONING'],
-        TASK_STATES['MODERATING'],
-        TASK_STATES['DOWNLOADING'],
-        TASK_STATES['DOWNLOADED'],
-        TASK_STATES['ASR_TRANSCRIBING'],
-        TASK_STATES['TRANSLATING_SUBTITLE'],
-        TASK_STATES['ENCODING_VIDEO'],
-        TASK_STATES['UPLOADING'],
-    ]
+    processing_states = PROCESSING_STATES
 
     conn = get_db_connection()
     try:
@@ -1803,12 +1806,9 @@ def reset_stuck_tasks(skip_active=False, cancel_active=False):
         cursor = conn.execute('''
             SELECT id, status, updated_at 
             FROM tasks 
-            WHERE status IN (?, ?, ?, ?, ?, ?, ?, ?) 
+            WHERE status IN ({}) 
             AND datetime(updated_at) < datetime('now', '-30 minutes')
-        ''', (
-            'processing', 'downloading', 'uploading', 'fetching_info',
-            'translating', 'translating_subtitle', 'encoding_video', 'asr_transcribing'
-        ))
+        '''.format(','.join(['?'] * len(PROCESSING_STATES))), PROCESSING_STATES)
         
         stuck_tasks = cursor.fetchall()
         
