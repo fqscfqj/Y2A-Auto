@@ -744,15 +744,13 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         for field in numeric_fields:
             if field in form_data:
                 try:
-                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                     original_value = form_data[field]
                     normalized_value = int(original_value)
                     if field == 'LOGIN_SESSION_TIMEOUT_MINUTES':
                         normalized_value = max(1, normalized_value)
                     form_data[field] = str(normalized_value)
-                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                 except (ValueError, TypeError) as e:
-                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    logger.debug(f"整数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     defaults = {
                         'MAX_CONCURRENT_TASKS': 2,
                         'MAX_CONCURRENT_UPLOADS': 1,
@@ -777,7 +775,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     }
                     defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
-                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
 
         float_fields = [
             'VAD_SILERO_THRESHOLD',
@@ -792,14 +790,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         for field in float_fields:
             if field in form_data:
                 try:
-                    print(f"DEBUG: 转换前 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                     original_value = form_data[field]
                     if str(original_value).strip() == '':
                         raise ValueError('empty string')
                     form_data[field] = str(float(original_value))
-                    print(f"DEBUG: 转换后 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
                 except (ValueError, TypeError) as e:
-                    print(f"DEBUG: 转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    logger.debug(f"浮点数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     float_defaults = {
                         'VAD_SILERO_THRESHOLD': 0.55,
                         'SUBTITLE_TIME_OFFSET_S': 0.0,
@@ -815,7 +811,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     }
                     float_defaults.update(SPEECH_PIPELINE_FLOAT_FIELDS)
                     form_data[field] = str(float_defaults.get(field, 0.0))
-                    print(f"DEBUG: 使用默认值 - field: {field}, value: {form_data[field]}, type: {type(form_data[field])}")
+                    logger.debug(f"浮点字段使用默认值 - field: {field}, value: {form_data[field]}")
 
         if 'SUBTITLE_FONT_NAME' in form_data:
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
@@ -984,38 +980,27 @@ if os.name == 'nt':
     import codecs
     # 检查Python版本和reconfigure方法可用性
     python_version = sys.version_info
-    print(f"DEBUG: 当前Python版本: {python_version.major}.{python_version.minor}.{python_version.micro}")
-    print(f"DEBUG: 操作系统: {os.name}, sys.stdout类型: {type(sys.stdout)}")
     
     # 强制设置stdout和stderr为UTF-8编码
     if hasattr(sys.stdout, 'reconfigure'):
-        print("DEBUG: sys.stdout.reconfigure方法可用，正在设置UTF-8编码")
         try:
             sys.stdout.reconfigure(encoding='utf-8')  # type: ignore
-            print("DEBUG: sys.stdout.reconfigure执行成功")
-        except Exception as e:
-            print(f"DEBUG: sys.stdout.reconfigure执行失败: {e}")
-    else:
-        print("DEBUG: sys.stdout.reconfigure方法不可用，跳过stdout编码设置")
+        except Exception:
+            pass
         
     if hasattr(sys.stderr, 'reconfigure'):
-        print("DEBUG: sys.stderr.reconfigure方法可用，正在设置UTF-8编码")
         try:
             sys.stderr.reconfigure(encoding='utf-8')  # type: ignore
-            print("DEBUG: sys.stderr.reconfigure执行成功")
-        except Exception as e:
-            print(f"DEBUG: sys.stderr.reconfigure执行失败: {e}")
-    else:
-        print("DEBUG: sys.stderr.reconfigure方法不可用，跳过stderr编码设置")
+        except Exception:
+            pass
     
     # 设置环境变量
     os.environ["PYTHONIOENCODING"] = "utf-8"
     # 为控制台处理器设置编码
     try:
         console_handler.setStream(codecs.getwriter('utf-8')(sys.stdout.buffer))  # type: ignore
-        print("DEBUG: 控制台处理器编码设置成功")
-    except Exception as e:
-        print(f"DEBUG: 控制台处理器编码设置失败: {e}")
+    except Exception:
+        pass
 
 # 配置根日志记录器
 root_logger = logging.getLogger()
@@ -1026,16 +1011,14 @@ root_logger.addHandler(console_handler)
 # 强制设置所有日志记录器的默认编码为UTF-8
 try:
     logging.getLogger().handlers[0].encoding = 'utf-8'  # type: ignore
-    print("DEBUG: 第一个日志处理器编码设置成功")
-except Exception as e:
-    print(f"DEBUG: 第一个日志处理器编码设置失败: {e}")
+except Exception:
+    pass
 
 try:
     if len(logging.getLogger().handlers) > 1:
         logging.getLogger().handlers[1].encoding = 'utf-8'  # type: ignore
-        print("DEBUG: 第二个日志处理器编码设置成功")
-except Exception as e:
-    print(f"DEBUG: 第二个日志处理器编码设置失败: {e}")
+except Exception:
+    pass
 
 # 配置应用日志记录器
 logger = logging.getLogger('Y2A-Auto')
@@ -1682,12 +1665,6 @@ def edit_task(task_id):
         if task['status'] in safe_states_to_make_uploadable:
             update_data['status'] = TASK_STATES['READY_FOR_UPLOAD']
         
-        # 调试：检查update_task函数参数类型
-        print(f"DEBUG: update_task参数 - task_id: {type(task_id)}, update_data: {type(update_data)}")
-        print(f"DEBUG: update_data内容: {update_data}")
-        # 检查是否有silent参数类型问题
-        if 'silent' in update_data:
-            print(f"DEBUG: silent参数值: {update_data['silent']}, 类型: {type(update_data['silent'])}")
         try:
             # 确保silent参数是布尔类型
             final_update_data = update_data.copy()
@@ -1702,9 +1679,8 @@ def edit_task(task_id):
                 final_update_data.pop('silent')
             
             update_task(task_id, silent=silent_param, **final_update_data)
-            print("DEBUG: update_task调用成功")
         except Exception as e:
-            print(f"DEBUG: update_task调用失败: {e}")
+            logger.warning(f"update_task调用失败: {e}")
         logger.info(f"任务 {task_id} 信息已更新")
         updated_task = get_task(task_id)
         if action == 'force_upload':
