@@ -2903,15 +2903,19 @@ def configure_app(app, config):
         if secret:
             app.secret_key = secret
         elif isinstance(config, dict):
-            import secrets
-            new_secret = secrets.token_hex(32)
-            config['SECRET_KEY'] = new_secret
-            app.secret_key = new_secret
-            try:
-                update_config({'SECRET_KEY': new_secret})
-                logger.info("已自动生成并保存SECRET_KEY")
-            except Exception as e:
-                logger.warning(f"保存自动生成的SECRET_KEY失败: {e}")
+            # 若新配置中无 SECRET_KEY 但 app 已有，则复用，避免 session 全部失效
+            if app.secret_key:
+                config['SECRET_KEY'] = app.secret_key
+            else:
+                import secrets
+                new_secret = secrets.token_hex(32)
+                config['SECRET_KEY'] = new_secret
+                app.secret_key = new_secret
+                try:
+                    update_config({'SECRET_KEY': new_secret})
+                    logger.info("已自动生成并保存SECRET_KEY")
+                except Exception as e:
+                    logger.warning(f"保存自动生成的SECRET_KEY失败: {e}")
 
         max_content = config.get('MAX_CONTENT_LENGTH_MB', None) if isinstance(config, dict) else None
         if max_content:

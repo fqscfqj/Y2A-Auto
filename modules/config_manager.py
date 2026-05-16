@@ -226,10 +226,12 @@ def normalize_login_session_timeout_minutes(value):
 
 
 def _prune_unknown_config_keys(config_data):
+    # SECRET_KEY 不属于用户可见配置，但必须随配置持久化，否则重启后 session 全部失效
+    _PRESERVED_INTERNAL_KEYS = {'SECRET_KEY'}
     clean_config = {}
     removed_keys = []
     for key, value in (config_data or {}).items():
-        if key in DEFAULT_CONFIG:
+        if key in DEFAULT_CONFIG or key in _PRESERVED_INTERNAL_KEYS:
             clean_config[key] = value
         else:
             removed_keys.append(key)
