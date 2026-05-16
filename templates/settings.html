@@ -2168,7 +2168,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(function (data) {
-                if (!data || data.found === false) {
+                if (!data) {
+                    return;
+                }
+                if (data.found === false) {
+                    finishSettingsSaveOperation({
+                        done: true,
+                        level: 'error',
+                        success: false,
+                        message: '保存进度已丢失，请重试。',
+                        detail: '',
+                        messages: []
+                    });
                     return;
                 }
                 setSettingsSaveProgressUi(data);
@@ -2179,9 +2190,8 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(function (error) {
                 stopSettingsSavePolling();
                 toggleSettingsSaveBusy(false);
-                if (saveProgressModal) {
-                    saveProgressModal.hide();
-                }
+                setSettingsSaveModalClosable(true);
+                forceHideSettingsSaveModal();
                 showSettingsToast('error', '获取保存进度失败: ' + error.message);
             });
     };
@@ -2251,9 +2261,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 .catch(function (error) {
                     stopSettingsSavePolling();
                     toggleSettingsSaveBusy(false);
-                    if (saveProgressModal) {
-                        saveProgressModal.hide();
-                    }
+                    setSettingsSaveModalClosable(true);
+                    forceHideSettingsSaveModal();
                     showSettingsToast('error', '保存设置失败: ' + error.message);
                 });
         });
