@@ -1747,6 +1747,13 @@ def delete_task_files(task_id):
     Returns:
         success: 删除是否成功
     """
+    # 验证 task_id 为合法 UUID，防止路径注入
+    try:
+        uuid.UUID(str(task_id))
+    except (ValueError, AttributeError):
+        logger.error("任务ID格式无效，拒绝删除文件")
+        return False
+
     # 删除下载目录
     task_dir = os.path.join(DOWNLOADS_DIR, task_id)
 

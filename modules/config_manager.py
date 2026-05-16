@@ -384,7 +384,7 @@ def update_config(new_config):
                 if encoder_value in valid_encoders:
                     current_config[key] = encoder_value
                 else:
-                    logger.warning(f"无效的视频编码器配置 {encoder_value}，已回退为 auto")
+                    logger.warning("无效的视频编码器配置值，已回退为 auto")
                     current_config[key] = 'auto'
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
