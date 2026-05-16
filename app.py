@@ -2491,8 +2491,8 @@ def settings():
         if enable_password_protection and has_effective_password:
             session['logged_in'] = True
             session.permanent = True
-        elif not enable_password_protection:
-            session.pop('logged_in', None)
+        # 关闭密码保护时不立即清除会话，避免中断当前保存流程的进度轮询。
+        # 会话将在用户主动退出或session过期时自然失效。
 
         if _is_ajax_request():
             _update_settings_save_progress(
