@@ -540,5 +540,6 @@ def create_speech_recognizer_from_config(
             request_timeout_s=timeout_s,
         )
         return SpeechRecognizer(config, task_id)
-    except Exception:
+    except Exception as e:
+        logging.getLogger('speech_recognition').warning(f"创建语音识别器失败: {e}")
         return None
