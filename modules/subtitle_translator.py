@@ -1053,8 +1053,8 @@ class SubtitleTranslator:
                 if not line:
                     continue
                 original = line
-                # 反复移除前置编号或项目符号
-                while True:
+                # 反复移除前置编号或项目符号（最多10次防止无限循环）
+                for _ in range(10):
                     new_line = re.sub(r'^(?:[\(（]?\s*\d+\s*[\)）.:、]\s*|[-–—·•]\s+)', '', line)
                     if new_line == line:
                         break
