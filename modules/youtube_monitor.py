@@ -402,7 +402,7 @@ class YouTubeMonitor:
                         config_data.get('min_duration', 0),
                         config_data.get('max_duration', 0),
                         config_data.get('schedule_type', 'manual'),
-                        config_data.get('schedule_interval', 60),
+                        config_data.get('schedule_interval', 120),
                         config_data.get('order_by', 'viewCount'),
                         config_data.get('start_date', ''),
                         config_data.get('end_date', ''),
@@ -669,8 +669,8 @@ class YouTubeMonitor:
             
             # 如果是自动调度，添加到调度器
             if config_data.get('schedule_type') == 'auto':
-                logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 60)}分钟")
-                self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
+                logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 120)}分钟")
+                self._schedule_monitor(config_id, config_data.get('schedule_interval', 120))
             
             return config_id
                 
@@ -1196,16 +1196,16 @@ class YouTubeMonitor:
         request_count = 0
         max_requests = config.get('rate_limit_requests', 4)
         # 使用调度间隔作为时间窗口（转换为秒）
-        request_window = config.get('schedule_interval', 60) * 60
+        request_window = config.get('schedule_interval', 120) * 60
         
         # 根据频道模式调整获取策略
         channel_mode = config.get('channel_mode', 'latest')
-        logger.info(f"开始处理 {len(channel_ids)} 个频道，模式: {channel_mode}，请求限制: {max_requests}/{config.get('schedule_interval', 60)}分钟")
+        logger.info(f"开始处理 {len(channel_ids)} 个频道，模式: {channel_mode}，请求限制: {max_requests}/{config.get('schedule_interval', 120)}分钟")
         
         had_error = False
         for i, channel_id in enumerate(channel_ids, 1):
             if request_count >= max_requests:
-                logger.warning(f"达到请求限制 {max_requests}/{config.get('schedule_interval', 60)}分钟，跳过剩余 {len(channel_ids) - i + 1} 个频道")
+                logger.warning(f"达到请求限制 {max_requests}/{config.get('schedule_interval', 120)}分钟，跳过剩余 {len(channel_ids) - i + 1} 个频道")
                 break
                 
             try:
@@ -1913,7 +1913,7 @@ class YouTubeMonitor:
         
         # 如果是自动调度，重新添加
         if config_data.get('schedule_type') == 'auto' and config_data.get('enabled'):
-            self._schedule_monitor(config_id, config_data.get('schedule_interval', 60))
+            self._schedule_monitor(config_id, config_data.get('schedule_interval', 120))
     
     def _remove_schedule(self, config_id):
         """移除调度任务"""
