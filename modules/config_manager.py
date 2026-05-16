@@ -196,6 +196,8 @@ DEFAULT_CONFIG = {
     # 重试与回退策略
     "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
+    # 任务调度
+    "PENDING_SCAN_INTERVAL_SECONDS": 30,  # 待处理任务扫描间隔（秒）
 }
 
 DEFAULT_CONFIG = inject_speech_pipeline_defaults(DEFAULT_CONFIG)
