@@ -1754,7 +1754,7 @@ def delete_task_files(task_id):
     try:
         task_dir_real = os.path.realpath(task_dir)
         downloads_dir_real = os.path.realpath(DOWNLOADS_DIR)
-        if not task_dir_real.startswith(downloads_dir_real + os.sep):
+        if os.path.commonpath([task_dir_real, downloads_dir_real]) != downloads_dir_real:
             logger.error(f"任务 {task_id} 的路径不在downloads目录内，拒绝删除")
             return False
     except (ValueError, OSError) as e:
