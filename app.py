@@ -50,7 +50,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
-app.jinja_env.globals.update(now=datetime.now())  # 添加当前时间到模板全局变量
 
 
 @app.context_processor
@@ -59,6 +58,7 @@ def inject_app_settings():
     if not isinstance(app_settings, dict):
         app_settings = {}
     return {
+        'now': datetime.now(),  # 每次请求动态获取当前时间
         'app_settings': app_settings,
         'show_logout_in_nav': bool(
             app_settings.get('password_protection_enabled') and session.get('logged_in')
