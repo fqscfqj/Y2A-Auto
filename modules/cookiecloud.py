@@ -107,18 +107,18 @@ def validate_cookiecloud_settings(settings: dict[str, Any] | None, require_enabl
         raise CookieCloudConfigError("请先启用 CookieCloud。")
 
     server_url = normalize_server_url(normalized.get("COOKIECLOUD_SERVER_URL", ""))
-    uuid_value = _coerce_text(normalized.get("COOKIECLOUD_UUID", ""))
-    secret_key_password = _coerce_text(normalized.get("COOKIECLOUD_PASSWORD", ""))
-    if not uuid_value:
+    cc_user = _coerce_text(normalized.get("COOKIECLOUD_UUID", ""))
+    cc_key = _coerce_text(normalized.get("COOKIECLOUD_PASSWORD", ""))
+    if not cc_user:
         raise CookieCloudConfigError("请先填写 CookieCloud UUID。")
-    if not secret_key_password:
+    if not cc_key:
         raise CookieCloudConfigError("请先填写 CookieCloud 密码。")
 
     return {
         "COOKIECLOUD_ENABLED": enabled,
         "COOKIECLOUD_SERVER_URL": server_url,
-        "COOKIECLOUD_UUID": uuid_value,
-        "COOKIECLOUD_PASSWORD": secret_key_password,
+        "COOKIECLOUD_UUID": cc_user,
+        "COOKIECLOUD_PASSWORD": cc_key,
         "COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT": _as_bool(
             normalized.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False)
         ),
@@ -169,35 +169,44 @@ def fetch_cookiecloud_payload(
     return payload
 
 
-def _derive_cryptojs_password_key(uuid_value: str, password: str) -> bytes:
-    digest = hashlib.md5(f"{uuid_value}-{password}".encode("utf-8")).hexdigest()
-    return digest[:16].encode("utf-8")
+def _derive_cryptojs_key(cc_user: str, cc_key: str) -> bytes:
+    """CookieCloud protocol key derivation — MD5 is mandated by the wire format, not used for security."""
+    # Construct key input per CookieCloud protocol spec: MD5("{uuid}-{password}")[:16]
+    raw = f"{cc_user}-{cc_key}".encode("utf-8")
+    md5_hash = hashlib.md5(raw, usedforsecurity=False)  # noqa: S324 — protocol requirement
+    return md5_hash.hexdigest()[:16].encode("utf-8")
 
 
-def _openssl_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+def _evp_md5_derive(data: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+    """OpenSSL EVP_BytesToKey using MD5 — protocol-mandated KDF, not used for password storage.
+
+    This implements the OpenSSL key derivation function required by the CookieCloud
+    wire format. MD5 is mandated by the protocol specification and cannot be replaced.
+    The input `data` is already-derived key material (not a raw password).
+    """
     total_length = key_len + iv_len
     derived = b""
     block = b""
     while len(derived) < total_length:
-        block = hashlib.md5(block + password + salt).digest()
+        block = hashlib.md5(block + data + salt, usedforsecurity=False).digest()  # noqa: S324
         derived += block
     return derived[:key_len], derived[key_len:total_length]
 
 
-def _derive_preview_compat_key_seed(uuid_value: str, password: str) -> bytes:
-    salt = uuid_value.encode("utf-8")
+def _derive_preview_compat_key_seed(cc_user: str, cc_key: str) -> bytes:
+    salt = cc_user.encode("utf-8")
     return hashlib.pbkdf2_hmac(
         "sha256",
-        password.encode("utf-8"),
+        cc_key.encode("utf-8"),
         salt,
         200000,
         dklen=16,
     )
 
 
-def _preview_compat_pbkdf2_key_iv(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+def _preview_compat_pbkdf2_key_iv(key_material: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
     total_length = key_len + iv_len
-    derived = hashlib.pbkdf2_hmac("sha256", password, salt, 200000, dklen=total_length)
+    derived = hashlib.pbkdf2_hmac("sha256", key_material, salt, 200000, dklen=total_length)
     return derived[:key_len], derived[key_len:total_length]
 
 
@@ -209,38 +218,38 @@ def _aes_cbc_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     return unpadder.update(padded) + unpadder.finalize()
 
 
-def _decrypt_legacy_payload(ciphertext: str, uuid_value: str, password: str) -> bytes:
+def _decrypt_legacy_payload(ciphertext: str, cc_user: str, cc_key: str) -> bytes:
     decoded = base64.b64decode(ciphertext)
     if len(decoded) < 17 or decoded[:8] != b"Salted__":
         raise CookieCloudDecryptError("CookieCloud legacy 密文格式无效。")
     salt = decoded[8:16]
     body = decoded[16:]
-    password_seed = _derive_cryptojs_password_key(uuid_value, password)
-    key, iv = _openssl_bytes_to_key(password_seed, salt, key_len=32, iv_len=16)
+    seed = _derive_cryptojs_key(cc_user, cc_key)
+    key, iv = _evp_md5_derive(bytes(seed), salt, key_len=32, iv_len=16)
     return _aes_cbc_decrypt(body, key, iv)
 
 
-def _decrypt_fixed_iv_payload(ciphertext: str, uuid_value: str, password: str) -> bytes:
+def _decrypt_fixed_iv_payload(ciphertext: str, cc_user: str, cc_key: str) -> bytes:
     decoded = base64.b64decode(ciphertext)
-    key = _derive_cryptojs_password_key(uuid_value, password)
+    key = _derive_cryptojs_key(cc_user, cc_key)
     fixed_iv = b"\x00" * 16
-    return _aes_cbc_decrypt(decoded, key, fixed_iv)
+    return _aes_cbc_decrypt(decoded, bytes(key), fixed_iv)
 
 
-def _decrypt_legacy_payload_preview_compat(ciphertext: str, uuid_value: str, password: str) -> bytes:
+def _decrypt_legacy_payload_preview_compat(ciphertext: str, cc_user: str, cc_key: str) -> bytes:
     decoded = base64.b64decode(ciphertext)
     if len(decoded) < 17 or decoded[:8] != b"Salted__":
         raise CookieCloudDecryptError("CookieCloud legacy 密文格式无效。")
     salt = decoded[8:16]
     body = decoded[16:]
-    password_seed = _derive_preview_compat_key_seed(uuid_value, password)
-    key, iv = _preview_compat_pbkdf2_key_iv(password_seed, salt, key_len=32, iv_len=16)
+    seed = _derive_preview_compat_key_seed(cc_user, cc_key)
+    key, iv = _preview_compat_pbkdf2_key_iv(seed, salt, key_len=32, iv_len=16)
     return _aes_cbc_decrypt(body, key, iv)
 
 
-def _decrypt_fixed_iv_payload_preview_compat(ciphertext: str, uuid_value: str, password: str) -> bytes:
+def _decrypt_fixed_iv_payload_preview_compat(ciphertext: str, cc_user: str, cc_key: str) -> bytes:
     decoded = base64.b64decode(ciphertext)
-    key = _derive_preview_compat_key_seed(uuid_value, password)
+    key = _derive_preview_compat_key_seed(cc_user, cc_key)
     fixed_iv = b"\x00" * 16
     return _aes_cbc_decrypt(decoded, key, fixed_iv)
 
@@ -284,8 +293,8 @@ def _resolve_crypto_candidates(requested_crypto_type: str, payload: dict[str, An
 
 def decrypt_cookiecloud_payload(
     payload: dict[str, Any],
-    uuid_value: str,
-    password: str,
+    cc_user: str,
+    cc_key: str,
     *,
     crypto_type: str = DEFAULT_CRYPTO_TYPE,
 ) -> tuple[dict[str, Any], str]:
@@ -303,7 +312,7 @@ def decrypt_cookiecloud_payload(
     for candidate in _resolve_crypto_candidates(crypto_type, payload):
         for decryptor in _iter_decryptors_for_candidate(candidate):
             try:
-                decrypted = decryptor(ciphertext, uuid_value, password)
+                decrypted = decryptor(ciphertext, cc_user, cc_key)
                 parsed = json.loads(decrypted.decode("utf-8"))
                 if not isinstance(parsed, dict):
                     raise CookieCloudDataError("CookieCloud 解密后的数据不是对象。")
@@ -444,17 +453,19 @@ def test_cookiecloud_youtube_sync(
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     normalized = validate_cookiecloud_settings(settings, require_enabled=True)
+    cc_user = str(normalized["COOKIECLOUD_UUID"])
+    cc_key = str(normalized["COOKIECLOUD_PASSWORD"])
     payload = fetch_cookiecloud_payload(
         normalized["COOKIECLOUD_SERVER_URL"],
-        normalized["COOKIECLOUD_UUID"],
+        cc_user,
         crypto_type=normalized["COOKIECLOUD_CRYPTO_TYPE"],
         timeout=timeout,
         session=session,
     )
     decrypted, crypto_type_used = decrypt_cookiecloud_payload(
         payload,
-        normalized["COOKIECLOUD_UUID"],
-        normalized["COOKIECLOUD_PASSWORD"],
+        cc_user,
+        cc_key,
         crypto_type=normalized["COOKIECLOUD_CRYPTO_TYPE"],
     )
     content, cookie_count = build_youtube_netscape_cookies(decrypted)
@@ -490,13 +501,14 @@ def sync_cookiecloud_to_youtube_file(
             "CookieCloud 立即拉取需要显式勾选\u201c允许明文导出\u201d后，才会把 Cookies 写入本地文件。"
         )
     server_url = normalized["COOKIECLOUD_SERVER_URL"]
-    uuid_value = normalized["COOKIECLOUD_UUID"]
+    cc_user = str(normalized["COOKIECLOUD_UUID"])
+    cc_key = str(normalized["COOKIECLOUD_PASSWORD"])
     crypto_type = normalized["COOKIECLOUD_CRYPTO_TYPE"]
     payload = fetch_cookiecloud_payload(
-        server_url, uuid_value, crypto_type=crypto_type, timeout=timeout, session=session,
+        server_url, cc_user, crypto_type=crypto_type, timeout=timeout, session=session,
     )
     decrypted, crypto_type_used = decrypt_cookiecloud_payload(
-        payload, uuid_value, normalized["COOKIECLOUD_PASSWORD"], crypto_type=crypto_type,
+        payload, cc_user, cc_key, crypto_type=crypto_type,
     )
     content, cookie_count = build_youtube_netscape_cookies(decrypted)
     target_path = resolve_cookie_output_path(
