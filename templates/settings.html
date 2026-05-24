@@ -468,7 +468,7 @@
                                             <div class="settings-card-body">
                                                 <div class="alert alert-info mb-3">
                                                     <i class="bi bi-info-circle"></i>
-                                                    当前首版仅支持从 CookieCloud 拉取 YouTube / Google 相关 Cookies，并写入上方的 YouTube Cookies 文件路径。按钮会直接使用当前表单里的值，不必先保存设置。
+                                                    当前首版仅支持从 CookieCloud 拉取 YouTube / Google 相关 Cookies。<strong>“测试连接”只会联网校验并在内存中解析，不会写本地文件；“立即拉取一次”才会把结果写入上方的 YouTube Cookies 文件路径。</strong> 按钮会直接使用当前表单里的值，不必先保存设置。
                                                 </div>
                                                 <label class="checkbox-label mb-3">
                                                     <input type="checkbox" id="cookiecloud-enabled" name="COOKIECLOUD_ENABLED" {% if config.get('COOKIECLOUD_ENABLED', False) %}checked{% endif %}>
@@ -508,13 +508,13 @@
                                                 </div>
                                                 <div class="alert alert-warning mb-3 mt-3">
                                                     <i class="bi bi-exclamation-triangle"></i>
-                                                    立即拉取会把 CookieCloud 解析结果写入本地 YouTube Cookies 文件。只有当你明确需要本地任务读取时，才建议启用下面的明文导出选项。
+                                                    如果你只是想确认服务地址、UUID、密码和加密算法是否正确，直接点“测试连接”即可，无需开启明文导出。只有当你明确需要让 <code>yt-dlp</code> / 本地任务读取 CookieCloud 结果时，才需要开启下面的明文导出选项并执行“立即拉取一次”。
                                                 </div>
                                                 <label class="checkbox-label mb-3">
                                                     <input type="checkbox" id="cookiecloud-allow-plaintext-export" name="COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT" {% if config.get('COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT', False) %}checked{% endif %}>
                                                     允许明文导出到本地 YouTube Cookies 文件
                                                 </label>
-                                                <p class="help-text mb-0">该选项会将 CookieCloud 解密后的 Cookies 以明文写入上方的 YouTube Cookies 路径，请仅在受信任的本机上使用。</p>
+                                                <p class="help-text mb-0">不开启也可以使用 CookieCloud 的“测试连接”，只是不会把结果写入本地文件；此时下载任务仍会继续读取现有的 YouTube Cookies 文件。开启后会将解密后的 Cookies 以明文写入上方路径，请仅在受信任的本机上使用。</p>
                                                 <div class="settings-inline-actions mt-3">
                                                     <button type="button" class="btn btn-outline-primary" id="cookiecloud-test-btn">
                                                         <i class="bi bi-wifi"></i> 测试连接
@@ -522,13 +522,13 @@
                                                     <button type="button" class="btn btn-outline-success" id="cookiecloud-sync-btn">
                                                         <i class="bi bi-cloud-download"></i> 立即拉取一次
                                                     </button>
-                                                    <span class="help-text" id="cookiecloud-status-text">启用后可使用当前表单配置进行测试与拉取。</span>
+                                                    <span class="help-text" id="cookiecloud-status-text">启用后可先用“测试连接”校验配置；如需写入本地 YouTube Cookies 文件，再开启明文导出并执行“立即拉取一次”。</span>
                                                 </div>
                                                 <div class="form-text mt-3" id="cookiecloud-last-sync-text">
                                                     {% if config.get('COOKIECLOUD_LAST_SYNC_AT', '') %}
                                                         最近结果：{{ '成功' if config.get('COOKIECLOUD_LAST_SYNC_STATUS', '') == 'success' else '失败' }} · {{ config.get('COOKIECLOUD_LAST_SYNC_AT', '') }}{% if config.get('COOKIECLOUD_LAST_SYNC_MESSAGE', '') %} · {{ config.get('COOKIECLOUD_LAST_SYNC_MESSAGE', '') }}{% endif %}
                                                     {% else %}
-                                                        最近未执行 CookieCloud 拉取。
+                                                        最近未执行 CookieCloud 测试或拉取。
                                                     {% endif %}
                                                 </div>
                                             </div>
@@ -2127,15 +2127,15 @@ document.addEventListener('DOMContentLoaded', function () {
         const exportAllowed = isCookieCloudPlaintextExportAllowed();
         setCookieCloudBusy(false);
         if (!enabled) {
-            setCookieCloudStatus('启用后可使用当前表单配置进行测试与拉取。', 'neutral');
+            setCookieCloudStatus('启用后可先用“测试连接”校验配置；如需写入本地 YouTube Cookies 文件，再开启明文导出并执行“立即拉取一次”。', 'neutral');
             return;
         }
         if (!exportAllowed) {
-            setCookieCloudStatus('勾选“允许明文导出”后才能把 Cookies 写入本地文件。', 'neutral');
+            setCookieCloudStatus('当前可直接测试连接；若要把 CookieCloud Cookies 写入本地文件供 yt-dlp / 任务使用，请勾选“允许明文导出”。', 'neutral');
             return;
         }
         if (cookieCloudStatusText && !cookieCloudStatusText.textContent.trim()) {
-            setCookieCloudStatus('将使用当前表单中的 CookieCloud 配置执行测试或拉取。', 'neutral');
+            setCookieCloudStatus('测试连接不会写文件；立即拉取会把结果写入当前 YouTube Cookies 路径。', 'neutral');
         }
     };
 
@@ -2157,7 +2157,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
         if (endpoint === cookieCloudSyncEndpoint && !isCookieCloudPlaintextExportAllowed()) {
-            showSettingsToast('warning', '请先勾选“允许明文导出”。');
+            showSettingsToast('warning', '“立即拉取一次”需要先勾选“允许明文导出”，因为它会写入本地 YouTube Cookies 文件。');
             return;
         }
 
