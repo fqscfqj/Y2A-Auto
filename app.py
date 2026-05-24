@@ -206,9 +206,21 @@ def _merge_cookiecloud_runtime_settings(payload: dict | None, base_config: dict 
 
     for key in text_fields:
         if key in incoming:
-            effective_config[key] = str(incoming.get(key) or '').strip()
+            value = str(incoming.get(key) or '').strip()
+            if key == 'COOKIECLOUD_PASSWORD' and not value:
+                continue
+            effective_config[key] = value
 
     return effective_config
+
+
+def _cookiecloud_operation_error_message(action: str, retry_later: bool = False) -> str:
+    action_key = str(action or '').strip().lower()
+    if action_key == 'test':
+        return 'CookieCloud 连接测试失败，请稍后重试。' if retry_later else 'CookieCloud 连接测试失败，请检查配置后重试。'
+    if action_key == 'sync':
+        return 'CookieCloud 立即拉取失败，请稍后重试。' if retry_later else 'CookieCloud 立即拉取失败，请检查配置后重试。'
+    return 'CookieCloud 操作失败，请稍后重试。' if retry_later else 'CookieCloud 操作失败，请检查配置后重试。'
 
 
 def _remember_cookiecloud_sync_result(success: bool, message: str):
@@ -2654,10 +2666,10 @@ def settings_test_cookiecloud():
             'updated_at': updated_at,
             'status': 'success',
         })
-    except CookieCloudError as e:
-        message = str(e)
+    except CookieCloudError:
+        message = _cookiecloud_operation_error_message('test')
         updated_at = _remember_cookiecloud_sync_result(False, message)
-        logger.warning('CookieCloud 连接测试失败: %s', message)
+        logger.warning('CookieCloud 连接测试失败')
         return jsonify({
             'success': False,
             'message': message,
@@ -2665,7 +2677,7 @@ def settings_test_cookiecloud():
             'status': 'error',
         }), 400
     except Exception:
-        message = 'CookieCloud 连接测试失败，请稍后重试。'
+        message = _cookiecloud_operation_error_message('test', retry_later=True)
         updated_at = _remember_cookiecloud_sync_result(False, message)
         logger.exception('CookieCloud 连接测试失败')
         return jsonify({
@@ -2698,10 +2710,10 @@ def settings_sync_cookiecloud():
             'updated_at': updated_at,
             'status': 'success',
         })
-    except CookieCloudError as e:
-        message = str(e)
+    except CookieCloudError:
+        message = _cookiecloud_operation_error_message('sync')
         updated_at = _remember_cookiecloud_sync_result(False, message)
-        logger.warning('CookieCloud 立即拉取失败: %s', message)
+        logger.warning('CookieCloud 立即拉取失败')
         return jsonify({
             'success': False,
             'message': message,
@@ -2709,7 +2721,7 @@ def settings_sync_cookiecloud():
             'status': 'error',
         }), 400
     except Exception:
-        message = 'CookieCloud 立即拉取失败，请稍后重试。'
+        message = _cookiecloud_operation_error_message('sync', retry_later=True)
         updated_at = _remember_cookiecloud_sync_result(False, message)
         logger.exception('CookieCloud 立即拉取失败')
         return jsonify({

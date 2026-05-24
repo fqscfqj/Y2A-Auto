@@ -490,7 +490,8 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="cookiecloud-password" class="form-label">密码</label>
-                                                            <input type="password" id="cookiecloud-password" name="COOKIECLOUD_PASSWORD" value="{{ config.get('COOKIECLOUD_PASSWORD', '') }}" class="form-control" autocomplete="off" placeholder="CookieCloud 密码">
+                                                            <input type="password" id="cookiecloud-password" name="COOKIECLOUD_PASSWORD" class="form-control" autocomplete="off" placeholder="CookieCloud 密码（留空则保留当前值）">
+                                                            <div class="form-text">为避免在页面源码中暴露明文密码，密码框不会回填；留空保存时会保留现有值。</div>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">

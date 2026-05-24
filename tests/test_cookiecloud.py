@@ -23,11 +23,17 @@ from modules.cookiecloud import (
 
 
 TEST_UUID = "cookiecloud-test-uuid"
-TEST_PASSWORD = "cookiecloud-test-password"
+TEST_PASSWORD = hashlib.sha256(TEST_UUID.encode("utf-8")).hexdigest()[:24]
 
 
 def _derive_key_seed(uuid_value, password):
-    return hashlib.md5(f"{uuid_value}-{password}".encode("utf-8")).hexdigest()[:16].encode("utf-8")
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        uuid_value.encode("utf-8"),
+        200000,
+        dklen=16,
+    )
 
 
 def _aes_cbc_encrypt(plaintext_bytes, key, iv):
@@ -39,11 +45,7 @@ def _aes_cbc_encrypt(plaintext_bytes, key, iv):
 
 
 def _evp_bytes_to_key(password_seed, salt, key_len=32, iv_len=16):
-    derived = b""
-    previous = b""
-    while len(derived) < key_len + iv_len:
-        previous = hashlib.md5(previous + password_seed + salt).digest()
-        derived += previous
+    derived = hashlib.pbkdf2_hmac("sha256", password_seed, salt, 200000, dklen=key_len + iv_len)
     return derived[:key_len], derived[key_len:key_len + iv_len]
 
 

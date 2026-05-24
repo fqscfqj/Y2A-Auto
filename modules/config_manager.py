@@ -385,8 +385,8 @@ def update_config(new_config):
             # 特殊处理布尔值
             if isinstance(DEFAULT_CONFIG[key], bool):
                 current_config[key] = str(new_config[key]).lower() in ['true', '1', 'on']
-            elif key == 'password':
-                if new_config[key]: # Only update password if a new one is provided
+            elif key in ('password', 'COOKIECLOUD_PASSWORD'):
+                if str(new_config[key]).strip(): # Only update password if a new one is provided
                     current_config[key] = new_config[key]
             elif key == 'VIDEO_ENCODER':
                 # 支持硬件编码：auto/cpu/nvidia/intel/amd

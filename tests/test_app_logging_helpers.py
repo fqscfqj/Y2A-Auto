@@ -64,6 +64,35 @@ class AppLoggingHelperTests(unittest.TestCase):
         self.assertNotIn("cookiecloud.example.com", serialized)
         self.assertNotIn("cookies/yt_cookies.txt", serialized)
 
+    def test_cookiecloud_helpers_sanitize_errors_and_preserve_password(self):
+        _coerce_checkbox_value, merge_runtime_settings, build_error_message = _load_functions(
+            "_coerce_checkbox_value",
+            "_merge_cookiecloud_runtime_settings",
+            "_cookiecloud_operation_error_message",
+        )
+
+        merged = merge_runtime_settings(
+            {
+                "COOKIECLOUD_ENABLED": True,
+                "COOKIECLOUD_PASSWORD": "",
+                "COOKIECLOUD_UUID": "incoming-uuid",
+            },
+            {
+                "COOKIECLOUD_PASSWORD": "stored-secret",
+                "COOKIECLOUD_UUID": "stored-uuid",
+            },
+        )
+
+        self.assertEqual(merged["COOKIECLOUD_PASSWORD"], "stored-secret")
+        self.assertEqual(merged["COOKIECLOUD_UUID"], "incoming-uuid")
+
+        test_message = build_error_message("test")
+        sync_message = build_error_message("sync", retry_later=True)
+        self.assertIn("CookieCloud", test_message)
+        self.assertIn("CookieCloud", sync_message)
+        self.assertNotIn("stored-secret", test_message + sync_message)
+        self.assertNotIn("incoming-uuid", test_message + sync_message)
+
 
 if __name__ == "__main__":
     unittest.main()

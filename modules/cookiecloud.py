@@ -165,17 +165,19 @@ def fetch_cookiecloud_payload(
 
 
 def _derive_key_seed(uuid_value: str, password: str) -> bytes:
-    digest = hashlib.md5(f"{uuid_value}-{password}".encode("utf-8")).hexdigest()
-    return digest[:16].encode("utf-8")
+    salt = uuid_value.encode("utf-8")
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        200000,
+        dklen=16,
+    )
 
 
-def _evp_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
-    derived = b""
-    previous = b""
+def _pbkdf2_key_iv(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
     total_length = key_len + iv_len
-    while len(derived) < total_length:
-        previous = hashlib.md5(previous + password + salt).digest()
-        derived += previous
+    derived = hashlib.pbkdf2_hmac("sha256", password, salt, 200000, dklen=total_length)
     return derived[:key_len], derived[key_len:total_length]
 
 
@@ -194,7 +196,7 @@ def _decrypt_legacy_payload(ciphertext: str, uuid_value: str, password: str) -> 
     salt = decoded[8:16]
     body = decoded[16:]
     password_seed = _derive_key_seed(uuid_value, password)
-    key, iv = _evp_bytes_to_key(password_seed, salt, key_len=32, iv_len=16)
+    key, iv = _pbkdf2_key_iv(password_seed, salt, key_len=32, iv_len=16)
     return _aes_cbc_decrypt(body, key, iv)
 
 
