@@ -93,6 +93,25 @@ class AppLoggingHelperTests(unittest.TestCase):
         self.assertNotIn("stored-secret", test_message + sync_message)
         self.assertNotIn("incoming-uuid", test_message + sync_message)
 
+    def test_cookiecloud_runtime_merge_ignores_non_mapping_payload(self):
+        _coerce_checkbox_value, merge_runtime_settings = _load_functions(
+            "_coerce_checkbox_value",
+            "_merge_cookiecloud_runtime_settings",
+        )
+
+        merged = merge_runtime_settings(
+            ["unexpected", "payload"],
+            {
+                "COOKIECLOUD_ENABLED": True,
+                "COOKIECLOUD_PASSWORD": "stored-secret",
+                "COOKIECLOUD_UUID": "stored-uuid",
+            },
+        )
+
+        self.assertTrue(merged["COOKIECLOUD_ENABLED"])
+        self.assertEqual(merged["COOKIECLOUD_PASSWORD"], "stored-secret")
+        self.assertEqual(merged["COOKIECLOUD_UUID"], "stored-uuid")
+
 
 if __name__ == "__main__":
     unittest.main()

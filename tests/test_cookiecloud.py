@@ -168,6 +168,111 @@ class CookieCloudTests(unittest.TestCase):
         self.assertNotIn("SESSDATA", content)
         self.assertIn("# Netscape HTTP Cookie File", content)
 
+    def test_build_youtube_netscape_cookies_keeps_only_boundary_matching_domains(self):
+        payload = {
+            "cookie_data": {
+                "notyoutube.com": [
+                    {
+                        "domain": ".notyoutube.com",
+                        "hostOnly": False,
+                        "path": "/",
+                        "secure": True,
+                        "expirationDate": 2000000100,
+                        "name": "BAD",
+                        "value": "bad-1",
+                    }
+                ],
+                "youtube.com.evil.tld": [
+                    {
+                        "domain": ".youtube.com.evil.tld",
+                        "hostOnly": False,
+                        "path": "/",
+                        "secure": True,
+                        "expirationDate": 2000000101,
+                        "name": "BAD2",
+                        "value": "bad-2",
+                    }
+                ],
+                "www.youtube.com": [
+                    {
+                        "domain": ".www.youtube.com",
+                        "hostOnly": False,
+                        "path": "/",
+                        "secure": True,
+                        "expirationDate": 2000000102,
+                        "name": "GOOD1",
+                        "value": "good-1",
+                    }
+                ],
+                "mail.google.com": [
+                    {
+                        "domain": ".mail.google.com",
+                        "hostOnly": False,
+                        "path": "/",
+                        "secure": True,
+                        "expirationDate": 2000000103,
+                        "name": "GOOD2",
+                        "value": "good-2",
+                    }
+                ],
+            }
+        }
+
+        content, cookie_count = build_youtube_netscape_cookies(payload)
+
+        self.assertEqual(cookie_count, 2)
+        self.assertIn("GOOD1", content)
+        self.assertIn("GOOD2", content)
+        self.assertNotIn("BAD\t", content)
+        self.assertNotIn("BAD2\t", content)
+
+    def test_build_youtube_netscape_cookies_sanitizes_field_separators(self):
+        payload = {
+            "cookie_data": {
+                "youtube.com\n": [
+                    {
+                        "domain": ".youtube.com\n",
+                        "hostOnly": False,
+                        "path": "/\npath",
+                        "secure": True,
+                        "expirationDate": 2000000200,
+                        "name": "SA\tPISID",
+                        "value": "va\nlue",
+                    }
+                ]
+            }
+        }
+
+        content, cookie_count = build_youtube_netscape_cookies(payload)
+        cookie_line = content.strip().splitlines()[-1]
+        fields = cookie_line.split("\t")
+
+        self.assertEqual(cookie_count, 1)
+        self.assertEqual(len(fields), 7)
+        self.assertEqual(fields[0], ".youtube.com")
+        self.assertEqual(fields[2], "/ path")
+        self.assertEqual(fields[5], "SA PISID")
+        self.assertEqual(fields[6], "va lue")
+
+    def test_sync_cookiecloud_to_youtube_file_requires_plaintext_export_opt_in(self):
+        with patch(
+            "modules.cookiecloud.test_cookiecloud_youtube_sync",
+            return_value={
+                "content": "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSAPISID\tvalue\n",
+                "cookie_count": 1,
+                "crypto_type_used": COOKIECLOUD_CRYPTO_LEGACY,
+            },
+        ):
+            with self.assertRaisesRegex(CookieCloudConfigError, "允许明文导出"):
+                sync_cookiecloud_to_youtube_file({
+                    "COOKIECLOUD_ENABLED": True,
+                    "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
+                    "COOKIECLOUD_UUID": TEST_UUID,
+                    "COOKIECLOUD_PASSWORD": TEST_PASSWORD,
+                    "COOKIECLOUD_CRYPTO_TYPE": "auto",
+                    "YOUTUBE_COOKIES_PATH": self.sync_relative_path,
+                })
+
     def test_resolve_cookie_output_path_rejects_escape_outside_project_root(self):
         with self.assertRaises(CookieCloudConfigError):
             resolve_cookie_output_path(os.path.join("..", "outside-cookiecloud.txt"))
@@ -186,6 +291,7 @@ class CookieCloudTests(unittest.TestCase):
                 "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
                 "COOKIECLOUD_UUID": TEST_UUID,
                 "COOKIECLOUD_PASSWORD": TEST_PASSWORD,
+                "COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT": True,
                 "COOKIECLOUD_CRYPTO_TYPE": "auto",
                 "YOUTUBE_COOKIES_PATH": self.sync_relative_path,
             })

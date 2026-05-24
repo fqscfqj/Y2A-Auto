@@ -4,7 +4,6 @@
 import base64
 import hashlib
 import json
-import logging
 import os
 import sys
 from typing import Any, Iterable
@@ -13,8 +12,6 @@ from urllib.parse import quote, urlparse, urlunparse
 import requests
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-logger = logging.getLogger("cookiecloud")
 
 COOKIECLOUD_CRYPTO_AUTO = "auto"
 COOKIECLOUD_CRYPTO_LEGACY = "legacy"
@@ -27,7 +24,7 @@ SUPPORTED_CRYPTO_TYPES = (
 DEFAULT_CRYPTO_TYPE = COOKIECLOUD_CRYPTO_AUTO
 DEFAULT_YOUTUBE_COOKIES_PATH = "cookies/yt_cookies.txt"
 DEFAULT_TIMEOUT = (5, 20)
-_YOUTUBE_DOMAIN_KEYWORDS = (
+_YOUTUBE_ALLOWED_BASE_DOMAINS = (
     "youtube.com",
     "youtu.be",
     "google.com",
@@ -70,6 +67,10 @@ def _as_bool(value: Any) -> bool:
 
 def _coerce_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _sanitize_cookie_field(value: Any) -> str:
+    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
 
 
 def normalize_crypto_type(value: Any) -> str:
@@ -117,6 +118,9 @@ def validate_cookiecloud_settings(settings: dict[str, Any] | None, require_enabl
         "COOKIECLOUD_SERVER_URL": server_url,
         "COOKIECLOUD_UUID": uuid_value,
         "COOKIECLOUD_PASSWORD": password_value,
+        "COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT": _as_bool(
+            normalized.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False)
+        ),
         "COOKIECLOUD_CRYPTO_TYPE": normalize_crypto_type(
             normalized.get("COOKIECLOUD_CRYPTO_TYPE", DEFAULT_CRYPTO_TYPE)
         ),
@@ -284,17 +288,20 @@ def _iter_cookie_items(cookie_payload: dict[str, Any]) -> Iterable[tuple[str, di
                 yield "", item
 
 
-def _is_youtube_related_domain(domain: str, bucket: str = "") -> bool:
-    candidates = [domain, bucket]
-    for candidate in candidates:
-        normalized = str(candidate or "").strip().lower().lstrip(".")
-        if any(keyword in normalized for keyword in _YOUTUBE_DOMAIN_KEYWORDS):
+def _is_youtube_related_domain(domain: str) -> bool:
+    normalized = _sanitize_cookie_field(domain).lower().lstrip(".")
+    if not normalized:
+        return False
+    for base_domain in _YOUTUBE_ALLOWED_BASE_DOMAINS:
+        if normalized == base_domain:
+            return True
+        if normalized.endswith(f".{base_domain}"):
             return True
     return False
 
 
 def _normalize_cookie_domain(domain: str, host_only: bool) -> tuple[str, str]:
-    cleaned = _coerce_text(domain).lstrip(".")
+    cleaned = _sanitize_cookie_field(domain).lstrip(".").lower()
     if not cleaned:
         return "", "FALSE"
     if host_only:
@@ -303,7 +310,7 @@ def _normalize_cookie_domain(domain: str, host_only: bool) -> tuple[str, str]:
 
 
 def _sanitize_cookie_value(value: Any) -> str:
-    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
+    return _sanitize_cookie_field(value)
 
 
 def _extract_expiration(item: dict[str, Any]) -> int:
@@ -321,15 +328,15 @@ def _extract_expiration(item: dict[str, Any]) -> int:
 def build_youtube_netscape_cookies(cookie_payload: dict[str, Any]) -> tuple[str, int]:
     lines_by_key: dict[tuple[str, str, str], str] = {}
     for bucket, item in _iter_cookie_items(cookie_payload):
-        domain = _coerce_text(item.get("domain") or bucket)
-        if not domain or not _is_youtube_related_domain(domain, bucket):
+        domain = _sanitize_cookie_field(item.get("domain")) or _sanitize_cookie_field(bucket)
+        if not domain or not _is_youtube_related_domain(domain):
             continue
 
-        name = _coerce_text(item.get("name"))
+        name = _sanitize_cookie_field(item.get("name"))
         if not name:
             continue
 
-        path = _coerce_text(item.get("path")) or "/"
+        path = _sanitize_cookie_field(item.get("path")) or "/"
         host_only = _as_bool(item.get("hostOnly", False))
         normalized_domain, include_subdomains = _normalize_cookie_domain(domain, host_only)
         if not normalized_domain:
@@ -421,15 +428,19 @@ def sync_cookiecloud_to_youtube_file(
     timeout: tuple[int, int] = DEFAULT_TIMEOUT,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
-    result = test_cookiecloud_youtube_sync(settings, timeout=timeout, session=session)
     normalized = validate_cookiecloud_settings(settings, require_enabled=True)
+    if not normalized.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False):
+        raise CookieCloudConfigError(
+            "CookieCloud 立即拉取需要显式勾选“允许明文导出”后，才会把 Cookies 写入本地文件。"
+        )
+    result = test_cookiecloud_youtube_sync(normalized, timeout=timeout, session=session)
     target_path = resolve_cookie_output_path(
         output_path or normalized.get("YOUTUBE_COOKIES_PATH") or DEFAULT_YOUTUBE_COOKIES_PATH,
         default_relative_path=DEFAULT_YOUTUBE_COOKIES_PATH,
     )
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, "w", encoding="utf-8", newline="\n") as file_obj:
-        file_obj.write(result["content"])
+        file_obj.write(result["content"])  # codeql[py/clear-text-storage-sensitive-data] Intentional local export of browser cookies after explicit user opt-in.
     return {
         **result,
         "output_path": target_path,

@@ -506,6 +506,15 @@
                                                         </div>
                                                     </div>
                                                 </div>
+                                                <div class="alert alert-warning mb-3 mt-3">
+                                                    <i class="bi bi-exclamation-triangle"></i>
+                                                    立即拉取会把 CookieCloud 解析结果写入本地 YouTube Cookies 文件。只有当你明确需要本地任务读取时，才建议启用下面的明文导出选项。
+                                                </div>
+                                                <label class="checkbox-label mb-3">
+                                                    <input type="checkbox" id="cookiecloud-allow-plaintext-export" name="COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT" {% if config.get('COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT', False) %}checked{% endif %}>
+                                                    允许明文导出到本地 YouTube Cookies 文件
+                                                </label>
+                                                <p class="help-text mb-0">该选项会将 CookieCloud 解密后的 Cookies 以明文写入上方的 YouTube Cookies 路径，请仅在受信任的本机上使用。</p>
                                                 <div class="settings-inline-actions mt-3">
                                                     <button type="button" class="btn btn-outline-primary" id="cookiecloud-test-btn">
                                                         <i class="bi bi-wifi"></i> 测试连接
@@ -2066,6 +2075,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const cookieCloudUuid = document.getElementById('cookiecloud-uuid');
     const cookieCloudPassword = document.getElementById('cookiecloud-password');
     const cookieCloudCryptoType = document.getElementById('cookiecloud-crypto-type');
+    const cookieCloudAllowPlaintextExport = document.getElementById('cookiecloud-allow-plaintext-export');
     const cookieCloudTestBtn = document.getElementById('cookiecloud-test-btn');
     const cookieCloudSyncBtn = document.getElementById('cookiecloud-sync-btn');
     const cookieCloudStatusText = document.getElementById('cookiecloud-status-text');
@@ -2073,6 +2083,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const youtubeCookiesPathField = document.getElementById('youtube-cookies');
     const cookieCloudTestEndpoint = '{{ url_for("settings_test_cookiecloud") }}';
     const cookieCloudSyncEndpoint = '{{ url_for("settings_sync_cookiecloud") }}';
+
+    const isCookieCloudPlaintextExportAllowed = function () {
+        return !!(cookieCloudAllowPlaintextExport && cookieCloudAllowPlaintextExport.checked);
+    };
 
     const setCookieCloudStatus = function (text, tone) {
         if (!cookieCloudStatusText) {
@@ -2098,19 +2112,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const setCookieCloudBusy = function (isBusy) {
         const enabled = !!(cookieCloudEnabled && cookieCloudEnabled.checked);
+        const exportAllowed = isCookieCloudPlaintextExportAllowed();
         [cookieCloudTestBtn, cookieCloudSyncBtn].forEach(function (button) {
             if (!button) {
                 return;
             }
-            button.disabled = !!isBusy || !enabled;
+            const isSyncButton = button === cookieCloudSyncBtn;
+            button.disabled = !!isBusy || !enabled || (isSyncButton && !exportAllowed);
         });
     };
 
     const syncCookieCloudActionState = function () {
         const enabled = !!(cookieCloudEnabled && cookieCloudEnabled.checked);
+        const exportAllowed = isCookieCloudPlaintextExportAllowed();
         setCookieCloudBusy(false);
         if (!enabled) {
             setCookieCloudStatus('启用后可使用当前表单配置进行测试与拉取。', 'neutral');
+            return;
+        }
+        if (!exportAllowed) {
+            setCookieCloudStatus('勾选“允许明文导出”后才能把 Cookies 写入本地文件。', 'neutral');
             return;
         }
         if (cookieCloudStatusText && !cookieCloudStatusText.textContent.trim()) {
@@ -2124,6 +2145,7 @@ document.addEventListener('DOMContentLoaded', function () {
             COOKIECLOUD_SERVER_URL: cookieCloudServerUrl ? cookieCloudServerUrl.value : '',
             COOKIECLOUD_UUID: cookieCloudUuid ? cookieCloudUuid.value : '',
             COOKIECLOUD_PASSWORD: cookieCloudPassword ? cookieCloudPassword.value : '',
+            COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT: isCookieCloudPlaintextExportAllowed(),
             COOKIECLOUD_CRYPTO_TYPE: cookieCloudCryptoType ? cookieCloudCryptoType.value : 'auto',
             YOUTUBE_COOKIES_PATH: youtubeCookiesPathField ? youtubeCookiesPathField.value : ''
         };
@@ -2132,6 +2154,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const invokeCookieCloudAction = function (endpoint, waitingText, defaultErrorMessage) {
         if (!cookieCloudEnabled || !cookieCloudEnabled.checked) {
             showSettingsToast('warning', '请先启用 CookieCloud。');
+            return;
+        }
+        if (endpoint === cookieCloudSyncEndpoint && !isCookieCloudPlaintextExportAllowed()) {
+            showSettingsToast('warning', '请先勾选“允许明文导出”。');
             return;
         }
 
@@ -2184,6 +2210,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (cookieCloudEnabled) {
         cookieCloudEnabled.addEventListener('change', syncCookieCloudActionState);
+        syncCookieCloudActionState();
+    }
+
+    if (cookieCloudAllowPlaintextExport) {
+        cookieCloudAllowPlaintextExport.addEventListener('change', syncCookieCloudActionState);
         syncCookieCloudActionState();
     }
 
@@ -2486,7 +2517,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    const applyStatusTone = function (el, tone) {
+    function applyStatusTone(el, tone) {
         if (!el) return;
         el.classList.remove('text-danger', 'text-success', 'text-muted');
         if (tone === 'error') {
@@ -2498,7 +2529,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
         el.classList.add('text-muted');
-    };
+    }
 
     const acfunStartBtn = document.getElementById('acfun-qrcode-start-btn');
     const acfunCheckBtn = document.getElementById('acfun-qrcode-check-btn');

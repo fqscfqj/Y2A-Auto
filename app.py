@@ -189,9 +189,9 @@ def _coerce_checkbox_value(value) -> bool:
 
 def _merge_cookiecloud_runtime_settings(payload: dict | None, base_config: dict | None = None) -> dict:
     effective_config = dict(base_config or load_config())
-    incoming = dict(payload or {})
+    incoming = dict(payload) if isinstance(payload, dict) else {}
 
-    bool_fields = {'COOKIECLOUD_ENABLED'}
+    bool_fields = {'COOKIECLOUD_ENABLED', 'COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT'}
     text_fields = {
         'COOKIECLOUD_SERVER_URL',
         'COOKIECLOUD_UUID',
