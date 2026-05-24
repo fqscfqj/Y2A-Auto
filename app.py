@@ -31,6 +31,11 @@ from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_FLOAT_FIELDS,
     SPEECH_PIPELINE_INT_FIELDS,
 )
+from modules.cookiecloud import (
+    CookieCloudError,
+    sync_cookiecloud_to_youtube_file,
+    test_cookiecloud_youtube_sync,
+)
 from modules.notifications import (
     CHANNEL_LABELS,
     CHANNEL_MESSAGE_PUSHER,
@@ -141,6 +146,7 @@ def _build_startup_config_log_summary(config: dict | None) -> dict:
             'CONTENT_MODERATION_ENABLED': bool(normalized.get('CONTENT_MODERATION_ENABLED', False)),
             'YOUTUBE_PROXY_ENABLED': bool(normalized.get('YOUTUBE_PROXY_ENABLED', False)),
             'YOUTUBE_API_PROXY_ENABLED': bool(normalized.get('YOUTUBE_API_PROXY_ENABLED', False)),
+            'COOKIECLOUD_ENABLED': bool(normalized.get('COOKIECLOUD_ENABLED', False)),
             'SUBTITLE_TRANSLATION_ENABLED': bool(normalized.get('SUBTITLE_TRANSLATION_ENABLED', False)),
             'SPEECH_RECOGNITION_ENABLED': bool(normalized.get('SPEECH_RECOGNITION_ENABLED', False)),
         },
@@ -171,6 +177,52 @@ def _append_notification_config_warnings(messages: list, config: dict | None):
                 'warning',
                 f'已启用 {channel_label} 通知，但缺少配置：{readable_fields}。该渠道会暂时跳过发送。'
             )
+
+
+def _coerce_checkbox_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or '').strip().lower() in ('true', '1', 'on', 'yes', 'y')
+
+
+def _merge_cookiecloud_runtime_settings(payload: dict | None, base_config: dict | None = None) -> dict:
+    effective_config = dict(base_config or load_config())
+    incoming = dict(payload or {})
+
+    bool_fields = {'COOKIECLOUD_ENABLED'}
+    text_fields = {
+        'COOKIECLOUD_SERVER_URL',
+        'COOKIECLOUD_UUID',
+        'COOKIECLOUD_PASSWORD',
+        'COOKIECLOUD_CRYPTO_TYPE',
+        'YOUTUBE_COOKIES_PATH',
+    }
+
+    for key in bool_fields:
+        if key in incoming:
+            effective_config[key] = _coerce_checkbox_value(incoming.get(key))
+
+    for key in text_fields:
+        if key in incoming:
+            effective_config[key] = str(incoming.get(key) or '').strip()
+
+    return effective_config
+
+
+def _remember_cookiecloud_sync_result(success: bool, message: str):
+    status = 'success' if success else 'error'
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        update_config({
+            'COOKIECLOUD_LAST_SYNC_AT': timestamp,
+            'COOKIECLOUD_LAST_SYNC_STATUS': status,
+            'COOKIECLOUD_LAST_SYNC_MESSAGE': str(message or '').strip(),
+        })
+    except Exception as e:
+        logger.warning(f'记录 CookieCloud 最近同步状态失败: {e}')
+    return timestamp
 
 
 def _get_request_ip_address() -> str:
@@ -717,6 +769,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'NOTIFY_WECOM_ENABLED',
             'NOTIFY_SERVERCHAN_ENABLED',
             'NOTIFY_MESSAGE_PUSHER_ENABLED',
+            'COOKIECLOUD_ENABLED',
         ]
         for checkbox in SPEECH_PIPELINE_CHECKBOXES:
             if checkbox not in checkboxes:
@@ -2578,6 +2631,93 @@ def settings_test_notification():
     except Exception:
         logger.exception("测试通知发送失败，渠道=%s", channel)
         return jsonify({'success': False, 'message': '测试通知发送失败，请稍后重试'}), 500
+
+
+@app.route('/settings/cookiecloud/test', methods=['POST'])
+@login_required
+def settings_test_cookiecloud():
+    payload = request.get_json(silent=True) or {}
+    effective_config = _merge_cookiecloud_runtime_settings(payload)
+
+    try:
+        result = test_cookiecloud_youtube_sync(effective_config)
+        message = (
+            f"CookieCloud 连接成功，已解析 {result['cookie_count']} 条 YouTube/Google Cookies，"
+            f"当前使用 {result['crypto_type_used']} 算法。"
+        )
+        updated_at = _remember_cookiecloud_sync_result(True, message)
+        return jsonify({
+            'success': True,
+            'message': message,
+            'cookie_count': result['cookie_count'],
+            'crypto_type_used': result['crypto_type_used'],
+            'updated_at': updated_at,
+            'status': 'success',
+        })
+    except CookieCloudError as e:
+        message = str(e)
+        updated_at = _remember_cookiecloud_sync_result(False, message)
+        logger.warning('CookieCloud 连接测试失败: %s', message)
+        return jsonify({
+            'success': False,
+            'message': message,
+            'updated_at': updated_at,
+            'status': 'error',
+        }), 400
+    except Exception:
+        message = 'CookieCloud 连接测试失败，请稍后重试。'
+        updated_at = _remember_cookiecloud_sync_result(False, message)
+        logger.exception('CookieCloud 连接测试失败')
+        return jsonify({
+            'success': False,
+            'message': message,
+            'updated_at': updated_at,
+            'status': 'error',
+        }), 500
+
+
+@app.route('/settings/cookiecloud/sync', methods=['POST'])
+@login_required
+def settings_sync_cookiecloud():
+    payload = request.get_json(silent=True) or {}
+    effective_config = _merge_cookiecloud_runtime_settings(payload)
+
+    try:
+        result = sync_cookiecloud_to_youtube_file(effective_config)
+        message = (
+            f"CookieCloud 已成功写入 {result['cookie_count']} 条 YouTube/Google Cookies 到 "
+            f"{result['output_path_display']}。"
+        )
+        updated_at = _remember_cookiecloud_sync_result(True, message)
+        return jsonify({
+            'success': True,
+            'message': message,
+            'cookie_count': result['cookie_count'],
+            'crypto_type_used': result['crypto_type_used'],
+            'output_path_display': result['output_path_display'],
+            'updated_at': updated_at,
+            'status': 'success',
+        })
+    except CookieCloudError as e:
+        message = str(e)
+        updated_at = _remember_cookiecloud_sync_result(False, message)
+        logger.warning('CookieCloud 立即拉取失败: %s', message)
+        return jsonify({
+            'success': False,
+            'message': message,
+            'updated_at': updated_at,
+            'status': 'error',
+        }), 400
+    except Exception:
+        message = 'CookieCloud 立即拉取失败，请稍后重试。'
+        updated_at = _remember_cookiecloud_sync_result(False, message)
+        logger.exception('CookieCloud 立即拉取失败')
+        return jsonify({
+            'success': False,
+            'message': message,
+            'updated_at': updated_at,
+            'status': 'error',
+        }), 500
 
 
 @app.route('/settings/acfun/qrcode/start', methods=['POST'])

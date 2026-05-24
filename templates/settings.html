@@ -458,6 +458,77 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
+                                                    <span class="section-eyebrow">可选同步</span>
+                                                    <h4>CookieCloud（YouTube）</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if config.get('COOKIECLOUD_ENABLED', False) else 'is-neutral' }}">
+                                                    {{ '已启用' if config.get('COOKIECLOUD_ENABLED', False) else '未启用' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="alert alert-info mb-3">
+                                                    <i class="bi bi-info-circle"></i>
+                                                    当前首版仅支持从 CookieCloud 拉取 YouTube / Google 相关 Cookies，并写入上方的 YouTube Cookies 文件路径。按钮会直接使用当前表单里的值，不必先保存设置。
+                                                </div>
+                                                <label class="checkbox-label mb-3">
+                                                    <input type="checkbox" id="cookiecloud-enabled" name="COOKIECLOUD_ENABLED" {% if config.get('COOKIECLOUD_ENABLED', False) %}checked{% endif %}>
+                                                    启用 CookieCloud 作为可选 YouTube Cookies 来源
+                                                </label>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="cookiecloud-server-url" class="form-label">服务地址</label>
+                                                            <input type="url" id="cookiecloud-server-url" name="COOKIECLOUD_SERVER_URL" value="{{ config.get('COOKIECLOUD_SERVER_URL', '') }}" class="form-control" placeholder="https://cookiecloud.example.com 或 http://127.0.0.1:8088">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="cookiecloud-uuid" class="form-label">UUID</label>
+                                                            <input type="text" id="cookiecloud-uuid" name="COOKIECLOUD_UUID" value="{{ config.get('COOKIECLOUD_UUID', '') }}" class="form-control" placeholder="CookieCloud UUID">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="cookiecloud-password" class="form-label">密码</label>
+                                                            <input type="password" id="cookiecloud-password" name="COOKIECLOUD_PASSWORD" value="{{ config.get('COOKIECLOUD_PASSWORD', '') }}" class="form-control" autocomplete="off" placeholder="CookieCloud 密码">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="cookiecloud-crypto-type" class="form-label">加密算法</label>
+                                                            <select id="cookiecloud-crypto-type" name="COOKIECLOUD_CRYPTO_TYPE" class="form-select">
+                                                                {% set cookiecloud_crypto_type = config.get('COOKIECLOUD_CRYPTO_TYPE', 'auto') %}
+                                                                <option value="auto" {% if cookiecloud_crypto_type == 'auto' %}selected{% endif %}>自动识别（推荐）</option>
+                                                                <option value="legacy" {% if cookiecloud_crypto_type == 'legacy' %}selected{% endif %}>legacy（旧版 CryptoJS）</option>
+                                                                <option value="aes-128-cbc-fixed" {% if cookiecloud_crypto_type == 'aes-128-cbc-fixed' %}selected{% endif %}>aes-128-cbc-fixed（新版固定 IV）</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-inline-actions mt-3">
+                                                    <button type="button" class="btn btn-outline-primary" id="cookiecloud-test-btn">
+                                                        <i class="bi bi-wifi"></i> 测试连接
+                                                    </button>
+                                                    <button type="button" class="btn btn-outline-success" id="cookiecloud-sync-btn">
+                                                        <i class="bi bi-cloud-download"></i> 立即拉取一次
+                                                    </button>
+                                                    <span class="help-text" id="cookiecloud-status-text">启用后可使用当前表单配置进行测试与拉取。</span>
+                                                </div>
+                                                <div class="form-text mt-3" id="cookiecloud-last-sync-text">
+                                                    {% if config.get('COOKIECLOUD_LAST_SYNC_AT', '') %}
+                                                        最近结果：{{ '成功' if config.get('COOKIECLOUD_LAST_SYNC_STATUS', '') == 'success' else '失败' }} · {{ config.get('COOKIECLOUD_LAST_SYNC_AT', '') }}{% if config.get('COOKIECLOUD_LAST_SYNC_MESSAGE', '') %} · {{ config.get('COOKIECLOUD_LAST_SYNC_MESSAGE', '') }}{% endif %}
+                                                    {% else %}
+                                                        最近未执行 CookieCloud 拉取。
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
                                                     <span class="section-eyebrow">监控接入</span>
                                                     <h4>YouTube 监控 API</h4>
                                                 </div>
@@ -1988,6 +2059,152 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
         });
     });
+
+    const cookieCloudEnabled = document.getElementById('cookiecloud-enabled');
+    const cookieCloudServerUrl = document.getElementById('cookiecloud-server-url');
+    const cookieCloudUuid = document.getElementById('cookiecloud-uuid');
+    const cookieCloudPassword = document.getElementById('cookiecloud-password');
+    const cookieCloudCryptoType = document.getElementById('cookiecloud-crypto-type');
+    const cookieCloudTestBtn = document.getElementById('cookiecloud-test-btn');
+    const cookieCloudSyncBtn = document.getElementById('cookiecloud-sync-btn');
+    const cookieCloudStatusText = document.getElementById('cookiecloud-status-text');
+    const cookieCloudLastSyncText = document.getElementById('cookiecloud-last-sync-text');
+    const youtubeCookiesPathField = document.getElementById('youtube-cookies');
+    const cookieCloudTestEndpoint = '{{ url_for("settings_test_cookiecloud") }}';
+    const cookieCloudSyncEndpoint = '{{ url_for("settings_sync_cookiecloud") }}';
+
+    const setCookieCloudStatus = function (text, tone) {
+        if (!cookieCloudStatusText) {
+            return;
+        }
+        cookieCloudStatusText.textContent = text || '';
+        applyStatusTone(cookieCloudStatusText, tone || 'neutral');
+    };
+
+    const updateCookieCloudLastSync = function (status, updatedAt, message) {
+        if (!cookieCloudLastSyncText) {
+            return;
+        }
+        const parts = ['最近结果：' + (status === 'success' ? '成功' : '失败')];
+        if (updatedAt) {
+            parts.push(updatedAt);
+        }
+        if (message) {
+            parts.push(message);
+        }
+        cookieCloudLastSyncText.textContent = parts.join(' · ');
+    };
+
+    const setCookieCloudBusy = function (isBusy) {
+        const enabled = !!(cookieCloudEnabled && cookieCloudEnabled.checked);
+        [cookieCloudTestBtn, cookieCloudSyncBtn].forEach(function (button) {
+            if (!button) {
+                return;
+            }
+            button.disabled = !!isBusy || !enabled;
+        });
+    };
+
+    const syncCookieCloudActionState = function () {
+        const enabled = !!(cookieCloudEnabled && cookieCloudEnabled.checked);
+        setCookieCloudBusy(false);
+        if (!enabled) {
+            setCookieCloudStatus('启用后可使用当前表单配置进行测试与拉取。', 'neutral');
+            return;
+        }
+        if (cookieCloudStatusText && !cookieCloudStatusText.textContent.trim()) {
+            setCookieCloudStatus('将使用当前表单中的 CookieCloud 配置执行测试或拉取。', 'neutral');
+        }
+    };
+
+    const collectCookieCloudPayload = function () {
+        return {
+            COOKIECLOUD_ENABLED: !!(cookieCloudEnabled && cookieCloudEnabled.checked),
+            COOKIECLOUD_SERVER_URL: cookieCloudServerUrl ? cookieCloudServerUrl.value : '',
+            COOKIECLOUD_UUID: cookieCloudUuid ? cookieCloudUuid.value : '',
+            COOKIECLOUD_PASSWORD: cookieCloudPassword ? cookieCloudPassword.value : '',
+            COOKIECLOUD_CRYPTO_TYPE: cookieCloudCryptoType ? cookieCloudCryptoType.value : 'auto',
+            YOUTUBE_COOKIES_PATH: youtubeCookiesPathField ? youtubeCookiesPathField.value : ''
+        };
+    };
+
+    const invokeCookieCloudAction = function (endpoint, waitingText, defaultErrorMessage) {
+        if (!cookieCloudEnabled || !cookieCloudEnabled.checked) {
+            showSettingsToast('warning', '请先启用 CookieCloud。');
+            return;
+        }
+
+        setCookieCloudBusy(true);
+        setCookieCloudStatus(waitingText, 'neutral');
+
+        fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(collectCookieCloudPayload())
+        })
+            .then(function (response) {
+                return response.json().catch(function () {
+                    return {};
+                }).then(function (data) {
+                    return {
+                        ok: response.ok,
+                        data: data || {}
+                    };
+                });
+            })
+            .then(function (result) {
+                if (!result.ok || !result.data.success) {
+                    throw {
+                        message: result.data.message || defaultErrorMessage,
+                        updatedAt: result.data.updated_at || '',
+                        status: result.data.status || 'error'
+                    };
+                }
+                setCookieCloudStatus(result.data.message || '操作成功', 'success');
+                updateCookieCloudLastSync(result.data.status || 'success', result.data.updated_at || '', result.data.message || '');
+                showSettingsToast('success', result.data.message || '操作成功');
+            })
+            .catch(function (error) {
+                const message = error && error.message ? error.message : defaultErrorMessage;
+                const updatedAt = error && error.updatedAt ? error.updatedAt : '';
+                setCookieCloudStatus(message, 'error');
+                if (updatedAt) {
+                    updateCookieCloudLastSync('error', updatedAt, message);
+                }
+                showSettingsToast('error', message);
+            })
+            .finally(function () {
+                setCookieCloudBusy(false);
+            });
+    };
+
+    if (cookieCloudEnabled) {
+        cookieCloudEnabled.addEventListener('change', syncCookieCloudActionState);
+        syncCookieCloudActionState();
+    }
+
+    if (cookieCloudTestBtn) {
+        cookieCloudTestBtn.addEventListener('click', function () {
+            invokeCookieCloudAction(
+                cookieCloudTestEndpoint,
+                '正在测试 CookieCloud 连接并校验 YouTube Cookies…',
+                'CookieCloud 连接测试失败，请稍后重试。'
+            );
+        });
+    }
+
+    if (cookieCloudSyncBtn) {
+        cookieCloudSyncBtn.addEventListener('click', function () {
+            invokeCookieCloudAction(
+                cookieCloudSyncEndpoint,
+                '正在拉取 CookieCloud 数据并写入 YouTube Cookies 文件…',
+                'CookieCloud 立即拉取失败，请稍后重试。'
+            );
+        });
+    }
 
     const settingsForm = document.getElementById('settings-form');
     const saveSettingsBtn = document.getElementById('save-settings-btn');

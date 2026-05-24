@@ -44,16 +44,24 @@ class AppLoggingHelperTests(unittest.TestCase):
             "YOUTUBE_API_KEY": "yt-secret",
             "ALIYUN_ACCESS_KEY_SECRET": "aliyun-secret",
             "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt",
+            "COOKIECLOUD_ENABLED": True,
+            "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
+            "COOKIECLOUD_UUID": "cookiecloud-secret-uuid",
+            "COOKIECLOUD_PASSWORD": "cookiecloud-secret-password",
         })
         serialized = json.dumps(summary, ensure_ascii=False)
 
         self.assertTrue(summary["feature_flags"]["AUTO_MODE_ENABLED"])
+        self.assertTrue(summary["feature_flags"]["COOKIECLOUD_ENABLED"])
         self.assertNotIn("credentials_configured", summary)
         self.assertNotIn("path_configured", summary)
         self.assertNotIn("super-secret", serialized)
         self.assertNotIn("sk-secret", serialized)
         self.assertNotIn("yt-secret", serialized)
         self.assertNotIn("aliyun-secret", serialized)
+        self.assertNotIn("cookiecloud-secret-uuid", serialized)
+        self.assertNotIn("cookiecloud-secret-password", serialized)
+        self.assertNotIn("cookiecloud.example.com", serialized)
         self.assertNotIn("cookies/yt_cookies.txt", serialized)
 
 

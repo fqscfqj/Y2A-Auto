@@ -62,6 +62,15 @@ DEFAULT_CONFIG = {
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
+    # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
+    "COOKIECLOUD_ENABLED": False,
+    "COOKIECLOUD_SERVER_URL": "",
+    "COOKIECLOUD_UUID": "",
+    "COOKIECLOUD_PASSWORD": "",
+    "COOKIECLOUD_CRYPTO_TYPE": "auto",
+    "COOKIECLOUD_LAST_SYNC_AT": "",
+    "COOKIECLOUD_LAST_SYNC_STATUS": "",
+    "COOKIECLOUD_LAST_SYNC_MESSAGE": "",
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
