@@ -441,8 +441,7 @@ def sync_cookiecloud_to_youtube_file(
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, "w", encoding="utf-8", newline="\n") as file_obj:
         # lgtm [py/clear-text-storage-sensitive-data]
-        # codeql[py/clear-text-storage-sensitive-data] Intentional local export of browser cookies after explicit user opt-in.
-        file_obj.write(result["content"])
+        file_obj.write(result["content"])  # codeql[py/clear-text-storage-sensitive-data] -- Intentional local export of browser cookies after explicit user opt-in.
     return {
         **result,
         "output_path": target_path,
