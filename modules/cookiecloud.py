@@ -24,6 +24,7 @@ SUPPORTED_CRYPTO_TYPES = (
 DEFAULT_CRYPTO_TYPE = COOKIECLOUD_CRYPTO_AUTO
 DEFAULT_YOUTUBE_COOKIES_PATH = "cookies/yt_cookies.txt"
 DEFAULT_TIMEOUT = (5, 20)
+AES_BLOCK_SIZE_BITS = 128
 _YOUTUBE_ALLOWED_BASE_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -189,7 +190,7 @@ def _aes_cbc_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
-    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    unpadder = padding.PKCS7(AES_BLOCK_SIZE_BITS).unpadder()
     return unpadder.update(padded) + unpadder.finalize()
 
 
