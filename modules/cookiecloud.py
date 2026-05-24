@@ -107,17 +107,17 @@ def validate_cookiecloud_settings(settings: dict[str, Any] | None, require_enabl
 
     server_url = normalize_server_url(normalized.get("COOKIECLOUD_SERVER_URL", ""))
     uuid_value = _coerce_text(normalized.get("COOKIECLOUD_UUID", ""))
-    password_value = _coerce_text(normalized.get("COOKIECLOUD_PASSWORD", ""))
+    secret_key_password = _coerce_text(normalized.get("COOKIECLOUD_PASSWORD", ""))
     if not uuid_value:
         raise CookieCloudConfigError("请先填写 CookieCloud UUID。")
-    if not password_value:
+    if not secret_key_password:
         raise CookieCloudConfigError("请先填写 CookieCloud 密码。")
 
     return {
         "COOKIECLOUD_ENABLED": enabled,
         "COOKIECLOUD_SERVER_URL": server_url,
         "COOKIECLOUD_UUID": uuid_value,
-        "COOKIECLOUD_PASSWORD": password_value,
+        "COOKIECLOUD_PASSWORD": secret_key_password,
         "COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT": _as_bool(
             normalized.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False)
         ),
