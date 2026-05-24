@@ -279,36 +279,29 @@ class CookieCloudTests(unittest.TestCase):
         self.assertEqual(fields[4], "0")
 
     def test_sync_cookiecloud_to_youtube_file_requires_plaintext_export_opt_in(self):
-        with patch(
-            "modules.cookiecloud.test_cookiecloud_youtube_sync",
-            return_value={
-                "content": "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSAPISID\tvalue\n",
-                "cookie_count": 1,
-                "crypto_type_used": COOKIECLOUD_CRYPTO_LEGACY,
-            },
-        ):
-            with self.assertRaisesRegex(CookieCloudConfigError, "允许明文导出"):
-                sync_cookiecloud_to_youtube_file({
-                    "COOKIECLOUD_ENABLED": True,
-                    "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
-                    "COOKIECLOUD_UUID": TEST_UUID,
-                    "COOKIECLOUD_PASSWORD": TEST_PASSWORD,
-                    "COOKIECLOUD_CRYPTO_TYPE": "auto",
-                    "YOUTUBE_COOKIES_PATH": self.sync_relative_path,
-                })
+        with self.assertRaisesRegex(CookieCloudConfigError, "允许明文导出"):
+            sync_cookiecloud_to_youtube_file({
+                "COOKIECLOUD_ENABLED": True,
+                "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
+                "COOKIECLOUD_UUID": TEST_UUID,
+                "COOKIECLOUD_PASSWORD": TEST_PASSWORD,
+                "COOKIECLOUD_CRYPTO_TYPE": "auto",
+                "YOUTUBE_COOKIES_PATH": self.sync_relative_path,
+            })
 
     def test_resolve_cookie_output_path_rejects_escape_outside_project_root(self):
         with self.assertRaises(CookieCloudConfigError):
             resolve_cookie_output_path(os.path.join("..", "outside-cookiecloud.txt"))
 
     def test_sync_cookiecloud_to_youtube_file_writes_generated_content(self):
+        fake_payload = {"encrypted": "fake"}
+        fake_decrypted = self.payload
         with patch(
-            "modules.cookiecloud.test_cookiecloud_youtube_sync",
-            return_value={
-                "content": "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSAPISID\tvalue\n",
-                "cookie_count": 1,
-                "crypto_type_used": COOKIECLOUD_CRYPTO_LEGACY,
-            },
+            "modules.cookiecloud.fetch_cookiecloud_payload",
+            return_value=fake_payload,
+        ), patch(
+            "modules.cookiecloud.decrypt_cookiecloud_payload",
+            return_value=(fake_decrypted, COOKIECLOUD_CRYPTO_LEGACY),
         ):
             result = sync_cookiecloud_to_youtube_file({
                 "COOKIECLOUD_ENABLED": True,
@@ -320,7 +313,7 @@ class CookieCloudTests(unittest.TestCase):
                 "YOUTUBE_COOKIES_PATH": self.sync_relative_path,
             })
 
-        self.assertEqual(result["cookie_count"], 1)
+        self.assertEqual(result["cookie_count"], 3)
         self.assertEqual(result["output_path_display"].replace("\\", "/"), self.sync_relative_path.replace("\\", "/"))
         self.assertTrue(self.sync_absolute_path.exists())
         written = self.sync_absolute_path.read_text(encoding="utf-8")

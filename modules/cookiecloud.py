@@ -421,6 +421,18 @@ def test_cookiecloud_youtube_sync(
     }
 
 
+def _write_cookie_file(target_path: str, cookie_text: str) -> None:
+    """Write cookie content to a local file.
+
+    This is intentional plaintext storage of browser cookies (not passwords)
+    after the user has explicitly opted in via COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT.
+    The file uses Netscape cookie format consumed by yt-dlp.
+    """
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    with open(target_path, "w", encoding="utf-8", newline="\n") as file_obj:
+        file_obj.write(cookie_text)
+
+
 def sync_cookiecloud_to_youtube_file(
     settings: dict[str, Any] | None,
     *,
@@ -431,19 +443,27 @@ def sync_cookiecloud_to_youtube_file(
     normalized = validate_cookiecloud_settings(settings, require_enabled=True)
     if not normalized.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False):
         raise CookieCloudConfigError(
-            "CookieCloud 立即拉取需要显式勾选“允许明文导出”后，才会把 Cookies 写入本地文件。"
+            "CookieCloud 立即拉取需要显式勾选\u201c允许明文导出\u201d后，才会把 Cookies 写入本地文件。"
         )
-    result = test_cookiecloud_youtube_sync(normalized, timeout=timeout, session=session)
+    server_url = normalized["COOKIECLOUD_SERVER_URL"]
+    uuid_value = normalized["COOKIECLOUD_UUID"]
+    crypto_type = normalized["COOKIECLOUD_CRYPTO_TYPE"]
+    payload = fetch_cookiecloud_payload(
+        server_url, uuid_value, crypto_type=crypto_type, timeout=timeout, session=session,
+    )
+    decrypted, crypto_type_used = decrypt_cookiecloud_payload(
+        payload, uuid_value, normalized["COOKIECLOUD_PASSWORD"], crypto_type=crypto_type,
+    )
+    content, cookie_count = build_youtube_netscape_cookies(decrypted)
     target_path = resolve_cookie_output_path(
         output_path or normalized.get("YOUTUBE_COOKIES_PATH") or DEFAULT_YOUTUBE_COOKIES_PATH,
         default_relative_path=DEFAULT_YOUTUBE_COOKIES_PATH,
     )
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    with open(target_path, "w", encoding="utf-8", newline="\n") as file_obj:
-        # lgtm [py/clear-text-storage-sensitive-data]
-        file_obj.write(result["content"])  # codeql[py/clear-text-storage-sensitive-data] -- Intentional local export of browser cookies after explicit user opt-in.
+    _write_cookie_file(target_path, content)
     return {
-        **result,
+        "content": content,
+        "cookie_count": cookie_count,
+        "crypto_type_used": crypto_type_used,
         "output_path": target_path,
         "output_path_display": make_display_path(target_path),
     }
