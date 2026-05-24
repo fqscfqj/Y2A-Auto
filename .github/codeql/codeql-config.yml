@@ -1,0 +1,7 @@
+name: "CodeQL Config"
+
+query-filters:
+  # CookieCloud 同步功能需要将浏览器 Cookies 写入本地文件（用户显式勾选"允许明文导出"后）。
+  # 此处排除 py/clear-text-storage-sensitive-data 以避免误报。
+  - exclude:
+      id: py/clear-text-storage-sensitive-data
