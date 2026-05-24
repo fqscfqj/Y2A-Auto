@@ -254,6 +254,30 @@ class CookieCloudTests(unittest.TestCase):
         self.assertEqual(fields[5], "SA PISID")
         self.assertEqual(fields[6], "va lue")
 
+    def test_build_youtube_netscape_cookies_ignores_overflow_expiration_values(self):
+        payload = {
+            "cookie_data": {
+                "youtube.com": [
+                    {
+                        "domain": ".youtube.com",
+                        "hostOnly": False,
+                        "path": "/",
+                        "secure": True,
+                        "expires": "1e309",
+                        "name": "SAPISID",
+                        "value": "value",
+                    }
+                ]
+            }
+        }
+
+        content, cookie_count = build_youtube_netscape_cookies(payload)
+        cookie_line = content.strip().splitlines()[-1]
+        fields = cookie_line.split("\t")
+
+        self.assertEqual(cookie_count, 1)
+        self.assertEqual(fields[4], "0")
+
     def test_sync_cookiecloud_to_youtube_file_requires_plaintext_export_opt_in(self):
         with patch(
             "modules.cookiecloud.test_cookiecloud_youtube_sync",

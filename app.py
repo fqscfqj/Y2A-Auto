@@ -782,6 +782,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'NOTIFY_SERVERCHAN_ENABLED',
             'NOTIFY_MESSAGE_PUSHER_ENABLED',
             'COOKIECLOUD_ENABLED',
+            'COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT',
         ]
         for checkbox in SPEECH_PIPELINE_CHECKBOXES:
             if checkbox not in checkboxes:

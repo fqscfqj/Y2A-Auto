@@ -320,7 +320,7 @@ def _extract_expiration(item: dict[str, Any]) -> int:
             continue
         try:
             return max(0, int(float(str(raw_value).strip())))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return 0
 
