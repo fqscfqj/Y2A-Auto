@@ -62,6 +62,16 @@ DEFAULT_CONFIG = {
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
+    # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
+    "COOKIECLOUD_ENABLED": False,
+    "COOKIECLOUD_SERVER_URL": "",
+    "COOKIECLOUD_UUID": "",
+    "COOKIECLOUD_PASSWORD": "",
+    "COOKIECLOUD_CRYPTO_TYPE": "auto",
+    "COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT": False,
+    "COOKIECLOUD_LAST_SYNC_AT": "",
+    "COOKIECLOUD_LAST_SYNC_STATUS": "",
+    "COOKIECLOUD_LAST_SYNC_MESSAGE": "",
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
@@ -376,8 +386,8 @@ def update_config(new_config):
             # 特殊处理布尔值
             if isinstance(DEFAULT_CONFIG[key], bool):
                 current_config[key] = str(new_config[key]).lower() in ['true', '1', 'on']
-            elif key == 'password':
-                if new_config[key]: # Only update password if a new one is provided
+            elif key in ('password', 'COOKIECLOUD_PASSWORD'):
+                if str(new_config[key]).strip(): # Only update password if a new one is provided
                     current_config[key] = new_config[key]
             elif key == 'VIDEO_ENCODER':
                 # 支持硬件编码：auto/cpu/nvidia/intel/amd

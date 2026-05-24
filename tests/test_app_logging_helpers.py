@@ -44,17 +44,73 @@ class AppLoggingHelperTests(unittest.TestCase):
             "YOUTUBE_API_KEY": "yt-secret",
             "ALIYUN_ACCESS_KEY_SECRET": "aliyun-secret",
             "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt",
+            "COOKIECLOUD_ENABLED": True,
+            "COOKIECLOUD_SERVER_URL": "https://cookiecloud.example.com",
+            "COOKIECLOUD_UUID": "cookiecloud-secret-uuid",
+            "COOKIECLOUD_PASSWORD": "cookiecloud-secret-password",
         })
         serialized = json.dumps(summary, ensure_ascii=False)
 
         self.assertTrue(summary["feature_flags"]["AUTO_MODE_ENABLED"])
+        self.assertTrue(summary["feature_flags"]["COOKIECLOUD_ENABLED"])
         self.assertNotIn("credentials_configured", summary)
         self.assertNotIn("path_configured", summary)
         self.assertNotIn("super-secret", serialized)
         self.assertNotIn("sk-secret", serialized)
         self.assertNotIn("yt-secret", serialized)
         self.assertNotIn("aliyun-secret", serialized)
+        self.assertNotIn("cookiecloud-secret-uuid", serialized)
+        self.assertNotIn("cookiecloud-secret-password", serialized)
+        self.assertNotIn("cookiecloud.example.com", serialized)
         self.assertNotIn("cookies/yt_cookies.txt", serialized)
+
+    def test_cookiecloud_helpers_sanitize_errors_and_preserve_password(self):
+        _coerce_checkbox_value, merge_runtime_settings, build_error_message = _load_functions(
+            "_coerce_checkbox_value",
+            "_merge_cookiecloud_runtime_settings",
+            "_cookiecloud_operation_error_message",
+        )
+
+        merged = merge_runtime_settings(
+            {
+                "COOKIECLOUD_ENABLED": True,
+                "COOKIECLOUD_PASSWORD": "",
+                "COOKIECLOUD_UUID": "incoming-uuid",
+            },
+            {
+                "COOKIECLOUD_PASSWORD": "stored-secret",
+                "COOKIECLOUD_UUID": "stored-uuid",
+            },
+        )
+
+        self.assertEqual(merged["COOKIECLOUD_PASSWORD"], "stored-secret")
+        self.assertEqual(merged["COOKIECLOUD_UUID"], "incoming-uuid")
+
+        test_message = build_error_message("test")
+        sync_message = build_error_message("sync", retry_later=True)
+        self.assertIn("CookieCloud", test_message)
+        self.assertIn("CookieCloud", sync_message)
+        self.assertNotIn("stored-secret", test_message + sync_message)
+        self.assertNotIn("incoming-uuid", test_message + sync_message)
+
+    def test_cookiecloud_runtime_merge_ignores_non_mapping_payload(self):
+        _coerce_checkbox_value, merge_runtime_settings = _load_functions(
+            "_coerce_checkbox_value",
+            "_merge_cookiecloud_runtime_settings",
+        )
+
+        merged = merge_runtime_settings(
+            ["unexpected", "payload"],
+            {
+                "COOKIECLOUD_ENABLED": True,
+                "COOKIECLOUD_PASSWORD": "stored-secret",
+                "COOKIECLOUD_UUID": "stored-uuid",
+            },
+        )
+
+        self.assertTrue(merged["COOKIECLOUD_ENABLED"])
+        self.assertEqual(merged["COOKIECLOUD_PASSWORD"], "stored-secret")
+        self.assertEqual(merged["COOKIECLOUD_UUID"], "stored-uuid")
 
 
 if __name__ == "__main__":
