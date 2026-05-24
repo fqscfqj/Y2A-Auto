@@ -523,3 +523,31 @@ def sync_cookiecloud_to_youtube_file(
         "output_path": target_path,
         "output_path_display": make_display_path(target_path),
     }
+
+
+def try_cookiecloud_youtube_sync(
+    settings: dict[str, Any] | None,
+    *,
+    timeout: tuple[int, int] = DEFAULT_TIMEOUT,
+    session: requests.Session | None = None,
+) -> tuple[bool, dict[str, Any] | str]:
+    """尝试通过 CookieCloud 同步 YouTube cookies 到本地文件。
+
+    用于 cookie 失效时的自动恢复：拉取 CookieCloud 远端 cookies 并写入本地
+    yt_cookies.txt，成功后返回 (True, result_dict)，失败返回 (False, error_msg)。
+    所有异常内部捕获，不会向调用方抛出。
+
+    仅在 CookieCloud 已启用且允许明文导出时执行。
+    """
+    try:
+        effective_config = dict(settings or {})
+        if not _as_bool(effective_config.get("COOKIECLOUD_ENABLED", False)):
+            return False, "CookieCloud 未启用"
+        if not _as_bool(effective_config.get("COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT", False)):
+            return False, "CookieCloud 未允许明文导出"
+        result = sync_cookiecloud_to_youtube_file(
+            effective_config, timeout=timeout, session=session,
+        )
+        return True, result
+    except Exception as exc:
+        return False, f"CookieCloud 同步失败: {exc}"

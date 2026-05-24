@@ -19,6 +19,7 @@ from modules.config_manager import (
 from logging.handlers import RotatingFileHandler
 from .utils import get_app_subdir, get_app_root_dir
 from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
+from .cookiecloud import try_cookiecloud_youtube_sync
 from shutil import which as _which
 from urllib.parse import parse_qs, urlparse
 import re
@@ -602,20 +603,25 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             # 预检查若只是格式选择问题，则继续进入正式下载，让后续降级格式策略接管
             if _is_format_selection_error(error_msg):
                 logger.warning(f"视频预检查遇到格式选择问题，继续进入下载阶段处理: {error_msg}")
-            else:
-                if _looks_like_youtube_bot_challenge(error_msg):
-                    logger.warning("检测到YouTube反机器人验证，可能需要更新Cookie")
-                    # 发送cookie更新通知到Web界面
-                    try:
-                        import requests
-                        # 尝试通知Web界面显示cookie更新提示
-                        requests.post('http://localhost:5000/api/cookies/refresh-needed', 
-                                    json={'reason': 'bot_detection', 'video_url': youtube_url}, 
-                                    timeout=1)
-                        logger.info("已发送Cookie刷新通知")
-                    except:
-                        pass  # 忽略请求失败，不影响主流程
-                
+            elif _looks_like_youtube_bot_challenge(error_msg):
+                # 检测到反机器人验证，尝试通过 CookieCloud 自动刷新 Cookie 后重试
+                logger.warning("检测到YouTube反机器人验证，尝试通过CookieCloud刷新Cookie")
+                config = load_config()
+                sync_ok, sync_info = try_cookiecloud_youtube_sync(config)
+                if sync_ok and isinstance(sync_info, dict):
+                    new_path = sync_info.get("output_path") or sync_info.get("output_path_display")
+                    if new_path and os.path.isfile(new_path):
+                        cookies_path = new_path
+                        logger.info("CookieCloud同步成功（%d 条Cookie），使用刷新后的Cookie重试",
+                                    sync_info.get("cookie_count", 0))
+                        available, formats_info, error_msg = test_video_availability(
+                            youtube_url, yt_dlp_cmd, cookies_path, logger,
+                        )
+                    else:
+                        logger.warning("CookieCloud同步成功但未生成有效的cookie文件")
+                else:
+                    logger.warning("CookieCloud同步失败: %s", sync_info)
+            if not available:
                 logger.error(f"视频不可用或无法访问: {error_msg}")
                 return False, f"视频不可用或无法访问: {error_msg}"
 
