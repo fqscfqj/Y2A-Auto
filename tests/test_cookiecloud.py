@@ -26,7 +26,11 @@ TEST_UUID = "cookiecloud-test-uuid"
 TEST_PASSWORD = hashlib.sha256(TEST_UUID.encode("utf-8")).hexdigest()[:24]
 
 
-def _derive_key_seed(uuid_value, password):
+def _derive_cryptojs_password_key(uuid_value, password):
+    return hashlib.md5(f"{uuid_value}-{password}".encode("utf-8")).hexdigest()[:16].encode("utf-8")
+
+
+def _derive_preview_compat_key_seed(uuid_value, password):
     return hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
@@ -44,22 +48,46 @@ def _aes_cbc_encrypt(plaintext_bytes, key, iv):
     return encryptor.update(padded) + encryptor.finalize()
 
 
-def _evp_bytes_to_key(password_seed, salt, key_len=32, iv_len=16):
+def _openssl_bytes_to_key(password_seed, salt, key_len=32, iv_len=16):
+    derived = b""
+    prev = b""
+    while len(derived) < key_len + iv_len:
+        prev = hashlib.md5(prev + password_seed + salt).digest()
+        derived += prev
+    return derived[:key_len], derived[key_len:key_len + iv_len]
+
+
+def _preview_compat_pbkdf2_key_iv(password_seed, salt, key_len=32, iv_len=16):
     derived = hashlib.pbkdf2_hmac("sha256", password_seed, salt, 200000, dklen=key_len + iv_len)
     return derived[:key_len], derived[key_len:key_len + iv_len]
 
 
 def _encrypt_legacy(payload, uuid_value=TEST_UUID, password=TEST_PASSWORD, salt=b"12345678"):
     plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    password_seed = _derive_key_seed(uuid_value, password)
-    key, iv = _evp_bytes_to_key(password_seed, salt)
+    password_seed = _derive_cryptojs_password_key(uuid_value, password)
+    key, iv = _openssl_bytes_to_key(password_seed, salt)
     encrypted = _aes_cbc_encrypt(plaintext, key, iv)
     return base64.b64encode(b"Salted__" + salt + encrypted).decode("utf-8")
 
 
 def _encrypt_fixed(payload, uuid_value=TEST_UUID, password=TEST_PASSWORD):
     plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    key = _derive_key_seed(uuid_value, password)
+    key = _derive_cryptojs_password_key(uuid_value, password)
+    encrypted = _aes_cbc_encrypt(plaintext, key, b"\x00" * 16)
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def _encrypt_legacy_preview_compat(payload, uuid_value=TEST_UUID, password=TEST_PASSWORD, salt=b"12345678"):
+    plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    password_seed = _derive_preview_compat_key_seed(uuid_value, password)
+    key, iv = _preview_compat_pbkdf2_key_iv(password_seed, salt)
+    encrypted = _aes_cbc_encrypt(plaintext, key, iv)
+    return base64.b64encode(b"Salted__" + salt + encrypted).decode("utf-8")
+
+
+def _encrypt_fixed_preview_compat(payload, uuid_value=TEST_UUID, password=TEST_PASSWORD):
+    plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    key = _derive_preview_compat_key_seed(uuid_value, password)
     encrypted = _aes_cbc_encrypt(plaintext, key, b"\x00" * 16)
     return base64.b64encode(encrypted).decode("utf-8")
 
@@ -146,6 +174,43 @@ class CookieCloudTests(unittest.TestCase):
 
     def test_decrypt_cookiecloud_payload_auto_detects_fixed_iv(self):
         encrypted = _encrypt_fixed(self.payload)
+        data, crypto_type = decrypt_cookiecloud_payload(
+            {
+                "encrypted": encrypted,
+                "crypto_type": COOKIECLOUD_CRYPTO_AES_128_CBC_FIXED,
+            },
+            TEST_UUID,
+            TEST_PASSWORD,
+        )
+
+        self.assertEqual(crypto_type, COOKIECLOUD_CRYPTO_AES_128_CBC_FIXED)
+        self.assertEqual(data["cookie_data"]["google.com"][0]["name"], "HSID")
+
+    def test_decrypt_cookiecloud_payload_auto_detects_fixed_iv_without_payload_crypto_type(self):
+        encrypted = _encrypt_fixed(self.payload)
+        data, crypto_type = decrypt_cookiecloud_payload(
+            {"encrypted": encrypted},
+            TEST_UUID,
+            TEST_PASSWORD,
+        )
+
+        self.assertEqual(crypto_type, COOKIECLOUD_CRYPTO_AES_128_CBC_FIXED)
+        self.assertEqual(data["cookie_data"]["google.com"][0]["name"], "HSID")
+
+    def test_decrypt_cookiecloud_payload_keeps_preview_legacy_compatibility(self):
+        encrypted = _encrypt_legacy_preview_compat(self.payload)
+        data, crypto_type = decrypt_cookiecloud_payload(
+            {"encrypted": encrypted},
+            TEST_UUID,
+            TEST_PASSWORD,
+            crypto_type=COOKIECLOUD_CRYPTO_LEGACY,
+        )
+
+        self.assertEqual(crypto_type, COOKIECLOUD_CRYPTO_LEGACY)
+        self.assertEqual(data["cookie_data"]["youtube.com"][0]["name"], "SAPISID")
+
+    def test_decrypt_cookiecloud_payload_keeps_preview_fixed_iv_compatibility(self):
+        encrypted = _encrypt_fixed_preview_compat(self.payload)
         data, crypto_type = decrypt_cookiecloud_payload(
             {
                 "encrypted": encrypted,

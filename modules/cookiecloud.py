@@ -169,7 +169,22 @@ def fetch_cookiecloud_payload(
     return payload
 
 
-def _derive_key_seed(uuid_value: str, password: str) -> bytes:
+def _derive_cryptojs_password_key(uuid_value: str, password: str) -> bytes:
+    digest = hashlib.md5(f"{uuid_value}-{password}".encode("utf-8")).hexdigest()
+    return digest[:16].encode("utf-8")
+
+
+def _openssl_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+    total_length = key_len + iv_len
+    derived = b""
+    block = b""
+    while len(derived) < total_length:
+        block = hashlib.md5(block + password + salt).digest()
+        derived += block
+    return derived[:key_len], derived[key_len:total_length]
+
+
+def _derive_preview_compat_key_seed(uuid_value: str, password: str) -> bytes:
     salt = uuid_value.encode("utf-8")
     return hashlib.pbkdf2_hmac(
         "sha256",
@@ -180,7 +195,7 @@ def _derive_key_seed(uuid_value: str, password: str) -> bytes:
     )
 
 
-def _pbkdf2_key_iv(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+def _preview_compat_pbkdf2_key_iv(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
     total_length = key_len + iv_len
     derived = hashlib.pbkdf2_hmac("sha256", password, salt, 200000, dklen=total_length)
     return derived[:key_len], derived[key_len:total_length]
@@ -200,16 +215,46 @@ def _decrypt_legacy_payload(ciphertext: str, uuid_value: str, password: str) -> 
         raise CookieCloudDecryptError("CookieCloud legacy 密文格式无效。")
     salt = decoded[8:16]
     body = decoded[16:]
-    password_seed = _derive_key_seed(uuid_value, password)
-    key, iv = _pbkdf2_key_iv(password_seed, salt, key_len=32, iv_len=16)
+    password_seed = _derive_cryptojs_password_key(uuid_value, password)
+    key, iv = _openssl_bytes_to_key(password_seed, salt, key_len=32, iv_len=16)
     return _aes_cbc_decrypt(body, key, iv)
 
 
 def _decrypt_fixed_iv_payload(ciphertext: str, uuid_value: str, password: str) -> bytes:
     decoded = base64.b64decode(ciphertext)
-    key = _derive_key_seed(uuid_value, password)
+    key = _derive_cryptojs_password_key(uuid_value, password)
     fixed_iv = b"\x00" * 16
     return _aes_cbc_decrypt(decoded, key, fixed_iv)
+
+
+def _decrypt_legacy_payload_preview_compat(ciphertext: str, uuid_value: str, password: str) -> bytes:
+    decoded = base64.b64decode(ciphertext)
+    if len(decoded) < 17 or decoded[:8] != b"Salted__":
+        raise CookieCloudDecryptError("CookieCloud legacy 密文格式无效。")
+    salt = decoded[8:16]
+    body = decoded[16:]
+    password_seed = _derive_preview_compat_key_seed(uuid_value, password)
+    key, iv = _preview_compat_pbkdf2_key_iv(password_seed, salt, key_len=32, iv_len=16)
+    return _aes_cbc_decrypt(body, key, iv)
+
+
+def _decrypt_fixed_iv_payload_preview_compat(ciphertext: str, uuid_value: str, password: str) -> bytes:
+    decoded = base64.b64decode(ciphertext)
+    key = _derive_preview_compat_key_seed(uuid_value, password)
+    fixed_iv = b"\x00" * 16
+    return _aes_cbc_decrypt(decoded, key, fixed_iv)
+
+
+def _iter_decryptors_for_candidate(candidate: str):
+    if candidate == COOKIECLOUD_CRYPTO_AES_128_CBC_FIXED:
+        return (
+            _decrypt_fixed_iv_payload,
+            _decrypt_fixed_iv_payload_preview_compat,
+        )
+    return (
+        _decrypt_legacy_payload,
+        _decrypt_legacy_payload_preview_compat,
+    )
 
 
 def _resolve_crypto_candidates(requested_crypto_type: str, payload: dict[str, Any] | None) -> list[str]:
@@ -256,18 +301,16 @@ def decrypt_cookiecloud_payload(
 
     last_error: Exception | None = None
     for candidate in _resolve_crypto_candidates(crypto_type, payload):
-        try:
-            if candidate == COOKIECLOUD_CRYPTO_AES_128_CBC_FIXED:
-                decrypted = _decrypt_fixed_iv_payload(ciphertext, uuid_value, password)
-            else:
-                decrypted = _decrypt_legacy_payload(ciphertext, uuid_value, password)
-            parsed = json.loads(decrypted.decode("utf-8"))
-            if not isinstance(parsed, dict):
-                raise CookieCloudDataError("CookieCloud 解密后的数据不是对象。")
-            return parsed, candidate
-        except Exception as exc:  # pragma: no cover - 自动回退需要保留宽口径
-            last_error = exc
-            continue
+        for decryptor in _iter_decryptors_for_candidate(candidate):
+            try:
+                decrypted = decryptor(ciphertext, uuid_value, password)
+                parsed = json.loads(decrypted.decode("utf-8"))
+                if not isinstance(parsed, dict):
+                    raise CookieCloudDataError("CookieCloud 解密后的数据不是对象。")
+                return parsed, candidate
+            except Exception as exc:  # pragma: no cover - 自动回退需要保留宽口径
+                last_error = exc
+                continue
 
     raise CookieCloudDecryptError("CookieCloud 凭据无效或解密失败，请检查 UUID、密码与加密算法。") from last_error
 
