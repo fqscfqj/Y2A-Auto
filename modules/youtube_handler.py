@@ -612,8 +612,9 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     new_path = sync_info.get("output_path") or sync_info.get("output_path_display")
                     if new_path and os.path.isfile(new_path):
                         cookies_path = new_path
+                        cookie_count = sync_info.get("cookie_count", 0)
                         logger.info("CookieCloud同步成功（%d 条Cookie），使用刷新后的Cookie重试",
-                                    sync_info.get("cookie_count", 0))
+                                    cookie_count)
                         available, formats_info, error_msg = test_video_availability(
                             youtube_url, yt_dlp_cmd, cookies_path, logger,
                         )
