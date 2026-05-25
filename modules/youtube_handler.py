@@ -620,14 +620,14 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     else:
                         logger.warning("CookieCloud同步成功但未生成有效的cookie文件")
                 else:
-                    logger.warning("CookieCloud同步失败: %s", sync_info)
+                    logger.warning("CookieCloud同步失败")
             if not available:
-                logger.error(f"视频不可用或无法访问: {error_msg}")
-                return False, f"视频不可用或无法访问: {error_msg}"
+                logger.error("视频不可用或无法访问")
+                return False, "视频不可用或无法访问"
 
         if not available and error_msg and _looks_like_youtube_bot_challenge(error_msg):
             # 对于同时存在格式/访问混合异常的场景，保留诊断日志但不阻塞后续下载重试
-            logger.warning(f"预检查存在潜在YouTube风控迹象，下载阶段将继续重试: {error_msg}")
+            logger.warning("预检查存在潜在YouTube风控迹象，下载阶段将继续重试")
         
         # 预先检测 ffmpeg（内部会在未提供config时自行加载配置）
         ffmpeg_location = get_ffmpeg_path(logger=logger)
