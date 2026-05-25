@@ -549,5 +549,5 @@ def try_cookiecloud_youtube_sync(
             effective_config, timeout=timeout, session=session,
         )
         return True, result
-    except Exception as exc:
-        return False, f"CookieCloud 同步失败: {exc}"
+    except Exception:
+        return False, "CookieCloud 同步失败"
