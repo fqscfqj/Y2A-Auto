@@ -726,6 +726,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         process = None
         output = ""
         manual_merge_success = False
+        cookiecloud_tried_in_download = False
 
         for attempt in range(max_retries):
             try:
@@ -863,6 +864,34 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                         logger.info("yt-dlp在合并阶段触发NoneType错误，已使用ffmpeg手动合并成功")
                         break
                     logger.warning("手动合并失败，将继续进行下载重试")
+
+                if _looks_like_youtube_bot_challenge(combined_error):
+                    # 下载阶段检测到反机器人验证，尝试通过 CookieCloud 刷新 Cookie 后重试
+                    if attempt < max_retries - 1 and not cookiecloud_tried_in_download:
+                        cookiecloud_tried_in_download = True
+                        logger.warning("下载阶段检测到YouTube反机器人验证，尝试通过CookieCloud刷新Cookie")
+                        try:
+                            config = load_config()
+                            sync_ok, sync_info = try_cookiecloud_youtube_sync(config)
+                            if sync_ok and isinstance(sync_info, dict):
+                                new_path = sync_info.get("output_path") or sync_info.get("output_path_display")
+                                if new_path and os.path.isfile(new_path):
+                                    cookies_path = new_path
+                                    logger.info("CookieCloud同步成功，使用刷新后的Cookie重试下载")
+                                    # 更新 cmd 中的 --cookies 参数
+                                    if '--cookies' in cmd:
+                                        idx = cmd.index('--cookies')
+                                        cmd[idx + 1] = new_path
+                                    else:
+                                        _append_yt_dlp_network_args(cmd, cookies_path=cookies_path)
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    logger.warning("CookieCloud同步成功但未生成有效的cookie文件")
+                            else:
+                                logger.warning("CookieCloud同步失败")
+                        except Exception as cc_exc:
+                            logger.warning(f"CookieCloud刷新Cookie时出错: {cc_exc}")
 
                 if "The page needs to be reloaded." in combined_error:
                     if attempt < max_retries - 1 and '--cookies' in cmd:
