@@ -892,7 +892,16 @@ class AsrApiClient:
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
-                if self._is_implausible_for_duration(text, max(end_s - start_s, 0.1)):
+                # When a VAD window is provided, use the window duration for the
+                # plausibility check.  Some ASR backends (e.g. qwen3-asr) return
+                # locally compressed timestamps that span only a fraction of the
+                # actual audio clip.  The alignment code in _align_segment will
+                # clamp these to window boundaries, so evaluating density against
+                # the window duration avoids false rejections.
+                check_duration = max(end_s - start_s, 0.1)
+                if window is not None and window.duration_s > 0:
+                    check_duration = max(check_duration, window.duration_s)
+                if self._is_implausible_for_duration(text, check_duration):
                     raise ImplausibleAsrResultError(
                         f"segment is implausible for returned timing {start_s:.2f}s-{end_s:.2f}s"
                     )
@@ -925,6 +934,28 @@ class AsrApiClient:
 
         if not text:
             text = ' '.join(segment.text for segment in segments).strip()
+
+        # Some ASR backends (e.g. qwen3-asr) return severely compressed
+        # timestamps that only span a small fraction of the actual audio clip.
+        # When a VAD window is available, rescale segment timestamps
+        # proportionally so they fill the window duration.  This preserves
+        # relative ordering while ensuring subtitles are visible for the
+        # correct amount of time.
+        if window is not None and window.duration_s > 0 and segments:
+            max_ts = max(seg.end_s for seg in segments)
+            if max_ts > 0 and max_ts < window.duration_s * 0.4:
+                scale = window.duration_s / max_ts
+                self.logger.info(
+                    "Rescaling compressed ASR timestamps by %.2f for window [%.1fs-%.1fs] "
+                    "(max_ts=%.2fs, window_dur=%.2fs)",
+                    scale, window.start_s, window.end_s, max_ts, window.duration_s,
+                )
+                for seg in segments:
+                    seg.start_s *= scale
+                    seg.end_s *= scale
+                    for w in seg.words:
+                        w.start_s *= scale
+                        w.end_s *= scale
 
         result_mode = 'word' if any(segment.words for segment in segments) else timestamp_mode
         return AsrTranscriptionResult(
