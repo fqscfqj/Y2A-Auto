@@ -4760,6 +4760,23 @@ class TaskProcessor:
         return False
 
     @classmethod
+    def _is_cjk_cjk_split(cls, text, split_index):
+        """Return True if *split_index* falls between two CJK-like characters.
+
+        Splitting mid-CJK-run is generally undesirable because most CJK
+        words are multi-character compounds.  The caller should penalise
+        these positions so the wrapper prefers punctuation, spaces and
+        script boundaries instead.
+        """
+        segment = str(text or '')
+        if split_index <= 0 or split_index >= len(segment):
+            return False
+        return (
+            cls._is_cjk_like_char(segment[split_index - 1])
+            and cls._is_cjk_like_char(segment[split_index])
+        )
+
+    @classmethod
     def _should_keep_ascii_phrase_together(cls, text, split_index):
         segment = str(text or '')
         if split_index <= 0 or split_index >= len(segment):
@@ -4989,6 +5006,8 @@ class TaskProcessor:
             score -= cls._semantic_wrap_bonus(right)
             if cls._is_broken_compound_wrap(left, right):
                 score += 12.0
+            if cls._is_cjk_cjk_split(segment, idx):
+                score += 4.0
 
             if best_score is None or score < best_score:
                 best_score = score

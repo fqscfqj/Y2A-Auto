@@ -117,6 +117,26 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertLessEqual(len(lines), 3)
         self.assertFalse(meta.get('overflow_warning'))
 
+    def test_wrap_avoids_splitting_cjk_run_mid_char(self):
+        """CJK text should prefer breaking at punctuation/script boundaries
+        over splitting between two consecutive CJK characters."""
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '这是我在真实PlayStation硬件上运行的自制《天际》演示版，需要保持硬件这个词完整，不能拆得七零八落。',
+            1920,
+            1080,
+            return_meta=True,
+        )
+
+        self.assertTrue(text)
+        lines = text.split('\\N')
+        for line in lines:
+            cjk_count = sum(1 for c in line if TaskProcessor._is_cjk_like_char(c))
+            self.assertGreater(
+                cjk_count, 1,
+                f'Line "{line}" contains only {cjk_count} CJK char(s) — likely a broken compound',
+            )
+        self.assertFalse(meta.get('overflow_warning'))
+
     def test_portrait_mixed_language_wrap_stays_balanced(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
             '在 720×1280 的竖屏里，Release notes、workflow status 这类英文短语也应该完整保留，避免断开后显得很廉价。',
