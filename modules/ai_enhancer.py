@@ -498,8 +498,8 @@ def _build_metadata_translation_system_prompt(target_language: str, retry: bool 
     if openai_config:
         try:
             mode, user_text = read_prompt_config_from_app_config(openai_config, 'METADATA_TRANSLATE')
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("读取 Prompt 配置失败（METADATA_TRANSLATE），将回退 builtin: %s", exc)
     return get_metadata_translate_prompt(
         mode=mode,
         user_text=user_text,
@@ -516,8 +516,8 @@ def _build_description_retry_system_prompt(target_language: str, openai_config=N
     if openai_config:
         try:
             mode, user_text = read_prompt_config_from_app_config(openai_config, 'METADATA_DESC_RETRY')
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("读取 Prompt 配置失败（METADATA_DESC_RETRY），将回退 builtin: %s", exc)
     return get_metadata_desc_retry_prompt(
         mode=mode,
         user_text=user_text,

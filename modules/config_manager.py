@@ -329,8 +329,8 @@ def load_config():
                             if normalized != config[mode_key]:
                                 config[mode_key] = normalized
                                 prompt_mode_changed = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Prompt 中心模式值标准化失败，将跳过本轮标准化: %s", exc)
 
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
                 if (

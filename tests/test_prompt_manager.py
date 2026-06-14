@@ -87,8 +87,8 @@ class ConfigKeyTests(unittest.TestCase):
         self.assertEqual(entries["SUBTITLE_TRANSLATE_MODE"], MODE_BUILTIN)
         self.assertIn("SUBTITLE_TRANSLATE_TEXT", entries)
         self.assertEqual(entries["SUBTITLE_TRANSLATE_TEXT"], "")
-        # 检查 4 组 × 2 = 8 个键
-        self.assertEqual(len(entries), 8)
+        # 每个 Prompt 注册 2 个键：_MODE + _TEXT
+        self.assertEqual(len(entries), len(get_prompt_ids()) * 2)
 
 
 class ReadPromptConfigTests(unittest.TestCase):

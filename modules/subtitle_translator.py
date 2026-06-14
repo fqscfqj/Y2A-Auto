@@ -1135,8 +1135,8 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             from .prompt_manager import read_prompt_config_from_app_config
             prompt_mode, prompt_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE')
             prompt_strict_mode, prompt_strict_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE_STRICT')
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"读取 Prompt 中心配置失败，将回退 builtin: {exc}")
 
         translation_config = TranslationConfig(
             source_language=app_config.get('SUBTITLE_SOURCE_LANGUAGE', 'auto'),

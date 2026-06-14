@@ -2235,10 +2235,16 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!preview) {
             return;
         }
+        var card = select.closest('article');
+        var textArea = card ? card.querySelector('textarea[name$="_TEXT"]') : null;
         var syncPreview = function () {
-            preview.style.display = (select.value === 'builtin') ? '' : 'none';
+            var hasUserText = textArea ? String(textArea.value || '').trim().length > 0 : true;
+            preview.style.display = (select.value === 'builtin' || !hasUserText) ? '' : 'none';
         };
         select.addEventListener('change', syncPreview);
+        if (textArea) {
+            textArea.addEventListener('input', syncPreview);
+        }
         syncPreview();
     });
 
