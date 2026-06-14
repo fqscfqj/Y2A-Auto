@@ -130,6 +130,7 @@ class TranslationConfig:
     # Prompt 中心配置
     prompt_mode: str = "builtin"
     prompt_text: str = ""         # 字幕翻译主 Prompt 用户文本
+    prompt_strict_mode: str = "builtin"  # 字幕翻译严格补救 Prompt 模式
     prompt_strict_text: str = ""  # 字幕翻译严格补救 Prompt 用户文本
 
 class SubtitleReader:
@@ -512,7 +513,10 @@ class LLMRequester:
         """严格模式提示词（委托给统一 Prompt 中心）。"""
         from .prompt_manager import get_subtitle_strict_system_prompt
         return get_subtitle_strict_system_prompt(
-            mode=self.openai_config.get('PROMPT_MODE', 'builtin'),
+            mode=self.openai_config.get(
+                'PROMPT_STRICT_MODE',
+                self.openai_config.get('PROMPT_MODE', 'builtin'),
+            ),
             user_text=self.openai_config.get('PROMPT_STRICT_TEXT', ''),
             target_language=target_language,
         )
@@ -590,7 +594,8 @@ class SubtitleTranslator:
             'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
             'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
             'OPENAI_TIMEOUT_SECONDS': config.timeout_seconds,
-            # Prompt 中心配置（快照，避免热修改影响进行中的翻译）
+            # Prompt 中心配置（快MODE': getattr(config, 'prompt_strict_mode', 'builtin'),
+            'PROMPT_STRICT_照，避免热修改影响进行中的翻译）
             'PROMPT_MODE': getattr(config, 'prompt_mode', 'builtin'),
             'PROMPT_TEXT': getattr(config, 'prompt_text', ''),
             'PROMPT_STRICT_TEXT': getattr(config, 'prompt_strict_text', ''),
@@ -1123,11 +1128,12 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
 
         # 读取 Prompt 中心配置
         prompt_mode = 'builtin'
-        prompt_text = ''
+        prompt_text = mode = 'builtin'
         prompt_strict_text = ''
         try:
-            from .prompt_manager import read_prompt_config_from_app_config, normalize_mode
+            from .prompt_manager import read_prompt_config_from_app_config
             prompt_mode, prompt_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE')
+            prompt_strict_moderompt_mode, prompt_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE')
             _, prompt_strict_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE_STRICT')
         except Exception:
             pass
@@ -1145,7 +1151,8 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             max_workers=max_workers,
             thinking_enabled=app_config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
             timeout_seconds=int(app_config.get('OPENAI_TIMEOUT_SECONDS', 600)),
-            prompt_mode=prompt_mode,
+            prompt_mode=prmode=prompt_strict_mode,
+            prompt_strict_ompt_mode,
             prompt_text=prompt_text,
             prompt_strict_text=prompt_strict_text,
         )
