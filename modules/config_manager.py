@@ -9,6 +9,7 @@ from .speech_pipeline_settings import (
     inject_speech_pipeline_defaults,
     migrate_legacy_speech_pipeline_config,
 )
+from .prompt_manager import get_default_config_entries as _get_prompt_default_entries
 
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
@@ -212,6 +213,9 @@ DEFAULT_CONFIG = {
 
 DEFAULT_CONFIG = inject_speech_pipeline_defaults(DEFAULT_CONFIG)
 
+# Prompt 中心默认键（4 组翻译 Prompt 的 mode + text）
+DEFAULT_CONFIG.update(_get_prompt_default_entries())
+
 
 def normalize_youtube_download_quality_mode(value):
     normalized = str(value or _YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT).strip().lower()
@@ -314,6 +318,20 @@ def load_config():
                 )
                 removed_unknown_keys = bool(removed_keys)
 
+                # Prompt 中心模式值标准化
+                prompt_mode_changed = False
+                try:
+                    from .prompt_manager import normalize_mode, get_prompt_ids, config_key_for_mode
+                    for pid in get_prompt_ids():
+                        mode_key = config_key_for_mode(pid)
+                        if mode_key in config:
+                            normalized = normalize_mode(config[mode_key])
+                            if normalized != config[mode_key]:
+                                config[mode_key] = normalized
+                                prompt_mode_changed = True
+                except Exception as exc:
+                    logger.debug("Prompt 中心模式值标准化失败，将跳过本轮标准化: %s", exc)
+
                 # 如果有新添加的默认键或需要纠正的项，则保存更新后的配置
                 if (
                     missing_keys
@@ -324,6 +342,7 @@ def load_config():
                     or session_timeout_changed
                     or migrated_legacy_speech
                     or removed_unknown_keys
+                    or prompt_mode_changed
                 ):
                     if migrated_legacy_speech:
                         logger.info("检测到旧版 ASR/VAD 默认值，已自动迁移到质量优先默认配置")
@@ -407,6 +426,13 @@ def update_config(new_config):
                 current_config[key] = normalize_youtube_download_max_height(new_config[key])
             elif key == 'LOGIN_SESSION_TIMEOUT_MINUTES':
                 current_config[key] = normalize_login_session_timeout_minutes(new_config[key])
+            elif key.endswith('_MODE') and key.startswith(('SUBTITLE_', 'METADATA_')):
+                # Prompt 中心模式值标准化
+                try:
+                    from .prompt_manager import normalize_mode
+                    current_config[key] = normalize_mode(new_config[key])
+                except Exception:
+                    current_config[key] = new_config[key]
             else:
                 current_config[key] = new_config[key]
 

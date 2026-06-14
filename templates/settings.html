@@ -102,6 +102,10 @@
                     <i class="bi bi-badge-cc"></i>
                     <span>字幕处理</span>
                 </a>
+                <a class="nav-link" id="vtab-prompts-tab" data-bs-toggle="pill" href="#vtab-prompts" role="tab" aria-controls="vtab-prompts" aria-selected="false">
+                    <i class="bi bi-chat-text"></i>
+                    <span>提示词</span>
+                </a>
                 <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
                     <i class="bi bi-mic"></i>
                     <span>语音识别</span>
@@ -963,6 +967,232 @@
                                             </div>
                                         </article>
                                     </div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="vtab-prompts" role="tabpanel" aria-labelledby="vtab-prompts-tab">
+                        <div class="settings-stack">
+                            <section class="settings-section">
+                                <div class="settings-section-header">
+                                    <div>
+                                        <h3 class="mb-1">提示词</h3>
+                                        <p class="section-lead mb-0">自定义字幕翻译与标题/简介翻译的 AI 指令。留空即使用内置默认模板。</p>
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info mb-4">
+                                    <i class="bi bi-info-circle"></i>
+                                    <strong>模式说明：</strong>
+                                    <ul class="mb-0 mt-1">
+                                        <li><strong>内置</strong>：使用系统默认模板，推荐大多数用户。</li>
+                                        <li><strong>追加</strong>：在默认模板后附加你的指令（推荐的自定义方式）。</li>
+                                        <li><strong>覆盖</strong>：用你的文本替换默认行为层，但 JSON 输出格式和逐条对齐等硬约束仍保留。</li>
+                                    </ul>
+                                </div>
+
+                                <div class="row g-4 settings-pane-grid">
+                                    <!-- 字幕翻译 -->
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">字幕翻译</span>
+                                                    <h4>字幕翻译主提示词</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else 'is-neutral' }}">
+                                                    {{ '已自定义' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else '使用内置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-translate-mode" class="form-label">模式</label>
+                                                            <select id="subtitle-translate-mode" name="SUBTITLE_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-translate">
+                                                                <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                <option value="append" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                <option value="override" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-translate" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                        <div class="alert alert-secondary mb-0">
+                                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-translate" aria-expanded="false">
+                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                </button>
+                                                            </div>
+                                                            <div class="collapse" id="builtin-text-subtitle-translate">
+                                                                <pre class="mb-0 small text-muted" style="white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;">{{ builtin_prompts.get('SUBTITLE_TRANSLATE', {}).get('builtin_text', '') }}</pre>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-translate-text" class="form-label">自定义指令</label>
+                                                            <textarea id="subtitle-translate-text" name="SUBTITLE_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：保留音乐术语不翻译；人名音译用常用写法；技术缩写保留原文">{{ config.get('SUBTITLE_TRANSLATE_TEXT', '') }}</textarea>
+                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>（目标语言名称）。留空则使用内置默认模板。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <!-- 字幕严格补救 -->
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">字幕翻译 · 高级</span>
+                                                    <h4>严格补救提示词</h4>
+                                                </div>
+                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedStrictPrompt" aria-expanded="false" aria-controls="advancedStrictPrompt">
+                                                    <i class="bi bi-chevron-down"></i> 展开
+                                                </button>
+                                            </div>
+                                            <div class="collapse mt-2" id="advancedStrictPrompt">
+                                                <div class="settings-card-body pt-0">
+                                                    <p class="help-text">首轮翻译后若检测到大量漏译条目，会用此提示词以严格模式再补翻一次。</p>
+                                                    <div class="row g-3">
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-translate-strict-mode" class="form-label">模式</label>
+                                                                <select id="subtitle-translate-strict-mode" name="SUBTITLE_TRANSLATE_STRICT_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-strict">
+                                                                    <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                    <option value="append" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                    <option value="override" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-strict" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                            <div class="alert alert-secondary mb-0">
+                                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-strict" aria-expanded="false">
+                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                    </button>
+                                                                </div>
+                                                                <div class="collapse" id="builtin-text-subtitle-strict">
+                                                                    <pre class="mb-0 small text-muted" style="white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;">{{ builtin_prompts.get('SUBTITLE_TRANSLATE_STRICT', {}).get('builtin_text', '') }}</pre>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-group mb-0">
+                                                                <label for="subtitle-translate-strict-text" class="form-label">自定义指令</label>
+                                                                <textarea id="subtitle-translate-strict-text" name="SUBTITLE_TRANSLATE_STRICT_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('SUBTITLE_TRANSLATE_STRICT_TEXT', '') }}</textarea>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <!-- 标题/简介翻译 -->
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">标题/简介翻译</span>
+                                                    <h4>元数据翻译主提示词</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-info' if config.get('METADATA_TRANSLATE_TEXT', '') else 'is-neutral' }}">
+                                                    {{ '已自定义' if config.get('METADATA_TRANSLATE_TEXT', '') else '使用内置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="metadata-translate-mode" class="form-label">模式</label>
+                                                            <select id="metadata-translate-mode" name="METADATA_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-metadata-translate">
+                                                                <option value="builtin" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                <option value="append" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                <option value="override" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-metadata-translate" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                        <div class="alert alert-secondary mb-0">
+                                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-metadata-translate" aria-expanded="false">
+                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                </button>
+                                                            </div>
+                                                            <div class="collapse" id="builtin-text-metadata-translate">
+                                                                <pre class="mb-0 small text-muted" style="white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;">{{ builtin_prompts.get('METADATA_TRANSLATE', {}).get('builtin_text', '') }}</pre>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <div class="form-group mb-0">
+                                                            <label for="metadata-translate-text" class="form-label">自定义指令</label>
+                                                            <textarea id="metadata-translate-text" name="METADATA_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：标题风格偏口语化；简介保留原始段落结构">{{ config.get('METADATA_TRANSLATE_TEXT', '') }}</textarea>
+                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>。留空则使用内置默认模板。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <!-- 简介重试 -->
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">标题/简介翻译 · 高级</span>
+                                                    <h4>简介重试提示词</h4>
+                                                </div>
+                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedDescRetryPrompt" aria-expanded="false" aria-controls="advancedDescRetryPrompt">
+                                                    <i class="bi bi-chevron-down"></i> 展开
+                                                </button>
+                                            </div>
+                                            <div class="collapse mt-2" id="advancedDescRetryPrompt">
+                                                <div class="settings-card-body pt-0">
+                                                    <p class="help-text">标题/简介首轮翻译后，若简介字段校验失败（如格式不自然、含导流残留等），会用此提示词单独重试简介。</p>
+                                                    <div class="row g-3">
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="metadata-desc-retry-mode" class="form-label">模式</label>
+                                                                <select id="metadata-desc-retry-mode" name="METADATA_DESC_RETRY_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-desc-retry">
+                                                                    <option value="builtin" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                    <option value="append" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                    <option value="override" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-desc-retry" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                            <div class="alert alert-secondary mb-0">
+                                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-desc-retry" aria-expanded="false">
+                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                    </button>
+                                                                </div>
+                                                                <div class="collapse" id="builtin-text-desc-retry">
+                                                                    <pre class="mb-0 small text-muted" style="white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;">{{ builtin_prompts.get('METADATA_DESC_RETRY', {}).get('builtin_text', '') }}</pre>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-group mb-0">
+                                                                <label for="metadata-desc-retry-text" class="form-label">自定义指令</label>
+                                                                <textarea id="metadata-desc-retry-text" name="METADATA_DESC_RETRY_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('METADATA_DESC_RETRY_TEXT', '') }}</textarea>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
                                 </div>
                             </section>
                         </div>
@@ -1993,6 +2223,29 @@ document.addEventListener('DOMContentLoaded', function () {
         };
         checkbox.addEventListener('change', updateInputState);
         updateInputState();
+    });
+
+    // Prompt 中心：根据模式下拉切换内置提示词预览的显示/隐藏
+    document.querySelectorAll('.prompt-mode-select').forEach(function (select) {
+        var previewId = select.getAttribute('data-preview-id');
+        if (!previewId) {
+            return;
+        }
+        var preview = document.getElementById(previewId);
+        if (!preview) {
+            return;
+        }
+        var card = select.closest('article');
+        var textArea = card ? card.querySelector('textarea[name$="_TEXT"]') : null;
+        var syncPreview = function () {
+            var hasUserText = textArea ? String(textArea.value || '').trim().length > 0 : true;
+            preview.style.display = (select.value === 'builtin' || !hasUserText) ? '' : 'none';
+        };
+        select.addEventListener('change', syncPreview);
+        if (textArea) {
+            textArea.addEventListener('input', syncPreview);
+        }
+        syncPreview();
     });
 
     const settingsToastContainer = document.getElementById('settings-toast-container');

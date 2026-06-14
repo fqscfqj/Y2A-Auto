@@ -2865,6 +2865,13 @@ class TaskProcessor:
             # 可选：允许用户配置固定分区ID，确保一次命中
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
+        # 传递 Prompt 中心配置（元数据翻译）
+        for prompt_key in (
+            'METADATA_TRANSLATE_MODE', 'METADATA_TRANSLATE_TEXT',
+            'METADATA_DESC_RETRY_MODE', 'METADATA_DESC_RETRY_TEXT',
+        ):
+            if prompt_key in self.config:
+                openai_config[prompt_key] = self.config[prompt_key]
         
         translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
         translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))

@@ -127,6 +127,11 @@ class TranslationConfig:
     max_workers: int = 2  # 减少最大并发线程数以降低内存使用
     thinking_enabled: bool = False
     timeout_seconds: int = 600  # API请求超时秒数；思考模型输出可达64k token，建议不低于300
+    # Prompt 中心配置
+    prompt_mode: str = "builtin"
+    prompt_text: str = ""         # 字幕翻译主 Prompt 用户文本
+    prompt_strict_mode: str = "builtin"  # 字幕翻译严格补救 Prompt 模式
+    prompt_strict_text: str = ""  # 字幕翻译严格补救 Prompt 用户文本
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -496,68 +501,24 @@ class LLMRequester:
             raise
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
-        """构建结构化系统提示词。"""
-        target_language = str(target_language).lower().strip()
-        target_lang_map = {
-            "zh": "中文",
-            "en": "English",
-            "ja": "日本語",
-            "ko": "한국어",
-        }
-        target_lang_name = target_lang_map.get(target_language, "中文")
-        shared_rules = (
-            "必须保持与输入数组一一对应：第 N 条输入只翻译成第 N 条输出。"
-            "禁止跨条目借用、合并、拆分、提前翻译下一条或重复上一条内容。"
-            "若某条源文本本身是不完整短语、半句或续句，译文也必须保持同样边界，不要擅自补成完整句。"
-            "不要根据上下文重写相邻条目，不要消除原始断句。"
-        )
-
-        if target_language != "zh":
-            return (
-                f"你是字幕翻译器。按顺序把 texts 每一项翻译成{target_lang_name}。"
-                f"{shared_rules}"
-                "等价翻译，不解释、不扩写；保留数字、代码、URL、占位符和无公认译名的专有名词。"
-                '只返回 JSON：{"translations":["译文1","译文2"]}。'
-            )
-
-        return (
-            "你是字幕翻译器。按顺序把 texts 每一项翻译成简体中文。"
-            f"{shared_rules}"
-            "等价翻译，不解释、不扩写；数字、代码、URL、占位符和无公认译法的专有名词可保留，"
-            "其余可翻译内容尽量译成自然简体中文。"
-            '只返回 JSON：{"translations":["译文1","译文2"]}。'
+        """构建结构化系统提示词（委托给统一 Prompt 中心）。"""
+        from .prompt_manager import get_subtitle_system_prompt
+        return get_subtitle_system_prompt(
+            mode=self.openai_config.get('PROMPT_MODE', 'builtin'),
+            user_text=self.openai_config.get('PROMPT_TEXT', ''),
+            target_language=target_language,
         )
 
     def _build_strict_structured_system_prompt(self, target_language: str) -> str:
-        """严格模式提示词：用于补救未译条目。"""
-        target_language = str(target_language).lower().strip()
-        target_lang_map = {
-            "zh": "中文",
-            "en": "English",
-            "ja": "日本語",
-            "ko": "한국어",
-        }
-        target_lang_name = target_lang_map.get(target_language, "中文")
-        shared_rules = (
-            "必须保持与输入数组一一对应：第 N 条输入只翻译成第 N 条输出。"
-            "禁止跨条目借用、合并、拆分、提前翻译下一条或重复上一条内容。"
-            "即使上下文相关，也不得把相邻条目的信息揉进当前条目。"
-            "若源文本是不完整短语、半句或续句，译文也保持不完整，不要补全。"
-        )
-
-        if target_language != "zh":
-            return (
-                f"你是字幕翻译器（严格模式）。按顺序把 texts 每一项完整翻译成{target_lang_name}。"
-                f"{shared_rules}"
-                "除数字、代码、URL、占位符和专有名词外，不要保留原文。"
-                '只返回 JSON：{"translations":["译文1","译文2"]}。'
-            )
-
-        return (
-            "你是字幕翻译器（严格模式）。按顺序把 texts 每一项尽量完整翻译成自然简体中文。"
-            f"{shared_rules}"
-            "普通句子和说明文字不得整句保留原文；仅保留数字、代码、URL、占位符和必要专有名词。"
-            '只返回 JSON：{"translations":["译文1","译文2"]}。'
+        """严格模式提示词（委托给统一 Prompt 中心）。"""
+        from .prompt_manager import get_subtitle_strict_system_prompt
+        return get_subtitle_strict_system_prompt(
+            mode=self.openai_config.get(
+                'PROMPT_STRICT_MODE',
+                self.openai_config.get('PROMPT_MODE', 'builtin'),
+            ),
+            user_text=self.openai_config.get('PROMPT_STRICT_TEXT', ''),
+            target_language=target_language,
         )
     
     def _build_structured_user_prompt(self, texts: List[str]) -> str:
@@ -633,6 +594,11 @@ class SubtitleTranslator:
             'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
             'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
             'OPENAI_TIMEOUT_SECONDS': config.timeout_seconds,
+            # Prompt 中心配置（快照，避免热修改影响进行中的翻译）
+            'PROMPT_MODE': getattr(config, 'prompt_mode', 'builtin'),
+            'PROMPT_TEXT': getattr(config, 'prompt_text', ''),
+            'PROMPT_STRICT_MODE': getattr(config, 'prompt_strict_mode', 'builtin'),
+            'PROMPT_STRICT_TEXT': getattr(config, 'prompt_strict_text', ''),
         }
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
@@ -1160,6 +1126,18 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         # 添加调试日志：检查配置值
         logger.debug(f"配置值检查 - subtitle_base_url: {subtitle_base_url is None}, subtitle_api_key: {subtitle_api_key is None}, subtitle_model: {subtitle_model is None}")
 
+        # 读取 Prompt 中心配置
+        prompt_mode = 'builtin'
+        prompt_text = ''
+        prompt_strict_mode = 'builtin'
+        prompt_strict_text = ''
+        try:
+            from .prompt_manager import read_prompt_config_from_app_config
+            prompt_mode, prompt_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE')
+            prompt_strict_mode, prompt_strict_text = read_prompt_config_from_app_config(app_config, 'SUBTITLE_TRANSLATE_STRICT')
+        except Exception as exc:
+            logger.debug(f"读取 Prompt 中心配置失败，将回退 builtin: {exc}")
+
         translation_config = TranslationConfig(
             source_language=app_config.get('SUBTITLE_SOURCE_LANGUAGE', 'auto'),
             target_language=app_config.get('SUBTITLE_TARGET_LANGUAGE', 'zh'),
@@ -1173,6 +1151,10 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             max_workers=max_workers,
             thinking_enabled=app_config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False),
             timeout_seconds=int(app_config.get('OPENAI_TIMEOUT_SECONDS', 600)),
+            prompt_mode=prompt_mode,
+            prompt_text=prompt_text,
+            prompt_strict_mode=prompt_strict_mode,
+            prompt_strict_text=prompt_strict_text,
         )
         
         if not translation_config.api_key:
