@@ -490,27 +490,38 @@ def _build_fallback_text(
     )
 
 
-def _build_metadata_translation_system_prompt(target_language: str, retry: bool = False) -> str:
-    target_name = _target_language_name(target_language)
-    prompt = (
-        f"你是视频标题和简介翻译器。将输入字段改写为{target_name}。"
-        "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
-        "title 必须是自然单行标题；description 必须是自然简介，可多段，但不能写成列表、备注或说明。"
-        "禁止补充新事实、解释或备注。"
-        '只返回 JSON：{"title":"","description":""}。'
+def _build_metadata_translation_system_prompt(target_language: str, retry: bool = False, openai_config=None) -> str:
+    """构建元数据翻译 system prompt（委托给统一 Prompt 中心）。"""
+    from .prompt_manager import get_metadata_translate_prompt, read_prompt_config_from_app_config
+    mode = 'builtin'
+    user_text = ''
+    if openai_config:
+        try:
+            mode, user_text = read_prompt_config_from_app_config(openai_config, 'METADATA_TRANSLATE')
+        except Exception:
+            pass
+    return get_metadata_translate_prompt(
+        mode=mode,
+        user_text=user_text,
+        target_language=target_language,
+        retry=retry,
     )
-    if retry:
-        prompt += "仅重写本次输入中提供的失败字段；无法安全输出时返回空字符串。"
-    return prompt
 
 
-def _build_description_retry_system_prompt(target_language: str) -> str:
-    target_name = _target_language_name(target_language)
-    return (
-        f"你是视频简介翻译器。将 description 翻译并改写为{target_name}自然简介。"
-        "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
-        "description 可以多段，不限制段落数，但不能输出列表、备注、解释或额外说明。"
-        '只返回 JSON：{"description":""}。'
+def _build_description_retry_system_prompt(target_language: str, openai_config=None) -> str:
+    """构建简介重试 system prompt（委托给统一 Prompt 中心）。"""
+    from .prompt_manager import get_metadata_desc_retry_prompt, read_prompt_config_from_app_config
+    mode = 'builtin'
+    user_text = ''
+    if openai_config:
+        try:
+            mode, user_text = read_prompt_config_from_app_config(openai_config, 'METADATA_DESC_RETRY')
+        except Exception:
+            pass
+    return get_metadata_desc_retry_prompt(
+        mode=mode,
+        user_text=user_text,
+        target_language=target_language,
     )
 
 
@@ -802,6 +813,7 @@ def _translate_video_metadata_once(
     logger,
     title_limit: int = 50,
     description_limit: int = 1000,
+    openai_config=None,
 ) -> Dict[str, Any]:
     translated_fields = {
         "title": "",
@@ -842,7 +854,7 @@ def _translate_video_metadata_once(
     translated_fields = _request_translated_metadata_fields(
         client=client,
         model_name=model_name,
-        system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False),
+        system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False, openai_config=openai_config),
         payload=payload,
         max_tokens=_estimate_metadata_max_tokens(requestable_fields),
         thinking_enabled=thinking_enabled,
@@ -873,7 +885,7 @@ def _translate_video_metadata_once(
             retry_fields = _request_translated_metadata_fields(
                 client=client,
                 model_name=model_name,
-                system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True),
+                system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True, openai_config=openai_config),
                 payload=retry_payload,
                 max_tokens=_estimate_metadata_max_tokens(["title"]),
                 thinking_enabled=thinking_enabled,
@@ -886,13 +898,13 @@ def _translate_video_metadata_once(
             translated_fields["title"] = retry_fields["title"]
 
         if "description" in invalid_fields:
-            description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True)
+            description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True, openai_config=openai_config)
             description_retry_scene = "ai_enhancer_metadata_translate_retry"
             if _should_use_description_only_retry(invalid_fields["description"]):
                 logger.info(
                     f"description 字段触发定向重试，失败原因: {invalid_fields['description']}"
                 )
-                description_retry_prompt = _build_description_retry_system_prompt(target_language)
+                description_retry_prompt = _build_description_retry_system_prompt(target_language, openai_config=openai_config)
                 description_retry_scene = "ai_enhancer_metadata_translate_description_retry"
 
             description_retry_payload = _build_metadata_translation_payload(
@@ -1033,6 +1045,7 @@ def translate_video_metadata(
                     logger=logger,
                     title_limit=title_limit,
                     description_limit=description_limit,
+                    openai_config=openai_config,
                 )
             except Exception as exc:
                 logger.error(f"第 {attempt} 次元数据翻译尝试发生异常: {exc}")

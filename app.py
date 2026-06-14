@@ -2571,12 +2571,18 @@ def settings():
     config = load_config()
     acfun_partition_mapping = _load_acfun_partition_mapping()
     bilibili_partition_mapping = _build_bilibili_partition_mapping()
+    try:
+        from modules.prompt_manager import get_builtin_prompt_previews
+        builtin_prompts = get_builtin_prompt_previews()
+    except Exception:
+        builtin_prompts = {}
     return render_template(
         'settings.html',
         config=config,
         whisper_languages=WHISPER_LANGUAGE_LIST,
         acfun_partition_mapping=acfun_partition_mapping,
-        bilibili_partition_mapping=bilibili_partition_mapping
+        bilibili_partition_mapping=bilibili_partition_mapping,
+        builtin_prompts=builtin_prompts,
     )
 
 
