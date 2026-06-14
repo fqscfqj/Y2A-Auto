@@ -290,7 +290,7 @@ def get_final_system_prompt(
     if mode == MODE_BUILTIN:
         return builtin_rendered
 
-    user_text = normalize_text(user_text)
+    user_text = _render_template(normalize_text(user_text), render_vars)
     if not user_text:
         # 用户文本为空，无论 append 还是 override 都回退 builtin
         logger.info("Prompt %s 用户文本为空，回退 builtin", prompt_id)
