@@ -1017,7 +1017,7 @@ def login_required(f):
 # 配置CORS，允许来自YouTube的跨域请求
 CORS(app, resources={
     r"/tasks/add_via_extension": {
-        "origins": ["*://www.youtube.com", "*://youtube.com", "https://www.youtube.com", "https://youtube.com"],
+        "origins": [r"https?://www\.youtube\.com", r"https?://youtube\.com"],
         "methods": ["POST", "OPTIONS"],
         "allow_headers": ["Content-Type"]
     }
