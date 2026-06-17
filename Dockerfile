@@ -136,13 +136,24 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-runtime \
 # 安装 Deno（yt-dlp 的 YouTube n challenge 解密需要 ≥2.3.0 的 JS 运行时）
 # Debian bookworm 的 nodejs 版本（20.x）低于 yt-dlp 要求的最低版本（22.0.0），
 # 因此需要安装 Deno 作为 JS challenge solver 的运行时
-RUN python3 -c "\
-import urllib.request, zipfile, io, os, stat; \
-url = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip'; \
-data = urllib.request.urlopen(url).read(); \
-with zipfile.ZipFile(io.BytesIO(data)) as z: \
-    z.extract('deno', '/usr/local/bin/'); \
-os.chmod('/usr/local/bin/deno', 0o755)" \
+ARG TARGETARCH
+RUN set -eux \
+    && arch="${TARGETARCH:-amd64}" \
+    && case "$arch" in \
+        amd64|x86_64) deno_arch="x86_64-unknown-linux-gnu" ;; \
+        arm64|aarch64) deno_arch="aarch64-unknown-linux-gnu" ;; \
+        *) echo "Unsupported arch for Deno: $arch" >&2 && exit 1 ;; \
+    esac \
+    && echo 'import urllib.request, zipfile, io, os' > /tmp/install_deno.py \
+    && echo 'import sys' >> /tmp/install_deno.py \
+    && echo 'arch = sys.argv[1]' >> /tmp/install_deno.py \
+    && echo 'url = f"https://github.com/denoland/deno/releases/latest/download/deno-{arch}.zip"' >> /tmp/install_deno.py \
+    && echo 'data = urllib.request.urlopen(url).read()' >> /tmp/install_deno.py \
+    && echo 'with zipfile.ZipFile(io.BytesIO(data)) as z:' >> /tmp/install_deno.py \
+    && echo '    z.extract("deno", "/usr/local/bin/")' >> /tmp/install_deno.py \
+    && echo 'os.chmod("/usr/local/bin/deno", 0o755)' >> /tmp/install_deno.py \
+    && python3 /tmp/install_deno.py "$deno_arch" \
+    && rm -f /tmp/install_deno.py \
     && deno --version
 
 # 可选：安装 GPU 编码支持库（VAAPI/Intel/AMD），通过 --build-arg ENABLE_GPU_DRIVERS=true 启用
