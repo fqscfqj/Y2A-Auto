@@ -59,9 +59,9 @@ def _base_app_config(**overrides):
         'AI_SEGMENTATION_API_KEY': '',
         'AI_SEGMENTATION_MODEL_NAME': '',
         'AI_SEGMENTATION_THINKING_ENABLED': False,
-        'AI_SEGMENTATION_MIN_CUE_DURATION_S': 0.8,
-        'AI_SEGMENTATION_MAX_CUE_DURATION_S': 7.0,
-        'AI_SEGMENTATION_MAX_CPS': 18.0,
+        'AI_SEGMENTATION_MIN_CUE_DURATION_S': 1.5,
+        'AI_SEGMENTATION_MAX_CUE_DURATION_S': 6.0,
+        'AI_SEGMENTATION_MAX_CPS': 15.0,
         'AI_SEGMENTATION_BATCH_WINDOW_S': 120.0,
         'AI_SEGMENTATION_MAX_CHARS_PER_BATCH': 8000,
         'AI_SEGMENTATION_TEMPERATURE': 0.2,
@@ -293,23 +293,36 @@ class EnforceRhythmTests(unittest.TestCase):
         return AISegmentationConfig.from_app_config(_base_app_config(**kw))
 
     def test_short_cue_merged_with_next(self):
-        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=0.8, AI_SEGMENTATION_MAX_CUE_DURATION_S=7.0)
+        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=1.5, AI_SEGMENTATION_MAX_CUE_DURATION_S=6.0)
         cues = [
             AlignedSubtitleCue(start_s=0, end_s=0.3, text='a'),  # 过短
-            AlignedSubtitleCue(start_s=0.3, end_s=2.0, text='b'),
+            AlignedSubtitleCue(start_s=0.3, end_s=2.5, text='b'),
         ]
         out = enforce_rhythm(cues, cfg)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].text, 'a b')
-        self.assertGreaterEqual(out[0].end_s - out[0].start_s, 0.8)
+        self.assertGreaterEqual(out[0].end_s - out[0].start_s, 1.5)
 
     def test_long_cue_split(self):
-        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=0.8, AI_SEGMENTATION_MAX_CUE_DURATION_S=3.0)
+        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=1.5, AI_SEGMENTATION_MAX_CUE_DURATION_S=3.0)
         cues = [AlignedSubtitleCue(start_s=0, end_s=10, text='first part. second part.')]
         out = enforce_rhythm(cues, cfg)
         self.assertGreater(len(out), 1)
         for c in out:
             self.assertLessEqual(c.end_s - c.start_s, 3.0 + 0.01)
+
+    def test_suboptimal_cues_merged_into_ideal_range(self):
+        """两条 1.5-2s 偏短条目应合并到 2-4s 理想区间。"""
+        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=1.5, AI_SEGMENTATION_MAX_CUE_DURATION_S=6.0)
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=1.8, text='短句一'),
+            AlignedSubtitleCue(start_s=1.9, end_s=3.7, text='短句二'),
+        ]
+        out = enforce_rhythm(cues, cfg)
+        self.assertEqual(len(out), 1)
+        merged_dur = out[0].end_s - out[0].start_s
+        self.assertGreaterEqual(merged_dur, 2.0)
+        self.assertLessEqual(merged_dur, 4.0)
 
     def test_overlapping_cues_resolved(self):
         cfg = self._cfg()

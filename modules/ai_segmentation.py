@@ -557,6 +557,88 @@ def _merge_short_cues(
     return result
 
 
+def _merge_suboptimal_cues(
+    cues: List[AlignedSubtitleCue],
+    min_duration_s: float,
+    max_duration_s: float,
+    max_cps: float,
+    ideal_min_s: float = 2.0,
+    ideal_max_s: float = 4.0,
+) -> List[AlignedSubtitleCue]:
+    """主动合并处于非理想区间的相邻短条目。
+
+    区别于 _merge_short_cues（仅处理 < min_duration_s 的条目）：
+    本函数处理 [min_duration_s, ideal_min_s) 区间内的"勉强达标但偏短"的条目，
+    若与下一条合并后落在理想区间 [ideal_min_s, ideal_max_s] 内且不超 CPS/最长限制，则合并。
+
+    这样可以避免「1.0-1.5s 短句堆积」这类 AI 虽满足阈值但观感不佳的情况。
+    """
+    if not cues:
+        return cues
+    work = list(cues)
+    result: List[AlignedSubtitleCue] = []
+    i = 0
+    while i < len(work):
+        cue = work[i]
+        duration = cue.end_s - cue.start_s
+        # 已在理想区间或更长：直接保留
+        if duration >= ideal_min_s:
+            result.append(cue)
+            i += 1
+            continue
+
+        # 偏短（min_duration_s <= duration < ideal_min_s）：尝试与下一条合并到理想区间
+        merged_into_next = False
+        if i + 1 < len(work):
+            nxt = work[i + 1]
+            gap = nxt.start_s - cue.end_s
+            combined_text = (cue.text + ' ' + nxt.text).strip() if cue.text and nxt.text else (cue.text or nxt.text)
+            combined_dur = nxt.end_s - cue.start_s
+            # 合并条件：间隙小、合并后不超最长、CPS 不超标、合并后落在理想区间或至少显著更长
+            if (
+                gap <= 0.5
+                and combined_dur <= max_duration_s
+                and _cps(combined_text, combined_dur) <= max_cps
+                and combined_dur <= ideal_max_s
+                and combined_dur > duration  # 合并后必须更长
+            ):
+                merged = AlignedSubtitleCue(
+                    start_s=cue.start_s, end_s=nxt.end_s, text=combined_text,
+                    provider=cue.provider, timing_source=cue.timing_source,
+                    alignment_confidence=cue.alignment_confidence,
+                )
+                work[i] = merged
+                work.pop(i + 1)
+                merged_into_next = True
+                # 重新评估（可能仍偏短，继续合并下一条）
+        if merged_into_next:
+            continue
+
+        # 无法与下一条合并：尝试与上一条合并（仅当上一条也偏短）
+        if result:
+            prev = result[-1]
+            prev_dur = prev.end_s - prev.start_s
+            if prev_dur < ideal_min_s:
+                gap = cue.start_s - prev.end_s
+                combined_text = (prev.text + ' ' + cue.text).strip() if prev.text and cue.text else (prev.text or cue.text)
+                combined_dur = cue.end_s - prev.start_s
+                if (
+                    gap <= 0.5
+                    and combined_dur <= max_duration_s
+                    and _cps(combined_text, combined_dur) <= max_cps
+                    and combined_dur <= ideal_max_s
+                ):
+                    prev.end_s = cue.end_s
+                    prev.text = combined_text
+                    i += 1
+                    continue
+
+        # 都不合并：保留原条目
+        result.append(cue)
+        i += 1
+    return result
+
+
 def _split_long_cue(cue: AlignedSubtitleCue, max_duration_s: float) -> List[AlignedSubtitleCue]:
     """过长度条目按句末标点切分；切不动则按文本中点等分（时间按比例）。"""
     duration = cue.end_s - cue.start_s
@@ -640,6 +722,11 @@ def enforce_rhythm(
 
     # 合并过短
     merged = _merge_short_cues(split_applied, config.min_cue_duration_s, config.max_cue_duration_s, config.max_cps)
+
+    # 主动合并非理想区间的偏短条目（1.5-2s 与下一条合并到 2-4s 理想区间）
+    merged = _merge_suboptimal_cues(
+        merged, config.min_cue_duration_s, config.max_cue_duration_s, config.max_cps,
+    )
 
     # 再次拆分（合并可能产生过长）
     final: List[AlignedSubtitleCue] = []
