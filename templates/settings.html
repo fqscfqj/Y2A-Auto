@@ -898,6 +898,23 @@
                                                         </div>
                                                     </div>
                                                     <div class="col-12">
+                                                        <hr class="my-2">
+                                                        <h5 class="section-eyebrow mb-2">电影级烧录样式</h5>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_PREFER_SINGLE_LINE" {% if config.get('SUBTITLE_PREFER_SINGLE_LINE', True) %}checked{% endif %}>
+                                                            优先单行显示（横屏短句自动合并为一行）
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-single-line-min-font-scale" class="form-label">单行最小字体缩放（0.5-1.0）</label>
+                                                            <input type="number" id="subtitle-single-line-min-font-scale" name="SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE" value="{{ config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', 0.85) }}" min="0.5" max="1.0" step="0.05" class="form-control">
+                                                            <p class="help-text mb-0">默认字体放不下时，会尝试缩小到该比例；仍放不下则自动换行。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
                                                         <p class="help-text mb-0">自动化流程在开启字幕翻译时会下载字幕；勾选后还会额外尝试下载 YouTube 自动生成字幕，适用于原视频没有人工字幕的情况。</p>
                                                     </div>
                                                     <div class="col-md-4">

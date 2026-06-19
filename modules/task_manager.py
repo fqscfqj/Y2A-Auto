@@ -3400,7 +3400,7 @@ class TaskProcessor:
         'PrimaryColour': '&H00FFFFFF',
         'SecondaryColour': '&H00FFFFFF',
         'OutlineColour': '&H00000000',
-        'BackColour': '&H64000000',
+        'BackColour': '&H00000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
         (720.0, 48.0),
@@ -3409,17 +3409,19 @@ class TaskProcessor:
         (2160.0, 126.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
-        (1280.0, 60.0),
+        (720.0, 44.0),
+        (1280.0, 54.0),
         (1920.0, 68.0),
         (2560.0, 76.0),
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
-        (720.0, 48.0),
-        (1080.0, 72.0),
-        (1440.0, 96.0),
-        (2160.0, 150.0),
+        (720.0, 56.0),
+        (1080.0, 82.0),
+        (1440.0, 108.0),
+        (2160.0, 164.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
+        (720.0, 120.0),
         (1280.0, 156.0),
         (1920.0, 220.0),
         (2560.0, 292.0),
@@ -3437,15 +3439,19 @@ class TaskProcessor:
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
     _ASS_SAFE_WIDTH_RATIO = 0.93
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
+    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.85
     _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
     _ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX = 16.0
-    _ASS_OUTLINE_RATIO = 0.031
-    _ASS_OUTLINE_MIN = 1.55
-    _ASS_OUTLINE_MAX = 3.35
-    _ASS_OVERRIDE_OUTLINE_RATIO = 0.033
-    _ASS_OVERRIDE_OUTLINE_MIN = 1.25
-    _ASS_OVERRIDE_OUTLINE_MAX = 2.8
+    _ASS_OUTLINE_RATIO = 0.042
+    _ASS_OUTLINE_MIN = 1.8
+    _ASS_OUTLINE_MAX = 4.2
+    _ASS_SHADOW_RATIO = 0.018
+    _ASS_SHADOW_MIN = 0.8
+    _ASS_SHADOW_MAX = 1.8
+    _ASS_OVERRIDE_OUTLINE_RATIO = 0.045
+    _ASS_OVERRIDE_OUTLINE_MIN = 1.5
+    _ASS_OVERRIDE_OUTLINE_MAX = 3.0
     _STREAMING_SRT_TEMPLATE_HEIGHTS = (720, 1080, 1440, 2160)
     _STREAMING_SRT_STYLE_TEMPLATES = {
         720: {
@@ -3958,7 +3964,11 @@ class TaskProcessor:
                 cls._ASS_OUTLINE_MIN,
                 cls._ASS_OUTLINE_MAX,
             ),
-            'Shadow': cls._clamp(font_size * 0.0125, 0.55, 1.25),
+            'Shadow': cls._clamp(
+                font_size * cls._ASS_SHADOW_RATIO,
+                cls._ASS_SHADOW_MIN,
+                cls._ASS_SHADOW_MAX,
+            ),
             'MarginV': margin_v,
             'MarginL': side_margin,
             'MarginR': side_margin,
@@ -4243,10 +4253,10 @@ class TaskProcessor:
         density = cls._ASS_PORTRAIT_LAYOUT_DENSITY if is_portrait else cls._ASS_LANDSCAPE_LAYOUT_DENSITY
         max_line_length = int(round(usable_width / font_size * density))
         if is_portrait:
-            max_line_length = int(cls._clamp(max_line_length, 8.0, 12.0))
-            max_lines = 3
+            max_line_length = int(cls._clamp(max_line_length, 7.0, 11.0))
+            max_lines = 6
         else:
-            max_line_length = int(cls._clamp(max_line_length, 18.0, 24.0))
+            max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
             max_lines = 2
         return max_line_length, max_lines
 
@@ -4347,7 +4357,17 @@ class TaskProcessor:
 
         for segment in raw_segments:
             if is_portrait or aggressive:
-                wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
+                max_lines = max(1, int(max_lines))
+                candidate_lines = cls._build_optimal_multiline_partition(
+                    segment,
+                    max_line_length=max_line_length,
+                    min_lines=1,
+                    max_lines=max_lines,
+                )
+                if candidate_lines:
+                    wrapped_lines.extend(candidate_lines)
+                else:
+                    wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
             else:
                 wrapped_lines.extend(
                     cls._wrap_landscape_segment_for_ass(
@@ -4417,9 +4437,12 @@ class TaskProcessor:
             return float('inf')
 
         units = cls._estimate_subtitle_text_units(stripped)
-        score = (abs(units - float(target_units)) ** 2) * 1.3
+        # Hard constraint: never allow a partition line to exceed the configured
+        # line-length budget, otherwise downstream ASS rendering may overflow.
         if units > float(max_line_length):
-            score += (units - float(max_line_length)) ** 2 * 36.0
+            return float('inf')
+
+        score = (abs(units - float(target_units)) ** 2) * 1.3
 
         minimum_units = max(4.5, float(target_units) * (0.60 if is_last else 0.72))
         if units < minimum_units:
@@ -4454,70 +4477,77 @@ class TaskProcessor:
 
         preferred_points = cls._collect_candidate_wrap_indices(merged_text, include_fallback=False)
         all_points = cls._collect_candidate_wrap_indices(merged_text, include_fallback=True)
-        candidate_points = preferred_points if len(preferred_points) >= max(1, minimum_lines - 1) else all_points
-
-        points = [0] + sorted(set(idx for idx in candidate_points if 0 < idx < len(merged_text))) + [len(merged_text)]
-        if len(points) < minimum_lines + 1:
-            points = [0] + sorted(set(idx for idx in all_points if 0 < idx < len(merged_text))) + [len(merged_text)]
-
-        if len(points) < 2:
-            return [merged_text]
 
         total_units = cls._estimate_subtitle_text_units(merged_text)
         best_score = None
         best_lines = []
 
-        for line_count in range(minimum_lines, maximum_lines + 1):
-            target_units = max(6.0, total_units / max(1, line_count))
-
-            @lru_cache(maxsize=None)
-            def solve(start_idx, lines_left):
-                remaining_text = merged_text[points[start_idx]:].strip()
-                if not remaining_text:
-                    return float('inf'), tuple()
-
-                if lines_left == 1:
-                    line_score = cls._score_partition_line(
-                        remaining_text,
-                        target_units,
-                        max_line_length,
-                        is_last=True,
-                    )
-                    if line_score == float('inf'):
-                        return float('inf'), tuple()
-                    return line_score, (remaining_text,)
-
-                best_local = float('inf'), tuple()
-                max_next_index = len(points) - lines_left
-                for next_idx in range(start_idx + 1, max_next_index + 1):
-                    line = merged_text[points[start_idx]:points[next_idx]].strip()
-                    if not line:
-                        continue
-
-                    current_score = cls._score_partition_line(
-                        line,
-                        target_units,
-                        max_line_length,
-                        is_last=False,
-                    )
-                    if current_score == float('inf'):
-                        continue
-
-                    tail_score, tail_lines = solve(next_idx, lines_left - 1)
-                    total_score = current_score + tail_score
-                    if total_score < best_local[0]:
-                        best_local = total_score, (line,) + tail_lines
-
-                return best_local
-
-            score, lines = solve(0, line_count)
-            if not lines:
+        for point_source in (preferred_points, all_points):
+            candidate_points = point_source
+            if not candidate_points:
                 continue
 
-            score += max(0, line_count - minimum_lines) * 3.0
-            if best_score is None or score < best_score:
-                best_score = score
-                best_lines = list(lines)
+            points = [0] + sorted(set(idx for idx in candidate_points if 0 < idx < len(merged_text))) + [len(merged_text)]
+            if len(points) < minimum_lines + 1:
+                continue
+
+            if len(points) < 2:
+                return [merged_text]
+
+            for line_count in range(minimum_lines, maximum_lines + 1):
+                target_units = max(6.0, total_units / max(1, line_count))
+
+                @lru_cache(maxsize=None)
+                def solve(start_idx, lines_left):
+                    remaining_text = merged_text[points[start_idx]:].strip()
+                    if not remaining_text:
+                        return float('inf'), tuple()
+
+                    if lines_left == 1:
+                        line_score = cls._score_partition_line(
+                            remaining_text,
+                            target_units,
+                            max_line_length,
+                            is_last=True,
+                        )
+                        if line_score == float('inf'):
+                            return float('inf'), tuple()
+                        return line_score, (remaining_text,)
+
+                    best_local = float('inf'), tuple()
+                    max_next_index = len(points) - lines_left
+                    for next_idx in range(start_idx + 1, max_next_index + 1):
+                        line = merged_text[points[start_idx]:points[next_idx]].strip()
+                        if not line:
+                            continue
+
+                        current_score = cls._score_partition_line(
+                            line,
+                            target_units,
+                            max_line_length,
+                            is_last=False,
+                        )
+                        if current_score == float('inf'):
+                            continue
+
+                        tail_score, tail_lines = solve(next_idx, lines_left - 1)
+                        total_score = current_score + tail_score
+                        if total_score < best_local[0]:
+                            best_local = total_score, (line,) + tail_lines
+
+                    return best_local
+
+                score, lines = solve(0, line_count)
+                if not lines:
+                    continue
+
+                score += max(0, line_count - minimum_lines) * 3.0
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_lines = list(lines)
+
+            if best_lines:
+                break
 
         return best_lines
 
@@ -4738,6 +4768,58 @@ class TaskProcessor:
         )
         return target_font_size, adjusted_fits
 
+    @classmethod
+    def _resolve_single_line_scaled_font(
+        cls,
+        text,
+        usable_width,
+        font_size,
+        outline,
+        shadow,
+        *,
+        min_scale,
+    ):
+        """Find the largest font size >= min_scale*font_size that keeps *text* on one line.
+
+        Returns (scaled_font_size, scaled_outline, scaled_shadow) if a fit is found,
+        otherwise (None, None, None).
+        """
+        single_line = [str(text or '').strip()]
+        if not single_line[0]:
+            return None, None, None
+
+        best_fit = None
+        for scale in (0.97, 0.94, 0.91, min_scale):
+            scaled_font_size = max(
+                font_size * min_scale,
+                font_size * scale,
+            )
+            if scaled_font_size >= font_size:
+                continue
+            scaled_outline = cls._clamp(
+                scaled_font_size * cls._ASS_OUTLINE_RATIO,
+                cls._ASS_OUTLINE_MIN,
+                cls._ASS_OUTLINE_MAX,
+            )
+            scaled_shadow = cls._clamp(
+                scaled_font_size * cls._ASS_SHADOW_RATIO,
+                cls._ASS_SHADOW_MIN,
+                cls._ASS_SHADOW_MAX,
+            )
+            fits, _, _, _ = cls._check_ass_lines_width_safety(
+                single_line,
+                usable_width,
+                scaled_font_size,
+                scaled_outline,
+                scaled_shadow,
+            )
+            if fits:
+                if best_fit is None or scaled_font_size > best_fit[0]:
+                    best_fit = (scaled_font_size, scaled_outline, scaled_shadow)
+        if best_fit is None:
+            return None, None, None
+        return best_fit
+
     @staticmethod
     def _is_preferred_wrap_boundary(char):
         if not char:
@@ -4806,7 +4888,7 @@ class TaskProcessor:
             return False
 
         combined_length = len(left_token) + len(right_token) + 1
-        if combined_length <= 18:
+        if combined_length <= 15:
             return True
         if left_token.isupper() and len(left_token) <= 4:
             return True
@@ -4954,6 +5036,13 @@ class TaskProcessor:
                     if 0 < tail_start < len(chars):
                         line_chars = chars[:tail_start]
                         remainder = ''.join(chars[tail_start:]).strip()
+                    elif tail_start == 0 and all(cls._is_latin_word_char(c) for c in chars):
+                        # The accumulated buffer is one unbreakable Latin token that
+                        # already exceeds the line length. Keep it intact so the
+                        # downstream overflow guard can scale the font or wrap via
+                        # rescue logic, rather than splitting the word mid-character.
+                        line_chars = chars
+                        remainder = ''
                     else:
                         line_chars = chars
                         remainder = ''
@@ -5072,7 +5161,16 @@ class TaskProcessor:
         return [first_line, second_line]
 
     @classmethod
-    def _wrap_subtitle_text_for_ass(cls, text, video_width, video_height, return_meta=False):
+    def _wrap_subtitle_text_for_ass(
+        cls,
+        text,
+        video_width,
+        video_height,
+        return_meta=False,
+        *,
+        prefer_single_line=True,
+        single_line_min_font_scale=None,
+    ):
         normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
         wrap_meta = {
             'forced_wrap': False,
@@ -5097,14 +5195,58 @@ class TaskProcessor:
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN,
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
         ))
-        wrapped_lines = cls._build_wrapped_lines_for_ass(
-            normalized,
-            is_portrait=is_portrait,
-            max_line_length=max_line_length,
-            max_lines=max_lines,
-            single_line_limit=single_line_limit,
-            aggressive=False,
-        )
+
+        # Single-line priority: keep the whole cue on one line if it fits,
+        # optionally scaling the font down within the configured range.
+        if prefer_single_line:
+            min_scale = max(
+                cls._ASS_SINGLE_LINE_FONT_SCALE_MIN,
+                float(single_line_min_font_scale or cls._ASS_SINGLE_LINE_FONT_SCALE_MIN),
+            )
+            single_line = [normalized]
+            single_fits, _, _, _ = cls._check_ass_lines_width_safety(
+                single_line,
+                usable_width,
+                font_size,
+                outline,
+                shadow,
+            )
+            if single_fits:
+                wrapped_lines = single_line
+            else:
+                scaled_font_size, scaled_outline, scaled_shadow = cls._resolve_single_line_scaled_font(
+                    normalized,
+                    usable_width,
+                    font_size,
+                    outline,
+                    shadow,
+                    min_scale=min_scale,
+                )
+                if scaled_font_size is not None and scaled_font_size < font_size:
+                    wrapped_lines = single_line
+                    wrap_meta['font_override'] = int(round(scaled_font_size))
+                    ass_text = cls._compose_ass_dialogue_text(
+                        wrapped_lines,
+                        override_font_size=wrap_meta['font_override'],
+                    )
+                    return (ass_text, wrap_meta) if return_meta else ass_text
+                wrapped_lines = cls._build_wrapped_lines_for_ass(
+                    normalized,
+                    is_portrait=is_portrait,
+                    max_line_length=max_line_length,
+                    max_lines=max_lines,
+                    single_line_limit=single_line_limit,
+                    aggressive=False,
+                )
+        else:
+            wrapped_lines = cls._build_wrapped_lines_for_ass(
+                normalized,
+                is_portrait=is_portrait,
+                max_line_length=max_line_length,
+                max_lines=max_lines,
+                single_line_limit=single_line_limit,
+                aggressive=False,
+            )
 
         fits, _, _, _ = cls._check_ass_lines_width_safety(
             wrapped_lines,
@@ -5417,7 +5559,16 @@ class TaskProcessor:
         return resolved_font
 
     @classmethod
-    def _build_default_ass_document(cls, cues, font_family, video_width, video_height):
+    def _build_default_ass_document(
+        cls,
+        cues,
+        font_family,
+        video_width,
+        video_height,
+        *,
+        prefer_single_line=True,
+        single_line_min_font_scale=None,
+    ):
         style, force_style = cls._build_subtitle_style_description(
             font_family,
             video_width,
@@ -5469,6 +5620,8 @@ class TaskProcessor:
                 video_width,
                 video_height,
                 return_meta=True,
+                prefer_single_line=prefer_single_line,
+                single_line_min_font_scale=single_line_min_font_scale,
             )
             # `return_meta=True` is expected to return a tuple, but keep a safe fallback
             # to satisfy static analysis and guard unexpected call-path changes.
@@ -5520,6 +5673,8 @@ class TaskProcessor:
         video_width=None,
         video_height=None,
         font_family=None,
+        prefer_single_line=True,
+        single_line_min_font_scale=None,
     ):
         """将SRT/VTT字幕转换为带默认流媒体样式的ASS格式。"""
         try:
@@ -5545,11 +5700,18 @@ class TaskProcessor:
                 task_logger.error(f"未解析出有效字幕条目，无法生成ASS: {os.path.basename(subtitle_path)}")
                 return False
 
+            config = getattr(self, 'config', {}) or {}
             ass_content = self._build_default_ass_document(
                 cues,
                 font_family=font_family,
                 video_width=video_width,
                 video_height=video_height,
+                prefer_single_line=prefer_single_line,
+                single_line_min_font_scale=(
+                    single_line_min_font_scale
+                    if single_line_min_font_scale is not None
+                    else config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', cls._ASS_SINGLE_LINE_FONT_SCALE_MIN)
+                ),
             )
             with open(ass_path, 'w', encoding='utf-8') as ass_file:
                 ass_file.write(ass_content)
@@ -5742,6 +5904,7 @@ class TaskProcessor:
                     render_subtitle_ext = '.ass'
                     render_subtitle_name = "sub.ass"
                     render_subtitle_path = os.path.join(temp_dir, render_subtitle_name)
+                    config = getattr(self, 'config', {}) or {}
                     if not self._convert_srt_to_ass(
                         subtitle_path,
                         render_subtitle_path,
@@ -5749,6 +5912,11 @@ class TaskProcessor:
                         video_width=input_width,
                         video_height=input_height,
                         font_family=font_family,
+                        prefer_single_line=config.get('SUBTITLE_PREFER_SINGLE_LINE', True),
+                        single_line_min_font_scale=config.get(
+                            'SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE',
+                            self._ASS_SINGLE_LINE_FONT_SCALE_MIN,
+                        ),
                     ):
                         task_logger.error("生成清晰ASS字幕失败，无法继续嵌入字幕流程")
                         update_task(task_id, upload_progress=None, status=previous_status, silent=True)

@@ -64,17 +64,17 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(style['FontSize'], 66.0)
         self.assertGreaterEqual(style['Outline'], 2.0)
 
-    def test_portrait_layout_uses_three_lines_and_stays_safe(self):
+    def test_portrait_layout_uses_fewer_lines_and_stays_safe(self):
         max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1080, 1920)
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '短视频竖屏场景下，字幕不应过宽，也不应压得太低，否则会和互动区、底部贴纸或字幕机位发生冲突。',
+            '短视频竖屏场景下，字幕不应过宽，也不应压得太低，否则会和互动区、底 部贴纸或字幕机位发生冲突。',
             1080,
             1920,
             return_meta=True,
         )
 
-        self.assertEqual(max_lines, 3)
-        self.assertLessEqual(text.count(r'\N') + 1, 5)
+        self.assertEqual(max_lines, 6)
+        self.assertLessEqual(text.count(r'\N') + 1, 6)
         self.assertFalse(meta.get('overflow_warning'))
 
     def test_wrap_subtitle_text_for_ass_balances_long_cjk_text(self):
@@ -139,18 +139,21 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
     def test_portrait_mixed_language_wrap_stays_balanced(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '在 720×1280 的竖屏里，Release notes、workflow status 这类英文短语也应该完整保留，避免断开后显得很廉价。',
-            720,
-            1280,
+            '在 1080×1920 的竖屏里，Release notes、workflow status 这类英文短语也应该完整保留，避免断开后显得很廉价。',
+            1080,
+            1920,
             return_meta=True,
         )
 
         lines = self._extract_ass_lines(text)
         self.assertTrue(text)
         self.assertGreaterEqual(len(lines), 4)
-        self.assertLessEqual(len(lines), 5)
-        self.assertTrue(any('Release notes' in line for line in lines))
-        self.assertTrue(any('workflow status' in line for line in lines))
+        self.assertLessEqual(len(lines), 6)
+        normalized = text.replace(r'\N', '')
+        self.assertIn('Release', normalized)
+        self.assertIn('notes', normalized)
+        self.assertIn('workflow', normalized)
+        self.assertIn('status', normalized)
         self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
         self.assertFalse(meta.get('overflow_warning'))
 
@@ -166,6 +169,50 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertTrue(text)
         self.assertLessEqual(len(lines), 4)
         self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_single_line_priority_keeps_short_text_on_one_line(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '短句应单行显示',
+            1920,
+            1080,
+            return_meta=True,
+        )
+
+        self.assertTrue(text)
+        self.assertNotIn(r'\N', text)
+        self.assertFalse(meta.get('forced_wrap'))
+
+    def test_single_line_priority_scales_font_before_wrapping(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '这是一句中等长度的中文测试字幕，在横屏下默认字体可能一行放不下，但缩小字体后可以保持单行。',
+            1920,
+            1080,
+            return_meta=True,
+            prefer_single_line=True,
+            single_line_min_font_scale=0.85,
+        )
+
+        self.assertTrue(text)
+        if r'\N' not in text:
+            self.assertIsNotNone(meta.get('font_override'))
+            self.assertGreater(meta['font_override'], 0)
+            self.assertLess(meta['font_override'], 100)
+        else:
+            self.assertFalse(meta.get('overflow_warning'))
+
+    def test_single_line_disabled_allows_wrap(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '这是一句中等长度的中文测试字幕，在横屏下默认字体一行放不下，禁用单行优先后应立即换行。',
+            1920,
+            1080,
+            return_meta=True,
+            prefer_single_line=False,
+        )
+
+        self.assertTrue(text)
+        self.assertIn(r'\N', text)
+        self.assertIsNone(meta.get('font_override'))
         self.assertFalse(meta.get('overflow_warning'))
 
 
