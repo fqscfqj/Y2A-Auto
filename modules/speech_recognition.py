@@ -22,6 +22,13 @@ from .subtitle_pipeline_types import (
 )
 from .vad_processor import VadConfig, VadProcessor
 
+try:  # AI 智能分段为可选增强，导入失败不应阻断语音识别主流程
+    from .ai_segmentation import AISegmentationConfig, AISegmenter, AISegmentationError
+except Exception:  # pragma: no cover - 防御性兜底
+    AISegmentationConfig = None  # type: ignore[assignment]
+    AISegmenter = None  # type: ignore[assignment]
+    AISegmentationError = Exception  # type: ignore[assignment]
+
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
     from .utils import get_app_subdir
@@ -94,6 +101,9 @@ class SpeechRecognitionConfig:
     max_retries: int = 3
     retry_delay_s: float = 2.0
     request_timeout_s: float = 300.0
+    # AI 智能分段（基于字级时间戳的语义重分段）
+    ai_segmentation_enabled: bool = False
+    ai_segmentation_config: Optional[Any] = None
 
 
 class SpeechRecognizer:
@@ -250,6 +260,7 @@ class SpeechRecognizer:
 
         results = self._asr.transcribe_windows_concurrent(window_inputs)
         aligned = self._srt.align_transcription_results(results, total_duration_s=total_duration)
+        aligned = self._maybe_apply_ai_segmentation(results, aligned)
         success_count = sum(1 for result in results if result.ok or result.timestamp_mode == 'srt')
         if success_count == 0:
             self.last_warning_message = self._pick_failure_token(results) or 'asr_failed'
@@ -275,6 +286,7 @@ class SpeechRecognizer:
             return []
         results = self._asr.transcribe_windows_concurrent(window_inputs)
         aligned = self._srt.align_transcription_results(results, total_duration_s=total_duration)
+        aligned = self._maybe_apply_ai_segmentation(results, aligned)
         if not aligned:
             self.last_warning_message = self._pick_failure_token(results) or self.last_warning_message
         return aligned
@@ -289,8 +301,39 @@ class SpeechRecognizer:
         )
         result = self._asr.transcribe_window(audio_wav, window=whole_window, segment_info='whole-audio')
         aligned = self._srt.align_transcription_results([result], total_duration_s=total_duration)
+        aligned = self._maybe_apply_ai_segmentation([result], aligned)
         if not aligned and result.failure_token:
             self.last_warning_message = result.failure_token
+        return aligned
+
+    def _maybe_apply_ai_segmentation(
+        self,
+        results: List[AsrTranscriptionResult],
+        aligned: List[AlignedSubtitleCue],
+    ) -> List[AlignedSubtitleCue]:
+        """若启用 AI 智能分段，对 ASR 原始结果（含字级时间戳）做语义重分段。
+
+        三级降级封装在 AISegmenter 内部；此处仅做最外层兜底——
+        任何异常都回退到规则分段结果，保证不阻断主流程。
+        """
+        if not self.config.ai_segmentation_enabled or not self.config.ai_segmentation_config:
+            return aligned
+        if AISegmenter is None or AISegmentationConfig is None:
+            self.logger.warning('AI 智能分段模块未加载，跳过')
+            return aligned
+        try:
+            segmenter = AISegmenter(self.config.ai_segmentation_config, logger=self.logger)
+            ai_cues = segmenter.segment(results)
+            if ai_cues:
+                self.logger.info(
+                    'AI 智能分段已应用：ASR 规则对齐 %d 条 → AI 重分段 %d 条',
+                    len(aligned), len(ai_cues),
+                )
+                return ai_cues
+        except AISegmentationError as exc:
+            self.logger.warning('AI 智能分段未生效，回退规则分段：%s', exc)
+        except Exception as exc:
+            self.logger.warning('AI 智能分段异常，回退规则分段：%s: %s', exc.__class__.__name__, exc)
         return aligned
 
     def _pick_failure_token(self, results: List[AsrTranscriptionResult]) -> str:
@@ -538,6 +581,12 @@ def create_speech_recognizer_from_config(
             max_retries=max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
             request_timeout_s=timeout_s,
+            ai_segmentation_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_ENABLED', False)),
+            ai_segmentation_config=(
+                AISegmentationConfig.from_app_config(app_config)
+                if AISegmentationConfig is not None
+                else None
+            ),
         )
         return SpeechRecognizer(config, task_id)
     except Exception as e:

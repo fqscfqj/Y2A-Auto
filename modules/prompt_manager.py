@@ -130,6 +130,39 @@ _DESC_RETRY_BUILTIN_BEHAVIOR = (
 )
 
 
+# ---------- AI 智能分段 Prompt（基于字级/段级时间戳的语义重分段，非翻译型） ----------
+# 字级模式：输入带字级时间戳的词序列，AI 按语义重新分组为字幕条目，时间精确到词边界。
+_SMART_SEGMENT_WORD_BUILTIN_BEHAVIOR = (
+    "你是电影级字幕分段专家。基于提供的字级时间戳词序列，重新切分为自然流畅、节奏舒适的字幕条目。"
+    "分段原则："
+    "1. 按语义完整度切分——一个条目应包含一个完整语意单元（短语或短句），不要把一个语意单元拆到两条，也不要跨语意单元强行合并。"
+    "2. 每条字幕的开始时间必须等于该条首个词的 start_s，结束时间必须等于该条末个词的 end_s；严禁自行编造或修改任何时间戳。"
+    "3. 必须覆盖所有输入词，保持原顺序，禁止丢失、重复、改写、增删任何词。"
+    "4. 节奏约束：每条时长不少于 {min_duration_s} 秒、不超过 {max_duration_s} 秒；可见字符速率不超过 {max_cps} 字/秒。"
+    "5. 优先在自然停顿（句号、问号、逗号、语气词后）切分；过短的相邻词应合并成一条以满足最短时长。"
+    "6. 单条文本保持简洁，避免过长换行。"
+)
+
+# 段级模式（降级）：输入仅有段级时间戳，AI 只能在段边界上拆分/合并，精度较低但仍优于纯规则。
+_SMART_SEGMENT_SEGMENT_BUILTIN_BEHAVIOR = (
+    "你是电影级字幕分段专家。基于提供的段落级时间戳，重新切分为自然流畅、节奏舒适的字幕条目。"
+    "分段原则："
+    "1. 可将一段拆分为多条，或将相邻短段合并为一条，以获得更自然的断句。"
+    "2. 每条字幕的开始/结束时间必须落在某段的边界上（段首 start_s 或段尾 end_s），严禁取段内中间值或编造时间戳。"
+    "3. 必须覆盖所有输入段的文本，保持原顺序，禁止丢失、重复、改写文本。"
+    "4. 节奏约束：每条时长不少于 {min_duration_s} 秒、不超过 {max_duration_s} 秒；可见字符速率不超过 {max_cps} 字/秒。"
+    "5. 优先在自然停顿处切分。"
+)
+
+# 协议壳：严格 JSON 输出格式 + 时间单调递增 + 不越界约束
+_SMART_SEGMENT_SHARED_RULES = (
+    "输出严格 JSON，不要任何解释或多余文本。"
+    "格式：{\"cues\":[{\"start_s\":数字,\"end_s\":数字,\"text\":\"该条所含词/段的原文拼接\"}]}。"
+    "cues 必须按 start_s 升序排列，每条 end_s > start_s，相邻条目时间不得重叠。"
+    "所有 start_s/end_s 必须精确取自输入数据，不得四舍五入或估算。"
+)
+
+
 # ---------------------------------------------------------------------------
 # 注册 4 组 Prompt
 # ---------------------------------------------------------------------------
@@ -380,6 +413,38 @@ def get_metadata_desc_retry_prompt(
         target_language=target_language,
     )
     return behavior + _METADATA_DESC_RETRY_JSON_SUFFIX
+
+
+# ---------------------------------------------------------------------------
+# AI 智能分段专用 API（非翻译型，独立于 Prompt 中心用户覆盖）
+# ---------------------------------------------------------------------------
+
+def get_smart_segment_system_prompt(
+    *,
+    has_word_timestamps: bool,
+    min_duration_s: float = 0.8,
+    max_duration_s: float = 7.0,
+    max_cps: float = 18.0,
+) -> str:
+    """获取 AI 智能分段最终 system prompt（含协议壳与 JSON 后缀）。
+
+    has_word_timestamps=True 使用字级模式（精度高），False 使用段级降级模式。
+    节奏阈值会渲染进行为层，指导模型遵守最短/最长时长与字符速率上限。
+    """
+    template = (
+        _SMART_SEGMENT_WORD_BUILTIN_BEHAVIOR
+        if has_word_timestamps
+        else _SMART_SEGMENT_SEGMENT_BUILTIN_BEHAVIOR
+    )
+    behavior = _render_template(
+        template,
+        {
+            "min_duration_s": f"{float(min_duration_s):.2f}",
+            "max_duration_s": f"{float(max_duration_s):.2f}",
+            "max_cps": f"{float(max_cps):.1f}",
+        },
+    )
+    return behavior + _SMART_SEGMENT_SHARED_RULES
 
 
 # ---------------------------------------------------------------------------

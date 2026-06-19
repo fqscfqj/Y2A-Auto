@@ -14,6 +14,7 @@ from .utils import extract_chat_message_json, get_chat_message_text
 
 logger = logging.getLogger('subtitle_qc')
 SHORT_LINE_NORMALIZED_LEN = 8
+SHORT_DURATION_THRESHOLD_S = 0.5  # 单条字幕显示时长低于此值视为过短（QC 安全网，独立于 AI 分段阈值）
 MAX_REPEATED_SAMPLE_PER_TEXT = 3
 TOP_REPEATED_TEXT_LIMIT = 5
 HIGH_CONFIDENCE_RULE_SCORE_THRESHOLD = 0.85
@@ -204,6 +205,7 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
     normalized_examples: Dict[str, str] = {}
     total_text_chars = 0
     short_line_count = 0
+    short_duration_count = 0
     max_repeat_run = 0
     current_repeat_run = 0
     previous_normalized = ''
@@ -240,6 +242,13 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
             earliest_start = start_seconds if earliest_start is None else min(earliest_start, start_seconds)
         if end_seconds is not None:
             latest_end = end_seconds if latest_end is None else max(latest_end, end_seconds)
+        if (
+            text
+            and start_seconds is not None
+            and end_seconds is not None
+            and (end_seconds - start_seconds) < SHORT_DURATION_THRESHOLD_S
+        ):
+            short_duration_count += 1
         stats.append({
             'index': idx,
             'item': it,
@@ -306,6 +315,8 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
         'total_text_chars': total_text_chars,
         'short_line_count': short_line_count,
         'short_line_ratio': (short_line_count / max(1, usable_count)) if usable_count else 0.0,
+        'short_duration_count': short_duration_count,
+        'short_duration_ratio': (short_duration_count / max(1, non_empty_count)) if non_empty_count else 0.0,
         'max_repeat_run': max_repeat_run,
         'timeline_span_seconds': timeline_span_seconds,
         'chars_per_minute': chars_per_minute,
@@ -332,6 +343,7 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     repeat_mass_ratio = float(metrics.get('repeat_mass_ratio', 1.0) or 0.0)
     avg_len = float(metrics.get('avg_len', 0.0) or 0.0)
     short_line_ratio = float(metrics.get('short_line_ratio', 0.0) or 0.0)
+    short_duration_ratio = float(metrics.get('short_duration_ratio', 0.0) or 0.0)
     max_repeat_run = int(metrics.get('max_repeat_run', 0) or 0)
     chars_per_minute = float(metrics.get('chars_per_minute', 0.0) or 0.0)
     suspicious_phrase_ratio = float(metrics.get('suspicious_phrase_ratio', 0.0) or 0.0)
@@ -348,6 +360,7 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     score -= min(0.25, max(0.0, 0.55 - unique_ratio) * 0.70)
     score -= min(0.20, max(0.0, 3.0 - avg_len) * 0.10)
     score -= min(0.22, max(0.0, short_line_ratio - 0.45) * 0.40)
+    score -= min(0.20, max(0.0, short_duration_ratio - 0.15) * 0.60)
     score -= min(0.16, max(0, max_repeat_run - 2) * 0.08)
     if chars_per_minute > 0:
         score -= min(0.18, max(0.0, 35.0 - chars_per_minute) * 0.006)
