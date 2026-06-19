@@ -3400,7 +3400,9 @@ class TaskProcessor:
         'PrimaryColour': '&H00FFFFFF',
         'SecondaryColour': '&H00FFFFFF',
         'OutlineColour': '&H00000000',
-        'BackColour': '&H00000000',
+        # Keep a subtle translucent background as a readability safety net
+        # for bright/high-contrast scenes while preserving the cinema look.
+        'BackColour': '&H33000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
         (720.0, 48.0),
@@ -4253,8 +4255,13 @@ class TaskProcessor:
         density = cls._ASS_PORTRAIT_LAYOUT_DENSITY if is_portrait else cls._ASS_LANDSCAPE_LAYOUT_DENSITY
         max_line_length = int(round(usable_width / font_size * density))
         if is_portrait:
-            max_line_length = int(cls._clamp(max_line_length, 7.0, 11.0))
-            max_lines = 6
+            # Portrait lines are capped at 14 visual units so that 5 balanced
+            # lines can absorb medium-length cues without immediately
+            # triggering overflow warnings, while still keeping the text narrow.
+            max_line_length = int(cls._clamp(max_line_length, 7.0, 14.0))
+            # Keep portrait subtitles compact: 5 lines is the hard ceiling,
+            # but the partitioner still prefers fewer balanced lines.
+            max_lines = 5
         else:
             max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
             max_lines = 2
@@ -4437,12 +4444,18 @@ class TaskProcessor:
             return float('inf')
 
         units = cls._estimate_subtitle_text_units(stripped)
-        # Hard constraint: never allow a partition line to exceed the configured
-        # line-length budget, otherwise downstream ASS rendering may overflow.
-        if units > float(max_line_length):
+        # Soft length constraint with a generous tolerance: hard-reject only
+        # when a line is extremely long, otherwise apply a strong quadratic
+        # penalty.  This keeps the DP out of the greedy fallback for portrait
+        # cues where perfect boundary-aligned partitions would otherwise be
+        # impossible within a tight budget.
+        hard_limit = max(float(max_line_length) * 1.5, float(max_line_length) + 8.0)
+        if units > hard_limit:
             return float('inf')
 
         score = (abs(units - float(target_units)) ** 2) * 1.3
+        if units > float(max_line_length):
+            score += ((units - float(max_line_length)) ** 2) * 36.0
 
         minimum_units = max(4.5, float(target_units) * (0.60 if is_last else 0.72))
         if units < minimum_units:
@@ -4789,12 +4802,18 @@ class TaskProcessor:
             return None, None, None
 
         best_fit = None
+        min_allowed_font = max(
+            float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
+            float(font_size) * float(cls._ASS_OVERRIDE_FONT_SIZE_RATIO_MIN),
+        )
         for scale in (0.97, 0.94, 0.91, min_scale):
             scaled_font_size = max(
                 font_size * min_scale,
                 font_size * scale,
             )
             if scaled_font_size >= font_size:
+                continue
+            if scaled_font_size < min_allowed_font:
                 continue
             scaled_outline = cls._clamp(
                 scaled_font_size * cls._ASS_OUTLINE_RATIO,

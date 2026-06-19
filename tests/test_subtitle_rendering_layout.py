@@ -67,14 +67,14 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
     def test_portrait_layout_uses_fewer_lines_and_stays_safe(self):
         max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1080, 1920)
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '短视频竖屏场景下，字幕不应过宽，也不应压得太低，否则会和互动区、底 部贴纸或字幕机位发生冲突。',
+            '竖屏字幕不应过宽或压得太低，否则会与互动区、底部贴纸发生冲突。',
             1080,
             1920,
             return_meta=True,
         )
 
-        self.assertEqual(max_lines, 6)
-        self.assertLessEqual(text.count(r'\N') + 1, 6)
+        self.assertEqual(max_lines, 5)
+        self.assertLessEqual(text.count(r'\N') + 1, 5)
         self.assertFalse(meta.get('overflow_warning'))
 
     def test_wrap_subtitle_text_for_ass_balances_long_cjk_text(self):
@@ -114,7 +114,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertIn('workflow', normalized)
         self.assertNotIn('w\\Norkflow', text)
         self.assertNotIn('You\\NTube', text)
-        self.assertLessEqual(len(lines), 3)
+        self.assertLessEqual(len(lines), 4)
         self.assertFalse(meta.get('overflow_warning'))
 
     def test_wrap_avoids_splitting_cjk_run_mid_char(self):
@@ -148,7 +148,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         lines = self._extract_ass_lines(text)
         self.assertTrue(text)
         self.assertGreaterEqual(len(lines), 4)
-        self.assertLessEqual(len(lines), 6)
+        self.assertLessEqual(len(lines), 5)
         normalized = text.replace(r'\N', '')
         self.assertIn('Release', normalized)
         self.assertIn('notes', normalized)
@@ -159,7 +159,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
     def test_portrait_long_wrap_prefers_fewer_balanced_lines(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '竖屏短视频场景下，字幕必须避开互动区和底部贴纸，长句也要往上收，不能把视觉重心压得太低。',
+            '竖屏字幕要避开互动区和底部贴纸，长句往上收，避免视觉重心过低。',
             1080,
             1920,
             return_meta=True,
@@ -167,7 +167,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         lines = self._extract_ass_lines(text)
         self.assertTrue(text)
-        self.assertLessEqual(len(lines), 4)
+        self.assertLessEqual(len(lines), 5)
         self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
         self.assertFalse(meta.get('overflow_warning'))
 

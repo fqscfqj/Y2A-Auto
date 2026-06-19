@@ -21,6 +21,8 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -57,8 +59,8 @@ def render_sample(
         single_line_min_font_scale=single_line_min_font_scale,
     )
 
-    # Use a sibling .ass file with a relative path to avoid ':' parsing issues
-    # in FFmpeg's subtitles filter option syntax on Windows.
+    # Write the ASS file next to the output image with a stable relative path
+    # so FFmpeg's subtitles filter parses it reliably on Windows.
     ass_path = out_path.with_suffix(".ass")
     ass_path.write_text(ass_content, encoding="utf-8")
     relative_ass = os.path.relpath(ass_path, os.getcwd()).replace("\\", "/")
@@ -77,8 +79,11 @@ def render_sample(
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     finally:
-        if ass_path.exists():
-            ass_path.unlink()
+        try:
+            if ass_path.exists():
+                ass_path.unlink()
+        except OSError:
+            pass
 
     return out_path
 
@@ -133,8 +138,12 @@ def main() -> int:
     for res in args.resolutions:
         width, height = parse_resolution(res)
         for idx, text in enumerate(args.texts, start=1):
-            safe_text = text[:20].replace("\\", "").replace("/", "_")
-            out_name = f"preview_{width}x{height}_{idx:02d}_{safe_text}.png"
+            safe_text = (
+                "".join(c if c.isprintable() and c not in '\\/:*?"<>|' else "_" for c in text[:20])
+                .strip()
+            )
+            short_hash = uuid.uuid4().hex[:8]
+            out_name = f"preview_{width}x{height}_{idx:02d}_{short_hash}_{safe_text}.png"
             out_path = outdir / out_name
             render_sample(
                 text=text,
