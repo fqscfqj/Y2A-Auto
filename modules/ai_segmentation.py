@@ -17,6 +17,7 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -675,9 +676,21 @@ def _split_long_cue(cue: AlignedSubtitleCue, max_duration_s: float) -> List[Alig
                 )
                 # 递归切分左右（防单边仍过长）
                 return _split_long_cue(left, max_duration_s) + _split_long_cue(right, max_duration_s)
-    # 切不动：按中点等分
+    # 切不动：优先按空格/CJK 边界切，兜底按中点
+    mid_pos = len(text) // 2
+    search_start = max(0, mid_pos - 15)
+    search_end = min(len(text), mid_pos + 15)
+    best_pos = mid_pos
+    for pos in range(search_start, search_end):
+        ch = text[pos]
+        if ch.isspace():
+            best_pos = pos + 1
+            break
+        if _CJK_CHAR_RE.match(ch) and pos > 0 and _CJK_CHAR_RE.match(text[pos - 1]):
+            best_pos = pos
+            break
     mid_s = cue.start_s + duration / 2
-    mid_text = len(text) // 2
+    mid_text = best_pos
     left_text = text[:mid_text].strip()
     right_text = text[mid_text:].strip()
     if not left_text or not right_text:
@@ -893,6 +906,10 @@ class AISegmenter:
         max_tokens = _estimate_max_tokens(char_count)
         last_exc: Optional[Exception] = None
         for attempt in range(self.config.max_retries + 1):
+            if attempt > 0:
+                delay = min(2 ** attempt, 8)  # 指数退避，上限 8s
+                self.logger.info('AI 分段重试等待 %ds...', delay)
+                time.sleep(delay)
             try:
                 return _request_json_object(
                     client=client,
