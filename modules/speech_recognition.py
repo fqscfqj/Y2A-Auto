@@ -23,7 +23,7 @@ from .subtitle_pipeline_types import (
 from .vad_processor import VadConfig, VadProcessor
 
 try:  # AI 智能分段为可选增强，导入失败不应阻断语音识别主流程
-    from .ai_segmentation import AISegmentationConfig, AISegmenter, AISegmentationError
+    from .ai_segmentation import AISegmentationConfig, AgentSegmenter as AISegmenter, AISegmentationError
 except Exception:  # pragma: no cover - 防御性兜底
     AISegmentationConfig = None  # type: ignore[assignment]
     AISegmenter = None  # type: ignore[assignment]

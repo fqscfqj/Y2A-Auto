@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 from modules.ai_segmentation import (
     AISegmentationConfig,
     AISegmentationError,
-    AISegmenter,
+    AgentSegmenter as AISegmenter,
     _Batch,
     _parse_cues_response,
     build_batches,
@@ -207,13 +207,13 @@ class ThreeLevelDegradationTests(unittest.TestCase):
         segmenter = AISegmenter(cfg, logger=MagicMock())
         call_state = {'word_called': False, 'seg_called': False}
 
-        def fake_word(batch, provider):
+        def fake_word(batch, provider, context_cues=None):
             call_state['word_called'] = True
             if word_exc:
                 raise word_exc
             return word_response
 
-        def fake_seg(batch, provider):
+        def fake_seg(batch, provider, context_cues=None):
             call_state['seg_called'] = True
             if seg_exc:
                 raise seg_exc

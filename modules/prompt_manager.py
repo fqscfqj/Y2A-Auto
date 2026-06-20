@@ -212,6 +212,44 @@ _SMART_SEGMENT_SHARED_RULES = (
     "所有 start_s/end_s 必须精确取自输入数据，不得四舍五入或估算。"
 )
 
+# Agent 上下文指令：告知 AI 如何使用已确认的历史 cues 作为参考
+_SMART_SEGMENT_CONTEXT_INSTRUCTIONS = (
+    "\n## 上下文参考（已确认的历史字幕）\n"
+    "- 输入数据中附带 `context_cues` 字段，包含前一批次已确认的字幕条目。\n"
+    "- 这些是 **已定稿结果**，你 **不得修改、覆盖或重新分段** context_cues 中的任何条目。\n"
+    "- context_cues 的作用：\n"
+    "  1. **风格延续**：保持与前文一致的断句节奏和分段风格。\n"
+    "  2. **语义接续**：如果前一批次末条字幕在语意上不完整（如半句话、排比列举未完），"
+    "你应让当前批次的第一条字幕自然接续完成该语意单元。\n"
+    "  3. **避免重复**：当前批次输出的时间戳不得与 context_cues 的时间范围重叠。\n"
+    "- 当前批次的首个 start_s 应在 context_cues 末条 end_s 之后（或紧接）。\n"
+)
+
+# Agent 边界精炼 prompt：用于跨批次边界审视
+_SMART_SEGMENT_BOUNDARY_REFINE_PROMPT = (
+    "检查相邻两个批次之间的字幕分段边界，"
+    "判断是否存在语义割裂——即一句完整的话被不恰当地切到了两个批次里。\n\n"
+    "## 输入\n"
+    "- `words`：边界区域内的所有词（带时间戳），来自两个批次的交界处。\n"
+    "- `current_cues`：当前已分段的字幕条目（覆盖上述词的范围）。\n\n"
+    "## 判断标准\n"
+    "- 如果 current_cues 的最后一条在语意上是完整的（句末有标点、意思完整），"
+    "则边界合理，直接原样返回 current_cues。\n"
+    "- 如果最后一条以半句话、连词、介词等不完整的形式结束，"
+    "且下一条明显是该句的延续，则需要调整边界：\n"
+    "  - 找到最自然的断句点（参考句末标点 > 分句标点 > 从句连接词前）\n"
+    "  - 在该点重新切分，使每条字幕都是自足的语意单元\n\n"
+    "## 节奏约束\n"
+    "- 目标时长 2-4 秒，最短 {min_duration_s} 秒，最长 {max_duration_s} 秒。\n"
+    "- 可见字符速率不超过 {max_cps} 字/秒。\n\n"
+    "## 技术约束\n"
+    "- 仅输出需要调整的 cue，未调整的保持不变。\n"
+    "- 每条 cue 的 start_s/end_s 必须精确取自 words 中的时间戳，不得编造。\n"
+    "- 所有 words 必须被覆盖，不得丢失任何词。\n"
+    "- 输出严格 JSON，不要任何解释。格式："
+    "{\"cues\":[{\"start_s\":数字,\"end_s\":数字,\"text\":\"原文拼接\"}]}。\n"
+)
+
 
 # ---------------------------------------------------------------------------
 # 注册 4 组 Prompt
@@ -475,11 +513,13 @@ def get_smart_segment_system_prompt(
     min_duration_s: float = 0.8,
     max_duration_s: float = 7.0,
     max_cps: float = 18.0,
+    has_context: bool = False,
 ) -> str:
     """获取 AI 智能分段最终 system prompt（含协议壳与 JSON 后缀）。
 
     has_word_timestamps=True 使用字级模式（精度高），False 使用段级降级模式。
     节奏阈值会渲染进行为层，指导模型遵守最短/最长时长与字符速率上限。
+    has_context=True 时注入上下文指令，告知 AI 如何使用已确认的历史 cues。
     """
     template = (
         _SMART_SEGMENT_WORD_BUILTIN_BEHAVIOR
@@ -494,7 +534,25 @@ def get_smart_segment_system_prompt(
             "max_cps": f"{float(max_cps):.1f}",
         },
     )
-    return behavior + _SMART_SEGMENT_SHARED_RULES
+    context_block = _SMART_SEGMENT_CONTEXT_INSTRUCTIONS if has_context else ''
+    return behavior + context_block + _SMART_SEGMENT_SHARED_RULES
+
+
+def get_boundary_refine_system_prompt(
+    *,
+    min_duration_s: float = 0.8,
+    max_duration_s: float = 7.0,
+    max_cps: float = 18.0,
+) -> str:
+    """获取边界精炼 system prompt，用于跨批次边界审视。"""
+    return _render_template(
+        _SMART_SEGMENT_BOUNDARY_REFINE_PROMPT,
+        {
+            "min_duration_s": f"{float(min_duration_s):.2f}",
+            "max_duration_s": f"{float(max_duration_s):.2f}",
+            "max_cps": f"{float(max_cps):.1f}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

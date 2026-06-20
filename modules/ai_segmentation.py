@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .ai_enhancer import _request_json_object, get_openai_client
-from .prompt_manager import get_smart_segment_system_prompt
+from .prompt_manager import get_smart_segment_system_prompt, get_boundary_refine_system_prompt
 from .speech_pipeline_settings import coerce_bool
 from .subtitle_pipeline_types import (
     AlignedSubtitleCue,
@@ -62,6 +62,10 @@ class AISegmentationConfig:
     temperature: float = 0.2
     max_retries: int = 2
     request_timeout_s: float = 600.0
+    # Agent 上下文感知
+    context_window: int = 3          # 前一批末尾 N 条 cue 注入下一批 prompt
+    boundary_refine_enabled: bool = True   # 边界精炼 pass
+    boundary_window: int = 3         # 边界精炼每侧取 N 条 cue
     # 解析后的实际生效模型配置（留空继承后填充）
     resolved_base_url: str = ''
     resolved_api_key: str = ''
@@ -83,6 +87,9 @@ class AISegmentationConfig:
             temperature=float(app_config.get('AI_SEGMENTATION_TEMPERATURE', 0.2) or 0.2),
             max_retries=int(app_config.get('AI_SEGMENTATION_MAX_RETRIES', 2) or 2),
             request_timeout_s=float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600),
+            context_window=int(app_config.get('AI_SEGMENTATION_CONTEXT_WINDOW', 3) or 3),
+            boundary_refine_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED', True)),
+            boundary_window=int(app_config.get('AI_SEGMENTATION_BOUNDARY_WINDOW', 3) or 3),
         )
         # 留空继承全局 OPENAI_*
         cfg.resolved_base_url = cfg.base_url or str(app_config.get('OPENAI_BASE_URL', '') or '').strip()
@@ -328,6 +335,37 @@ def _build_segment_payload(segments: List[AsrSegmentTiming]) -> Dict[str, Any]:
             for idx, s in enumerate(segments)
         ]
     }
+
+
+def _serialize_context_cues(context_cues: List[AlignedSubtitleCue]) -> List[Dict[str, Any]]:
+    """将已确认的上下文 cues 序列化为 payload 片段。"""
+    return [
+        {'start_s': round(float(c.start_s), 3), 'end_s': round(float(c.end_s), 3), 'text': str(c.text or '')}
+        for c in context_cues
+        if str(c.text or '').strip()
+    ]
+
+
+def _build_word_payload_with_context(
+    words: List[AsrWordTiming],
+    context_cues: List[AlignedSubtitleCue],
+) -> Dict[str, Any]:
+    """构建带上下文的字级 payload。"""
+    payload = _build_word_payload(words)
+    if context_cues:
+        payload['context_cues'] = _serialize_context_cues(context_cues)
+    return payload
+
+
+def _build_segment_payload_with_context(
+    segments: List[AsrSegmentTiming],
+    context_cues: List[AlignedSubtitleCue],
+) -> Dict[str, Any]:
+    """构建带上下文的段级 payload。"""
+    payload = _build_segment_payload(segments)
+    if context_cues:
+        payload['context_cues'] = _serialize_context_cues(context_cues)
+    return payload
 
 
 def _parse_cues_response(
@@ -958,3 +996,326 @@ def _flatten_segments_from_words(words: List[AsrWordTiming]) -> Tuple[List[AsrSe
     if not segs:
         return [], 0.0, 0.0
     return segs, segs[0].start_s, segs[-1].end_s
+
+
+# ---------------------------------------------------------------------------
+# Agent 智能分段器（上下文感知 + 边界精炼）
+# ---------------------------------------------------------------------------
+
+class AgentSegmenter:
+    """上下文感知的 AI 智能分段器，替代原 AISegmenter。
+
+    与 AISegmenter 的区别：
+    1. 滑动上下文窗口：处理批次 N 时注入 N-1 的末尾 cue 作为参考
+    2. 边界精炼 pass：所有批次完成后，对相邻批次边界进行二次审视
+    """
+
+    def __init__(self, config: AISegmentationConfig, logger=None):
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+
+    def segment(self, results: List[AsrTranscriptionResult]) -> List[AlignedSubtitleCue]:
+        """主入口：构建批次 → 上下文感知 AI 分段 → 可选边界精炼 → 节奏后处理。"""
+        if not self.config.enabled:
+            raise AISegmentationError('AI 分段未启用')
+        if not self.config.is_model_configured:
+            raise AISegmentationError('AI 分段模型未配置（API_KEY/MODEL_NAME 为空且无全局 OPENAI 配置可继承）')
+
+        valid_results = [r for r in results if r.segments]
+        if not valid_results:
+            raise AISegmentationError('无可用 ASR 结果')
+
+        provider = valid_results[0].provider or 'unknown'
+        batches = build_batches(
+            valid_results,
+            self.config.batch_window_s,
+            self.config.max_chars_per_batch,
+        )
+        if not batches:
+            self.logger.warning('Agent 分段：无有效批次')
+            return []
+
+        self.logger.info(
+            'Agent 分段开始：%d 批次，上下文窗口=%d，边界精炼=%s',
+            len(batches), self.config.context_window,
+            '开启' if self.config.boundary_refine_enabled else '关闭',
+        )
+
+        # 逐批处理，维护滑动上下文
+        all_cues: List[AlignedSubtitleCue] = []
+        batch_results: List[List[AlignedSubtitleCue]] = []
+        ai_success_count = 0
+
+        for idx, batch in enumerate(batches):
+            # 提取前一批末尾 N 条 cue 作为上下文
+            context_cues: List[AlignedSubtitleCue] = []
+            if self.config.context_window > 0 and all_cues:
+                context_cues = all_cues[-self.config.context_window:]
+
+            cues = self._segment_batch_with_context(batch, provider, idx, len(batches), context_cues)
+            batch_results.append(cues)
+            all_cues.extend(cues)
+
+            if any(c.timing_source == 'ai' for c in cues):
+                ai_success_count += 1
+
+        self.logger.info(
+            'Agent 分段初轮完成：%d 批次，AI 成功 %d，共 %d 条 cue',
+            len(batches), ai_success_count, len(all_cues),
+        )
+
+        # Phase 2：边界精炼
+        if self.config.boundary_refine_enabled and len(batches) > 1:
+            all_cues = self._refine_boundaries(all_cues, batches, batch_results, provider)
+            self.logger.info('边界精炼完成，共 %d 条 cue', len(all_cues))
+
+        return enforce_rhythm(all_cues, self.config)
+
+    def _segment_batch_with_context(
+        self,
+        batch: _Batch,
+        provider: str,
+        idx: int,
+        total: int,
+        context_cues: List[AlignedSubtitleCue],
+    ) -> List[AlignedSubtitleCue]:
+        """单批次三级降级，支持上下文传递。"""
+        label = f'批次 {idx + 1}/{total}'
+        has_ctx = bool(context_cues)
+
+        # 第一级：字级 AI（带上下文）
+        if batch.has_word_timestamps and batch.words:
+            try:
+                cues = self._call_ai_word_level(batch, provider, context_cues)
+                if cues:
+                    self.logger.info('%s 字级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
+                    return cues
+            except Exception as exc:
+                self.logger.warning('%s 字级 AI 分段失败，降级段级：%s', label, exc)
+            # 第二级：段级 AI
+            if not batch.segments:
+                segs, _, _ = _flatten_segments_from_words(batch.words)
+                batch.segments = segs
+            if batch.segments:
+                try:
+                    cues = self._call_ai_segment_level(batch, provider, context_cues)
+                    if cues:
+                        self.logger.info('%s 段级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
+                        return cues
+                except Exception as exc:
+                    self.logger.warning('%s 段级 AI 分段失败，回退基线：%s', label, exc)
+        else:
+            if batch.segments:
+                try:
+                    cues = self._call_ai_segment_level(batch, provider, context_cues)
+                    if cues:
+                        self.logger.info('%s 段级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
+                        return cues
+                except Exception as exc:
+                    self.logger.warning('%s 段级 AI 分段失败，回退基线：%s', label, exc)
+
+        # 第三级：基线对齐
+        self.logger.info('%s 回退基线对齐', label)
+        return _baseline_align_batch(batch, provider)
+
+    def _call_ai_word_level(
+        self,
+        batch: _Batch,
+        provider: str,
+        context_cues: Optional[List[AlignedSubtitleCue]] = None,
+    ) -> List[AlignedSubtitleCue]:
+        system_prompt = get_smart_segment_system_prompt(
+            has_word_timestamps=True,
+            min_duration_s=self.config.min_cue_duration_s,
+            max_duration_s=self.config.max_cue_duration_s,
+            max_cps=self.config.max_cps,
+            has_context=bool(context_cues),
+        )
+        payload = _build_word_payload_with_context(batch.words, context_cues or [])
+        parsed = self._call_with_retry(system_prompt, payload, batch.char_count)
+        cues_data = _parse_cues_response(
+            parsed, batch.time_start_s, batch.time_end_s, len(batch.words),
+        )
+        if not cues_data:
+            raise AISegmentationError('字级 AI 返回无有效 cue')
+        return _cues_from_response(cues_data, timing_source='ai', provider=provider)
+
+    def _call_ai_segment_level(
+        self,
+        batch: _Batch,
+        provider: str,
+        context_cues: Optional[List[AlignedSubtitleCue]] = None,
+    ) -> List[AlignedSubtitleCue]:
+        if not batch.segments:
+            raise AISegmentationError('段级 AI 无段输入')
+        system_prompt = get_smart_segment_system_prompt(
+            has_word_timestamps=False,
+            min_duration_s=self.config.min_cue_duration_s,
+            max_duration_s=self.config.max_cue_duration_s,
+            max_cps=self.config.max_cps,
+            has_context=bool(context_cues),
+        )
+        payload = _build_segment_payload_with_context(batch.segments, context_cues or [])
+        parsed = self._call_with_retry(system_prompt, payload, batch.char_count)
+        cues_data = _parse_cues_response(
+            parsed, batch.time_start_s, batch.time_end_s, len(batch.segments),
+        )
+        if not cues_data:
+            raise AISegmentationError('段级 AI 返回无有效 cue')
+        return _cues_from_response(cues_data, timing_source='ai', provider=provider)
+
+    def _call_with_retry(
+        self,
+        system_prompt: str,
+        payload: Dict[str, Any],
+        char_count: int,
+    ) -> Optional[Dict[str, Any]]:
+        client = self._create_client()
+        max_tokens = _estimate_max_tokens(char_count)
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.config.max_retries + 1):
+            if attempt > 0:
+                delay = min(2 ** attempt, 8)
+                self.logger.info('AI 分段重试等待 %ds...', delay)
+                time.sleep(delay)
+            try:
+                return _request_json_object(
+                    client=client,
+                    model_name=self.config.resolved_model_name,
+                    system_prompt=system_prompt,
+                    payload=payload,
+                    max_tokens=max_tokens,
+                    temperature=self.config.temperature,
+                    thinking_enabled=self.config.thinking_enabled,
+                    logger_obj=self.logger,
+                    scene_name=f'agent_segmentation_attempt{attempt + 1}',
+                    user_content=json.dumps(payload, ensure_ascii=False),
+                )
+            except Exception as exc:
+                last_exc = exc
+                self.logger.warning(
+                    'AI 分段请求失败（第 %d 次）：%s: %s',
+                    attempt + 1, exc.__class__.__name__, exc,
+                )
+        if last_exc:
+            raise last_exc
+        return None
+
+    def _create_client(self):
+        client_config = {
+            'OPENAI_API_KEY': self.config.resolved_api_key,
+            'OPENAI_BASE_URL': self.config.resolved_base_url,
+            'OPENAI_TIMEOUT_SECONDS': self.config.request_timeout_s,
+        }
+        return get_openai_client(client_config)
+
+    def _refine_boundaries(
+        self,
+        all_cues: List[AlignedSubtitleCue],
+        batches: List[_Batch],
+        batch_results: List[List[AlignedSubtitleCue]],
+        provider: str,
+    ) -> List[AlignedSubtitleCue]:
+        """边界精炼 pass：对相邻批次边界进行二次审视。"""
+        bw = self.config.boundary_window
+        refined: List[AlignedSubtitleCue] = list(batch_results[0])
+
+        for i in range(len(batches) - 1):
+            prev_cues = batch_results[i]
+            next_cues = batch_results[i + 1]
+
+            # 取边界区域的 cue
+            boundary_prev = prev_cues[-bw:] if len(prev_cues) > bw else prev_cues
+            boundary_next = next_cues[:bw] if len(next_cues) > bw else next_cues
+
+            if not boundary_prev or not boundary_next:
+                refined.extend(next_cues if i + 1 < len(batches) else [])
+                continue
+
+            # 检查边界是否需要精炼：前批末条是否语意完整
+            last_prev_text = boundary_prev[-1].text or ''
+            if _is_sentence_complete(last_prev_text):
+                # 边界合理，无需精炼
+                refined.extend(next_cues)
+                continue
+
+            # 收集边界区域的 word 数据
+            boundary_words = self._collect_boundary_words(batches, i, boundary_prev, boundary_next)
+            if not boundary_words:
+                refined.extend(next_cues)
+                continue
+
+            # 构建精炼 payload
+            current_boundary_cues = boundary_prev + boundary_next
+            payload = {
+                'words': [
+                    {'i': idx, 'text': str(w.text or ''), 'start_s': round(float(w.start_s), 3), 'end_s': round(float(w.end_s), 3)}
+                    for idx, w in enumerate(boundary_words)
+                ],
+                'current_cues': [
+                    {'start_s': round(float(c.start_s), 3), 'end_s': round(float(c.end_s), 3), 'text': str(c.text or '')}
+                    for c in current_boundary_cues
+                ],
+            }
+
+            try:
+                system_prompt = get_boundary_refine_system_prompt(
+                    min_duration_s=self.config.min_cue_duration_s,
+                    max_duration_s=self.config.max_cue_duration_s,
+                    max_cps=self.config.max_cps,
+                )
+                parsed = self._call_with_retry(system_prompt, payload, sum(len(w.text or '') for w in boundary_words))
+                refined_cues_data = _parse_cues_response(
+                    parsed,
+                    boundary_prev[0].start_s,
+                    boundary_next[-1].end_s,
+                    len(boundary_words),
+                )
+                if refined_cues_data:
+                    new_boundary_cues = _cues_from_response(refined_cues_data, timing_source='ai', provider=provider)
+                    # 替换边界区域的 cues：前批去掉尾部 + 后批去掉头部
+                    prev_keep = prev_cues[:max(0, len(prev_cues) - bw)]
+                    next_keep = next_cues[bw:] if len(next_cues) > bw else []
+                    refined = prev_keep + new_boundary_cues + next_keep
+                    self.logger.info(
+                        '边界 %d/%d 精炼成功：%d 条 → %d 条',
+                        i + 1, i + 2, len(current_boundary_cues), len(new_boundary_cues),
+                    )
+                else:
+                    refined.extend(next_cues)
+                    self.logger.info('边界 %d/%d 精炼无调整', i + 1, i + 2)
+            except Exception as exc:
+                refined.extend(next_cues)
+                self.logger.warning('边界 %d/%d 精炼失败：%s', i + 1, i + 2, exc)
+
+        return refined
+
+    def _collect_boundary_words(
+        self,
+        batches: List[_Batch],
+        batch_idx: int,
+        boundary_prev: List[AlignedSubtitleCue],
+        boundary_next: List[AlignedSubtitleCue],
+    ) -> List[AsrWordTiming]:
+        """收集边界区域的 word 数据。"""
+        time_start = boundary_prev[0].start_s
+        time_end = boundary_next[-1].end_s
+        words: List[AsrWordTiming] = []
+        for bi in (batch_idx, batch_idx + 1):
+            if bi >= len(batches):
+                continue
+            batch = batches[bi]
+            if batch.words:
+                for w in batch.words:
+                    if w.start_s >= time_start - 0.5 and w.end_s <= time_end + 0.5:
+                        words.append(w)
+        words.sort(key=lambda w: w.start_s)
+        return words
+
+
+def _is_sentence_complete(text: str) -> bool:
+    """检查文本是否以句末标点结尾（语意完整）。"""
+    text = str(text or '').rstrip()
+    if not text:
+        return False
+    return text[-1] in '.!?。！？；;' or text.endswith('...') or text.endswith('…')
