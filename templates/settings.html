@@ -1575,6 +1575,114 @@
                                         </article>
                                     </div>
 
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">语义重分段</span>
+                                                    <h4>AI 智能分段</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-info' if config.get('AI_SEGMENTATION_ENABLED', False) else 'is-neutral' }}">
+                                                    {{ '已启用' if config.get('AI_SEGMENTATION_ENABLED', False) else '未启用' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-12">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="AI_SEGMENTATION_ENABLED" {% if config.get('AI_SEGMENTATION_ENABLED', False) %}checked{% endif %}>
+                                                            启用 AI 智能分段
+                                                        </label>
+                                                        <div class="form-text">基于 ASR 返回的字级时间戳，由 AI 按语义重新切分字幕，获得更自然的断句与节奏。需 ASR 支持字级时间戳（如 Whisper 时间戳粒度包含 <code>word</code>，模型如 <code>parakeet-crispasr</code>）；不支持时自动降级到段级 AI 分段，再失败则回退规则分段。</div>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-subcard mt-3">
+                                                    <div class="settings-subcard-header">
+                                                        <h5>智能分段专用模型</h5>
+                                                        <span class="settings-status-badge {{ 'is-info' if config.get('AI_SEGMENTATION_API_KEY') or config.get('AI_SEGMENTATION_MODEL_NAME') or config.get('AI_SEGMENTATION_BASE_URL') else 'is-neutral' }}">
+                                                            {{ '已覆盖全局配置' if config.get('AI_SEGMENTATION_API_KEY') or config.get('AI_SEGMENTATION_MODEL_NAME') or config.get('AI_SEGMENTATION_BASE_URL') else '留空即继承全局' }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-url" class="form-label">智能分段专用接口地址</label>
+                                                                <input type="text" id="ai-seg-url" name="AI_SEGMENTATION_BASE_URL" value="{{ config.get('AI_SEGMENTATION_BASE_URL', '') }}" class="form-control" placeholder="留空则沿用全局">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-key" class="form-label">智能分段专用 API 密钥</label>
+                                                                <input type="password" id="ai-seg-key" name="AI_SEGMENTATION_API_KEY" value="{{ config.get('AI_SEGMENTATION_API_KEY', '') }}" class="form-control" placeholder="留空则沿用全局">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-model" class="form-label">智能分段专用模型名</label>
+                                                                <input type="text" id="ai-seg-model" name="AI_SEGMENTATION_MODEL_NAME" value="{{ config.get('AI_SEGMENTATION_MODEL_NAME', '') }}" class="form-control" placeholder="留空则沿用全局">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-check form-switch">
+                                                                <input class="form-check-input" type="checkbox" id="ai-seg-thinking-enabled" name="AI_SEGMENTATION_THINKING_ENABLED" {% if config.get('AI_SEGMENTATION_THINKING_ENABLED', False) %}checked{% endif %}>
+                                                                <label class="form-check-label" for="ai-seg-thinking-enabled">智能分段模型启用思考模式</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-subcard mt-3">
+                                                    <div class="settings-subcard-header">
+                                                        <h5>节奏与批次参数</h5>
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-md-3">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-min-dur" class="form-label">最短显示时长（秒）</label>
+                                                                <input type="number" step="0.1" min="0.2" id="ai-seg-min-dur" name="AI_SEGMENTATION_MIN_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MIN_CUE_DURATION_S', 0.8) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-3">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-max-dur" class="form-label">最长段长（秒）</label>
+                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-dur" name="AI_SEGMENTATION_MAX_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MAX_CUE_DURATION_S', 7.0) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-3">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-max-cps" class="form-label">最大字符速率（字/秒）</label>
+                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-cps" name="AI_SEGMENTATION_MAX_CPS" value="{{ config.get('AI_SEGMENTATION_MAX_CPS', 18.0) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-3">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-batch" class="form-label">批次窗口（秒）</label>
+                                                                <input type="number" step="1" min="10" id="ai-seg-batch" name="AI_SEGMENTATION_BATCH_WINDOW_S" value="{{ config.get('AI_SEGMENTATION_BATCH_WINDOW_S', 120.0) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-max-chars" class="form-label">单批次最大字符数</label>
+                                                                <input type="number" step="100" min="500" id="ai-seg-max-chars" name="AI_SEGMENTATION_MAX_CHARS_PER_BATCH" value="{{ config.get('AI_SEGMENTATION_MAX_CHARS_PER_BATCH', 8000) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-temp" class="form-label">采样温度</label>
+                                                                <input type="number" step="0.1" min="0" max="2" id="ai-seg-temp" name="AI_SEGMENTATION_TEMPERATURE" value="{{ config.get('AI_SEGMENTATION_TEMPERATURE', 0.2) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-retries" class="form-label">失败重试次数</label>
+                                                                <input type="number" step="1" min="0" max="5" id="ai-seg-retries" name="AI_SEGMENTATION_MAX_RETRIES" value="{{ config.get('AI_SEGMENTATION_MAX_RETRIES', 2) }}" class="form-control">
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
                                 </div>
                             </section>
                         </div>
