@@ -99,7 +99,7 @@ SPEECH_PIPELINE_DEFAULTS: Dict[str, Any] = {
     "AI_SEGMENTATION_TEMPERATURE": 0.2,  # AI 分段采样温度（低温度更稳定）
     "AI_SEGMENTATION_MAX_RETRIES": 2,  # 单批次 AI 失败重试次数（仍失败则降级）
     "AI_SEGMENTATION_CONTEXT_WINDOW": 3,  # 滑动上下文窗口：前一批次末尾 N 条 cue 注入下一批 prompt
-    "AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED": True,  # 边界精炼：跨批次边界语义审视（额外 LLM 调用）
+    "AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED": False,  # 边界精炼：索引制下通常不需要，可手动开启
     "AI_SEGMENTATION_BOUNDARY_WINDOW": 3,  # 边界精炼：每侧取 N 条 cue 进行审视
 }
 

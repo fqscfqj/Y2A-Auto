@@ -134,7 +134,10 @@ _DESC_RETRY_BUILTIN_BEHAVIOR = (
 # 字级模式：输入带字级时间戳的词序列，AI 按语义重新分组为字幕条目，时间精确到词边界。
 # 遵循 Netflix Timed Text Style Guide 的断句原则。
 _SMART_SEGMENT_WORD_BUILTIN_BEHAVIOR = (
-    "基于提供的字级时间戳词序列，重新切分为可直接上线的字幕条目。"
+    "你是专业字幕智能分段器。"
+    "你将收到按顺序排列的词级时间戳 JSON 数组，每个词带有 index、start、end、text。"
+    "请只根据语义、标点和停顿，把连续词切成适合字幕阅读的自然短句。"
+    "严禁改写、删词、重排，也不要输出任何解释。"
     "\n\n"
     "## 核心原则：每条字幕必须是一个自足的「呼吸单元」\n"
     "- 单看这一条字幕，观众就应该能理解一个完整的意思片段。\n"
@@ -169,8 +172,9 @@ _SMART_SEGMENT_WORD_BUILTIN_BEHAVIOR = (
     "- 排比、列举、并列短语（如 house, food, and job）→ 合并为一条，不要逐项拆散。\n"
     "\n"
     "## 技术约束\n"
-    "- 每条字幕的开始时间 = 该条首个词的 start_s，结束时间 = 该条末个词的 end_s。严禁编造或修改时间戳。\n"
-    "- 必须覆盖所有输入词，保持原顺序，禁止丢失、重复、改写、增删任何词。\n"
+    "- 只返回 JSON 数组；每个元素包含 start_index 和 end_index，且为闭区间。\n"
+    "- 返回结果必须完整覆盖当前窗口内全部词索引，不能缺失、不能重叠、不能越界。\n"
+    "- 优先在句号、问号、感叹号、分号、明显停顿处断句；避免过长片段。\n"
     "- 输出前自查：每条字幕单独拿出来读，是否像一句自然完整的话？如果不是，请调整边界。\n"
 )
 
@@ -204,12 +208,20 @@ _SMART_SEGMENT_SEGMENT_BUILTIN_BEHAVIOR = (
     "- 输出前自查：每条字幕单独读是否自然完整？\n"
 )
 
-# 协议壳：严格 JSON 输出格式 + 时间单调递增 + 不越界约束
+# 协议壳：严格 JSON 输出格式 + 时间单调递增 + 不越界约束（段级模式使用）
 _SMART_SEGMENT_SHARED_RULES = (
     "输出严格 JSON，不要任何解释或多余文本。"
     "格式：{\"cues\":[{\"start_s\":数字,\"end_s\":数字,\"text\":\"该条所含词/段的原文拼接\"}]}。"
     "cues 必须按 start_s 升序排列，每条 end_s > start_s，相邻条目时间不得重叠。"
     "所有 start_s/end_s 必须精确取自输入数据，不得四舍五入或估算。"
+)
+
+# 协议壳：索引制 JSON 输出格式（字级模式使用）
+_SMART_SEGMENT_WORD_SHARED_RULES = (
+    "只返回 JSON 数组，不要输出 Markdown，不要输出额外字段，不要任何解释。"
+    "格式示例：[{\"start_index\":0,\"end_index\":5},{\"start_index\":6,\"end_index\":11}]。"
+    "每个元素的 start_index 和 end_index 为闭区间，指向输入词序列的 index 字段。"
+    "区间必须连续、无间隙、无重叠，完整覆盖从第一个词到最后一个词的全部索引。"
 )
 
 # Agent 上下文指令：告知 AI 如何使用已确认的历史 cues 作为参考
@@ -535,7 +547,8 @@ def get_smart_segment_system_prompt(
         },
     )
     context_block = _SMART_SEGMENT_CONTEXT_INSTRUCTIONS if has_context else ''
-    return behavior + context_block + _SMART_SEGMENT_SHARED_RULES
+    shared_rules = _SMART_SEGMENT_WORD_SHARED_RULES if has_word_timestamps else _SMART_SEGMENT_SHARED_RULES
+    return behavior + context_block + shared_rules
 
 
 def get_boundary_refine_system_prompt(

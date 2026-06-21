@@ -606,6 +606,53 @@ def _request_json_object(
     return None
 
 
+def _request_raw_text(
+    client,
+    model_name: str,
+    system_prompt: str,
+    payload: Dict[str, Any],
+    *,
+    max_tokens: int,
+    temperature: float,
+    thinking_enabled: bool,
+    logger_obj,
+    scene_name: str,
+    user_content=None,
+) -> str:
+    """请求 LLM 返回原始文本（不做 JSON 解析），用于索引制分段等场景。"""
+    user_message_content = user_content
+    if user_message_content is None:
+        user_message_content = json.dumps(payload, ensure_ascii=False)
+    create_kwargs = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message_content},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    response = None
+    request_start = time.time()
+    if logger_obj:
+        logger_obj.info("发起模型请求（纯文本模式）")
+    try:
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=thinking_enabled,
+            logger=logger_obj,
+            scene_name=scene_name,
+        )
+    finally:
+        if logger_obj:
+            logger_obj.info(f"模型请求结束，耗时: {time.time() - request_start:.2f}秒")
+    if not getattr(response, "choices", None):
+        return ''
+    content = response.choices[0].message.content or ''
+    return content.strip()
+
+
 def _sanitize_metadata_field(
     value: Any,
     content_type: str,
