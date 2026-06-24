@@ -49,6 +49,8 @@ _NOISE_TAG_RE = re.compile(
     r'^\s*[\[\(（【]\s*(?:music|noise|applause|laughter|silence|background noise|音乐|噪声|掌声|笑声|静音)\s*[\]\)）】]\s*$',
     re.IGNORECASE,
 )
+# ASS/SSA 格式标签：\h（硬空格）、\N（换行）、\n（软换行）、{\...}（样式覆盖）
+_ASS_TAG_RE = re.compile(r'\\[hHnN]|{\\[^}]*}')
 
 _MIN_GAP_S = 0.01
 _MIN_VISIBLE_DUR_S = 0.05
@@ -458,6 +460,13 @@ class SrtTransformEngine:
             text = str(cue.get('text') or '').strip()
             if not text:
                 continue
+            # 清洗 ASS/SSA 格式标签
+            text = text.replace('\\h', ' ').replace('\\H', ' ')
+            text = text.replace('\\N', ' ').replace('\\n', ' ')
+            text = _ASS_TAG_RE.sub('', text)
+            text = _WHITESPACE_RE.sub(' ', text).strip()
+            if not text:
+                continue
             duration = max(float(cue.get('end', 0.0)) - float(cue.get('start', 0.0)), 0.0)
             if self._is_suspicious_hallucination_text(text):
                 continue
@@ -538,6 +547,10 @@ class SrtTransformEngine:
         return resolved
 
     def _normalize_text_line(self, text: str) -> str:
+        # 先清洗 ASS/SSA 格式标签（YouTube 自动生成字幕可能带这些）
+        text = text.replace('\\h', ' ').replace('\\H', ' ')
+        text = text.replace('\\N', ' ').replace('\\n', ' ')
+        text = _ASS_TAG_RE.sub('', text)  # 移除 {\b1} 等样式覆盖标签
         text = _WHITESPACE_RE.sub(' ', text).strip()
         if self.config.normalize_punctuation:
             text = _PUNCTUATION_SPACE_RE.sub(r'\1 ', text)

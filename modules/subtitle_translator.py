@@ -540,6 +540,14 @@ class LLMRequester:
         """解析结构化翻译结果"""
         try:
             json_result = extract_chat_message_json(message, expected_type=dict)
+            # 如果首次解析失败，尝试清洗 ASS 标签后重试
+            if not isinstance(json_result, dict):
+                import re as _re
+                raw_text = get_chat_message_text(message)
+                cleaned_text = _re.sub(r'\\[hHnN]', ' ', raw_text)
+                cleaned_text = _re.sub(r'{\\[^}]*}', '', cleaned_text)
+                from .utils import extract_json_from_text
+                json_result = extract_json_from_text(cleaned_text, expected_type=dict)
             if not isinstance(json_result, dict):
                 preview = get_chat_message_text(message)
                 with self._log_lock:
@@ -564,8 +572,14 @@ class LLMRequester:
             while len(translations) < expected_count:
                 translations.append("")  # 用空字符串填充
             
-            # 截断多余的翻译
-            final_translations = translations[:expected_count]
+            # 截断多余的翻译，并清洗 ASS 标签
+            import re as _re
+            _ass_tag_re = _re.compile(r'\\[hHnN]|{\\[^}]*}')
+            final_translations = []
+            for t in translations[:expected_count]:
+                cleaned = _ass_tag_re.sub('', str(t or '')).strip()
+                cleaned = _re.sub(r'\s+', ' ', cleaned).strip()
+                final_translations.append(cleaned)
             
             with self._log_lock:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")

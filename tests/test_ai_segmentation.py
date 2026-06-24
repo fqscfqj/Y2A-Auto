@@ -19,6 +19,9 @@ from modules.ai_segmentation import (
     _load_json_candidate,
     _parse_cues_response,
     _parse_index_ranges,
+    _crosses_sentence_boundary,
+    _repair_broken_sentences,
+    _split_long_cue,
     build_batches,
     enforce_rhythm,
     _flatten_segments_from_words,
@@ -578,6 +581,154 @@ class CuesFromIndexRangesTests(unittest.TestCase):
         words = [_make_word('hello', 0, 0.5)]
         cues = _cues_from_index_ranges([], words, 'whisper')
         self.assertEqual(len(cues), 0)
+
+
+# ---------------------------------------------------------------------------
+# rhythm_enabled 配置
+# ---------------------------------------------------------------------------
+
+class RhythmEnabledConfigTests(unittest.TestCase):
+    def test_default_rhythm_disabled(self):
+        cfg = AISegmentationConfig.from_app_config(_base_app_config())
+        self.assertFalse(cfg.rhythm_enabled)
+
+    def test_rhythm_enabled_from_config(self):
+        cfg = AISegmentationConfig.from_app_config(_base_app_config(AI_SEGMENTATION_RHYTHM_ENABLED=True))
+        self.assertTrue(cfg.rhythm_enabled)
+
+
+# ---------------------------------------------------------------------------
+# 句子边界检测
+# ---------------------------------------------------------------------------
+
+class CrossesSentenceBoundaryTests(unittest.TestCase):
+    def test_period_then_uppercase_is_boundary(self):
+        self.assertTrue(_crosses_sentence_boundary('Hello world.', 'Next sentence.'))
+
+    def test_period_then_cjk_is_boundary(self):
+        self.assertTrue(_crosses_sentence_boundary('Hello world.', '下一个句子'))
+
+    def test_comma_then_text_is_not_boundary(self):
+        self.assertFalse(_crosses_sentence_boundary('Hello,', 'world'))
+
+    def test_no_punct_is_not_boundary(self):
+        self.assertFalse(_crosses_sentence_boundary('Hello', 'world'))
+
+    def test_empty_text_is_not_boundary(self):
+        self.assertFalse(_crosses_sentence_boundary('', 'world'))
+        self.assertFalse(_crosses_sentence_boundary('hello', ''))
+
+
+# ---------------------------------------------------------------------------
+# 超长切分：中文逗号/顿号
+# ---------------------------------------------------------------------------
+
+class SplitLongCueChineseCommaTests(unittest.TestCase):
+    def test_split_at_chinese_comma(self):
+        """含中文逗号的超长 cue 应在逗号处切分，而非中点。"""
+        cue = AlignedSubtitleCue(
+            start_s=0, end_s=10,
+            text='这是第一部分的内容，这是第二部分的内容',
+        )
+        out = _split_long_cue(cue, max_duration_s=3.0)
+        self.assertGreater(len(out), 1)
+        # 验证切分结果拼接后与原文一致
+        combined = ''.join(c.text for c in out)
+        self.assertIn('内容', combined)
+
+    def test_split_at_chinese_dunhao(self):
+        """含顿号的超长 cue 应在顿号处切分。"""
+        cue = AlignedSubtitleCue(
+            start_s=0, end_s=10,
+            text='苹果、香蕉、橘子、葡萄、西瓜',
+        )
+        out = _split_long_cue(cue, max_duration_s=2.0)
+        self.assertGreater(len(out), 1)
+
+    def test_no_punct_uses_fallback(self):
+        """无标点的超长 cue 应使用虚词/中点兜底。"""
+        cue = AlignedSubtitleCue(
+            start_s=0, end_s=10,
+            text='这是一个没有任何标点符号的很长很长很长的中文句子',
+        )
+        out = _split_long_cue(cue, max_duration_s=3.0)
+        self.assertGreater(len(out), 1)
+        # 不应在单个汉字中间劈开
+        for c in out:
+            self.assertGreater(len(c.text.strip()), 0)
+
+
+# ---------------------------------------------------------------------------
+# 断裂句修复
+# ---------------------------------------------------------------------------
+
+class RepairBrokenSentencesTests(unittest.TestCase):
+    def test_merges_function_word_ending(self):
+        """以虚词"的"结尾的 cue 应与下一条合并。"""
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=2, text='这是我最喜欢的'),
+            AlignedSubtitleCue(start_s=2, end_s=4, text='游戏'),
+        ]
+        out = _repair_broken_sentences(cues, max_duration_s=6.0, max_cps=15.0)
+        self.assertEqual(len(out), 1)
+        self.assertIn('最喜欢', out[0].text)
+        self.assertIn('游戏', out[0].text)
+
+    def test_does_not_merge_sentence_end(self):
+        """以句号结尾的 cue 不应与下一条合并。"""
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=2, text='这是第一句。'),
+            AlignedSubtitleCue(start_s=2, end_s=4, text='这是第二句。'),
+        ]
+        out = _repair_broken_sentences(cues, max_duration_s=6.0, max_cps=15.0)
+        self.assertEqual(len(out), 2)
+
+    def test_does_not_merge_when_duration_exceeded(self):
+        """合并后超长则不合并。"""
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=5.5, text='这是一个很长的句子的'),
+            AlignedSubtitleCue(start_s=5.5, end_s=10, text='后续部分也很长'),
+        ]
+        out = _repair_broken_sentences(cues, max_duration_s=6.0, max_cps=15.0)
+        self.assertEqual(len(out), 2)  # 合并后 10s > 6s，不合并
+
+    def test_empty_input(self):
+        self.assertEqual(_repair_broken_sentences([], 6.0, 15.0), [])
+
+    def test_single_cue(self):
+        cues = [AlignedSubtitleCue(start_s=0, end_s=2, text='的')]
+        out = _repair_broken_sentences(cues, 6.0, 15.0)
+        self.assertEqual(len(out), 1)
+
+
+# ---------------------------------------------------------------------------
+# enforce_rhythm 句子边界守卫
+# ---------------------------------------------------------------------------
+
+class EnforceRhythmBoundaryGuardTests(unittest.TestCase):
+    def _cfg(self, **kw):
+        return AISegmentationConfig.from_app_config(_base_app_config(**kw))
+
+    def test_does_not_merge_across_sentence_boundary(self):
+        """enforce_rhythm 不应跨越句号合并两条独立句子。"""
+        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=1.5, AI_SEGMENTATION_MAX_CUE_DURATION_S=6.0)
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=0.8, text='好。'),  # 短，但以句号结尾
+            AlignedSubtitleCue(start_s=0.8, end_s=3.0, text='这是新的句子'),
+        ]
+        out = enforce_rhythm(cues, cfg)
+        # 不应合并——跨越了句子边界
+        self.assertEqual(len(out), 2)
+
+    def test_merges_continuation_without_boundary(self):
+        """enforce_rhythm 应合并以逗号结尾的短 cue 与续接的 cue。"""
+        cfg = self._cfg(AI_SEGMENTATION_MIN_CUE_DURATION_S=1.5, AI_SEGMENTATION_MAX_CUE_DURATION_S=6.0)
+        cues = [
+            AlignedSubtitleCue(start_s=0, end_s=0.8, text='但是，'),  # 短，以逗号结尾
+            AlignedSubtitleCue(start_s=0.8, end_s=3.0, text='这确实是续接的内容'),
+        ]
+        out = enforce_rhythm(cues, cfg)
+        self.assertEqual(len(out), 1)
 
 
 if __name__ == '__main__':

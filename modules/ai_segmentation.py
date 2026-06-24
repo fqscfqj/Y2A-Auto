@@ -34,8 +34,17 @@ from .subtitle_pipeline_types import (
 
 # 句末/停顿标点，用于过长短目拆分的安全网
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？；;]+\s*)')
+_CLAUSE_SPLIT_RE = re.compile(r'([,，、]+\s*)')  # 次级切分标点：逗号/顿号
 _CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
 _SOFT_BREAK_PUNCTUATION = frozenset('.!?。！？；;')
+# 中文虚词/连接词/助词——用于无标点时的兜底切分点（在其前面切分）
+_CJK_FUNCTION_WORDS = frozenset(
+    '的了在是和与而但也还就都把被从到会能要想过着'  # 助词/连词/介词/能愿动词/动态助词
+    '而且但是因为所以如果虽然不过然后或者而且因此'  # 双字连接词（优先在前面切）
+)
+# 句末标点——用于判断一条 cue 是否在句子边界结束
+_SENTENCE_END_PUNCTS = set('.!?。！？')
+_CLAUSE_END_PUNCTS = set(';:；：，、')
 
 
 class AISegmentationError(Exception):
@@ -67,6 +76,7 @@ class AISegmentationConfig:
     context_window: int = 3          # 前一批末尾 N 条 cue 注入下一批 prompt
     boundary_refine_enabled: bool = False   # 边界精炼 pass（索引制下通常不需要）
     boundary_window: int = 3         # 边界精炼每侧取 N 条 cue
+    rhythm_enabled: bool = False     # 节奏后处理（合并过短/拆分过长）；默认关闭，直接信任 AI 分段结果
     # 解析后的实际生效模型配置（留空继承后填充）
     resolved_base_url: str = ''
     resolved_api_key: str = ''
@@ -91,6 +101,7 @@ class AISegmentationConfig:
             context_window=int(app_config.get('AI_SEGMENTATION_CONTEXT_WINDOW', 3) or 3),
             boundary_refine_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED', False)),
             boundary_window=int(app_config.get('AI_SEGMENTATION_BOUNDARY_WINDOW', 3) or 3),
+            rhythm_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_RHYTHM_ENABLED', False)),
         )
         # 留空继承全局 OPENAI_*
         cfg.resolved_base_url = cfg.base_url or str(app_config.get('OPENAI_BASE_URL', '') or '').strip()
@@ -741,6 +752,23 @@ def _cps(text: str, duration_s: float) -> float:
     return _visual_text_length(text) / safe_dur
 
 
+def _crosses_sentence_boundary(left_text: str, right_text: str) -> bool:
+    """判断合并两条 cue 是否跨越了句子边界。
+
+    如果左 cue 以句末标点结尾（.!?。！？），且右 cue 以新句开头（大写字母或中文非标点字符），
+    则认为跨越了句子边界，不应合并。
+    """
+    if not left_text or not right_text:
+        return False
+    left_end = left_text.rstrip()[-1:] if left_text.rstrip() else ''
+    right_start = right_text.lstrip()[:1] if right_text.lstrip() else ''
+    if left_end in _SENTENCE_END_PUNCTS:
+        # 右侧以大写字母或中文字符开头 → 新句起始
+        if right_start and (right_start[0].isupper() or _CJK_CHAR_RE.match(right_start)):
+            return True
+    return False
+
+
 def _merge_short_cues(
     cues: List[AlignedSubtitleCue],
     min_duration_s: float,
@@ -776,6 +804,7 @@ def _merge_short_cues(
                 gap <= 0.3
                 and combined_dur <= max_duration_s
                 and _cps(combined_text, combined_dur) <= max_cps
+                and not _crosses_sentence_boundary(cue.text or '', nxt.text or '')
             ):
                 merged = AlignedSubtitleCue(
                     start_s=cue.start_s, end_s=nxt.end_s, text=combined_text,
@@ -799,6 +828,7 @@ def _merge_short_cues(
                 gap <= 0.3
                 and combined_dur <= max_duration_s
                 and _cps(combined_text, combined_dur) <= max_cps
+                and not _crosses_sentence_boundary(prev.text or '', cue.text or '')
             ):
                 prev.end_s = cue.end_s
                 prev.text = combined_text
@@ -857,6 +887,7 @@ def _merge_suboptimal_cues(
                 and _cps(combined_text, combined_dur) <= max_cps
                 and combined_dur <= ideal_max_s
                 and combined_dur > duration  # 合并后必须更长
+                and not _crosses_sentence_boundary(cue.text or '', nxt.text or '')
             ):
                 merged = AlignedSubtitleCue(
                     start_s=cue.start_s, end_s=nxt.end_s, text=combined_text,
@@ -883,6 +914,7 @@ def _merge_suboptimal_cues(
                     and combined_dur <= max_duration_s
                     and _cps(combined_text, combined_dur) <= max_cps
                     and combined_dur <= ideal_max_s
+                    and not _crosses_sentence_boundary(prev.text or '', cue.text or '')
                 ):
                     prev.end_s = cue.end_s
                     prev.text = combined_text
@@ -896,58 +928,27 @@ def _merge_suboptimal_cues(
 
 
 def _split_long_cue(cue: AlignedSubtitleCue, max_duration_s: float) -> List[AlignedSubtitleCue]:
-    """过长度条目按句末标点切分；切不动则按文本中点等分（时间按比例）。"""
+    """过长度条目按句末标点切分；切不动则按逗号/顿号切分；最后按虚词/中点兜底。"""
     duration = cue.end_s - cue.start_s
     if duration <= max_duration_s:
         return [cue]
     text = str(cue.text or '')
-    # 尝试按句末标点切分
-    parts = [p for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
-    if len(parts) >= 2:
-        total_len = sum(len(p) for p in parts)
-        # 贪心累积到约一半长度切一刀
-        acc_len = 0
-        cut_idx = 0
-        for i, p in enumerate(parts):
-            acc_len += len(p)
-            if acc_len >= total_len / 2:
-                cut_idx = i + 1
-                break
-        if 0 < cut_idx < len(parts):
-            left_text = ''.join(parts[:cut_idx]).strip()
-            right_text = ''.join(parts[cut_idx:]).strip()
-            if left_text and right_text:
-                ratio = len(left_text) / max(1, len(left_text) + len(right_text))
-                mid_s = cue.start_s + duration * ratio
-                left = AlignedSubtitleCue(
-                    start_s=cue.start_s, end_s=mid_s, text=left_text,
-                    provider=cue.provider, timing_source=cue.timing_source,
-                    alignment_confidence=cue.alignment_confidence,
-                )
-                right = AlignedSubtitleCue(
-                    start_s=mid_s, end_s=cue.end_s, text=right_text,
-                    provider=cue.provider, timing_source=cue.timing_source,
-                    alignment_confidence=cue.alignment_confidence,
-                )
-                # 递归切分左右（防单边仍过长）
-                return _split_long_cue(left, max_duration_s) + _split_long_cue(right, max_duration_s)
-    # 切不动：优先按空格/CJK 边界切，兜底按中点
-    mid_pos = len(text) // 2
-    search_start = max(0, mid_pos - 15)
-    search_end = min(len(text), mid_pos + 15)
-    best_pos = mid_pos
-    for pos in range(search_start, search_end):
-        ch = text[pos]
-        if ch.isspace():
-            best_pos = pos + 1
-            break
-        if _CJK_CHAR_RE.match(ch) and pos > 0 and _CJK_CHAR_RE.match(text[pos - 1]):
-            best_pos = pos
-            break
-    mid_s = cue.start_s + duration / 2
-    mid_text = best_pos
-    left_text = text[:mid_text].strip()
-    right_text = text[mid_text:].strip()
+
+    # 第一级：按句末标点切分（.!?。！？；;）
+    result = _split_at_pattern(text, duration, cue, _SENTENCE_SPLIT_RE, max_duration_s)
+    if result:
+        return result
+
+    # 第二级：按逗号/顿号切分（,，、）
+    result = _split_at_pattern(text, duration, cue, _CLAUSE_SPLIT_RE, max_duration_s)
+    if result:
+        return result
+
+    # 第三级：兜底——优先在中文虚词前切分，其次空格，最后中点
+    mid_pos = _find_best_fallback_split(text)
+    mid_s = cue.start_s + duration * mid_pos / max(1, len(text))
+    left_text = text[:mid_pos].strip()
+    right_text = text[mid_pos:].strip()
     if not left_text or not right_text:
         return [cue]
     return [
@@ -958,6 +959,75 @@ def _split_long_cue(cue: AlignedSubtitleCue, max_duration_s: float) -> List[Alig
                            provider=cue.provider, timing_source=cue.timing_source,
                            alignment_confidence=cue.alignment_confidence),
     ]
+
+
+def _split_at_pattern(
+    text: str, duration: float, cue: AlignedSubtitleCue, pattern: 're.Pattern',
+    max_duration_s: float = 6.0,
+) -> Optional[List[AlignedSubtitleCue]]:
+    """尝试按正则模式切分文本，成功则递归返回左右 cue 列表。"""
+    parts = [p for p in pattern.split(text) if p.strip()]
+    if len(parts) < 2:
+        return None
+    total_len = sum(len(p) for p in parts)
+    acc_len = 0
+    cut_idx = 0
+    for i, p in enumerate(parts):
+        acc_len += len(p)
+        if acc_len >= total_len / 2:
+            cut_idx = i + 1
+            break
+    if not (0 < cut_idx < len(parts)):
+        return None
+    left_text = ''.join(parts[:cut_idx]).strip()
+    right_text = ''.join(parts[cut_idx:]).strip()
+    if not left_text or not right_text:
+        return None
+    ratio = len(left_text) / max(1, len(left_text) + len(right_text))
+    mid_s = cue.start_s + duration * ratio
+    left = AlignedSubtitleCue(
+        start_s=cue.start_s, end_s=mid_s, text=left_text,
+        provider=cue.provider, timing_source=cue.timing_source,
+        alignment_confidence=cue.alignment_confidence,
+    )
+    right = AlignedSubtitleCue(
+        start_s=mid_s, end_s=cue.end_s, text=right_text,
+        provider=cue.provider, timing_source=cue.timing_source,
+        alignment_confidence=cue.alignment_confidence,
+    )
+    return _split_long_cue(left, max_duration_s) + _split_long_cue(right, max_duration_s)
+
+
+def _find_best_fallback_split(text: str) -> int:
+    """在文本中找最佳兜底切分位置：虚词前 > 空格 > CJK 字符边界 > 中点。"""
+    mid_pos = len(text) // 2
+    search_start = max(0, mid_pos - 20)
+    search_end = min(len(text), mid_pos + 20)
+
+    # 优先在中文虚词前切分
+    for pos in range(search_start, min(search_end, len(text))):
+        ch = text[pos]
+        # 双字虚词：在第二个字的位置切（即虚词整体归入右侧）
+        if pos + 1 < len(text) and text[pos:pos + 2] in _CJK_FUNCTION_WORDS:
+            if pos > 0:
+                return pos
+        # 单字虚词：在虚词前切分
+        if ch in _CJK_FUNCTION_WORDS and pos > 0:
+            return pos
+
+    # 其次在空格处切分
+    for pos in range(search_start, search_end):
+        if text[pos].isspace():
+            return pos + 1
+
+    # 再次在 CJK 字符边界处切分
+    for pos in range(search_start, search_end):
+        ch = text[pos]
+        if _CJK_CHAR_RE.match(ch) and pos > 0 and _CJK_CHAR_RE.match(text[pos - 1]):
+            return pos
+
+    # 最后兜底中点
+    return mid_pos
 
 
 def enforce_rhythm(
@@ -1000,7 +1070,76 @@ def enforce_rhythm(
     final: List[AlignedSubtitleCue] = []
     for c in merged:
         final.extend(_split_long_cue(c, config.max_cue_duration_s))
+
+    # 修复被劈开的句子（以虚词/介词结尾的 cue 与下一条合并）
+    final = _repair_broken_sentences(final, config.max_cue_duration_s, config.max_cps)
     return final
+
+
+def _repair_broken_sentences(
+    cues: List[AlignedSubtitleCue],
+    max_duration_s: float,
+    max_cps: float,
+) -> List[AlignedSubtitleCue]:
+    """修复被劈开的句子：以虚词/介词/连词结尾的 cue 与下一条合并。
+
+    在 enforce_rhythm 最终输出前调用，修复后处理链中产生的语义断裂。
+    """
+    if len(cues) < 2:
+        return cues
+    result: List[AlignedSubtitleCue] = []
+    i = 0
+    while i < len(cues):
+        cue = cues[i]
+        if i + 1 >= len(cues):
+            result.append(cue)
+            break
+
+        nxt = cues[i + 1]
+        text = str(cue.text or '').rstrip()
+        if not text:
+            result.append(cue)
+            i += 1
+            continue
+
+        last_char = text[-1]
+        # 检查是否以虚词/助词/介词/连词结尾（不是句末标点、不是逗号/分号）
+        should_merge = False
+        if last_char not in _SENTENCE_END_PUNCTS and last_char not in _CLAUSE_END_PUNCTS:
+            # 单字虚词结尾
+            if last_char in _CJK_FUNCTION_WORDS:
+                should_merge = True
+            # 双字虚词结尾（检查最后两个字符）
+            elif len(text) >= 2 and text[-2:] in _CJK_FUNCTION_WORDS:
+                should_merge = True
+            # 英文虚词结尾
+            elif last_char.isalpha():
+                last_word = text.split()[-1].lower() if text.split() else ''
+                if last_word in ('the', 'a', 'an', 'and', 'or', 'but', 'of', 'in', 'on', 'at',
+                                  'to', 'for', 'with', 'from', 'by', 'as', 'is', 'are', 'was',
+                                  'were', 'has', 'have', 'had', 'be', 'been', 'being',
+                                  'that', 'which', 'who', 'where', 'when', 'if', 'because',
+                                  'so', 'like', 'about', 'into', 'through', 'during', 'before',
+                                  'after', 'above', 'below', 'between', 'under', 'over'):
+                    should_merge = True
+
+        if should_merge:
+            gap = nxt.start_s - cue.end_s
+            combined_text = (cue.text + ' ' + nxt.text).strip() if cue.text and nxt.text else (cue.text or nxt.text)
+            combined_dur = nxt.end_s - cue.start_s
+            if gap <= 0.5 and combined_dur <= max_duration_s and _cps(combined_text, combined_dur) <= max_cps:
+                merged = AlignedSubtitleCue(
+                    start_s=cue.start_s, end_s=nxt.end_s, text=combined_text,
+                    provider=cue.provider, timing_source=cue.timing_source,
+                    alignment_confidence=cue.alignment_confidence,
+                )
+                result.append(merged)
+                i += 2  # 跳过下一条（已合并）
+                continue
+
+        result.append(cue)
+        i += 1
+    return result
 
 
 def _flatten_segments_from_words(words: List[AsrWordTiming]) -> Tuple[List[AsrSegmentTiming], float, float]:
@@ -1101,7 +1240,11 @@ class AISegmenter:
             all_cues = self._refine_boundaries(all_cues, batches, batch_results, provider)
             self.logger.info('边界精炼完成，共 %d 条 cue', len(all_cues))
 
-        return enforce_rhythm(all_cues, self.config)
+        if self.config.rhythm_enabled:
+            self.logger.info('节奏后处理已开启，执行 enforce_rhythm')
+            return enforce_rhythm(all_cues, self.config)
+        self.logger.info('节奏后处理已关闭，直接返回 AI 分段结果')
+        return all_cues
 
     def _segment_batch_with_context(
         self,

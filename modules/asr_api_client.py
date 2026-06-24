@@ -892,6 +892,26 @@ class AsrApiClient:
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
+                # Some backends (e.g. parakeet-crispasr) return tokens with
+                # only text and no per-word timing.  When _extract_words
+                # discards all tokens due to missing timestamps but the raw
+                # token list does contain text, synthesize evenly-spaced word
+                # timings from the segment boundaries.
+                if not words:
+                    raw_tokens = raw_segment.get('words') or raw_segment.get('tokens') or []
+                    text_tokens = [
+                        str(t.get('word') or t.get('text') or t.get('token') or '').strip()
+                        for t in (raw_tokens if isinstance(raw_tokens, list) else [])
+                        if isinstance(t, dict)
+                    ]
+                    text_tokens = [t for t in text_tokens if t]
+                    if text_tokens and end_s > start_s:
+                        seg_dur = end_s - start_s
+                        word_dur = seg_dur / len(text_tokens)
+                        words = [
+                            AsrWordTiming(start_s=start_s + i * word_dur, end_s=start_s + (i + 1) * word_dur, text=t)
+                            for i, t in enumerate(text_tokens)
+                        ]
                 # When a VAD window is provided, use the window duration for the
                 # plausibility check.  Some ASR backends (e.g. qwen3-asr) return
                 # locally compressed timestamps that span only a fraction of the
@@ -992,11 +1012,11 @@ class AsrApiClient:
         for raw_word in raw_words or []:
             if not isinstance(raw_word, dict):
                 continue
-            text = str(raw_word.get('word') or raw_word.get('text') or '').strip()
+            text = str(raw_word.get('word') or raw_word.get('text') or raw_word.get('token') or '').strip()
             if not text:
                 continue
-            start_s = AsrApiClient._normalize_timing_value(raw_word.get('start', raw_word.get('start_s', 0.0)), timing_scale)
-            end_s = AsrApiClient._normalize_timing_value(raw_word.get('end', raw_word.get('end_s', 0.0)), timing_scale)
+            start_s = AsrApiClient._normalize_timing_value(raw_word.get('start', raw_word.get('start_s', raw_word.get('start_time', 0.0))), timing_scale)
+            end_s = AsrApiClient._normalize_timing_value(raw_word.get('end', raw_word.get('end_s', raw_word.get('end_time', 0.0))), timing_scale)
             if end_s <= start_s:
                 continue
             words.append(AsrWordTiming(start_s=start_s, end_s=end_s, text=text))
