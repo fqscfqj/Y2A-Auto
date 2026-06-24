@@ -13,7 +13,12 @@ from modules.ai_segmentation import (
     AISegmentationError,
     AISegmenter,
     _Batch,
+    _cues_from_index_ranges,
+    _find_balanced_json,
+    _find_soft_break_point,
+    _load_json_candidate,
     _parse_cues_response,
+    _parse_index_ranges,
     build_batches,
     enforce_rhythm,
     _flatten_segments_from_words,
@@ -207,13 +212,13 @@ class ThreeLevelDegradationTests(unittest.TestCase):
         segmenter = AISegmenter(cfg, logger=MagicMock())
         call_state = {'word_called': False, 'seg_called': False}
 
-        def fake_word(batch, provider):
+        def fake_word(batch, provider, context_cues=None):
             call_state['word_called'] = True
             if word_exc:
                 raise word_exc
             return word_response
 
-        def fake_seg(batch, provider):
+        def fake_seg(batch, provider, context_cues=None):
             call_state['seg_called'] = True
             if seg_exc:
                 raise seg_exc
@@ -365,6 +370,214 @@ class HelperTests(unittest.TestCase):
         cues = _baseline_align_batch(batch, 'whisper')
         self.assertGreater(len(cues), 1)
         self.assertEqual(cues[0].timing_source, 'word')
+
+
+# ---------------------------------------------------------------------------
+# 索引范围解析
+# ---------------------------------------------------------------------------
+
+class ParseIndexRangesTests(unittest.TestCase):
+    def test_array_format(self):
+        raw = '[[0, 2], [3, 5]]'
+        result = _parse_index_ranges(raw, word_count=6)
+        self.assertEqual(result, [(0, 2), (3, 5)])
+
+    def test_dict_format_start_index_end_index(self):
+        raw = '[{"start_index": 0, "end_index": 1}, {"start_index": 2, "end_index": 3}]'
+        result = _parse_index_ranges(raw, word_count=4)
+        self.assertEqual(result, [(0, 1), (2, 3)])
+
+    def test_dict_format_start_end(self):
+        raw = '[{"start": 0, "end": 2}]'
+        result = _parse_index_ranges(raw, word_count=3)
+        self.assertEqual(result, [(0, 2)])
+
+    def test_dict_format_from_to(self):
+        raw = '[{"from": 0, "to": 1}]'
+        result = _parse_index_ranges(raw, word_count=2)
+        self.assertEqual(result, [(0, 1)])
+
+    def test_dict_format_indices(self):
+        raw = '[{"indices": [0, 2]}]'
+        result = _parse_index_ranges(raw, word_count=3)
+        self.assertEqual(result, [(0, 2)])
+
+    def test_wrapped_format_ranges_key(self):
+        raw = '{"ranges": [[0, 1], [2, 4]]}'
+        result = _parse_index_ranges(raw, word_count=5)
+        self.assertEqual(result, [(0, 1), (2, 4)])
+
+    def test_empty_word_count_returns_empty(self):
+        result = _parse_index_ranges('[]', word_count=0)
+        self.assertEqual(result, [])
+
+    def test_invalid_index_raises(self):
+        raw = '[[0, 1], ["bad", 3]]'
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=4)
+
+    def test_start_greater_than_end_raises(self):
+        raw = '[[3, 0]]'
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=4)
+
+    def test_gap_in_ranges_raises(self):
+        raw = '[[0, 1], [3, 4]]'  # 缺少 2
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=5)
+
+    def test_incomplete_coverage_raises(self):
+        raw = '[[0, 1]]'  # 只覆盖 0-1，word_count=4 需覆盖到 3
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=4)
+
+    def test_code_fence_wrapped(self):
+        raw = '```json\n[[0, 2]]\n```'
+        result = _parse_index_ranges(raw, word_count=3)
+        self.assertEqual(result, [(0, 2)])
+
+    def test_float_index_coerced(self):
+        raw = '[[0.0, 1.0]]'
+        result = _parse_index_ranges(raw, word_count=2)
+        self.assertEqual(result, [(0, 1)])
+
+
+# ---------------------------------------------------------------------------
+# 软切分点
+# ---------------------------------------------------------------------------
+
+class FindSoftBreakPointTests(unittest.TestCase):
+    def test_punctuation_break(self):
+        words = [
+            _make_word('hello', 0, 0.5),
+            _make_word('world.', 0.5, 1.0),
+            _make_word('foo', 1.0, 1.5),
+        ]
+        idx = _find_soft_break_point(words)
+        self.assertEqual(idx, 2)  # 在 'world.' 后切分
+
+    def test_pause_break(self):
+        words = [
+            _make_word('hello', 0, 0.5),
+            _make_word('world', 0.5, 1.0),
+            _make_word('foo', 2.0, 2.5),  # 1.0s 停顿 ≥ 0.6
+        ]
+        idx = _find_soft_break_point(words)
+        self.assertEqual(idx, 2)
+
+    def test_no_break_point_returns_zero(self):
+        # words are contiguous with no punctuation and gaps < 0.6s
+        words = [_make_word(f'w{i}', i * 0.3, i * 0.3 + 0.25) for i in range(5)]
+        idx = _find_soft_break_point(words)
+        self.assertEqual(idx, 0)
+
+    def test_single_word_returns_zero(self):
+        words = [_make_word('hello', 0, 1)]
+        idx = _find_soft_break_point(words)
+        self.assertEqual(idx, 0)
+
+    def test_empty_returns_zero(self):
+        idx = _find_soft_break_point([])
+        self.assertEqual(idx, 0)
+
+
+# ---------------------------------------------------------------------------
+# 平衡 JSON 提取
+# ---------------------------------------------------------------------------
+
+class FindBalancedJsonTests(unittest.TestCase):
+    def test_simple_array(self):
+        result = _find_balanced_json('[[0, 1], [2, 3]]', '[', ']')
+        self.assertEqual(result, '[[0, 1], [2, 3]]')
+
+    def test_simple_object(self):
+        result = _find_balanced_json('{"key": "value"}', '{', '}')
+        self.assertEqual(result, '{"key": "value"}')
+
+    def test_nested_brackets(self):
+        result = _find_balanced_json('[[[0, 1]]]', '[', ']')
+        self.assertEqual(result, '[[[0, 1]]]')
+
+    def test_string_with_brackets(self):
+        result = _find_balanced_json('[["[nested]", 1]]', '[', ']')
+        self.assertEqual(result, '[["[nested]", 1]]')
+
+    def test_no_match_returns_empty(self):
+        result = _find_balanced_json('no json here', '[', ']')
+        self.assertEqual(result, '')
+
+    def test_unbalanced_returns_empty(self):
+        result = _find_balanced_json('[[0, 1]', '[', ']')
+        self.assertEqual(result, '')
+
+
+class LoadJsonCandidateTests(unittest.TestCase):
+    def test_plain_json_array(self):
+        result = _load_json_candidate('[[0, 1], [2, 3]]')
+        self.assertEqual(result, [[0, 1], [2, 3]])
+
+    def test_code_fence_wrapped(self):
+        result = _load_json_candidate('```json\n[{"a": 1}]\n```')
+        self.assertEqual(result, [{'a': 1}])
+
+    def test_bom_stripped(self):
+        result = _load_json_candidate('\ufeff[1, 2, 3]')
+        self.assertEqual(result, [1, 2, 3])
+
+    def test_nested_object(self):
+        result = _load_json_candidate('{"data": {"nested": true}}')
+        self.assertEqual(result, {'data': {'nested': True}})
+
+    def test_invalid_json_raises(self):
+        with self.assertRaises(AISegmentationError):
+            _load_json_candidate('not json at all')
+
+    def test_empty_raises(self):
+        with self.assertRaises(AISegmentationError):
+            _load_json_candidate('')
+
+
+# ---------------------------------------------------------------------------
+# 索引范围映射回 cue
+# ---------------------------------------------------------------------------
+
+class CuesFromIndexRangesTests(unittest.TestCase):
+    def test_normal_mapping(self):
+        words = [_make_word('hello', 0, 0.5), _make_word('world', 0.5, 1.0)]
+        ranges = [(0, 1)]
+        cues = _cues_from_index_ranges(ranges, words, 'whisper')
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0].text, 'helloworld')
+        self.assertEqual(cues[0].start_s, 0.0)
+        self.assertEqual(cues[0].end_s, 1.0)
+        self.assertEqual(cues[0].timing_source, 'ai')
+
+    def test_multiple_ranges(self):
+        words = [_make_word(f'w{i}', i, i + 0.5) for i in range(6)]
+        ranges = [(0, 2), (3, 5)]
+        cues = _cues_from_index_ranges(ranges, words, 'whisper')
+        self.assertEqual(len(cues), 2)
+        self.assertEqual(cues[0].text, 'w0w1w2')
+        self.assertEqual(cues[1].text, 'w3w4w5')
+
+    def test_out_of_bounds_skipped_with_warning(self):
+        words = [_make_word('hello', 0, 0.5)]
+        ranges = [(0, 0), (-1, 0), (0, 5)]
+        logger = MagicMock()
+        cues = _cues_from_index_ranges(ranges, words, 'whisper', logger=logger)
+        self.assertEqual(len(cues), 1)  # 只有 (0,0) 有效
+        self.assertEqual(logger.warning.call_count, 2)  # 两次越界警告
+
+    def test_empty_text_skipped(self):
+        words = [_make_word('', 0, 0.5)]
+        ranges = [(0, 0)]
+        cues = _cues_from_index_ranges(ranges, words, 'whisper')
+        self.assertEqual(len(cues), 0)
+
+    def test_empty_ranges(self):
+        words = [_make_word('hello', 0, 0.5)]
+        cues = _cues_from_index_ranges([], words, 'whisper')
+        self.assertEqual(len(cues), 0)
 
 
 if __name__ == '__main__':

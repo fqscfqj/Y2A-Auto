@@ -540,6 +540,53 @@ def _build_metadata_translation_payload(
     return payload
 
 
+def _request_chat_completion(
+    client,
+    model_name: str,
+    system_prompt: str,
+    payload: Dict[str, Any],
+    *,
+    max_tokens: int,
+    temperature: float,
+    thinking_enabled: bool,
+    logger_obj,
+    scene_name: str,
+    user_content=None,
+    response_format=None,
+):
+    """公共 LLM 调用逻辑：构建消息、计时、执行请求，返回原始 response。"""
+    user_message_content = user_content
+    if user_message_content is None:
+        user_message_content = json.dumps(payload, ensure_ascii=False)
+    create_kwargs = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message_content},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if response_format is not None:
+        create_kwargs["response_format"] = response_format
+    request_start = time.time()
+    mode_label = "JSON模式" if response_format else "纯文本模式"
+    if logger_obj:
+        logger_obj.info(f"发起模型请求（{mode_label}）")
+    try:
+        response = openai_chat_create_with_thinking_control(
+            client=client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=thinking_enabled,
+            logger=logger_obj,
+            scene_name=scene_name,
+        )
+    finally:
+        if logger_obj:
+            logger_obj.info(f"模型请求结束，耗时: {time.time() - request_start:.2f}秒")
+    return response
+
+
 def _request_json_object(
     client,
     model_name: str,
@@ -553,30 +600,13 @@ def _request_json_object(
     scene_name: str,
     user_content=None,
 ) -> Optional[Dict[str, Any]]:
-    user_message_content = user_content
-    if user_message_content is None:
-        user_message_content = json.dumps(payload, ensure_ascii=False)
-    create_kwargs = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message_content},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "response_format": {"type": "json_object"},
-    }
-    response = None
-    request_start = time.time()
-    if logger_obj:
-        logger_obj.info("发起模型请求（JSON模式）")
     try:
-        response = openai_chat_create_with_thinking_control(
-            client=client,
-            create_kwargs=create_kwargs,
-            thinking_enabled=thinking_enabled,
-            logger=logger_obj,
-            scene_name=scene_name,
+        response = _request_chat_completion(
+            client, model_name, system_prompt, payload,
+            max_tokens=max_tokens, temperature=temperature,
+            thinking_enabled=thinking_enabled, logger_obj=logger_obj,
+            scene_name=scene_name, user_content=user_content,
+            response_format={"type": "json_object"},
         )
     except Exception as exc:
         if _is_timeout_like_error(exc) or _is_response_format_unsupported_error(exc):
@@ -584,26 +614,47 @@ def _request_json_object(
                 logger_obj.warning(
                     f"{scene_name} JSON模式请求失败，回退到纯文本JSON解析: {exc.__class__.__name__}: {exc}"
                 )
-            fallback_kwargs = dict(create_kwargs)
-            fallback_kwargs.pop("response_format", None)
-            response = openai_chat_create_with_thinking_control(
-                client=client,
-                create_kwargs=fallback_kwargs,
-                thinking_enabled=thinking_enabled,
-                logger=logger_obj,
+            response = _request_chat_completion(
+                client, model_name, system_prompt, payload,
+                max_tokens=max_tokens, temperature=temperature,
+                thinking_enabled=thinking_enabled, logger_obj=logger_obj,
                 scene_name=f"{scene_name}_fallback_plain_json",
+                user_content=user_content,
             )
         else:
             raise
-    finally:
-        if logger_obj:
-            logger_obj.info(f"模型请求结束，耗时: {time.time() - request_start:.2f}秒")
     if not getattr(response, "choices", None):
         return None
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
     if isinstance(parsed, dict):
         return parsed
     return None
+
+
+def _request_raw_text(
+    client,
+    model_name: str,
+    system_prompt: str,
+    payload: Dict[str, Any],
+    *,
+    max_tokens: int,
+    temperature: float,
+    thinking_enabled: bool,
+    logger_obj,
+    scene_name: str,
+    user_content=None,
+) -> str:
+    """请求 LLM 返回原始文本（不做 JSON 解析），用于索引制分段等场景。"""
+    response = _request_chat_completion(
+        client, model_name, system_prompt, payload,
+        max_tokens=max_tokens, temperature=temperature,
+        thinking_enabled=thinking_enabled, logger_obj=logger_obj,
+        scene_name=scene_name, user_content=user_content,
+    )
+    if not getattr(response, "choices", None):
+        return ''
+    content = response.choices[0].message.content or ''
+    return content.strip()
 
 
 def _sanitize_metadata_field(

@@ -5729,7 +5729,7 @@ class TaskProcessor:
                 single_line_min_font_scale=(
                     single_line_min_font_scale
                     if single_line_min_font_scale is not None
-                    else config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', cls._ASS_SINGLE_LINE_FONT_SCALE_MIN)
+                    else config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', self._ASS_SINGLE_LINE_FONT_SCALE_MIN)
                 ),
             )
             with open(ass_path, 'w', encoding='utf-8') as ass_file:
