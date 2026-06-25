@@ -121,6 +121,78 @@ class AsrApiClientTests(unittest.TestCase):
         self.assertAlmostEqual(result.segments[0].words[1].start_s, 1.0)
         self.assertAlmostEqual(result.segments[0].words[1].end_s, 2.0)
 
+    def test_payload_with_text_only_segment_synthesizes_words(self):
+        """When a segment has no words/tokens field at all (e.g. parakeet-crispasr
+        via a proxy that strips per-word data), words are synthesized from the
+        segment text split on whitespace.  This enables word-level AI
+        segmentation instead of degrading to segment-level mode."""
+        client = AsrApiClient(AsrConfig(api_key=''))
+        window = DetectedSpeechWindow(start_s=0.0, end_s=3.0, ownership_start_s=0.0, ownership_end_s=3.0)
+        payload = {
+            'text': 'hello world foo',
+            'segments': [{
+                'start': 0.0, 'end': 3.0, 'text': 'hello world foo',
+            }],
+        }
+        result = client._payload_to_transcription_result(
+            payload,
+            provider='parakeet',
+            response_format='verbose_json',
+            timestamp_mode='segment',
+            window=window,
+            granularities=('segment', 'word'),
+        )
+        self.assertEqual(len(result.segments), 1)
+        self.assertEqual(result.timestamp_mode, 'word')
+        words = result.segments[0].words
+        self.assertEqual([w.text for w in words], ['hello', 'world', 'foo'])
+        # Words should be evenly spaced across the 3s segment
+        self.assertAlmostEqual(words[0].start_s, 0.0)
+        self.assertAlmostEqual(words[2].end_s, 3.0)
+
+    def test_localai_top_level_words_preferred_over_synthesis(self):
+        """LocalAI (parakeet-crispasr) puts word-level data at the top-level
+        `words` array with {text, start, end} format, NOT inside segments.
+        Segments have `tokens: null` ([]int, not token objects).  Real
+        top-level word timings must be used — NOT synthesized from text split,
+        which would produce less accurate evenly-spaced timings."""
+        client = AsrApiClient(AsrConfig(api_key=''))
+        window = DetectedSpeechWindow(start_s=0.0, end_s=4.0, ownership_start_s=0.0, ownership_end_s=4.0)
+        # Simulate LocalAI crispasr verbose_json: segments have no words,
+        # tokens is null ([]int).  Top-level words have real per-word timings.
+        payload = {
+            'text': 'hello world',
+            'language': 'en',
+            'duration': 4.0,
+            'segments': [{
+                'id': 0, 'start': 0.0, 'end': 4.0, 'text': 'hello world',
+                'tokens': None,  # LocalAI []int serialized as null
+            }],
+            'words': [
+                # LocalAI uses 'text' key (not OpenAI's 'word' key)
+                {'text': 'hello', 'start': 0.5, 'end': 1.5},
+                {'text': 'world', 'start': 2.0, 'end': 3.5},
+            ],
+        }
+        result = client._payload_to_transcription_result(
+            payload,
+            provider='whisper',
+            response_format='verbose_json',
+            timestamp_mode='segment',
+            window=window,
+            granularities=('segment', 'word'),
+        )
+        self.assertEqual(result.timestamp_mode, 'word')
+        words = result.segments[0].words
+        self.assertEqual(len(words), 2)
+        self.assertEqual([w.text for w in words], ['hello', 'world'])
+        # Real timings from top-level words, NOT evenly-spaced synthesis
+        # (synthesis would give start=0.0/end=2.0 and start=2.0/end=4.0)
+        self.assertAlmostEqual(words[0].start_s, 0.5)
+        self.assertAlmostEqual(words[0].end_s, 1.5)
+        self.assertAlmostEqual(words[1].start_s, 2.0)
+        self.assertAlmostEqual(words[1].end_s, 3.5)
+
 
 if __name__ == '__main__':
     unittest.main()

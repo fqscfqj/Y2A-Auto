@@ -363,8 +363,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(len(segs), 2)
         self.assertEqual(start, 0.0)
         self.assertEqual(end, 2.0)
-        self.assertEqual(segs[0].text, 'helloworld.')
-        self.assertEqual(segs[1].text, 'foobar.')
+        self.assertEqual(segs[0].text, 'hello world.')
+        self.assertEqual(segs[1].text, 'foo bar.')
 
     def test_baseline_align_batch_word_mode(self):
         words = [_make_word(f'w{i}', i, i + 0.5) for i in range(15)]
@@ -373,6 +373,46 @@ class HelperTests(unittest.TestCase):
         cues = _baseline_align_batch(batch, 'whisper')
         self.assertGreater(len(cues), 1)
         self.assertEqual(cues[0].timing_source, 'word')
+
+    def test_join_word_texts_adds_spaces_for_latin(self):
+        """English words must be joined with spaces (regression: spaces were lost)."""
+        from modules.ai_segmentation import _join_word_texts
+        words = [_make_word('hello', 0, 0.5), _make_word('world', 0.5, 1.0)]
+        self.assertEqual(_join_word_texts(words), 'hello world')
+
+    def test_join_word_texts_no_space_for_cjk(self):
+        """CJK text has no inter-word spaces."""
+        from modules.ai_segmentation import _join_word_texts
+        words = [_make_word('你好', 0, 0.5), _make_word('世界', 0.5, 1.0)]
+        self.assertEqual(_join_word_texts(words), '你好世界')
+
+    def test_join_word_texts_punctuation_attaches(self):
+        """Punctuation attaches to the previous word without a leading space."""
+        from modules.ai_segmentation import _join_word_texts
+        words = [_make_word('hello', 0, 0.5), _make_word('world', 0.5, 1.0), _make_word('!', 1.0, 1.1)]
+        self.assertEqual(_join_word_texts(words), 'hello world!')
+
+    def test_flatten_words_preserves_original_text_via_offsets(self):
+        """_flatten_words computes char offsets so _words_to_text slices the
+        original segment text — preserving spaces and punctuation natively,
+        without CJK/latin heuristics."""
+        from modules.ai_segmentation import _flatten_words, _words_to_text
+        # Segment text has original spaces + comma — words are individual tokens
+        seg = _make_segment(
+            'Have you ever wondered, what it might be like?',
+            0, 5.0,
+            [_make_word(w, i, i + 0.5) for i, w in enumerate(
+                ['Have', 'you', 'ever', 'wondered,', 'what', 'it', 'might', 'be', 'like?']
+            )],
+        )
+        result = _make_result([seg], 0, 5.0)
+        words, _, _ = _flatten_words([result])
+        # All words should have valid offsets
+        self.assertTrue(all(w.char_start >= 0 for w in words))
+        # Slice a sub-range [0, 3] → "Have you ever wondered,"
+        self.assertEqual(_words_to_text(words[0:4]), 'Have you ever wondered,')
+        # Slice full range → original text
+        self.assertEqual(_words_to_text(words), 'Have you ever wondered, what it might be like?')
 
 
 # ---------------------------------------------------------------------------
@@ -424,15 +464,15 @@ class ParseIndexRangesTests(unittest.TestCase):
         with self.assertRaises(AISegmentationError):
             _parse_index_ranges(raw, word_count=4)
 
-    def test_gap_in_ranges_raises(self):
-        raw = '[[0, 1], [3, 4]]'  # 缺少 2
-        with self.assertRaises(AISegmentationError):
-            _parse_index_ranges(raw, word_count=5)
+    def test_gap_in_ranges_filled(self):
+        raw = '[[0, 1], [3, 4]]'  # 缺少 2，应并入前一段
+        result = _parse_index_ranges(raw, word_count=5)
+        self.assertEqual(result, [(0, 4)])
 
-    def test_incomplete_coverage_raises(self):
-        raw = '[[0, 1]]'  # 只覆盖 0-1，word_count=4 需覆盖到 3
-        with self.assertRaises(AISegmentationError):
-            _parse_index_ranges(raw, word_count=4)
+    def test_incomplete_coverage_filled(self):
+        raw = '[[0, 1]]'  # 只覆盖 0-1，尾部追加到最后
+        result = _parse_index_ranges(raw, word_count=4)
+        self.assertEqual(result, [(0, 3)])
 
     def test_code_fence_wrapped(self):
         raw = '```json\n[[0, 2]]\n```'
@@ -550,7 +590,7 @@ class CuesFromIndexRangesTests(unittest.TestCase):
         ranges = [(0, 1)]
         cues = _cues_from_index_ranges(ranges, words, 'whisper')
         self.assertEqual(len(cues), 1)
-        self.assertEqual(cues[0].text, 'helloworld')
+        self.assertEqual(cues[0].text, 'hello world')
         self.assertEqual(cues[0].start_s, 0.0)
         self.assertEqual(cues[0].end_s, 1.0)
         self.assertEqual(cues[0].timing_source, 'ai')
@@ -560,8 +600,8 @@ class CuesFromIndexRangesTests(unittest.TestCase):
         ranges = [(0, 2), (3, 5)]
         cues = _cues_from_index_ranges(ranges, words, 'whisper')
         self.assertEqual(len(cues), 2)
-        self.assertEqual(cues[0].text, 'w0w1w2')
-        self.assertEqual(cues[1].text, 'w3w4w5')
+        self.assertEqual(cues[0].text, 'w0 w1 w2')
+        self.assertEqual(cues[1].text, 'w3 w4 w5')
 
     def test_out_of_bounds_skipped_with_warning(self):
         words = [_make_word('hello', 0, 0.5)]

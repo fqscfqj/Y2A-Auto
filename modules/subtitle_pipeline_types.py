@@ -31,6 +31,12 @@ class AsrWordTiming:
     start_s: float
     end_s: float
     text: str
+    # 原生文本切片：word 所属 segment 的原始文本（带正确空格/标点），
+    # 以及该 word 在原始文本中的字符偏移 [char_start, char_end)。
+    # 由 _flatten_words / 合成兜底填充；为空/-1 时回退到 _join_word_texts。
+    source_text: str = ''
+    char_start: int = -1
+    char_end: int = -1
 
     @property
     def duration_s(self) -> float:

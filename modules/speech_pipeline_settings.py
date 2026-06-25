@@ -92,11 +92,11 @@ SPEECH_PIPELINE_DEFAULTS: Dict[str, Any] = {
     "AI_SEGMENTATION_MODEL_NAME": "",  # 留空则回退到 OPENAI_MODEL_NAME
     "AI_SEGMENTATION_THINKING_ENABLED": False,  # 智能分段模型独立思考开关
     "AI_SEGMENTATION_MIN_CUE_DURATION_S": 1.5,  # 最短显示时长（秒），低于此值合并/延长（电影级字幕节奏下限）
-    "AI_SEGMENTATION_MAX_CUE_DURATION_S": 6.0,  # 最长段长（秒），超过则拆分（避免单条过长）
+    "AI_SEGMENTATION_MAX_CUE_DURATION_S": 5.0,  # 最长段长（秒），超过则拆分（避免单条过长）
     "AI_SEGMENTATION_MAX_CPS": 15.0,  # 最大每秒可见字符数（中文友好），超过则拆分
     "AI_SEGMENTATION_BATCH_WINDOW_S": 120.0,  # VAD 窗口合并目标时长（秒），长上下文利于分段准确性
-    "AI_SEGMENTATION_MAX_CHARS_PER_BATCH": 8000,  # 单批次送检最大字符数硬上限，超限则进一步拆分
-    "AI_SEGMENTATION_TEMPERATURE": 0.2,  # AI 分段采样温度（低温度更稳定）
+    "AI_SEGMENTATION_MAX_CHARS_PER_BATCH": 4000,  # 单批次送检最大字符数硬上限，超限则进一步拆分
+    "AI_SEGMENTATION_TEMPERATURE": 0.1,  # AI 分段采样温度（低温度更稳定）
     "AI_SEGMENTATION_MAX_RETRIES": 2,  # 单批次 AI 失败重试次数（仍失败则降级）
     "AI_SEGMENTATION_CONTEXT_WINDOW": 3,  # 滑动上下文窗口：前一批次末尾 N 条 cue 注入下一批 prompt
     "AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED": False,  # 边界精炼：索引制下通常不需要，可手动开启

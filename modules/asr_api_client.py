@@ -28,6 +28,31 @@ _VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 _INVALID_DURATION_FALLBACK = 0.5
 
 
+def _compute_synth_word_offsets(segment_text: str, words: List[AsrWordTiming]) -> None:
+    """为合成词计算在原始 segment 文本中的字符偏移 [char_start, char_end)。
+
+    顺序匹配每个 word.text 在 segment_text 中的位置，使下游能直接从原始
+    文本切片，完整保留空格和标点。
+    """
+    if not segment_text or not words:
+        return
+    pos = 0
+    search_lower = segment_text.lower()
+    for w in words:
+        wtext = str(w.text or '').strip()
+        if not wtext:
+            continue
+        idx = segment_text.find(wtext, pos)
+        if idx < 0:
+            idx = search_lower.find(wtext.lower(), pos)
+        if idx >= 0:
+            w.source_text = segment_text
+            w.char_start = idx
+            w.char_end = idx + len(wtext)
+            pos = idx + len(wtext)
+
+
+
 def _format_srt_timestamp(seconds: float) -> str:
     total_millis = int(round(float(seconds or 0.0) * 1000))
     hours = total_millis // 3_600_000
@@ -891,27 +916,16 @@ class AsrApiClient:
                 end_s = self._normalize_timing_value(raw_segment.get('end', 0.0), timing_scale)
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
+                # Extract real per-segment word timings if present.
+                # Note: LocalAI's TranscriptionSegmentSeconds has no `words` field,
+                # and its `tokens` field is []int (integer token IDs), not OpenAI-style
+                # token objects.  _extract_words skips non-dict entries, so []int
+                # tokens are harmlessly ignored.  Real word data for LocalAI arrives
+                # at the top-level `words` array (handled below).
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
-                # Some backends (e.g. parakeet-crispasr) return tokens with
-                # only text and no per-word timing.  When _extract_words
-                # discards all tokens due to missing timestamps but the raw
-                # token list does contain text, synthesize evenly-spaced word
-                # timings from the segment boundaries.
-                if not words:
-                    raw_tokens = raw_segment.get('words') or raw_segment.get('tokens') or []
-                    text_tokens = [
-                        str(t.get('word') or t.get('text') or t.get('token') or '').strip()
-                        for t in (raw_tokens if isinstance(raw_tokens, list) else [])
-                        if isinstance(t, dict)
-                    ]
-                    text_tokens = [t for t in text_tokens if t]
-                    if text_tokens and end_s > start_s:
-                        seg_dur = end_s - start_s
-                        word_dur = seg_dur / len(text_tokens)
-                        words = [
-                            AsrWordTiming(start_s=start_s + i * word_dur, end_s=start_s + (i + 1) * word_dur, text=t)
-                            for i, t in enumerate(text_tokens)
-                        ]
+                # Stash raw tokens for Phase-3 synthesis fallback (segments with
+                # text-only tokens but no per-word timing).
+                raw_tokens_for_meta = raw_segment.get('words') or raw_segment.get('tokens') or []
                 # When a VAD window is provided, use the window duration for the
                 # plausibility check.  Some ASR backends (e.g. qwen3-asr) return
                 # locally compressed timestamps that span only a fraction of the
@@ -932,14 +946,82 @@ class AsrApiClient:
                         text=text,
                         words=words,
                         confidence=self._to_optional_float(raw_segment.get('avg_logprob') or raw_segment.get('confidence')),
-                        metadata={'id': raw_segment.get('id'), 'timing_scale': timing_scale},
+                        metadata={'id': raw_segment.get('id'), 'timing_scale': timing_scale, '_raw_tokens': raw_tokens_for_meta},
                     )
                 )
 
+        # Phase 2: Attach top-level words (LocalAI/whisper verbose_json puts
+        # word-level data here, not inside segments).  This must happen BEFORE
+        # the text-split synthesis fallback so real word timings are preserved.
         if segments and top_level_words:
             top_words = self._extract_words(top_level_words, timing_scale=timing_scale)
             if top_words:
                 self._attach_top_level_words_to_segments(segments, top_words)
+                self.logger.info(
+                    "ASR top-level words: %d word-level entries received and attached to segments",
+                    len(top_words),
+                )
+            else:
+                self.logger.info(
+                    "ASR top-level words field present but no extractable word timings (raw count=%d)",
+                    len(top_level_words),
+                )
+        elif segments:
+            self.logger.info(
+                "ASR response has no top-level words field; per-word data unavailable for this backend",
+            )
+
+        # Phase 3: Last-resort synthesis for segments still without any word
+        # data.  Evenly-space word timings from token text (if available) or
+        # segment text split on whitespace.  This enables word-level AI
+        # segmentation for backends that only return segment-level text/timing
+        # (e.g. parakeet-crispasr when the service doesn't expose per-word data).
+        synth_count = 0
+        for segment in segments:
+            if segment.words:
+                continue
+            text_tokens: List[str] = []
+            raw_tokens = (segment.metadata or {}).get('_raw_tokens') or []
+            if isinstance(raw_tokens, list):
+                for t in raw_tokens:
+                    if isinstance(t, dict):
+                        w = str(t.get('word') or t.get('text') or t.get('token') or '').strip()
+                    elif isinstance(t, str):
+                        w = t.strip()
+                    else:
+                        w = ''
+                    if w:
+                        text_tokens.append(w)
+            if not text_tokens:
+                text_tokens = segment.text.split()
+            if text_tokens and segment.end_s > segment.start_s:
+                seg_dur = segment.end_s - segment.start_s
+                word_dur = seg_dur / len(text_tokens)
+                seg_text = segment.text
+                synth_words = [
+                    AsrWordTiming(
+                        start_s=segment.start_s + i * word_dur,
+                        end_s=segment.start_s + (i + 1) * word_dur,
+                        text=t,
+                        source_text=seg_text,
+                    )
+                    for i, t in enumerate(text_tokens)
+                ]
+                # 计算每个合成词在原始 segment 文本中的字符偏移，
+                # 使下游 _words_to_text 能直接从原始文本切片（保留空格/标点）
+                _compute_synth_word_offsets(seg_text, synth_words)
+                segment.words = synth_words
+                synth_count += 1
+        # Clean up temporary metadata
+        for segment in segments:
+            if segment.metadata and '_raw_tokens' in segment.metadata:
+                del segment.metadata['_raw_tokens']
+        if synth_count:
+            self.logger.info(
+                "Synthesized evenly-spaced word timings for %d/%d segments "
+                "(ASR backend returned no per-word data)",
+                synth_count, len(segments),
+            )
 
         text = str(payload.get('text') or '').strip()
         if not segments and text:
@@ -1104,6 +1186,10 @@ class AsrApiClient:
     ):
         if not segments or not words:
             return
+        # Track segments that already have per-segment words — top-level
+        # words should only fill gaps, not duplicate or override per-segment
+        # data (which may be real or synthesized from token/text fallbacks).
+        segments_with_own_words = set(id(s) for s in segments if s.words)
         for segment in segments:
             if segment.words:
                 continue
@@ -1112,19 +1198,29 @@ class AsrApiClient:
             selected_segment: Optional[AsrSegmentTiming] = None
             best_overlap = -1.0
             for segment in segments:
+                if id(segment) in segments_with_own_words:
+                    continue
                 overlap = min(word.end_s, segment.end_s) - max(word.start_s, segment.start_s)
                 if overlap > best_overlap and overlap > 0.0:
                     best_overlap = overlap
                     selected_segment = segment
             if selected_segment is None:
-                selected_segment = min(
-                    segments,
-                    key=lambda segment: min(
-                        abs(word.start_s - segment.start_s),
-                        abs(word.end_s - segment.end_s),
-                    ),
-                )
-            selected_segment.words.append(word)
+                candidates = [s for s in segments if id(s) not in segments_with_own_words]
+                if candidates:
+                    selected_segment = min(
+                        candidates,
+                        key=lambda segment: min(
+                            abs(word.start_s - segment.start_s),
+                            abs(word.end_s - segment.end_s),
+                        ),
+                    )
+            if selected_segment is not None:
+                word.source_text = selected_segment.text
+                selected_segment.words.append(word)
+        # 为每个 segment 的 words 计算字符偏移，使下游能从原始文本切片
+        for segment in segments:
+            if segment.words and segment.text:
+                _compute_synth_word_offsets(segment.text, segment.words)
 
     @staticmethod
     def _extract_language_from_data(data: Dict[str, Any]) -> str:
