@@ -3395,20 +3395,24 @@ class TaskProcessor:
         'MarginL': 96.0,
         'MarginR': 96.0,
         'Alignment': 2,
+        # BorderStyle=4 gives a modern rounded-rectangle background box
+        # (supported by libass/FFmpeg), which is the dominant look for
+        # streaming/online-video captions.
+        # BorderStyle=1 with a thick, dark semi-transparent outline.
+        # This gives the clean "no-box" streaming caption look while keeping
+        # text readable on bright/complex backgrounds.
         'BorderStyle': 1,
-        'Bold': 0,
+        'Bold': 1,
         'PrimaryColour': '&H00FFFFFF',
         'SecondaryColour': '&H00FFFFFF',
-        'OutlineColour': '&H00000000',
-        # Keep a subtle translucent background as a readability safety net
-        # for bright/high-contrast scenes while preserving the cinema look.
-        'BackColour': '&H33000000',
+        'OutlineColour': '&HB2000000',
+        'BackColour': '&H00000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
         (720.0, 48.0),
-        (1080.0, 68.0),
-        (1440.0, 84.0),
-        (2160.0, 126.0),
+        (1080.0, 54.0),
+        (1440.0, 68.0),
+        (2160.0, 102.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
         (720.0, 44.0),
@@ -3418,9 +3422,9 @@ class TaskProcessor:
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
         (720.0, 56.0),
-        (1080.0, 82.0),
-        (1440.0, 108.0),
-        (2160.0, 164.0),
+        (1080.0, 62.0),
+        (1440.0, 82.0),
+        (2160.0, 124.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
         (720.0, 120.0),
@@ -3428,29 +3432,34 @@ class TaskProcessor:
         (1920.0, 220.0),
         (2560.0, 292.0),
     )
-    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
-    _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 56.0
-    _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 160.0
+    # Narrower side margins for landscape: online captions use more of the
+    # available width and therefore stay single-line longer.
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.025
+    _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 32.0
+    _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 80.0
     _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.095
     _ASS_PORTRAIT_SIDE_MARGIN_MIN = 82.0
     _ASS_PORTRAIT_SIDE_MARGIN_MAX = 156.0
-    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.89
-    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.85
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 22.0
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 28.0
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.93
+    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.96
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 28.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 34.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
     _ASS_SAFE_WIDTH_RATIO = 0.93
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
-    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.85
+    # Allow slightly more aggressive down-scaling for single-line priority:
+    # online captions often trade a small font reduction to avoid a wrap.
+    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.78
     _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
     _ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX = 16.0
-    _ASS_OUTLINE_RATIO = 0.042
-    _ASS_OUTLINE_MIN = 1.8
-    _ASS_OUTLINE_MAX = 4.2
-    _ASS_SHADOW_RATIO = 0.018
-    _ASS_SHADOW_MIN = 0.8
-    _ASS_SHADOW_MAX = 1.8
+    # Thicker outline for the BorderStyle=4 rounded box, plus a soft shadow.
+    _ASS_OUTLINE_RATIO = 0.075
+    _ASS_OUTLINE_MIN = 2.2
+    _ASS_OUTLINE_MAX = 5.5
+    _ASS_SHADOW_RATIO = 0.025
+    _ASS_SHADOW_MIN = 1.0
+    _ASS_SHADOW_MAX = 2.2
     _ASS_OVERRIDE_OUTLINE_RATIO = 0.045
     _ASS_OVERRIDE_OUTLINE_MIN = 1.5
     _ASS_OVERRIDE_OUTLINE_MAX = 3.0
@@ -4391,7 +4400,13 @@ class TaskProcessor:
         text_units = cls._estimate_subtitle_text_units(str(line or ''))
         if text_units <= 0:
             return 0.0
-        padding = max(6.0, float(outline) * 4.0 + float(shadow) * 2.0 + float(font_size) * 0.08)
+        # Padding accounts for the rounded box (BorderStyle=4) or outline,
+        # the shadow offset and a small safety margin. The coefficients were
+        # calibrated against Source Han Sans HW SC rendered at 1080p.
+        padding = max(
+            8.0,
+            float(outline) * 2.8 + float(shadow) * 1.8 + float(font_size) * 0.14,
+        )
         return text_units * float(font_size) + padding
 
     @classmethod
@@ -4794,6 +4809,9 @@ class TaskProcessor:
     ):
         """Find the largest font size >= min_scale*font_size that keeps *text* on one line.
 
+        Uses binary search so the scale reduction is as small as possible,
+        keeping the subtitle single-line without an aggressive visual shrink.
+
         Returns (scaled_font_size, scaled_outline, scaled_shadow) if a fit is found,
         otherwise (None, None, None).
         """
@@ -4801,43 +4819,66 @@ class TaskProcessor:
         if not single_line[0]:
             return None, None, None
 
-        best_fit = None
         min_allowed_font = max(
             float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
             float(font_size) * float(cls._ASS_OVERRIDE_FONT_SIZE_RATIO_MIN),
+            float(font_size) * float(min_scale),
         )
-        for scale in (0.97, 0.94, 0.91, min_scale):
-            scaled_font_size = max(
-                font_size * min_scale,
-                font_size * scale,
-            )
-            if scaled_font_size >= font_size:
-                continue
-            if scaled_font_size < min_allowed_font:
-                continue
-            scaled_outline = cls._clamp(
-                scaled_font_size * cls._ASS_OUTLINE_RATIO,
+        if min_allowed_font >= float(font_size):
+            return None, None, None
+
+        def _fits_at_size(size):
+            test_outline = cls._clamp(
+                size * cls._ASS_OUTLINE_RATIO,
                 cls._ASS_OUTLINE_MIN,
                 cls._ASS_OUTLINE_MAX,
             )
-            scaled_shadow = cls._clamp(
-                scaled_font_size * cls._ASS_SHADOW_RATIO,
+            test_shadow = cls._clamp(
+                size * cls._ASS_SHADOW_RATIO,
                 cls._ASS_SHADOW_MIN,
                 cls._ASS_SHADOW_MAX,
             )
             fits, _, _, _ = cls._check_ass_lines_width_safety(
                 single_line,
                 usable_width,
-                scaled_font_size,
-                scaled_outline,
-                scaled_shadow,
+                size,
+                test_outline,
+                test_shadow,
             )
-            if fits:
-                if best_fit is None or scaled_font_size > best_fit[0]:
-                    best_fit = (scaled_font_size, scaled_outline, scaled_shadow)
-        if best_fit is None:
+            return fits
+
+        lo = min_allowed_font
+        hi = float(font_size)
+        if _fits_at_size(hi):
             return None, None, None
-        return best_fit
+        if not _fits_at_size(lo):
+            return None, None, None
+
+        best_size = lo
+        for _ in range(12):
+            mid = (lo + hi) / 2.0
+            if _fits_at_size(mid):
+                best_size = mid
+                lo = mid
+            else:
+                hi = mid
+
+        best_size = float(int(round(best_size)))
+        best_size = min(best_size, font_size - 1.0)
+        if best_size < min_allowed_font:
+            return None, None, None
+
+        best_outline = cls._clamp(
+            best_size * cls._ASS_OUTLINE_RATIO,
+            cls._ASS_OUTLINE_MIN,
+            cls._ASS_OUTLINE_MAX,
+        )
+        best_shadow = cls._clamp(
+            best_size * cls._ASS_SHADOW_RATIO,
+            cls._ASS_SHADOW_MIN,
+            cls._ASS_SHADOW_MAX,
+        )
+        return best_size, best_outline, best_shadow
 
     @staticmethod
     def _is_preferred_wrap_boundary(char):
@@ -5517,10 +5558,10 @@ class TaskProcessor:
     def _resolve_subtitle_font(self, task_logger, temp_fonts_dir):
         config = getattr(self, 'config', {}) or {}
         configured_font_name = str(
-            config.get('SUBTITLE_FONT_NAME') or 'SourceHanSansHWSC-VF.otf'
+            config.get('SUBTITLE_FONT_NAME') or 'NotoSansCJKsc-Regular.otf'
         ).strip()
         if not configured_font_name:
-            configured_font_name = 'SourceHanSansHWSC-VF.otf'
+            configured_font_name = 'NotoSansCJKsc-Regular.otf'
 
         resolved_font = {
             'configured_font_name': configured_font_name,
@@ -5894,13 +5935,13 @@ class TaskProcessor:
                         )
 
                 if not font_family:
-                    # 回退到常见的中文字体家族名称。优先使用你当前字体显示的家族名
+                    # 回退到常见的中文字体家族名称。优先使用 Noto Sans CJK SC
                     fallback_families = [
+                        'Noto Sans CJK SC',
                         'Source Han Sans HW SC VF',
                         'Source Han Sans HW SC',
                         'Source Han Sans SC',
                         'Source Han Sans',
-                        'Noto Sans CJK SC',
                         'Microsoft YaHei',
                         'SimHei'
                     ]

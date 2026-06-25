@@ -104,7 +104,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--font",
-        default="SourceHanSansHWSC-VF.otf",
+        default="NotoSansCJKsc-Regular.otf",
         help="字体文件名（需存在于 ffmpeg/fonts/ 或系统字体目录）",
     )
     parser.add_argument(

@@ -42,11 +42,13 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         self.assertEqual(style['PlayResX'], 1920)
         self.assertEqual(style['PlayResY'], 1080)
-        self.assertGreaterEqual(style['MarginV'], 68.0)
-        self.assertGreaterEqual(style['MarginL'], 96.0)
-        self.assertGreaterEqual(style['MarginR'], 96.0)
-        self.assertGreaterEqual(style['FontSize'], 66.0)
-        self.assertGreaterEqual(style['Outline'], 2.0)
+        # Online-style captions sit slightly lower and use more horizontal
+        # width than the previous cinematic safe-area margins.
+        self.assertGreaterEqual(style['MarginV'], 60.0)
+        self.assertGreaterEqual(style['MarginL'], 40.0)
+        self.assertGreaterEqual(style['MarginR'], 40.0)
+        self.assertGreaterEqual(style['FontSize'], 52.0)
+        self.assertGreaterEqual(style['Outline'], 2.2)
         self.assertEqual(style['Alignment'], 2)
 
     def test_landscape_layout_uses_wider_lines(self):
