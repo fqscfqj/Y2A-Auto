@@ -29,6 +29,7 @@ from .subtitle_pipeline_types import (
     AsrSegmentTiming,
     AsrTranscriptionResult,
     AsrWordTiming,
+    DetectedSpeechWindow,
 )
 
 
@@ -622,8 +623,8 @@ def _parse_cues_response(
     for item in raw_cues:
         if not isinstance(item, dict):
             continue
-        raw_start = item.get('start_s')
-        raw_end = item.get('end_s')
+        raw_start = item.get('start_s', item.get('start', item.get('start_time')))
+        raw_end = item.get('end_s', item.get('end', item.get('end_time')))
         if raw_start is None or raw_end is None:
             continue
         try:
@@ -1336,6 +1337,23 @@ class AISegmenter:
             parsed, batch.time_start_s, batch.time_end_s, len(batch.segments),
         )
         if not cues_data:
+            # 诊断：记录模型返回的原始结构，帮助定位格式不匹配
+            if isinstance(parsed, dict):
+                raw_cues = parsed.get('cues')
+                if isinstance(raw_cues, list):
+                    self.logger.warning(
+                        '段级 AI 返回 cues 列表长度=%d，但全部被过滤（批次范围=%.1f-%.1f）',
+                        len(raw_cues), batch.time_start_s, batch.time_end_s,
+                    )
+                    for i, item in enumerate(raw_cues[:3]):
+                        self.logger.warning('  cue[%d]: %s', i, str(item)[:200])
+                else:
+                    self.logger.warning(
+                        '段级 AI 返回 JSON 缺少 cues 字段，键=%s',
+                        list(parsed.keys())[:5],
+                    )
+            else:
+                self.logger.warning('段级 AI 返回非 dict: %s', str(parsed)[:200])
             raise AISegmentationError('段级 AI 返回无有效 cue')
         return _cues_from_response(cues_data, timing_source='ai', provider=provider)
 
@@ -1354,7 +1372,7 @@ class AISegmenter:
                 self.logger.info('AI 分段重试等待 %ds...', delay)
                 time.sleep(delay)
             try:
-                return _request_json_object(
+                result = _request_json_object(
                     client=client,
                     model_name=self.config.resolved_model_name,
                     system_prompt=system_prompt,
@@ -1365,6 +1383,12 @@ class AISegmenter:
                     logger_obj=self.logger,
                     scene_name=f'agent_segmentation_attempt{attempt + 1}',
                     user_content=json.dumps(payload, ensure_ascii=False),
+                )
+                if result is not None:
+                    return result
+                self.logger.warning(
+                    'AI 分段返回空结果（第 %d 次），重试中...',
+                    attempt + 1,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -1532,3 +1556,118 @@ def _is_sentence_complete(text: str) -> bool:
     if not text:
         return False
     return text[-1] in '.!?。！？；;' or text.endswith('...') or text.endswith('…')
+
+
+# ---------------------------------------------------------------------------
+# SRT 文件重分段适配层
+# ---------------------------------------------------------------------------
+
+def srt_to_asr_results(
+    srt_path: str,
+    logger: Optional[logging.Logger] = None,
+) -> 'List[AsrTranscriptionResult]':
+    """将 SRT 文件解析为 AsrTranscriptionResult 列表，供 AISegmenter.segment() 使用。
+
+    每个 SRT cue 转为一个 AsrSegmentTiming，包装为独立的 AsrTranscriptionResult。
+    """
+    from .srt_transform_engine import SrtTransformEngine, SrtTransformConfig
+
+    _logger = logger or logging.getLogger(__name__)
+
+    try:
+        with open(srt_path, encoding='utf-8') as f:
+            srt_text = f.read()
+    except FileNotFoundError:
+        _logger.warning('SRT 文件不存在: %s', srt_path)
+        return []
+    except Exception as exc:
+        _logger.warning('SRT 文件读取失败: %s — %s', srt_path, exc)
+        return []
+
+    if not srt_text.strip():
+        _logger.warning('SRT 文件为空: %s', srt_path)
+        return []
+
+    engine = SrtTransformEngine(SrtTransformConfig(), logger=_logger)
+    cues = engine.parse_srt(srt_text)
+    if not cues:
+        _logger.warning('SRT 解析无有效 cue: %s', srt_path)
+        return []
+
+    results: List[AsrTranscriptionResult] = []
+    for cue in cues:
+        start = float(cue.get('start', 0.0) or 0.0)
+        end = float(cue.get('end', 0.0) or 0.0)
+        text = str(cue.get('text') or '').strip()
+        if not text or end <= start:
+            continue
+
+        seg = AsrSegmentTiming(start_s=start, end_s=end, text=text)
+        window = DetectedSpeechWindow(
+            start_s=start, end_s=end,
+            ownership_start_s=start, ownership_end_s=end,
+        )
+        result = AsrTranscriptionResult(
+            provider='srt_file',
+            response_format='srt',
+            timestamp_mode='segment',
+            text=text,
+            segments=[seg],
+            window=window,
+        )
+        results.append(result)
+
+    _logger.info('SRT 转换为 %d 个 AsrTranscriptionResult: %s', len(results), srt_path)
+    return results
+
+
+def resegment_srt_file(
+    srt_path: str,
+    config: 'AISegmentationConfig',
+    logger: Optional[logging.Logger] = None,
+) -> 'Optional[str]':
+    """对已有 SRT 文件进行 AI 重分段，返回新 SRT 文件路径。
+
+    失败时返回 None（不阻断流程）。
+    """
+    from .srt_transform_engine import SrtTransformEngine, SrtTransformConfig
+
+    _logger = logger or logging.getLogger(__name__)
+
+    try:
+        results = srt_to_asr_results(srt_path, _logger)
+        if not results:
+            _logger.warning('SRT 重分段：无法解析输入文件，跳过')
+            return None
+
+        segmenter = AISegmenter(config, logger=_logger)
+        cues = segmenter.segment(results)
+        if not cues:
+            _logger.warning('SRT 重分段：AI 分段返回空结果，跳过')
+            return None
+
+        engine = SrtTransformEngine(SrtTransformConfig(), logger=_logger)
+        srt_text = engine.render_srt(cues)
+        if not srt_text:
+            _logger.warning('SRT 重分段：render_srt 返回空，跳过')
+            return None
+
+        # 写入临时文件，路径与原始 SRT 同目录
+        import os
+        base, ext = os.path.splitext(srt_path)
+        new_path = f'{base}.resegmented{ext}'
+        with open(new_path, 'w', encoding='utf-8') as f:
+            f.write(srt_text)
+
+        _logger.info(
+            'SRT 重分段完成：%d cues → %d cues，输出: %s',
+            len(results), len(cues), new_path,
+        )
+        return new_path
+
+    except AISegmentationError as exc:
+        _logger.warning('SRT 重分段跳过（AI 分段不可用）: %s', exc)
+        return None
+    except Exception as exc:
+        _logger.warning('SRT 重分段异常，使用原始文件: %s', exc)
+        return None

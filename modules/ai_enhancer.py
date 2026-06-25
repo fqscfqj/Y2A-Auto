@@ -16,6 +16,7 @@ from .utils import (
     safe_str,
     openai_chat_create_with_thinking_control,
     extract_chat_message_json,
+    get_chat_message_text,
 )
 
 import openai
@@ -624,10 +625,18 @@ def _request_json_object(
         else:
             raise
     if not getattr(response, "choices", None):
+        if logger_obj:
+            logger_obj.warning(f"{scene_name} 模型返回空 choices")
         return None
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
     if isinstance(parsed, dict):
         return parsed
+    if logger_obj:
+        raw_text = get_chat_message_text(response.choices[0].message)
+        logger_obj.warning(
+            f"{scene_name} 模型返回内容无法解析为 JSON（正文长度=%d）",
+            len(raw_text),
+        )
     return None
 
 

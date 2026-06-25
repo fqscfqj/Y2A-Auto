@@ -3124,7 +3124,7 @@ class TaskProcessor:
             task_logger.info(f"检测到字幕语言: {subtitle_lang}")
             if en_candidates and subtitle_file in en_candidates:
                 task_logger.info("优先使用英文字幕进行翻译")
-            
+
             # 创建翻译器（此时需要翻译为中文）
             translator = create_translator_from_config(self.config, task_id)
             if not translator:
