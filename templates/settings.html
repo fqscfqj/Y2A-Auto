@@ -1328,19 +1328,27 @@
                                                         <div class="col-md-6">
                                                             <div class="settings-toggle-field">
                                                                 <label class="checkbox-label settings-toggle-label">
-                                                                    <input type="checkbox" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" id="subtitle-max-line-length-enabled" {% if config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False) %}checked{% endif %}>
+                                                                    <input type="checkbox" checked disabled>
                                                                     每行最大字符数
                                                                 </label>
-                                                                <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control form-control-sm" disabled placeholder="字符">
+                                                                <input type="number" value="999" class="form-control form-control-sm" disabled placeholder="字符">
+                                                                <!-- Hard-coded: SUBTITLE_MAX_LINE_LENGTH is pinned to 999 so cues
+                                                                     are never force-wrapped by the SRT formatter. -->
+                                                                <input type="hidden" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" value="on">
+                                                                <input type="hidden" name="SUBTITLE_MAX_LINE_LENGTH" value="999">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
                                                             <div class="settings-toggle-field">
                                                                 <label class="checkbox-label settings-toggle-label">
-                                                                    <input type="checkbox" name="SUBTITLE_MAX_LINES_ENABLED" id="subtitle-max-lines-enabled" {% if config.get('SUBTITLE_MAX_LINES_ENABLED', False) %}checked{% endif %}>
+                                                                    <input type="checkbox" checked disabled>
                                                                     最大行数
                                                                 </label>
-                                                                <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control form-control-sm" disabled placeholder="行">
+                                                                <input type="number" value="1" class="form-control form-control-sm" disabled placeholder="行">
+                                                                <!-- Hard-coded: SUBTITLE_MAX_LINES is pinned to 1 to prefer
+                                                                     single-line captions. -->
+                                                                <input type="hidden" name="SUBTITLE_MAX_LINES_ENABLED" value="on">
+                                                                <input type="hidden" name="SUBTITLE_MAX_LINES" value="1">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">

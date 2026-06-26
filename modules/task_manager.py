@@ -3447,9 +3447,10 @@ class TaskProcessor:
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
     _ASS_SAFE_WIDTH_RATIO = 0.93
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
-    # Allow slightly more aggressive down-scaling for single-line priority:
-    # online captions often trade a small font reduction to avoid a wrap.
-    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.78
+    # Allow aggressive down-scaling for single-line priority. Landscape
+    # captions are required to stay on one line, so we shrink the font as
+    # far as the global override minimum permits before accepting overflow.
+    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.60
     _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
     _ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX = 16.0
@@ -4078,8 +4079,9 @@ class TaskProcessor:
             max_line_length = int(cls._clamp(max_line_length, 12.0, 18.0))
             max_lines = 3
         else:
+            # Hard-coded single-line target for streaming SRT output.
             max_line_length = int(cls._clamp(max_line_length, 20.0, 26.0))
-            max_lines = 2
+            max_lines = 1
         return max_line_length, max_lines
 
     @classmethod
@@ -4272,8 +4274,11 @@ class TaskProcessor:
             # but the partitioner still prefers fewer balanced lines.
             max_lines = 5
         else:
+            # Hard-coded to 1 line for landscape captions. The single-line
+            # priority logic will scale the font down when needed; only if the
+            # text still does not fit will an overflow warning be emitted.
             max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
-            max_lines = 2
+            max_lines = 1
         return max_line_length, max_lines
 
     @staticmethod
@@ -4384,6 +4389,11 @@ class TaskProcessor:
                     wrapped_lines.extend(candidate_lines)
                 else:
                     wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
+            elif int(max_lines) <= 1:
+                # Hard-coded single-line mode: keep the segment intact so the
+                # caller can scale the font or emit an overflow warning instead
+                # of wrapping.
+                wrapped_lines.append(segment)
             else:
                 wrapped_lines.extend(
                     cls._wrap_landscape_segment_for_ass(
@@ -5231,7 +5241,13 @@ class TaskProcessor:
         prefer_single_line=True,
         single_line_min_font_scale=None,
     ):
-        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        # Normalize internal line breaks so that a single SRT cue is always
+        # treated as one logical line. The ASS burn-in stage decides whether
+        # to scale the font or emit an overflow warning; it never falls back
+        # to multi-line wrapping for landscape captions.
+        normalized = cls._merge_subtitle_text_parts(
+            str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        )
         wrap_meta = {
             'forced_wrap': False,
             'font_override': None,
@@ -5359,7 +5375,10 @@ class TaskProcessor:
                     wrap_meta['forced_wrap'] = True
                     fits = portrait_fallback_fits
 
-        if not fits and not is_portrait and max_lines < 4:
+        # Landscape captions are hard-coded to a single line. Only attempt
+        # multi-line rescue fallbacks when the layout explicitly allows more
+        # than one line (e.g. caller passed prefer_single_line=False).
+        if not fits and not is_portrait and 1 < max_lines < 4:
             landscape_rescue_lines, landscape_rescue_fits = cls._find_landscape_rescue_lines(
                 normalized,
                 max_line_length=max_line_length,
@@ -5463,11 +5482,14 @@ class TaskProcessor:
     def _parse_subtitle_text_to_cues(cls, subtitle_text, video_width=None, video_height=None):
         from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
 
-        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
+        # Hard-coded large limits for SRT parsing: never split an incoming SRT
+        # cue here. The ASS burn-in stage (_wrap_subtitle_text_for_ass) decides
+        # later whether to scale the font or wrap, based on the real video
+        # dimensions and the single-line priority settings.
         engine = SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=max_line_length,
-                max_lines=max_lines,
+                max_line_length=999,
+                max_lines=99,
                 normalize_punctuation=False,
                 filter_filler_words=False,
             )
