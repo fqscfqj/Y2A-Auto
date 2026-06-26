@@ -292,15 +292,25 @@ class AsrApiClient:
         format_errors: List[Exception] = []
         for granularities in self._whisper_granularity_candidates():
             try:
-                response = self._request_whisper_response(
-                    wav_path,
-                    model,
-                    'verbose_json',
-                    granularities=granularities,
-                    include_language_hint=include_language_hint,
-                    include_prompt=include_prompt,
-                )
-                payload = self._as_dict(response) or {}
+                # Prefer raw HTTP to preserve segment-level words.
+                try:
+                    payload = self._request_whisper_raw_json(
+                        wav_path,
+                        model,
+                        granularities=granularities,
+                        include_language_hint=include_language_hint,
+                        include_prompt=include_prompt,
+                    )
+                except Exception:
+                    response = self._request_whisper_response(
+                        wav_path,
+                        model,
+                        'verbose_json',
+                        granularities=granularities,
+                        include_language_hint=include_language_hint,
+                        include_prompt=include_prompt,
+                    )
+                    payload = self._as_dict(response) or {}
                 result = self._payload_to_transcription_result(
                     payload,
                     provider='whisper',
@@ -450,6 +460,64 @@ class AsrApiClient:
                 return self.client.audio.translations.create(**params)
             return self.client.audio.transcriptions.create(**params)
 
+    def _build_whisper_transcriptions_url(self) -> str:
+        """Build the /v1/audio/transcriptions URL for direct HTTP requests."""
+        base = str(self.config.base_url or 'https://api.openai.com/v1').strip().rstrip('/')
+        if not base:
+            base = 'https://api.openai.com/v1'
+        if base.endswith('/audio/transcriptions'):
+            return base
+        if base.endswith('/v1'):
+            return f"{base}/audio/transcriptions"
+        return f"{base}/audio/transcriptions"
+
+    def _request_whisper_raw_json(
+        self,
+        wav_path: str,
+        model: str,
+        *,
+        granularities: Tuple[str, ...],
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
+    ) -> Dict[str, Any]:
+        """Direct HTTP request to whisper-compatible API, bypassing OpenAI SDK.
+
+        The OpenAI Python SDK's ``model_dump()`` only serialises fields defined
+        in its Pydantic schema.  LocalAI's crispasr backend returns per-segment
+        ``words`` arrays that the SDK schema does not include, so they are
+        silently dropped.  By making a raw ``requests.post`` we preserve the
+        full JSON response including segment-level word timestamps.
+        """
+        endpoint_url = self._build_whisper_transcriptions_url()
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers['Authorization'] = f"Bearer {self.config.api_key}"
+
+        form_data: List[Tuple[str, str]] = [('model', model), ('response_format', 'verbose_json')]
+        if include_language_hint:
+            language = (self._language_hint or self.config.language or '').strip()
+            if language and language.lower() != 'unknown':
+                form_data.append(('language', language))
+        if include_prompt:
+            prompt = str(self.config.prompt or '').strip()
+            if prompt:
+                form_data.append(('prompt', prompt))
+        for gran in granularities:
+            form_data.append(('timestamp_granularities', str(gran)))
+
+        with open(wav_path, 'rb') as file_obj:
+            response = requests.post(
+                endpoint_url,
+                headers=headers,
+                files={'file': (os.path.basename(wav_path), file_obj, 'audio/wav')},
+                data=form_data,
+                timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+            )
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
+        payload: Dict[str, Any] = response.json()
+        return payload
+
     def transcribe_window(
         self,
         wav_path: str,
@@ -568,15 +636,34 @@ class AsrApiClient:
                 failure_token='asr_no_timestamps',
             )
 
-        response = self._request_whisper_response(
-            wav_path,
-            model,
-            fmt,
-            granularities=granularities,
-            include_language_hint=include_language_hint,
-            include_prompt=include_prompt,
-        )
-        payload = self._as_dict(response) or {}
+        # For verbose_json, prefer direct HTTP over OpenAI SDK to preserve
+        # segment-level ``words`` that ``model_dump()`` strips.
+        if fmt == 'verbose_json':
+            try:
+                payload = self._request_whisper_raw_json(
+                    wav_path,
+                    model,
+                    granularities=granularities,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
+                )
+            except Exception as exc:
+                self.logger.debug("Raw HTTP fallback failed (%s), using SDK path", exc)
+                response = self._request_whisper_response(
+                    wav_path, model, fmt,
+                    granularities=granularities,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
+                )
+                payload = self._as_dict(response) or {}
+        else:
+            response = self._request_whisper_response(
+                wav_path, model, fmt,
+                granularities=granularities,
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
+            )
+            payload = self._as_dict(response) or {}
         return self._payload_to_transcription_result(
             payload,
             provider='whisper',
@@ -917,11 +1004,9 @@ class AsrApiClient:
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
                 # Extract real per-segment word timings if present.
-                # Note: LocalAI's TranscriptionSegmentSeconds has no `words` field,
-                # and its `tokens` field is []int (integer token IDs), not OpenAI-style
-                # token objects.  _extract_words skips non-dict entries, so []int
-                # tokens are harmlessly ignored.  Real word data for LocalAI arrives
-                # at the top-level `words` array (handled below).
+                # LocalAI's crispasr backend returns word-level timestamps
+                # in the segment's ``words`` array when using direct HTTP
+                # (bypassing the OpenAI SDK's model_dump which strips them).
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
                 # Stash raw tokens for Phase-3 synthesis fallback (segments with
                 # text-only tokens but no per-word timing).
@@ -950,6 +1035,16 @@ class AsrApiClient:
                     )
                 )
 
+        # Diagnostic: log per-segment word counts to trace native word timestamps
+        if segments:
+            seg_word_counts = [len(s.words) for s in segments]
+            total_words = sum(seg_word_counts)
+            if total_words:
+                self.logger.info(
+                    "ASR Phase-1 segment words: %d total across %d segments (%s)",
+                    total_words, len(segments), seg_word_counts,
+                )
+
         # Phase 2: Attach top-level words (LocalAI/whisper verbose_json puts
         # word-level data here, not inside segments).  This must happen BEFORE
         # the text-split synthesis fallback so real word timings are preserved.
@@ -970,6 +1065,39 @@ class AsrApiClient:
             self.logger.info(
                 "ASR response has no top-level words field; per-word data unavailable for this backend",
             )
+
+        # Phase 2.5: Redistribute parakeet global words.
+        # LocalAI's crispasr backend attaches parakeet word-level timestamps
+        # only to the FIRST segment (global word list, not per-segment).
+        # When there are multiple segments, redistribute those words across
+        # all segments based on timing so every segment gets real word data.
+        if len(segments) > 1:
+            segs_with_words = [s for s in segments if s.words]
+            segs_without = [s for s in segments if not s.words]
+            if len(segs_with_words) == 1 and segs_with_words[0] is segments[0] and segs_without:
+                donor = segments[0]
+                donor_words = list(donor.words)
+                redistributed = 0
+                for seg in segments[1:]:
+                    seg_words = [
+                        w for w in donor_words
+                        if w.start_s >= seg.start_s and w.start_s < seg.end_s
+                    ]
+                    if seg_words:
+                        seg.words = seg_words
+                        redistributed += 1
+                # Keep only words that belong to segment 0's range
+                remaining = [
+                    w for w in donor_words
+                    if w.start_s < segments[1].start_s
+                ]
+                if remaining:
+                    donor.words = remaining
+                if redistributed:
+                    self.logger.info(
+                        "Redistributed parakeet global words: %d words from seg[0] → %d/%d segments now have word data",
+                        len(donor_words), redistributed + 1, len(segments),
+                    )
 
         # Phase 3: Last-resort synthesis for segments still without any word
         # data.  Evenly-space word timings from token text (if available) or
