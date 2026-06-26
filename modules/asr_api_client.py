@@ -1008,9 +1008,6 @@ class AsrApiClient:
                 # in the segment's ``words`` array when using direct HTTP
                 # (bypassing the OpenAI SDK's model_dump which strips them).
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
-                # Stash raw tokens for Phase-3 synthesis fallback (segments with
-                # text-only tokens but no per-word timing).
-                raw_tokens_for_meta = raw_segment.get('words') or raw_segment.get('tokens') or []
                 # When a VAD window is provided, use the window duration for the
                 # plausibility check.  Some ASR backends (e.g. qwen3-asr) return
                 # locally compressed timestamps that span only a fraction of the
@@ -1031,7 +1028,7 @@ class AsrApiClient:
                         text=text,
                         words=words,
                         confidence=self._to_optional_float(raw_segment.get('avg_logprob') or raw_segment.get('confidence')),
-                        metadata={'id': raw_segment.get('id'), 'timing_scale': timing_scale, '_raw_tokens': raw_tokens_for_meta},
+                        metadata={'id': raw_segment.get('id'), 'timing_scale': timing_scale},
                     )
                 )
 
@@ -1098,58 +1095,6 @@ class AsrApiClient:
                         "Redistributed parakeet global words: %d words from seg[0] → %d/%d segments now have word data",
                         len(donor_words), redistributed + 1, len(segments),
                     )
-
-        # Phase 3: Last-resort synthesis for segments still without any word
-        # data.  Evenly-space word timings from token text (if available) or
-        # segment text split on whitespace.  This enables word-level AI
-        # segmentation for backends that only return segment-level text/timing
-        # (e.g. parakeet-crispasr when the service doesn't expose per-word data).
-        synth_count = 0
-        for segment in segments:
-            if segment.words:
-                continue
-            text_tokens: List[str] = []
-            raw_tokens = (segment.metadata or {}).get('_raw_tokens') or []
-            if isinstance(raw_tokens, list):
-                for t in raw_tokens:
-                    if isinstance(t, dict):
-                        w = str(t.get('word') or t.get('text') or t.get('token') or '').strip()
-                    elif isinstance(t, str):
-                        w = t.strip()
-                    else:
-                        w = ''
-                    if w:
-                        text_tokens.append(w)
-            if not text_tokens:
-                text_tokens = segment.text.split()
-            if text_tokens and segment.end_s > segment.start_s:
-                seg_dur = segment.end_s - segment.start_s
-                word_dur = seg_dur / len(text_tokens)
-                seg_text = segment.text
-                synth_words = [
-                    AsrWordTiming(
-                        start_s=segment.start_s + i * word_dur,
-                        end_s=segment.start_s + (i + 1) * word_dur,
-                        text=t,
-                        source_text=seg_text,
-                    )
-                    for i, t in enumerate(text_tokens)
-                ]
-                # 计算每个合成词在原始 segment 文本中的字符偏移，
-                # 使下游 _words_to_text 能直接从原始文本切片（保留空格/标点）
-                _compute_synth_word_offsets(seg_text, synth_words)
-                segment.words = synth_words
-                synth_count += 1
-        # Clean up temporary metadata
-        for segment in segments:
-            if segment.metadata and '_raw_tokens' in segment.metadata:
-                del segment.metadata['_raw_tokens']
-        if synth_count:
-            self.logger.info(
-                "Synthesized evenly-spaced word timings for %d/%d segments "
-                "(ASR backend returned no per-word data)",
-                synth_count, len(segments),
-            )
 
         text = str(payload.get('text') or '').strip()
         if not segments and text:

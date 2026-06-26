@@ -95,7 +95,8 @@ class AsrApiClientTests(unittest.TestCase):
         self.assertAlmostEqual(words[0].end_s, 0.7)
 
     def test_payload_with_token_only_segments_produces_result(self):
-        """End-to-end: parakeet-style payload still produces a valid result."""
+        """parakeet-style payload with token dicts but no timing produces
+        segment-level result (no word timestamps)."""
         client = AsrApiClient(AsrConfig(api_key=''))
         window = DetectedSpeechWindow(start_s=0.0, end_s=2.0, ownership_start_s=0.0, ownership_end_s=2.0)
         payload = {
@@ -115,17 +116,12 @@ class AsrApiClientTests(unittest.TestCase):
         )
         self.assertEqual(len(result.segments), 1)
         self.assertEqual(result.segments[0].text, 'hello world')
-        self.assertEqual(len(result.segments[0].words), 2)
-        self.assertAlmostEqual(result.segments[0].words[0].start_s, 0.0)
-        self.assertAlmostEqual(result.segments[0].words[0].end_s, 1.0)
-        self.assertAlmostEqual(result.segments[0].words[1].start_s, 1.0)
-        self.assertAlmostEqual(result.segments[0].words[1].end_s, 2.0)
+        # Tokens without start/end timing are skipped by _extract_words
+        self.assertEqual(len(result.segments[0].words), 0)
 
-    def test_payload_with_text_only_segment_synthesizes_words(self):
-        """When a segment has no words/tokens field at all (e.g. parakeet-crispasr
-        via a proxy that strips per-word data), words are synthesized from the
-        segment text split on whitespace.  This enables word-level AI
-        segmentation instead of degrading to segment-level mode."""
+    def test_payload_with_text_only_segment_keeps_segment_mode(self):
+        """When a segment has no words/tokens field at all, the result stays
+        in segment mode (no synthetic word timestamps are generated)."""
         client = AsrApiClient(AsrConfig(api_key=''))
         window = DetectedSpeechWindow(start_s=0.0, end_s=3.0, ownership_start_s=0.0, ownership_end_s=3.0)
         payload = {
@@ -143,12 +139,8 @@ class AsrApiClientTests(unittest.TestCase):
             granularities=('segment', 'word'),
         )
         self.assertEqual(len(result.segments), 1)
-        self.assertEqual(result.timestamp_mode, 'word')
-        words = result.segments[0].words
-        self.assertEqual([w.text for w in words], ['hello', 'world', 'foo'])
-        # Words should be evenly spaced across the 3s segment
-        self.assertAlmostEqual(words[0].start_s, 0.0)
-        self.assertAlmostEqual(words[2].end_s, 3.0)
+        self.assertEqual(result.timestamp_mode, 'segment')
+        self.assertEqual(result.segments[0].words, [])
 
     def test_localai_top_level_words_preferred_over_synthesis(self):
         """LocalAI (parakeet-crispasr) puts word-level data at the top-level
