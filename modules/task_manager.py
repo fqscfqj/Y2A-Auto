@@ -5881,6 +5881,8 @@ class TaskProcessor:
             input_audio_bit_rate = self._coerce_int(audio_info.get('bit_rate'))
             # GOP 取 2 秒一关键帧
             gop = max(24, int(round(2 * input_fps)))
+            # HEVC 适合更长 GOP，4 秒可提升压缩效率 5-10%
+            gop_hevc = max(48, int(round(4 * input_fps)))
             task_logger.info(
                 "输入媒体摘要: video_codec=%s, video_bitrate=%s, audio_codec=%s, audio_bitrate=%s, file_size=%s",
                 input_video_codec or 'unknown',
@@ -5889,6 +5891,7 @@ class TaskProcessor:
                 _format_bitrate_for_log(input_audio_bit_rate),
                 _format_size_for_log(input_size_bytes),
             )
+            task_logger.info(f"GOP 设置: H.264={gop} (2秒), HEVC={gop_hevc} (4秒)")
 
             def _ffmpeg_has_filter(filter_name: str) -> bool:
                 try:
@@ -6183,12 +6186,14 @@ class TaskProcessor:
                         '-preset', 'p7',
                         '-tune', 'hq',
                         '-rc:v', 'vbr',
+                        '-b:v', '0',
                         '-cq:v', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'main',
                         '-bf', '2',
-                        '-g', str(gop),
-                        '-pix_fmt', 'yuv420p'
+                        '-g', str(gop_hevc),
+                        '-pix_fmt', 'yuv420p',
+                        '-tag:v', 'hvc1'
                     ]
 
                 def build_intel_params():
@@ -6203,8 +6208,9 @@ class TaskProcessor:
                         '-vsync', 'cfr',
                         '-profile:v', 'main',
                         '-bf', '2',
-                        '-g', str(gop),
-                        '-pix_fmt', 'nv12'
+                        '-g', str(gop_hevc),
+                        '-pix_fmt', 'nv12',
+                        '-tag:v', 'hvc1'
                     ]
 
                 def build_amd_params():
@@ -6223,8 +6229,9 @@ class TaskProcessor:
                             '-qvbr_quality_level', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'main',
-                            '-g', str(gop),
-                            '-pix_fmt', 'yuv420p'
+                            '-g', str(gop_hevc),
+                            '-pix_fmt', 'yuv420p',
+                            '-tag:v', 'hvc1'
                         ]
                     else:
                         # VAAPI (Linux)
@@ -6234,7 +6241,8 @@ class TaskProcessor:
                             '-qp', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'main',
-                            '-g', str(gop)
+                            '-g', str(gop_hevc),
+                            '-tag:v', 'hvc1'
                         ]
 
                 def is_vaapi_encoder() -> bool:
