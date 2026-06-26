@@ -3432,8 +3432,8 @@ class TaskProcessor:
         (1920.0, 220.0),
         (2560.0, 292.0),
     )
-    # Narrower side margins for landscape: online captions use more of the
-    # available width and therefore stay single-line longer.
+    # Landscape captions use generous side margins to avoid crowding the
+    # edges, but still keep enough width to stay single-line after scaling.
     _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.025
     _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 32.0
     _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 80.0
@@ -3441,11 +3441,13 @@ class TaskProcessor:
     _ASS_PORTRAIT_SIDE_MARGIN_MIN = 82.0
     _ASS_PORTRAIT_SIDE_MARGIN_MAX = 156.0
     _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.93
-    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.96
+    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 1.04
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 28.0
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 34.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 38.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
-    _ASS_SAFE_WIDTH_RATIO = 0.93
+    # Allow text to use almost the full usable width. A small safety margin
+    # remains so descenders/outlines do not touch the screen edges.
+    _ASS_SAFE_WIDTH_RATIO = 0.98
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
     # Allow aggressive down-scaling for single-line priority. Landscape
     # captions are required to stay on one line, so we shrink the font as
