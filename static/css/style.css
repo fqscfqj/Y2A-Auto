@@ -993,4 +993,11 @@ body.login-fullscreen {
     width: 100%;
 }
 
+.builtin-prompt-pre {
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
 @media (max-width:420px){ .login-card .card-body{ padding:1.25rem } .login-brand img{ width:48px;height:48px } }

@@ -3,7 +3,7 @@
 {% block title %}Y2A-Auto - 编辑任务{% endblock %}
 
 {% block content %}
-<div class="edit-task-container">
+<div class="edit-task-container" data-upload-target="{{ upload_target|default('acfun') }}">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>编辑任务</h2>
         <a href="{{ url_for('tasks') }}" class="btn btn-outline-secondary">返回任务列表</a>
@@ -362,33 +362,17 @@
 {% block extra_js %}
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        {% if (upload_target|default('acfun')) in ['acfun', 'bilibili', 'both'] %}
+        var _platformConfig = {
+            'both':     { titleSoft: 50,  titleHard: 50,  descSoft: 1000, descHard: 1000, titleMsg: '已开启双平台投稿，标题按共同最低限制 50 字执行，超出部分会在上传时自动截断。', descMsg: '已开启双平台投稿，简介按共同最低限制 1000 字执行，超出部分会在上传时自动截断。' },
+            'bilibili': { titleSoft: 80,  titleHard: 80,  descSoft: 2000, descHard: 2000, titleMsg: 'bilibili 标题上限为 80 字，超出部分会在上传时自动截断。', descMsg: 'bilibili 简介上限为 2000 字，超出部分会在上传时自动截断。' },
+            'acfun':    { titleSoft: 50,  titleHard: 50,  descSoft: 1000, descHard: 1000, titleMsg: 'AcFun 标题上限为 50 字，超出部分会在上传时自动截断。', descMsg: 'AcFun 简介上限为 1000 字，超出部分会在上传时自动截断。' }
+        };
+        var _cfg = _platformConfig[document.querySelector('.edit-task-container').dataset.uploadTarget] || _platformConfig['acfun'];
+
         const titleInput = document.getElementById('video_title_translated');
         const descriptionTextarea = document.getElementById('description_translated');
         const titleHint = document.getElementById('metadata-title-hint');
         const descriptionHint = document.getElementById('metadata-description-hint');
-        {% if (upload_target|default('acfun')) == 'both' %}
-        const titleSoftLimit = 50;
-        const titleHardLimit = 50;
-        const descriptionSoftLimit = 1000;
-        const descriptionHardLimit = 1000;
-        const titleBaseText = '已开启双平台投稿，标题按共同最低限制 50 字执行，超出部分会在上传时自动截断。';
-        const descriptionBaseText = '已开启双平台投稿，简介按共同最低限制 1000 字执行，超出部分会在上传时自动截断。';
-        {% elif (upload_target|default('acfun')) == 'bilibili' %}
-        const titleSoftLimit = 80;
-        const titleHardLimit = 80;
-        const descriptionSoftLimit = 2000;
-        const descriptionHardLimit = 2000;
-        const titleBaseText = 'bilibili 标题上限为 80 字，超出部分会在上传时自动截断。';
-        const descriptionBaseText = 'bilibili 简介上限为 2000 字，超出部分会在上传时自动截断。';
-        {% else %}
-        const titleSoftLimit = 50;
-        const titleHardLimit = 50;
-        const descriptionSoftLimit = 1000;
-        const descriptionHardLimit = 1000;
-        const titleBaseText = 'AcFun 标题上限为 50 字，超出部分会在上传时自动截断。';
-        const descriptionBaseText = 'AcFun 简介上限为 1000 字，超出部分会在上传时自动截断。';
-        {% endif %}
 
         function updateLimitHint(field, hintEl, baseText, softLimit, hardLimit) {
             if (!field || !hintEl) {
@@ -402,9 +386,9 @@
 
         if (titleInput && titleHint) {
             titleInput.addEventListener('input', function() {
-                updateLimitHint(titleInput, titleHint, titleBaseText, titleSoftLimit, titleHardLimit);
+                updateLimitHint(titleInput, titleHint, _cfg.titleMsg, _cfg.titleSoft, _cfg.titleHard);
             });
-            updateLimitHint(titleInput, titleHint, titleBaseText, titleSoftLimit, titleHardLimit);
+            updateLimitHint(titleInput, titleHint, _cfg.titleMsg, _cfg.titleSoft, _cfg.titleHard);
         }
 
         if (descriptionTextarea && descriptionHint) {
@@ -412,20 +396,19 @@
                 updateLimitHint(
                     descriptionTextarea,
                     descriptionHint,
-                    descriptionBaseText,
-                    descriptionSoftLimit,
-                    descriptionHardLimit
+                    _cfg.descMsg,
+                    _cfg.descSoft,
+                    _cfg.descHard
                 );
             });
             updateLimitHint(
                 descriptionTextarea,
                 descriptionHint,
-                descriptionBaseText,
-                descriptionSoftLimit,
-                descriptionHardLimit
+                _cfg.descMsg,
+                _cfg.descSoft,
+                _cfg.descHard
             );
         }
-        {% endif %}
 
         // 标签管理
         const tagInputs = document.querySelectorAll('.tag-input');
