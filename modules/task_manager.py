@@ -3441,6 +3441,9 @@ class TaskProcessor:
     _ASS_PORTRAIT_SIDE_MARGIN_MIN = 82.0
     _ASS_PORTRAIT_SIDE_MARGIN_MAX = 156.0
     _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.93
+    # 单行优先模式允许密度略 >1.0：font_size 按等宽近似估算偏保守，略微放宽
+    # 以更充分地利用 _ASS_SAFE_WIDTH_RATIO(0.98) 已留出的安全宽度。实际单行
+    # 字符上限由下游 _clamp(18, 28) 钳制，不会真正溢出可用宽度。
     _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 1.04
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 28.0
     _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 38.0
