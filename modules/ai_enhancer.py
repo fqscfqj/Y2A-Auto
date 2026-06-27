@@ -547,7 +547,7 @@ def _request_chat_completion(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: int,
+    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -565,9 +565,10 @@ def _request_chat_completion(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message_content},
         ],
-        "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if max_tokens is not None:
+        create_kwargs["max_tokens"] = max_tokens
     if response_format is not None:
         create_kwargs["response_format"] = response_format
     request_start = time.time()
@@ -594,7 +595,7 @@ def _request_json_object(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: int,
+    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -631,12 +632,37 @@ def _request_json_object(
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
     if isinstance(parsed, dict):
         return parsed
+
+    # JSON 解析失败，重试一次（纯文本模式，强化提示）
+    raw_text = get_chat_message_text(response.choices[0].message)
     if logger_obj:
-        raw_text = get_chat_message_text(response.choices[0].message)
-        # 用 %-style 惰性格式化：避免 f-string 与 %d 混用——当 scene_name
-        # 含 % 字符时，logging 的 getMessage() 会把它当成占位符而抛 ValueError。
         logger_obj.warning(
-            "%s 模型返回内容无法解析为 JSON（正文长度=%d）",
+            "%s 模型返回内容无法解析为 JSON（正文长度=%d），重试中…",
+            scene_name,
+            len(raw_text),
+        )
+    retry_system = system_prompt + "\n重要：你必须且只能返回一个合法的JSON对象，不要包含任何解释、代码标记或额外文字。"
+    try:
+        response = _request_chat_completion(
+            client, model_name, retry_system, payload,
+            max_tokens=max_tokens, temperature=temperature,
+            thinking_enabled=thinking_enabled, logger_obj=logger_obj,
+            scene_name=f"{scene_name}_retry_json",
+            user_content=user_content,
+        )
+    except Exception:
+        pass
+    else:
+        if getattr(response, "choices", None):
+            parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
+            if isinstance(parsed, dict):
+                if logger_obj:
+                    logger_obj.info("%s 重试成功，已获取有效 JSON", scene_name)
+                return parsed
+
+    if logger_obj:
+        logger_obj.warning(
+            "%s 模型返回内容最终无法解析为 JSON（正文长度=%d）",
             scene_name,
             len(raw_text),
         )
@@ -649,7 +675,7 @@ def _request_raw_text(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: int,
+    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -1724,7 +1750,8 @@ def _request_content_profile(
     model_name = openai_config.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
     payload = _build_partition_analysis_payload(metadata)
     system_prompt = (
-        "你是视频内容分析器。根据 source_metadata 判断题材、内容形式与语义实体，并返回 JSON。"
+        "你是视频内容分析器。只输出一个JSON对象，禁止输出任何解释、前缀、后缀或代码标记。"
+        "根据 source_metadata 判断题材、内容形式与语义实体。"
         "domain 只能是 game/music/dance/film/technology/lifestyle/knowledge/other。"
         "content_format 只能是 interview/review/gameplay/news/tutorial/vlog/highlights/commentary/analysis/clip/other。"
         "如果是游戏内容，game_mode 只能是 single_player/online/esports/mobile/unknown。"
@@ -1733,7 +1760,7 @@ def _request_content_profile(
         "entities 输出数组，保留专有名词。"
         "is_interview 输出布尔值。confidence 输出 0 到 1 的数字。"
         "reason_summary 用简体中文简要概括判断依据。"
-        '只返回 JSON：{"domain":"","subdomain":"","content_format":"","entities":[],"game_mode":"unknown","is_interview":false,"confidence":0.0,"reason_summary":""}。'
+        '只返回一个JSON对象，格式：{"domain":"","subdomain":"","content_format":"","entities":[],"game_mode":"unknown","is_interview":false,"confidence":0.0,"reason_summary":""}。'
     )
 
     parsed = None
@@ -1745,7 +1772,6 @@ def _request_content_profile(
                 model_name=model_name,
                 system_prompt=system_prompt,
                 payload=payload,
-                max_tokens=220,
                 temperature=0.0,
                 thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
                 logger_obj=logger,
@@ -1778,7 +1804,6 @@ def _request_content_profile(
             model_name=model_name,
             system_prompt=system_prompt,
             payload=payload,
-            max_tokens=220,
             temperature=0.0,
             thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
             logger_obj=logger,
