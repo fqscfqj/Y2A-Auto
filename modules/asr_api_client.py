@@ -28,6 +28,31 @@ _VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 _INVALID_DURATION_FALLBACK = 0.5
 
 
+def _compute_synth_word_offsets(segment_text: str, words: List[AsrWordTiming]) -> None:
+    """为合成词计算在原始 segment 文本中的字符偏移 [char_start, char_end)。
+
+    顺序匹配每个 word.text 在 segment_text 中的位置，使下游能直接从原始
+    文本切片，完整保留空格和标点。
+    """
+    if not segment_text or not words:
+        return
+    pos = 0
+    search_lower = segment_text.lower()
+    for w in words:
+        wtext = str(w.text or '').strip()
+        if not wtext:
+            continue
+        idx = segment_text.find(wtext, pos)
+        if idx < 0:
+            idx = search_lower.find(wtext.lower(), pos)
+        if idx >= 0:
+            w.source_text = segment_text
+            w.char_start = idx
+            w.char_end = idx + len(wtext)
+            pos = idx + len(wtext)
+
+
+
 def _format_srt_timestamp(seconds: float) -> str:
     total_millis = int(round(float(seconds or 0.0) * 1000))
     hours = total_millis // 3_600_000
@@ -267,15 +292,25 @@ class AsrApiClient:
         format_errors: List[Exception] = []
         for granularities in self._whisper_granularity_candidates():
             try:
-                response = self._request_whisper_response(
-                    wav_path,
-                    model,
-                    'verbose_json',
-                    granularities=granularities,
-                    include_language_hint=include_language_hint,
-                    include_prompt=include_prompt,
-                )
-                payload = self._as_dict(response) or {}
+                # Prefer raw HTTP to preserve segment-level words.
+                try:
+                    payload = self._request_whisper_raw_json(
+                        wav_path,
+                        model,
+                        granularities=granularities,
+                        include_language_hint=include_language_hint,
+                        include_prompt=include_prompt,
+                    )
+                except Exception:
+                    response = self._request_whisper_response(
+                        wav_path,
+                        model,
+                        'verbose_json',
+                        granularities=granularities,
+                        include_language_hint=include_language_hint,
+                        include_prompt=include_prompt,
+                    )
+                    payload = self._as_dict(response) or {}
                 result = self._payload_to_transcription_result(
                     payload,
                     provider='whisper',
@@ -425,6 +460,64 @@ class AsrApiClient:
                 return self.client.audio.translations.create(**params)
             return self.client.audio.transcriptions.create(**params)
 
+    def _build_whisper_transcriptions_url(self) -> str:
+        """Build the /v1/audio/transcriptions URL for direct HTTP requests."""
+        base = str(self.config.base_url or 'https://api.openai.com/v1').strip().rstrip('/')
+        if not base:
+            base = 'https://api.openai.com/v1'
+        if base.endswith('/audio/transcriptions'):
+            return base
+        if base.endswith('/v1'):
+            return f"{base}/audio/transcriptions"
+        return f"{base}/audio/transcriptions"
+
+    def _request_whisper_raw_json(
+        self,
+        wav_path: str,
+        model: str,
+        *,
+        granularities: Tuple[str, ...],
+        include_language_hint: bool = True,
+        include_prompt: bool = True,
+    ) -> Dict[str, Any]:
+        """Direct HTTP request to whisper-compatible API, bypassing OpenAI SDK.
+
+        The OpenAI Python SDK's ``model_dump()`` only serialises fields defined
+        in its Pydantic schema.  LocalAI's crispasr backend returns per-segment
+        ``words`` arrays that the SDK schema does not include, so they are
+        silently dropped.  By making a raw ``requests.post`` we preserve the
+        full JSON response including segment-level word timestamps.
+        """
+        endpoint_url = self._build_whisper_transcriptions_url()
+        headers: Dict[str, str] = {}
+        if self.config.api_key:
+            headers['Authorization'] = f"Bearer {self.config.api_key}"
+
+        form_data: List[Tuple[str, str]] = [('model', model), ('response_format', 'verbose_json')]
+        if include_language_hint:
+            language = (self._language_hint or self.config.language or '').strip()
+            if language and language.lower() != 'unknown':
+                form_data.append(('language', language))
+        if include_prompt:
+            prompt = str(self.config.prompt or '').strip()
+            if prompt:
+                form_data.append(('prompt', prompt))
+        for gran in granularities:
+            form_data.append(('timestamp_granularities', str(gran)))
+
+        with open(wav_path, 'rb') as file_obj:
+            response = requests.post(
+                endpoint_url,
+                headers=headers,
+                files={'file': (os.path.basename(wav_path), file_obj, 'audio/wav')},
+                data=form_data,
+                timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+            )
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
+        payload: Dict[str, Any] = response.json()
+        return payload
+
     def transcribe_window(
         self,
         wav_path: str,
@@ -543,15 +636,34 @@ class AsrApiClient:
                 failure_token='asr_no_timestamps',
             )
 
-        response = self._request_whisper_response(
-            wav_path,
-            model,
-            fmt,
-            granularities=granularities,
-            include_language_hint=include_language_hint,
-            include_prompt=include_prompt,
-        )
-        payload = self._as_dict(response) or {}
+        # For verbose_json, prefer direct HTTP over OpenAI SDK to preserve
+        # segment-level ``words`` that ``model_dump()`` strips.
+        if fmt == 'verbose_json':
+            try:
+                payload = self._request_whisper_raw_json(
+                    wav_path,
+                    model,
+                    granularities=granularities,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
+                )
+            except Exception as exc:
+                self.logger.debug("Raw HTTP fallback failed (%s), using SDK path", exc)
+                response = self._request_whisper_response(
+                    wav_path, model, fmt,
+                    granularities=granularities,
+                    include_language_hint=include_language_hint,
+                    include_prompt=include_prompt,
+                )
+                payload = self._as_dict(response) or {}
+        else:
+            response = self._request_whisper_response(
+                wav_path, model, fmt,
+                granularities=granularities,
+                include_language_hint=include_language_hint,
+                include_prompt=include_prompt,
+            )
+            payload = self._as_dict(response) or {}
         return self._payload_to_transcription_result(
             payload,
             provider='whisper',
@@ -891,6 +1003,10 @@ class AsrApiClient:
                 end_s = self._normalize_timing_value(raw_segment.get('end', 0.0), timing_scale)
                 if end_s <= start_s:
                     end_s = start_s + _INVALID_DURATION_FALLBACK
+                # Extract real per-segment word timings if present.
+                # LocalAI's crispasr backend returns word-level timestamps
+                # in the segment's ``words`` array when using direct HTTP
+                # (bypassing the OpenAI SDK's model_dump which strips them).
                 words = self._extract_words(raw_segment.get('words') or raw_segment.get('tokens') or [], timing_scale=timing_scale)
                 # When a VAD window is provided, use the window duration for the
                 # plausibility check.  Some ASR backends (e.g. qwen3-asr) return
@@ -916,10 +1032,69 @@ class AsrApiClient:
                     )
                 )
 
+        # Diagnostic: log per-segment word counts to trace native word timestamps
+        if segments:
+            seg_word_counts = [len(s.words) for s in segments]
+            total_words = sum(seg_word_counts)
+            if total_words:
+                self.logger.info(
+                    "ASR Phase-1 segment words: %d total across %d segments (%s)",
+                    total_words, len(segments), seg_word_counts,
+                )
+
+        # Phase 2: Attach top-level words (LocalAI/whisper verbose_json puts
+        # word-level data here, not inside segments).  This must happen BEFORE
+        # the text-split synthesis fallback so real word timings are preserved.
         if segments and top_level_words:
             top_words = self._extract_words(top_level_words, timing_scale=timing_scale)
             if top_words:
                 self._attach_top_level_words_to_segments(segments, top_words)
+                self.logger.info(
+                    "ASR top-level words: %d word-level entries received and attached to segments",
+                    len(top_words),
+                )
+            else:
+                self.logger.info(
+                    "ASR top-level words field present but no extractable word timings (raw count=%d)",
+                    len(top_level_words),
+                )
+        elif segments:
+            self.logger.info(
+                "ASR response has no top-level words field; per-word data unavailable for this backend",
+            )
+
+        # Phase 2.5: Redistribute parakeet global words.
+        # LocalAI's crispasr backend attaches parakeet word-level timestamps
+        # only to the FIRST segment (global word list, not per-segment).
+        # When there are multiple segments, redistribute those words across
+        # all segments based on timing so every segment gets real word data.
+        if len(segments) > 1:
+            segs_with_words = [s for s in segments if s.words]
+            segs_without = [s for s in segments if not s.words]
+            if len(segs_with_words) == 1 and segs_with_words[0] is segments[0] and segs_without:
+                donor = segments[0]
+                donor_words = list(donor.words)
+                redistributed = 0
+                for seg in segments[1:]:
+                    seg_words = [
+                        w for w in donor_words
+                        if w.start_s >= seg.start_s and w.start_s < seg.end_s
+                    ]
+                    if seg_words:
+                        seg.words = seg_words
+                        redistributed += 1
+                # Keep only words that belong to segment 0's range
+                remaining = [
+                    w for w in donor_words
+                    if w.start_s < segments[1].start_s
+                ]
+                if remaining:
+                    donor.words = remaining
+                if redistributed:
+                    self.logger.info(
+                        "Redistributed parakeet global words: %d words from seg[0] → %d/%d segments now have word data",
+                        len(donor_words), redistributed + 1, len(segments),
+                    )
 
         text = str(payload.get('text') or '').strip()
         if not segments and text:
@@ -992,11 +1167,11 @@ class AsrApiClient:
         for raw_word in raw_words or []:
             if not isinstance(raw_word, dict):
                 continue
-            text = str(raw_word.get('word') or raw_word.get('text') or '').strip()
+            text = str(raw_word.get('word') or raw_word.get('text') or raw_word.get('token') or '').strip()
             if not text:
                 continue
-            start_s = AsrApiClient._normalize_timing_value(raw_word.get('start', raw_word.get('start_s', 0.0)), timing_scale)
-            end_s = AsrApiClient._normalize_timing_value(raw_word.get('end', raw_word.get('end_s', 0.0)), timing_scale)
+            start_s = AsrApiClient._normalize_timing_value(raw_word.get('start', raw_word.get('start_s', raw_word.get('start_time', 0.0))), timing_scale)
+            end_s = AsrApiClient._normalize_timing_value(raw_word.get('end', raw_word.get('end_s', raw_word.get('end_time', 0.0))), timing_scale)
             if end_s <= start_s:
                 continue
             words.append(AsrWordTiming(start_s=start_s, end_s=end_s, text=text))
@@ -1084,6 +1259,10 @@ class AsrApiClient:
     ):
         if not segments or not words:
             return
+        # Track segments that already have per-segment words — top-level
+        # words should only fill gaps, not duplicate or override per-segment
+        # data (which may be real or synthesized from token/text fallbacks).
+        segments_with_own_words = set(id(s) for s in segments if s.words)
         for segment in segments:
             if segment.words:
                 continue
@@ -1092,19 +1271,29 @@ class AsrApiClient:
             selected_segment: Optional[AsrSegmentTiming] = None
             best_overlap = -1.0
             for segment in segments:
+                if id(segment) in segments_with_own_words:
+                    continue
                 overlap = min(word.end_s, segment.end_s) - max(word.start_s, segment.start_s)
                 if overlap > best_overlap and overlap > 0.0:
                     best_overlap = overlap
                     selected_segment = segment
             if selected_segment is None:
-                selected_segment = min(
-                    segments,
-                    key=lambda segment: min(
-                        abs(word.start_s - segment.start_s),
-                        abs(word.end_s - segment.end_s),
-                    ),
-                )
-            selected_segment.words.append(word)
+                candidates = [s for s in segments if id(s) not in segments_with_own_words]
+                if candidates:
+                    selected_segment = min(
+                        candidates,
+                        key=lambda segment: min(
+                            abs(word.start_s - segment.start_s),
+                            abs(word.end_s - segment.end_s),
+                        ),
+                    )
+            if selected_segment is not None:
+                word.source_text = selected_segment.text
+                selected_segment.words.append(word)
+        # 为每个 segment 的 words 计算字符偏移，使下游能从原始文本切片
+        for segment in segments:
+            if segment.words and segment.text:
+                _compute_synth_word_offsets(segment.text, segment.words)
 
     @staticmethod
     def _extract_language_from_data(data: Dict[str, Any]) -> str:

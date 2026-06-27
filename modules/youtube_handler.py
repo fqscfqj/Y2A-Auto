@@ -185,14 +185,20 @@ def _build_subtitle_download_args(
     if not include_subtitles:
         return ['--no-write-subs']
 
-    args = [
+    # 仅当用户显式允许 YouTube 自动生成字幕时才下载字幕。
+    # yt-dlp 的 --write-subs 会下载所有字幕（含自动生成），
+    # --no-write-auto-subs 在新版本中无效，无法可靠区分。
+    # 因此当 YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED=False 时，
+    # 直接禁用字幕下载，让后续 ASR 流程负责生成字幕。
+    if not bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
+        return ['--no-write-subs']
+
+    return [
         '--write-subs',
         '--all-subs',
         '--convert-subs', 'srt',
+        '--write-auto-subs',
     ]
-    if bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
-        args.append('--write-auto-subs')
-    return args
 
 
 def _is_format_selection_error(error_text: str | None) -> bool:

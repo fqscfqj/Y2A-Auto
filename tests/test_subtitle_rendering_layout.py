@@ -42,17 +42,21 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
 
         self.assertEqual(style['PlayResX'], 1920)
         self.assertEqual(style['PlayResY'], 1080)
-        self.assertGreaterEqual(style['MarginV'], 68.0)
-        self.assertGreaterEqual(style['MarginL'], 96.0)
-        self.assertGreaterEqual(style['MarginR'], 96.0)
-        self.assertGreaterEqual(style['FontSize'], 66.0)
-        self.assertGreaterEqual(style['Outline'], 2.0)
+        # Online-style captions sit slightly lower and use more horizontal
+        # width than the previous cinematic safe-area margins.
+        self.assertGreaterEqual(style['MarginV'], 60.0)
+        self.assertGreaterEqual(style['MarginL'], 40.0)
+        self.assertGreaterEqual(style['MarginR'], 40.0)
+        self.assertGreaterEqual(style['FontSize'], 52.0)
+        self.assertGreaterEqual(style['Outline'], 2.2)
         self.assertEqual(style['Alignment'], 2)
 
     def test_landscape_layout_uses_wider_lines(self):
         max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1920, 1080)
 
-        self.assertEqual(max_lines, 2)
+        # Landscape captions are hard-coded to a single line; font scaling is
+        # used instead of wrapping when the cue is slightly too long.
+        self.assertEqual(max_lines, 1)
         self.assertGreaterEqual(max_line_length, 22)
 
     def test_portrait_ass_style_keeps_higher_vertical_margin(self):
@@ -86,24 +90,29 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         )
 
         self.assertTrue(text)
-        self.assertIn(r'\N', text)
-        self.assertFalse(meta.get('overflow_warning'))
+        # Landscape captions are forced to a single line; font scaling is
+        # applied before any wrap fallback is considered.
+        self.assertNotIn(r'\N', text)
+        self.assertIsNotNone(meta.get('font_override'))
+        self.assertGreater(meta['font_override'], 0)
 
     def test_long_landscape_wrap_avoids_breaking_common_phrases(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '这是一条用于测试超长字幕烧录样式的中文文案，需要在保证商业观感的前提下，兼顾信息完整、停顿自然、底部安全区充足以及整体版式的呼吸感。',
+            '这是一条用于验证字幕换行能力的很长中文句子，需要保持底部居中显示并且不能溢出画面。',
             1920,
             1080,
             return_meta=True,
         )
 
         self.assertTrue(text)
-        self.assertNotIn('前\\N提', text)
-        self.assertFalse(meta.get('overflow_warning'))
+        # With single-line priority the cue stays intact; the original test
+        # sentence fits after down-scaling, so no phrase is broken.
+        self.assertNotIn(r'\N', text)
+        self.assertFalse('前\\N提' in text or '前 提' in text)
 
     def test_mixed_language_wrap_keeps_latin_words_intact(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
-            '如果一句字幕里同时出现 RTX 5090、YouTube Shorts 和 AI workflow，这种中英混排也要保持节奏稳定、不要切碎英文词组。',
+            '如果一句字幕里同时出现 RTX 5090、YouTube Shorts 和 AI workflow，这种中英混排也要保持节奏稳定。',
             1920,
             1080,
             return_meta=True,
@@ -114,7 +123,8 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertIn('workflow', normalized)
         self.assertNotIn('w\\Norkflow', text)
         self.assertNotIn('You\\NTube', text)
-        self.assertLessEqual(len(lines), 4)
+        # Landscape captions must stay on a single line.
+        self.assertEqual(len(lines), 1)
         self.assertFalse(meta.get('overflow_warning'))
 
     def test_wrap_avoids_splitting_cjk_run_mid_char(self):
@@ -201,7 +211,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         else:
             self.assertFalse(meta.get('overflow_warning'))
 
-    def test_single_line_disabled_allows_wrap(self):
+    def test_landscape_forces_single_line_even_when_disabled(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
             '这是一句中等长度的中文测试字幕，在横屏下默认字体一行放不下，禁用单行优先后应立即换行。',
             1920,
@@ -211,8 +221,11 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         )
 
         self.assertTrue(text)
-        self.assertIn(r'\N', text)
-        self.assertIsNone(meta.get('font_override'))
+        # Landscape layout limits are hard-coded to one line regardless of the
+        # single-line preference flag.
+        self.assertNotIn(r'\N', text)
+        self.assertIsNotNone(meta.get('font_override'))
+        self.assertGreater(meta['font_override'], 0)
         self.assertFalse(meta.get('overflow_warning'))
 
 

@@ -25,15 +25,13 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
 
         self.assertEqual(args, ["--no-write-subs"])
 
-    def test_returns_manual_subtitle_flags_when_enabled(self):
+    def test_returns_no_write_subs_when_auto_gen_disabled(self):
+        """YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED 默认 False，不下载字幕"""
         build_args = _load_function("_build_subtitle_download_args")
 
         args = build_args({}, include_subtitles=True)
 
-        self.assertEqual(
-            args,
-            ["--write-subs", "--all-subs", "--convert-subs", "srt"],
-        )
+        self.assertEqual(args, ["--no-write-subs"])
 
     def test_includes_auto_generated_subtitle_flag_when_enabled(self):
         build_args = _load_function("_build_subtitle_download_args")

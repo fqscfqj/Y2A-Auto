@@ -3124,7 +3124,7 @@ class TaskProcessor:
             task_logger.info(f"检测到字幕语言: {subtitle_lang}")
             if en_candidates and subtitle_file in en_candidates:
                 task_logger.info("优先使用英文字幕进行翻译")
-            
+
             # 创建翻译器（此时需要翻译为中文）
             translator = create_translator_from_config(self.config, task_id)
             if not translator:
@@ -3395,20 +3395,24 @@ class TaskProcessor:
         'MarginL': 96.0,
         'MarginR': 96.0,
         'Alignment': 2,
+        # BorderStyle=4 gives a modern rounded-rectangle background box
+        # (supported by libass/FFmpeg), which is the dominant look for
+        # streaming/online-video captions.
+        # BorderStyle=1 with a thick, dark semi-transparent outline.
+        # This gives the clean "no-box" streaming caption look while keeping
+        # text readable on bright/complex backgrounds.
         'BorderStyle': 1,
-        'Bold': 0,
+        'Bold': 1,
         'PrimaryColour': '&H00FFFFFF',
         'SecondaryColour': '&H00FFFFFF',
-        'OutlineColour': '&H00000000',
-        # Keep a subtle translucent background as a readability safety net
-        # for bright/high-contrast scenes while preserving the cinema look.
-        'BackColour': '&H33000000',
+        'OutlineColour': '&HB2000000',
+        'BackColour': '&H00000000',
     }
     _ASS_LANDSCAPE_FONT_SIZE_ANCHORS = (
         (720.0, 48.0),
-        (1080.0, 68.0),
-        (1440.0, 84.0),
-        (2160.0, 126.0),
+        (1080.0, 54.0),
+        (1440.0, 68.0),
+        (2160.0, 102.0),
     )
     _ASS_PORTRAIT_FONT_SIZE_ANCHORS = (
         (720.0, 44.0),
@@ -3418,9 +3422,9 @@ class TaskProcessor:
     )
     _ASS_LANDSCAPE_MARGIN_V_ANCHORS = (
         (720.0, 56.0),
-        (1080.0, 82.0),
-        (1440.0, 108.0),
-        (2160.0, 164.0),
+        (1080.0, 62.0),
+        (1440.0, 82.0),
+        (2160.0, 124.0),
     )
     _ASS_PORTRAIT_MARGIN_V_ANCHORS = (
         (720.0, 120.0),
@@ -3428,29 +3432,40 @@ class TaskProcessor:
         (1920.0, 220.0),
         (2560.0, 292.0),
     )
-    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.05
-    _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 56.0
-    _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 160.0
+    # Landscape captions use generous side margins to avoid crowding the
+    # edges, but still keep enough width to stay single-line after scaling.
+    _ASS_LANDSCAPE_SIDE_MARGIN_RATIO = 0.025
+    _ASS_LANDSCAPE_SIDE_MARGIN_MIN = 32.0
+    _ASS_LANDSCAPE_SIDE_MARGIN_MAX = 80.0
     _ASS_PORTRAIT_SIDE_MARGIN_RATIO = 0.095
     _ASS_PORTRAIT_SIDE_MARGIN_MIN = 82.0
     _ASS_PORTRAIT_SIDE_MARGIN_MAX = 156.0
-    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.89
-    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 0.85
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 22.0
-    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 28.0
+    _ASS_LANDSCAPE_LAYOUT_DENSITY = 0.93
+    # 单行优先模式允许密度略 >1.0：font_size 按等宽近似估算偏保守，略微放宽
+    # 以更充分地利用 _ASS_SAFE_WIDTH_RATIO(0.98) 已留出的安全宽度。实际单行
+    # 字符上限由下游 _clamp(18, 28) 钳制，不会真正溢出可用宽度。
+    _ASS_LANDSCAPE_SINGLE_LINE_DENSITY = 1.04
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN = 28.0
+    _ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX = 38.0
     _ASS_PORTRAIT_LAYOUT_DENSITY = 0.92
-    _ASS_SAFE_WIDTH_RATIO = 0.93
+    # Allow text to use almost the full usable width. A small safety margin
+    # remains so descenders/outlines do not touch the screen edges.
+    _ASS_SAFE_WIDTH_RATIO = 0.98
     _ASS_OVERRIDE_FONT_SIZE_RATIO_MIN = 0.60
-    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.85
+    # Allow aggressive down-scaling for single-line priority. Landscape
+    # captions are required to stay on one line, so we shrink the font as
+    # far as the global override minimum permits before accepting overflow.
+    _ASS_SINGLE_LINE_FONT_SCALE_MIN = 0.60
     _ASS_OVERRIDE_FONT_SIZE_MIN = 32.0
     _ASS_HARD_WRAP_MIN_LINE_LENGTH = 8
     _ASS_PORTRAIT_RESCUE_LINE_LENGTH_MAX = 16.0
-    _ASS_OUTLINE_RATIO = 0.042
-    _ASS_OUTLINE_MIN = 1.8
-    _ASS_OUTLINE_MAX = 4.2
-    _ASS_SHADOW_RATIO = 0.018
-    _ASS_SHADOW_MIN = 0.8
-    _ASS_SHADOW_MAX = 1.8
+    # Thicker outline for the BorderStyle=4 rounded box, plus a soft shadow.
+    _ASS_OUTLINE_RATIO = 0.075
+    _ASS_OUTLINE_MIN = 2.2
+    _ASS_OUTLINE_MAX = 5.5
+    _ASS_SHADOW_RATIO = 0.025
+    _ASS_SHADOW_MIN = 1.0
+    _ASS_SHADOW_MAX = 2.2
     _ASS_OVERRIDE_OUTLINE_RATIO = 0.045
     _ASS_OVERRIDE_OUTLINE_MIN = 1.5
     _ASS_OVERRIDE_OUTLINE_MAX = 3.0
@@ -4069,8 +4084,9 @@ class TaskProcessor:
             max_line_length = int(cls._clamp(max_line_length, 12.0, 18.0))
             max_lines = 3
         else:
+            # Hard-coded single-line target for streaming SRT output.
             max_line_length = int(cls._clamp(max_line_length, 20.0, 26.0))
-            max_lines = 2
+            max_lines = 1
         return max_line_length, max_lines
 
     @classmethod
@@ -4263,8 +4279,11 @@ class TaskProcessor:
             # but the partitioner still prefers fewer balanced lines.
             max_lines = 5
         else:
+            # Hard-coded to 1 line for landscape captions. The single-line
+            # priority logic will scale the font down when needed; only if the
+            # text still does not fit will an overflow warning be emitted.
             max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
-            max_lines = 2
+            max_lines = 1
         return max_line_length, max_lines
 
     @staticmethod
@@ -4375,6 +4394,11 @@ class TaskProcessor:
                     wrapped_lines.extend(candidate_lines)
                 else:
                     wrapped_lines.extend(cls._wrap_subtitle_segment_greedily(segment, max_line_length))
+            elif int(max_lines) <= 1:
+                # Hard-coded single-line mode: keep the segment intact so the
+                # caller can scale the font or emit an overflow warning instead
+                # of wrapping.
+                wrapped_lines.append(segment)
             else:
                 wrapped_lines.extend(
                     cls._wrap_landscape_segment_for_ass(
@@ -4391,7 +4415,13 @@ class TaskProcessor:
         text_units = cls._estimate_subtitle_text_units(str(line or ''))
         if text_units <= 0:
             return 0.0
-        padding = max(6.0, float(outline) * 4.0 + float(shadow) * 2.0 + float(font_size) * 0.08)
+        # Padding accounts for the rounded box (BorderStyle=4) or outline,
+        # the shadow offset and a small safety margin. The coefficients were
+        # calibrated against Source Han Sans HW SC rendered at 1080p.
+        padding = max(
+            8.0,
+            float(outline) * 2.8 + float(shadow) * 1.8 + float(font_size) * 0.14,
+        )
         return text_units * float(font_size) + padding
 
     @classmethod
@@ -4794,6 +4824,9 @@ class TaskProcessor:
     ):
         """Find the largest font size >= min_scale*font_size that keeps *text* on one line.
 
+        Uses binary search so the scale reduction is as small as possible,
+        keeping the subtitle single-line without an aggressive visual shrink.
+
         Returns (scaled_font_size, scaled_outline, scaled_shadow) if a fit is found,
         otherwise (None, None, None).
         """
@@ -4801,43 +4834,66 @@ class TaskProcessor:
         if not single_line[0]:
             return None, None, None
 
-        best_fit = None
         min_allowed_font = max(
             float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
             float(font_size) * float(cls._ASS_OVERRIDE_FONT_SIZE_RATIO_MIN),
+            float(font_size) * float(min_scale),
         )
-        for scale in (0.97, 0.94, 0.91, min_scale):
-            scaled_font_size = max(
-                font_size * min_scale,
-                font_size * scale,
-            )
-            if scaled_font_size >= font_size:
-                continue
-            if scaled_font_size < min_allowed_font:
-                continue
-            scaled_outline = cls._clamp(
-                scaled_font_size * cls._ASS_OUTLINE_RATIO,
+        if min_allowed_font >= float(font_size):
+            return None, None, None
+
+        def _fits_at_size(size):
+            test_outline = cls._clamp(
+                size * cls._ASS_OUTLINE_RATIO,
                 cls._ASS_OUTLINE_MIN,
                 cls._ASS_OUTLINE_MAX,
             )
-            scaled_shadow = cls._clamp(
-                scaled_font_size * cls._ASS_SHADOW_RATIO,
+            test_shadow = cls._clamp(
+                size * cls._ASS_SHADOW_RATIO,
                 cls._ASS_SHADOW_MIN,
                 cls._ASS_SHADOW_MAX,
             )
             fits, _, _, _ = cls._check_ass_lines_width_safety(
                 single_line,
                 usable_width,
-                scaled_font_size,
-                scaled_outline,
-                scaled_shadow,
+                size,
+                test_outline,
+                test_shadow,
             )
-            if fits:
-                if best_fit is None or scaled_font_size > best_fit[0]:
-                    best_fit = (scaled_font_size, scaled_outline, scaled_shadow)
-        if best_fit is None:
+            return fits
+
+        lo = min_allowed_font
+        hi = float(font_size)
+        if _fits_at_size(hi):
             return None, None, None
-        return best_fit
+        if not _fits_at_size(lo):
+            return None, None, None
+
+        best_size = lo
+        for _ in range(12):
+            mid = (lo + hi) / 2.0
+            if _fits_at_size(mid):
+                best_size = mid
+                lo = mid
+            else:
+                hi = mid
+
+        best_size = float(int(round(best_size)))
+        best_size = min(best_size, font_size - 1.0)
+        if best_size < min_allowed_font:
+            return None, None, None
+
+        best_outline = cls._clamp(
+            best_size * cls._ASS_OUTLINE_RATIO,
+            cls._ASS_OUTLINE_MIN,
+            cls._ASS_OUTLINE_MAX,
+        )
+        best_shadow = cls._clamp(
+            best_size * cls._ASS_SHADOW_RATIO,
+            cls._ASS_SHADOW_MIN,
+            cls._ASS_SHADOW_MAX,
+        )
+        return best_size, best_outline, best_shadow
 
     @staticmethod
     def _is_preferred_wrap_boundary(char):
@@ -5190,7 +5246,13 @@ class TaskProcessor:
         prefer_single_line=True,
         single_line_min_font_scale=None,
     ):
-        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        # Normalize internal line breaks so that a single SRT cue is always
+        # treated as one logical line. The ASS burn-in stage decides whether
+        # to scale the font or emit an overflow warning; it never falls back
+        # to multi-line wrapping for landscape captions.
+        normalized = cls._merge_subtitle_text_parts(
+            str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        )
         wrap_meta = {
             'forced_wrap': False,
             'font_override': None,
@@ -5318,7 +5380,10 @@ class TaskProcessor:
                     wrap_meta['forced_wrap'] = True
                     fits = portrait_fallback_fits
 
-        if not fits and not is_portrait and max_lines < 4:
+        # Landscape captions are hard-coded to a single line. Only attempt
+        # multi-line rescue fallbacks when the layout explicitly allows more
+        # than one line (e.g. caller passed prefer_single_line=False).
+        if not fits and not is_portrait and 1 < max_lines < 4:
             landscape_rescue_lines, landscape_rescue_fits = cls._find_landscape_rescue_lines(
                 normalized,
                 max_line_length=max_line_length,
@@ -5422,11 +5487,14 @@ class TaskProcessor:
     def _parse_subtitle_text_to_cues(cls, subtitle_text, video_width=None, video_height=None):
         from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
 
-        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
+        # Hard-coded large limits for SRT parsing: never split an incoming SRT
+        # cue here. The ASS burn-in stage (_wrap_subtitle_text_for_ass) decides
+        # later whether to scale the font or wrap, based on the real video
+        # dimensions and the single-line priority settings.
         engine = SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=max_line_length,
-                max_lines=max_lines,
+                max_line_length=999,
+                max_lines=99,
                 normalize_punctuation=False,
                 filter_filler_words=False,
             )
@@ -5517,10 +5585,10 @@ class TaskProcessor:
     def _resolve_subtitle_font(self, task_logger, temp_fonts_dir):
         config = getattr(self, 'config', {}) or {}
         configured_font_name = str(
-            config.get('SUBTITLE_FONT_NAME') or 'SourceHanSansHWSC-VF.otf'
+            config.get('SUBTITLE_FONT_NAME') or 'NotoSansCJKsc-Regular.otf'
         ).strip()
         if not configured_font_name:
-            configured_font_name = 'SourceHanSansHWSC-VF.otf'
+            configured_font_name = 'NotoSansCJKsc-Regular.otf'
 
         resolved_font = {
             'configured_font_name': configured_font_name,
@@ -5840,6 +5908,8 @@ class TaskProcessor:
             input_audio_bit_rate = self._coerce_int(audio_info.get('bit_rate'))
             # GOP 取 2 秒一关键帧
             gop = max(24, int(round(2 * input_fps)))
+            # HEVC 适合更长 GOP，4 秒可提升压缩效率 5-10%
+            gop_hevc = max(48, int(round(4 * input_fps)))
             task_logger.info(
                 "输入媒体摘要: video_codec=%s, video_bitrate=%s, audio_codec=%s, audio_bitrate=%s, file_size=%s",
                 input_video_codec or 'unknown',
@@ -5848,6 +5918,7 @@ class TaskProcessor:
                 _format_bitrate_for_log(input_audio_bit_rate),
                 _format_size_for_log(input_size_bytes),
             )
+            task_logger.info(f"GOP 设置: H.264={gop} (2秒), HEVC={gop_hevc} (4秒)")
 
             def _ffmpeg_has_filter(filter_name: str) -> bool:
                 try:
@@ -5894,13 +5965,13 @@ class TaskProcessor:
                         )
 
                 if not font_family:
-                    # 回退到常见的中文字体家族名称。优先使用你当前字体显示的家族名
+                    # 回退到常见的中文字体家族名称。优先使用 Noto Sans CJK SC
                     fallback_families = [
+                        'Noto Sans CJK SC',
                         'Source Han Sans HW SC VF',
                         'Source Han Sans HW SC',
                         'Source Han Sans SC',
                         'Source Han Sans',
-                        'Noto Sans CJK SC',
                         'Microsoft YaHei',
                         'SimHei'
                     ]
@@ -6142,12 +6213,14 @@ class TaskProcessor:
                         '-preset', 'p7',
                         '-tune', 'hq',
                         '-rc:v', 'vbr',
+                        '-b:v', '0',
                         '-cq:v', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'main',
                         '-bf', '2',
-                        '-g', str(gop),
-                        '-pix_fmt', 'yuv420p'
+                        '-g', str(gop_hevc),
+                        '-pix_fmt', 'yuv420p',
+                        '-tag:v', 'hvc1'
                     ]
 
                 def build_intel_params():
@@ -6162,8 +6235,9 @@ class TaskProcessor:
                         '-vsync', 'cfr',
                         '-profile:v', 'main',
                         '-bf', '2',
-                        '-g', str(gop),
-                        '-pix_fmt', 'nv12'
+                        '-g', str(gop_hevc),
+                        '-pix_fmt', 'nv12',
+                        '-tag:v', 'hvc1'
                     ]
 
                 def build_amd_params():
@@ -6182,8 +6256,9 @@ class TaskProcessor:
                             '-qvbr_quality_level', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'main',
-                            '-g', str(gop),
-                            '-pix_fmt', 'yuv420p'
+                            '-g', str(gop_hevc),
+                            '-pix_fmt', 'yuv420p',
+                            '-tag:v', 'hvc1'
                         ]
                     else:
                         # VAAPI (Linux)
@@ -6193,7 +6268,8 @@ class TaskProcessor:
                             '-qp', str(target_quality_int),
                             '-vsync', 'cfr',
                             '-profile:v', 'main',
-                            '-g', str(gop)
+                            '-g', str(gop_hevc),
+                            '-tag:v', 'hvc1'
                         ]
 
                 def is_vaapi_encoder() -> bool:

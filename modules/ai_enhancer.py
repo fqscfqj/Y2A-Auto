@@ -16,6 +16,7 @@ from .utils import (
     safe_str,
     openai_chat_create_with_thinking_control,
     extract_chat_message_json,
+    get_chat_message_text,
 )
 
 import openai
@@ -624,10 +625,21 @@ def _request_json_object(
         else:
             raise
     if not getattr(response, "choices", None):
+        if logger_obj:
+            logger_obj.warning(f"{scene_name} 模型返回空 choices")
         return None
     parsed = extract_chat_message_json(response.choices[0].message, expected_type=dict)
     if isinstance(parsed, dict):
         return parsed
+    if logger_obj:
+        raw_text = get_chat_message_text(response.choices[0].message)
+        # 用 %-style 惰性格式化：避免 f-string 与 %d 混用——当 scene_name
+        # 含 % 字符时，logging 的 getMessage() 会把它当成占位符而抛 ValueError。
+        logger_obj.warning(
+            "%s 模型返回内容无法解析为 JSON（正文长度=%d）",
+            scene_name,
+            len(raw_text),
+        )
     return None
 
 
