@@ -28,43 +28,30 @@
         </div>
     </div>
 
+    <div class="settings-search-bar mb-3">
+        <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" id="settings-search-input" class="form-control" placeholder="搜索设置项名称，如：代理、模型、密码、Whisper…">
+            <button type="button" id="settings-search-clear" class="btn btn-outline-secondary d-none" title="清除搜索" aria-label="清除搜索"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div id="settings-search-hint" class="form-text d-none"></div>
+    </div>
+
     <div class="settings-summary-grid">
-        <button type="button" class="settings-summary-card" data-settings-target="#vtab-overview">
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-general">
             <span class="settings-summary-icon"><i class="bi bi-play-circle"></i></span>
             <div>
                 <div class="settings-summary-label">自动化状态</div>
                 <div class="settings-summary-value">{{ '无人值守已启用' if config.AUTO_MODE_ENABLED else '手动模式' }}</div>
-                <span class="settings-status-badge {{ 'is-success' if config.AUTO_MODE_ENABLED else 'is-neutral' }}">
-                    {{ '运行中' if config.AUTO_MODE_ENABLED else '未启用' }}
-                </span>
-            </div>
-        </button>
-        <button type="button" class="settings-summary-card" data-settings-target="#vtab-overview">
-            <span class="settings-summary-icon"><i class="bi bi-cloud-upload"></i></span>
-            <div>
-                <div class="settings-summary-label">默认投稿平台</div>
-                <div class="settings-summary-value">{{ default_target_label }}</div>
-                <span class="settings-status-badge is-info">
-                    {% if config.RECOMMEND_PARTITION %}自动分区{% else %}手动分区{% endif %}
-                </span>
+                <span class="settings-status-badge {{ 'is-success' if config.AUTO_MODE_ENABLED else 'is-neutral' }}">{{ '运行中' if config.AUTO_MODE_ENABLED else '未启用' }}</span>
             </div>
         </button>
         <button type="button" class="settings-summary-card" data-settings-target="#vtab-accounts">
-            <span class="settings-summary-icon settings-icon-dual"><i class="bi bi-person-badge"></i><i class="bi bi-globe2"></i></span>
+            <span class="settings-summary-icon"><i class="bi bi-person-vcard"></i></span>
             <div>
                 <div class="settings-summary-label">账号与网络</div>
                 <div class="settings-summary-value">登录、Cookies、代理</div>
                 <span class="settings-status-badge is-info">集中管理</span>
-            </div>
-        </button>
-        <button type="button" class="settings-summary-card" data-settings-target="#vtab-moderation">
-            <span class="settings-summary-icon"><i class="bi bi-shield-check"></i></span>
-            <div>
-                <div class="settings-summary-label">内容审核</div>
-                <div class="settings-summary-value">{{ '已接入审核服务' if moderation_ready else '待配置审核服务' }}</div>
-                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
-                    {{ '可用' if moderation_ready else '未配置' }}
-                </span>
             </div>
         </button>
         <button type="button" class="settings-summary-card" data-settings-target="#vtab-ai-models">
@@ -72,9 +59,31 @@
             <div>
                 <div class="settings-summary-label">AI 服务状态</div>
                 <div class="settings-summary-value">{{ '已接入模型服务' if ai_ready else '待配置模型服务' }}</div>
-                <span class="settings-status-badge {{ 'is-success' if ai_ready else 'is-warning' }}">
-                    {{ '可用' if ai_ready else '未配置' }}
-                </span>
+                <span class="settings-status-badge {{ 'is-success' if ai_ready else 'is-warning' }}">{{ '可用' if ai_ready else '未配置' }}</span>
+            </div>
+        </button>
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-subtitle-voice">
+            <span class="settings-summary-icon"><i class="bi bi-badge-cc"></i></span>
+            <div>
+                <div class="settings-summary-label">字幕与语音</div>
+                <div class="settings-summary-value">ASR·翻译·提示词</div>
+                <span class="settings-status-badge is-info">一站式</span>
+            </div>
+        </button>
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-notifications">
+            <span class="settings-summary-icon"><i class="bi bi-bell"></i></span>
+            <div>
+                <div class="settings-summary-label">消息推送</div>
+                <div class="settings-summary-value">{{ '已启用推送' if config.get('NOTIFY_ENABLED', False) else '未启用推送' }}</div>
+                <span class="settings-status-badge {{ 'is-success' if config.get('NOTIFY_ENABLED', False) else 'is-neutral' }}">{{ '运行中' if config.get('NOTIFY_ENABLED', False) else '未启用' }}</span>
+            </div>
+        </button>
+        <button type="button" class="settings-summary-card" data-settings-target="#vtab-ops">
+            <span class="settings-summary-icon"><i class="bi bi-shield-lock"></i></span>
+            <div>
+                <div class="settings-summary-label">运维与安全</div>
+                <div class="settings-summary-value">并发·清理·监控</div>
+                <span class="settings-status-badge is-info">集中管理</span>
             </div>
         </button>
     </div>
@@ -82,49 +91,29 @@
     <div class="row settings-layout">
         <div class="col-lg-3 mb-3">
             <div class="settings-nav nav nav-pills" id="settings-nav" role="tablist" aria-orientation="vertical">
-                <a class="nav-link active" id="vtab-overview-tab" data-bs-toggle="pill" href="#vtab-overview" role="tab" aria-controls="vtab-overview" aria-selected="true">
-                    <i class="bi bi-grid-1x2"></i>
-                    <span>运行概览</span>
+                <a class="nav-link active" id="vtab-general-tab" data-bs-toggle="pill" href="#vtab-general" role="tab" aria-controls="vtab-general" aria-selected="true">
+                    <i class="bi bi-sliders"></i>
+                    <span>常规与投稿</span>
                 </a>
                 <a class="nav-link" id="vtab-accounts-tab" data-bs-toggle="pill" href="#vtab-accounts" role="tab" aria-controls="vtab-accounts" aria-selected="false">
-                    <span class="settings-nav-icon-group"><i class="bi bi-person-vcard"></i><i class="bi bi-globe2"></i></span>
+                    <i class="bi bi-person-vcard"></i>
                     <span>账号与网络</span>
-                </a>
-                <a class="nav-link" id="vtab-moderation-tab" data-bs-toggle="pill" href="#vtab-moderation" role="tab" aria-controls="vtab-moderation" aria-selected="false">
-                    <i class="bi bi-shield-check"></i>
-                    <span>内容审核</span>
                 </a>
                 <a class="nav-link" id="vtab-ai-models-tab" data-bs-toggle="pill" href="#vtab-ai-models" role="tab" aria-controls="vtab-ai-models" aria-selected="false">
                     <i class="bi bi-robot"></i>
                     <span>AI 模型</span>
                 </a>
-                <a class="nav-link" id="vtab-subtitles-tab" data-bs-toggle="pill" href="#vtab-subtitles" role="tab" aria-controls="vtab-subtitles" aria-selected="false">
+                <a class="nav-link" id="vtab-subtitle-voice-tab" data-bs-toggle="pill" href="#vtab-subtitle-voice" role="tab" aria-controls="vtab-subtitle-voice" aria-selected="false">
                     <i class="bi bi-badge-cc"></i>
-                    <span>字幕处理</span>
-                </a>
-                <a class="nav-link" id="vtab-prompts-tab" data-bs-toggle="pill" href="#vtab-prompts" role="tab" aria-controls="vtab-prompts" aria-selected="false">
-                    <i class="bi bi-chat-text"></i>
-                    <span>提示词</span>
-                </a>
-                <a class="nav-link" id="vtab-asr-tab" data-bs-toggle="pill" href="#vtab-asr" role="tab" aria-controls="vtab-asr" aria-selected="false">
-                    <i class="bi bi-mic"></i>
-                    <span>语音识别</span>
-                </a>
-                <a class="nav-link" id="vtab-transcode-tab" data-bs-toggle="pill" href="#vtab-transcode" role="tab" aria-controls="vtab-transcode" aria-selected="false">
-                    <i class="bi bi-film"></i>
-                    <span>视频转码</span>
-                </a>
-                <a class="nav-link" id="vtab-maintenance-tab" data-bs-toggle="pill" href="#vtab-maintenance" role="tab" aria-controls="vtab-maintenance" aria-selected="false">
-                    <i class="bi bi-tools"></i>
-                    <span>监控与维护</span>
+                    <span>字幕与语音</span>
                 </a>
                 <a class="nav-link" id="vtab-notifications-tab" data-bs-toggle="pill" href="#vtab-notifications" role="tab" aria-controls="vtab-notifications" aria-selected="false">
                     <i class="bi bi-bell"></i>
                     <span>消息推送</span>
                 </a>
-                <a class="nav-link" id="vtab-security-tab" data-bs-toggle="pill" href="#vtab-security" role="tab" aria-controls="vtab-security" aria-selected="false">
+                <a class="nav-link" id="vtab-ops-tab" data-bs-toggle="pill" href="#vtab-ops" role="tab" aria-controls="vtab-ops" aria-selected="false">
                     <i class="bi bi-shield-lock"></i>
-                    <span>安全</span>
+                    <span>运维与安全</span>
                 </a>
             </div>
         </div>
@@ -132,13 +121,14 @@
         <div class="col-lg-9">
             <form method="post" enctype="multipart/form-data" id="settings-form">
                 <div class="tab-content" id="settings-tabContent">
-                    <div class="tab-pane fade show active" id="vtab-overview" role="tabpanel" aria-labelledby="vtab-overview-tab">
+
+                    <div class="tab-pane fade show active" id="vtab-general" role="tabpanel" aria-labelledby="vtab-general-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
                                 <div class="settings-section-header">
                                     <div>
-                                        <h3 class="mb-1">运行概览</h3>
-                                        <p class="section-lead mb-0">把最常改的自动化、投稿和审核设置集中在一页，减少来回切换。</p>
+                                    <h3 class="mb-1">常规与投稿</h3>
+                                    <p class="section-lead mb-0">自动化流程、投稿策略、视频转码与内容审核集中管理，常用项优先。</p>
                                     </div>
                                 </div>
                                 <div class="row g-4 settings-pane-grid">
@@ -281,18 +271,109 @@
                                         </article>
                                     </div>
 
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">转码策略</span>
+                                                    <h4>视频转码</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="video-encoder" class="form-label">视频编码器</label>
+                                                            <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
+                                                                <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
+                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（libx264）</option>
+                                                                <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA（NVENC）</option>
+                                                                <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel（QSV）</option>
+                                                                <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD（AMF/VAAPI）</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="VIDEO_CUSTOM_PARAMS_ENABLED" id="video-custom-params-enabled" {% if config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False) %}checked{% endif %}>
+                                                            启用自定义转码参数
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <div class="row g-3 mt-2" id="custom-params-section">
+                                                    <div class="col-12">
+                                                        <div class="form-group">
+                                                            <label for="video-custom-params" class="form-label">自定义视频编码参数</label>
+                                                            <input type="text" id="video-custom-params" name="VIDEO_CUSTOM_PARAMS" value="{{ config.get('VIDEO_CUSTOM_PARAMS', '') }}" class="form-control" placeholder="例如: -c:v libx264 -preset slow -crf 18">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">审核服务</span>
+                                                    <h4>内容审核与阿里云凭证</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
+                                                    {{ '凭证已配置' if moderation_ready else '凭证未完成' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
+                                                            启用内容审核
+                                                        </label>
+                                                        <p class="help-text mb-0">审核标题、描述和封面，建议与阿里云凭证一起完成配置。</p>
+                                                    </div>
+                                                </div>
+                                                <div class="row g-3 mt-1">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-key" class="form-label">AccessKey ID</label>
+                                                            <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-secret" class="form-label">AccessKey Secret</label>
+                                                            <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="aliyun-region" class="form-label">审核区域</label>
+                                                            <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}" class="form-control" placeholder="默认 cn-shanghai">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group mb-0">
+                                                            <label for="aliyun-text-service" class="form-label">文本审核服务</label>
+                                                            <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection_pro">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
                                 </div>
                             </section>
                         </div>
                     </div>
-
                     <div class="tab-pane fade" id="vtab-accounts" role="tabpanel" aria-labelledby="vtab-accounts-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
                                 <div class="settings-section-header">
                                     <div>
-                                        <h3 class="mb-1">账号与网络</h3>
-                                        <p class="section-lead mb-0">平台登录、下载访问、YouTube 监控接入和 FFmpeg 环境集中维护，方便快速排查接入问题。</p>
+                                    <h3 class="mb-1">账号与网络</h3>
+                                    <p class="section-lead mb-0">平台登录、Cookies、下载代理与 CookieCloud 同步集中管理。</p>
                                     </div>
                                 </div>
                                 <div class="row g-4 settings-pane-grid">
@@ -539,159 +620,6 @@
                                         </article>
                                     </div>
 
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">监控接入</span>
-                                                    <h4>YouTube 监控 API</h4>
-                                                </div>
-                                                <span class="settings-status-badge {{ 'is-success' if config.YOUTUBE_API_KEY else 'is-warning' }}">
-                                                    {{ '已配置' if config.YOUTUBE_API_KEY else '未配置' }}
-                                                </span>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="alert alert-info mb-3">
-                                                    <i class="bi bi-info-circle"></i>
-                                                    下载页中的“启用代理下载”只影响 `yt-dlp` 下载链路；这里的代理只影响 YouTube Data API 监控请求，且不会继承下载代理或环境变量代理。
-                                                </div>
-                                                <div class="row g-3">
-                                                    <div class="col-12">
-                                                        <div class="form-group">
-                                                            <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
-                                                            <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
-                                                            <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="YOUTUBE_API_PROXY_ENABLED" {% if config.get('YOUTUBE_API_PROXY_ENABLED', False) %}checked{% endif %}>
-                                                            为 YouTube 监控 API 启用独立代理
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-8">
-                                                        <div class="form-group">
-                                                            <label for="youtube-api-proxy-url" class="form-label">监控 API 代理地址</label>
-                                                            <input type="text" id="youtube-api-proxy-url" name="YOUTUBE_API_PROXY_URL" value="{{ config.get('YOUTUBE_API_PROXY_URL', '') }}" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
-                                                            <p class="help-text">关闭时强制直连，不会回退到下载代理或 `HTTP_PROXY/HTTPS_PROXY`。</p>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label class="form-label d-block">&nbsp;</label>
-                                                            <div class="text-muted small pt-2">如果服务器本身无法直连 YouTube Data API，请在这里单独填写代理。</div>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="youtube-api-proxy-username" class="form-label">监控 API 代理用户名</label>
-                                                            <input type="text" id="youtube-api-proxy-username" name="YOUTUBE_API_PROXY_USERNAME" value="{{ config.get('YOUTUBE_API_PROXY_USERNAME', '') }}" class="form-control" placeholder="可选">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="youtube-api-proxy-password" class="form-label">监控 API 代理密码</label>
-                                                            <input type="password" id="youtube-api-proxy-password" name="YOUTUBE_API_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_API_PROXY_PASSWORD', '') }}" class="form-control" placeholder="可选">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                {% if config.YOUTUBE_API_KEY %}
-                                                <div class="alert alert-success mt-3 mb-0">
-                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置；如服务器无法直连，请同时配置上方监控 API 代理。
-                                                </div>
-                                                {% else %}
-                                                <div class="alert alert-warning mt-3 mb-0">
-                                                    <i class="bi bi-exclamation-triangle"></i> 尚未配置 YouTube API 密钥，请先完成接入。
-                                                </div>
-                                                {% endif %}
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">运行环境</span>
-                                                    <h4>FFmpeg 环境</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <label class="checkbox-label">
-                                                    <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
-                                                    Windows 缺失时自动下载 FFmpeg
-                                                </label>
-                                                <div class="form-group mt-3 mb-0">
-                                                    <label for="ffmpeg-location" class="form-label">FFmpeg 自定义路径</label>
-                                                    <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="留空使用内置 FFmpeg">
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="vtab-moderation" role="tabpanel" aria-labelledby="vtab-moderation-tab">
-                        <div class="settings-stack">
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">内容审核</h3>
-                                        <p class="section-lead mb-0">独立维护审核开关、阿里云凭证和审核服务参数，减少与投稿设置混排。</p>
-                                    </div>
-                                </div>
-                                <div class="row g-4 settings-pane-grid">
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">审核服务</span>
-                                                    <h4>内容审核与阿里云凭证</h4>
-                                                </div>
-                                                <span class="settings-status-badge {{ 'is-success' if moderation_ready else 'is-warning' }}">
-                                                    {{ '凭证已配置' if moderation_ready else '凭证未完成' }}
-                                                </span>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="settings-field settings-field-switch">
-                                                    <div>
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
-                                                            启用内容审核
-                                                        </label>
-                                                        <p class="help-text mb-0">审核标题、描述和封面，建议与阿里云凭证一起完成配置。</p>
-                                                    </div>
-                                                </div>
-                                                <div class="row g-3 mt-1">
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-key" class="form-label">AccessKey ID</label>
-                                                            <input type="password" id="aliyun-key" name="ALIYUN_ACCESS_KEY_ID" value="{{ config.ALIYUN_ACCESS_KEY_ID }}" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-secret" class="form-label">AccessKey Secret</label>
-                                                            <input type="password" id="aliyun-secret" name="ALIYUN_ACCESS_KEY_SECRET" value="{{ config.ALIYUN_ACCESS_KEY_SECRET }}" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="aliyun-region" class="form-label">审核区域</label>
-                                                            <input type="text" id="aliyun-region" name="ALIYUN_CONTENT_MODERATION_REGION" value="{{ config.ALIYUN_CONTENT_MODERATION_REGION }}" class="form-control" placeholder="默认 cn-shanghai">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group mb-0">
-                                                            <label for="aliyun-text-service" class="form-label">文本审核服务</label>
-                                                            <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection_pro">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
                                 </div>
                             </section>
                         </div>
@@ -829,399 +757,13 @@
                             </section>
                         </div>
                     </div>
-
-                    <div class="tab-pane fade" id="vtab-subtitles" role="tabpanel" aria-labelledby="vtab-subtitles-tab">
+                    <div class="tab-pane fade" id="vtab-subtitle-voice" role="tabpanel" aria-labelledby="vtab-subtitle-voice-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
                                 <div class="settings-section-header">
                                     <div>
-                                        <h3 class="mb-1">字幕处理</h3>
-                                        <p class="section-lead mb-0">把字幕翻译、质检和后处理单独展开，减少和模型、语音识别参数混排。</p>
-                                    </div>
-                                </div>
-                                <div class="row g-4 settings-pane-grid">
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">翻译与质检</span>
-                                                    <h4>字幕翻译与质检</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="row g-3">
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="SUBTITLE_TRANSLATION_ENABLED" {% if config.SUBTITLE_TRANSLATION_ENABLED %}checked{% endif %}>
-                                                            启用字幕翻译
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
-                                                            启用 ASR 源字幕质检
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED" {% if config.get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False) %}checked{% endif %}>
-                                                            下载 YouTube 自动生成字幕
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-source-lang" class="form-label">源语言</label>
-                                                            <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang" class="form-select">
-                                                                <option value="auto" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'auto' %}selected{% endif %}>自动检测</option>
-                                                                <option value="en" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
-                                                                <option value="ja" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
-                                                                <option value="ko" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
-                                                                <option value="zh" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-target-lang" class="form-label">目标语言</label>
-                                                            <select name="SUBTITLE_TARGET_LANGUAGE" id="subtitle-target-lang" class="form-select">
-                                                                <option value="zh" {% if config.SUBTITLE_TARGET_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
-                                                                <option value="en" {% if config.SUBTITLE_TARGET_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
-                                                                <option value="ja" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
-                                                                <option value="ko" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-font-name" class="form-label">烧录字体文件</label>
-                                                            <input type="text" id="subtitle-font-name" name="SUBTITLE_FONT_NAME" value="{{ config.get('SUBTITLE_FONT_NAME', 'SourceHanSansHWSC-VF.otf') }}" class="form-control" placeholder="SourceHanSansHWSC-VF.otf">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12">
-                                                        <hr class="my-2">
-                                                        <h5 class="section-eyebrow mb-2">电影级烧录样式</h5>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="SUBTITLE_PREFER_SINGLE_LINE" {% if config.get('SUBTITLE_PREFER_SINGLE_LINE', True) %}checked{% endif %}>
-                                                            优先单行显示（横屏短句自动合并为一行）
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-single-line-min-font-scale" class="form-label">单行最小字体缩放（0.5-1.0）</label>
-                                                            <input type="number" id="subtitle-single-line-min-font-scale" name="SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE" value="{{ config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', 0.78) }}" min="0.5" max="1.0" step="0.05" class="form-control">
-                                                            <p class="help-text mb-0">默认字体放不下时，会尝试缩小到该比例；仍放不下则自动换行。</p>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12">
-                                                        <p class="help-text mb-0">自动化流程在开启字幕翻译时会下载字幕；勾选后还会额外尝试下载 YouTube 自动生成字幕，适用于原视频没有人工字幕的情况。</p>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-batch-size" class="form-label">批次大小</label>
-                                                            <input type="number" id="subtitle-batch-size" name="SUBTITLE_BATCH_SIZE" value="{{ config.SUBTITLE_BATCH_SIZE }}" min="1" max="20" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-max-retries" class="form-label">最大重试次数</label>
-                                                            <input type="number" id="subtitle-max-retries" name="SUBTITLE_MAX_RETRIES" value="{{ config.SUBTITLE_MAX_RETRIES }}" min="1" max="10" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-retry-delay" class="form-label">重试延迟（秒）</label>
-                                                            <input type="number" id="subtitle-retry-delay" name="SUBTITLE_RETRY_DELAY" value="{{ config.SUBTITLE_RETRY_DELAY }}" min="1" max="30" class="form-control">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="SUBTITLE_EMBED_IN_VIDEO" {% if config.SUBTITLE_EMBED_IN_VIDEO %}checked{% endif %}>
-                                                            将字幕嵌入视频
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="checkbox-label">
-                                                            <input type="checkbox" name="SUBTITLE_KEEP_ORIGINAL" {% if config.SUBTITLE_KEEP_ORIGINAL %}checked{% endif %}>
-                                                            保留原始字幕文件
-                                                        </label>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitleMaxWorkers" class="form-label">字幕翻译最大并发线程数</label>
-                                                            <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 0) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div class="mt-3">
-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedSubtitleQc" aria-expanded="false" aria-controls="advancedSubtitleQc">
-                                                        <i class="bi bi-chevron-down"></i> 质检高级参数
-                                                    </button>
-                                                    <div class="collapse mt-3" id="advancedSubtitleQc">
-                                                        <div class="row g-3">
-                                                            <div class="col-md-4">
-                                                                <div class="form-group">
-                                                                    <label for="subtitle-qc-threshold" class="form-label">通过阈值</label>
-                                                                    <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.35) }}" class="form-control">
-                                                                </div>
-                                                            </div>
-                                                            <div class="col-md-4">
-                                                                <div class="form-group">
-                                                                    <label for="subtitle-qc-sample" class="form-label">AI 抽样上限</label>
-                                                                    <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">
-                                                                </div>
-                                                            </div>
-                                                            <div class="col-md-4">
-                                                                <div class="form-group">
-                                                                    <label for="subtitle-qc-maxchars" class="form-label">送检字符上限</label>
-                                                                    <input type="number" min="1000" max="30000" step="500" id="subtitle-qc-maxchars" name="SUBTITLE_QC_MAX_CHARS" value="{{ config.get('SUBTITLE_QC_MAX_CHARS', 9000) }}" class="form-control">
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-
-                    <div class="tab-pane fade" id="vtab-prompts" role="tabpanel" aria-labelledby="vtab-prompts-tab">
-                        <div class="settings-stack">
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">提示词</h3>
-                                        <p class="section-lead mb-0">自定义字幕翻译与标题/简介翻译的 AI 指令。留空即使用内置默认模板。</p>
-                                    </div>
-                                </div>
-
-                                <div class="alert alert-info mb-4">
-                                    <i class="bi bi-info-circle"></i>
-                                    <strong>模式说明：</strong>
-                                    <ul class="mb-0 mt-1">
-                                        <li><strong>内置</strong>：使用系统默认模板，推荐大多数用户。</li>
-                                        <li><strong>追加</strong>：在默认模板后附加你的指令（推荐的自定义方式）。</li>
-                                        <li><strong>覆盖</strong>：用你的文本替换默认行为层，但 JSON 输出格式和逐条对齐等硬约束仍保留。</li>
-                                    </ul>
-                                </div>
-
-                                <div class="row g-4 settings-pane-grid">
-                                    <!-- 字幕翻译 -->
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">字幕翻译</span>
-                                                    <h4>字幕翻译主提示词</h4>
-                                                </div>
-                                                <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else 'is-neutral' }}">
-                                                    {{ '已自定义' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else '使用内置' }}
-                                                </span>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="row g-3">
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-translate-mode" class="form-label">模式</label>
-                                                            <select id="subtitle-translate-mode" name="SUBTITLE_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-translate">
-                                                                <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
-                                                                <option value="append" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
-                                                                <option value="override" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-translate" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
-                                                        <div class="alert alert-secondary mb-0">
-                                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
-                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-translate" aria-expanded="false">
-                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
-                                                                </button>
-                                                            </div>
-                                                            <div class="collapse" id="builtin-text-subtitle-translate">
-                                                                <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('SUBTITLE_TRANSLATE', {}).get('builtin_text', '') }}</pre>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-translate-text" class="form-label">自定义指令</label>
-                                                            <textarea id="subtitle-translate-text" name="SUBTITLE_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：保留音乐术语不翻译；人名音译用常用写法；技术缩写保留原文">{{ config.get('SUBTITLE_TRANSLATE_TEXT', '') }}</textarea>
-                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>（目标语言名称）。留空则使用内置默认模板。</p>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <!-- 字幕严格补救 -->
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">字幕翻译 · 高级</span>
-                                                    <h4>严格补救提示词</h4>
-                                                </div>
-                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedStrictPrompt" aria-expanded="false" aria-controls="advancedStrictPrompt">
-                                                    <i class="bi bi-chevron-down"></i> 展开
-                                                </button>
-                                            </div>
-                                            <div class="collapse mt-2" id="advancedStrictPrompt">
-                                                <div class="settings-card-body pt-0">
-                                                    <p class="help-text">首轮翻译后若检测到大量漏译条目，会用此提示词以严格模式再补翻一次。</p>
-                                                    <div class="row g-3">
-                                                        <div class="col-md-4">
-                                                            <div class="form-group">
-                                                                <label for="subtitle-translate-strict-mode" class="form-label">模式</label>
-                                                                <select id="subtitle-translate-strict-mode" name="SUBTITLE_TRANSLATE_STRICT_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-strict">
-                                                                    <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
-                                                                    <option value="append" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
-                                                                    <option value="override" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
-                                                                </select>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-strict" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
-                                                            <div class="alert alert-secondary mb-0">
-                                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
-                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-strict" aria-expanded="false">
-                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
-                                                                    </button>
-                                                                </div>
-                                                                <div class="collapse" id="builtin-text-subtitle-strict">
-                                                                    <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('SUBTITLE_TRANSLATE_STRICT', {}).get('builtin_text', '') }}</pre>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-12">
-                                                            <div class="form-group mb-0">
-                                                                <label for="subtitle-translate-strict-text" class="form-label">自定义指令</label>
-                                                                <textarea id="subtitle-translate-strict-text" name="SUBTITLE_TRANSLATE_STRICT_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('SUBTITLE_TRANSLATE_STRICT_TEXT', '') }}</textarea>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <!-- 标题/简介翻译 -->
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">标题/简介翻译</span>
-                                                    <h4>元数据翻译主提示词</h4>
-                                                </div>
-                                                <span class="settings-status-badge {{ 'is-info' if config.get('METADATA_TRANSLATE_TEXT', '') else 'is-neutral' }}">
-                                                    {{ '已自定义' if config.get('METADATA_TRANSLATE_TEXT', '') else '使用内置' }}
-                                                </span>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="row g-3">
-                                                    <div class="col-md-4">
-                                                        <div class="form-group">
-                                                            <label for="metadata-translate-mode" class="form-label">模式</label>
-                                                            <select id="metadata-translate-mode" name="METADATA_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-metadata-translate">
-                                                                <option value="builtin" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
-                                                                <option value="append" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
-                                                                <option value="override" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-metadata-translate" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
-                                                        <div class="alert alert-secondary mb-0">
-                                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
-                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-metadata-translate" aria-expanded="false">
-                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
-                                                                </button>
-                                                            </div>
-                                                            <div class="collapse" id="builtin-text-metadata-translate">
-                                                                <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('METADATA_TRANSLATE', {}).get('builtin_text', '') }}</pre>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-12">
-                                                        <div class="form-group mb-0">
-                                                            <label for="metadata-translate-text" class="form-label">自定义指令</label>
-                                                            <textarea id="metadata-translate-text" name="METADATA_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：标题风格偏口语化；简介保留原始段落结构">{{ config.get('METADATA_TRANSLATE_TEXT', '') }}</textarea>
-                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>。留空则使用内置默认模板。</p>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <!-- 简介重试 -->
-                                    <div class="col-12">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">标题/简介翻译 · 高级</span>
-                                                    <h4>简介重试提示词</h4>
-                                                </div>
-                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedDescRetryPrompt" aria-expanded="false" aria-controls="advancedDescRetryPrompt">
-                                                    <i class="bi bi-chevron-down"></i> 展开
-                                                </button>
-                                            </div>
-                                            <div class="collapse mt-2" id="advancedDescRetryPrompt">
-                                                <div class="settings-card-body pt-0">
-                                                    <p class="help-text">标题/简介首轮翻译后，若简介字段校验失败（如格式不自然、含导流残留等），会用此提示词单独重试简介。</p>
-                                                    <div class="row g-3">
-                                                        <div class="col-md-4">
-                                                            <div class="form-group">
-                                                                <label for="metadata-desc-retry-mode" class="form-label">模式</label>
-                                                                <select id="metadata-desc-retry-mode" name="METADATA_DESC_RETRY_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-desc-retry">
-                                                                    <option value="builtin" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
-                                                                    <option value="append" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
-                                                                    <option value="override" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
-                                                                </select>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-desc-retry" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
-                                                            <div class="alert alert-secondary mb-0">
-                                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
-                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-desc-retry" aria-expanded="false">
-                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
-                                                                    </button>
-                                                                </div>
-                                                                <div class="collapse" id="builtin-text-desc-retry">
-                                                                    <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('METADATA_DESC_RETRY', {}).get('builtin_text', '') }}</pre>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-12">
-                                                            <div class="form-group mb-0">
-                                                                <label for="metadata-desc-retry-text" class="form-label">自定义指令</label>
-                                                                <textarea id="metadata-desc-retry-text" name="METADATA_DESC_RETRY_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('METADATA_DESC_RETRY_TEXT', '') }}</textarea>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-
-                    <div class="tab-pane fade" id="vtab-asr" role="tabpanel" aria-labelledby="vtab-asr-tab">
-                        <div class="settings-stack">
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">语音识别</h3>
-                                        <p class="section-lead mb-0">按服务类型拆开展示 ASR 参数、Whisper 扩展项和共享 VAD 控制。</p>
+                                    <h3 class="mb-1">字幕与语音</h3>
+                                    <p class="section-lead mb-0">ASR 服务、字幕后处理、AI 智能分段、字幕翻译质检与提示词一站式配置。</p>
                                     </div>
                                 </div>
                                 <div class="row g-4 settings-pane-grid">
@@ -1254,6 +796,7 @@
                                             </div>
                                         </article>
                                     </div>
+
                                     <div class="col-12" id="whisper-config">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
@@ -1708,141 +1251,145 @@
                                         </article>
                                     </div>
 
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-
-                    <div class="tab-pane fade" id="vtab-transcode" role="tabpanel" aria-labelledby="vtab-transcode-tab">
-                        <div class="settings-stack">
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">视频转码</h3>
-                                        <p class="section-lead mb-0">单独管理编码器和自定义参数，避免和字幕、ASR 参数挤在同一页。</p>
-                                    </div>
-                                </div>
-                                <div class="row g-4 settings-pane-grid">
                                     <div class="col-12">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">转码策略</span>
-                                                    <h4>视频转码</h4>
+                                                    <span class="section-eyebrow">翻译与质检</span>
+                                                    <h4>字幕翻译与质检</h4>
                                                 </div>
                                             </div>
                                             <div class="settings-card-body">
                                                 <div class="row g-3">
                                                     <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_TRANSLATION_ENABLED" {% if config.SUBTITLE_TRANSLATION_ENABLED %}checked{% endif %}>
+                                                            启用字幕翻译
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
+                                                            启用 ASR 源字幕质检
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED" {% if config.get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False) %}checked{% endif %}>
+                                                            下载 YouTube 自动生成字幕
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
                                                         <div class="form-group">
-                                                            <label for="video-encoder" class="form-label">视频编码器</label>
-                                                            <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
-                                                                <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
-                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（libx264）</option>
-                                                                <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA（NVENC）</option>
-                                                                <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel（QSV）</option>
-                                                                <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD（AMF/VAAPI）</option>
+                                                            <label for="subtitle-source-lang" class="form-label">源语言</label>
+                                                            <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang" class="form-select">
+                                                                <option value="auto" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'auto' %}selected{% endif %}>自动检测</option>
+                                                                <option value="en" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
+                                                                <option value="ja" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
+                                                                <option value="ko" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
+                                                                <option value="zh" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
                                                             </select>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-target-lang" class="form-label">目标语言</label>
+                                                            <select name="SUBTITLE_TARGET_LANGUAGE" id="subtitle-target-lang" class="form-select">
+                                                                <option value="zh" {% if config.SUBTITLE_TARGET_LANGUAGE == 'zh' %}selected{% endif %}>中文</option>
+                                                                <option value="en" {% if config.SUBTITLE_TARGET_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
+                                                                <option value="ja" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ja' %}selected{% endif %}>日语</option>
+                                                                <option value="ko" {% if config.SUBTITLE_TARGET_LANGUAGE == 'ko' %}selected{% endif %}>韩语</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-font-name" class="form-label">烧录字体文件</label>
+                                                            <input type="text" id="subtitle-font-name" name="SUBTITLE_FONT_NAME" value="{{ config.get('SUBTITLE_FONT_NAME', 'SourceHanSansHWSC-VF.otf') }}" class="form-control" placeholder="SourceHanSansHWSC-VF.otf">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <hr class="my-2">
+                                                        <h5 class="section-eyebrow mb-2">电影级烧录样式</h5>
+                                                    </div>
+                                                    <div class="col-md-6">
                                                         <label class="checkbox-label">
-                                                            <input type="checkbox" name="VIDEO_CUSTOM_PARAMS_ENABLED" id="video-custom-params-enabled" {% if config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False) %}checked{% endif %}>
-                                                            启用自定义转码参数
+                                                            <input type="checkbox" name="SUBTITLE_PREFER_SINGLE_LINE" {% if config.get('SUBTITLE_PREFER_SINGLE_LINE', True) %}checked{% endif %}>
+                                                            优先单行显示（横屏短句自动合并为一行）
                                                         </label>
                                                     </div>
-                                                </div>
-                                                <div class="row g-3 mt-2" id="custom-params-section">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-single-line-min-font-scale" class="form-label">单行最小字体缩放（0.5-1.0）</label>
+                                                            <input type="number" id="subtitle-single-line-min-font-scale" name="SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE" value="{{ config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', 0.78) }}" min="0.5" max="1.0" step="0.05" class="form-control">
+                                                            <p class="help-text mb-0">默认字体放不下时，会尝试缩小到该比例；仍放不下则自动换行。</p>
+                                                        </div>
+                                                    </div>
                                                     <div class="col-12">
+                                                        <p class="help-text mb-0">自动化流程在开启字幕翻译时会下载字幕；勾选后还会额外尝试下载 YouTube 自动生成字幕，适用于原视频没有人工字幕的情况。</p>
+                                                    </div>
+                                                    <div class="col-md-4">
                                                         <div class="form-group">
-                                                            <label for="video-custom-params" class="form-label">自定义视频编码参数</label>
-                                                            <input type="text" id="video-custom-params" name="VIDEO_CUSTOM_PARAMS" value="{{ config.get('VIDEO_CUSTOM_PARAMS', '') }}" class="form-control" placeholder="例如: -c:v libx264 -preset slow -crf 18">
+                                                            <label for="subtitle-batch-size" class="form-label">批次大小</label>
+                                                            <input type="number" id="subtitle-batch-size" name="SUBTITLE_BATCH_SIZE" value="{{ config.SUBTITLE_BATCH_SIZE }}" min="1" max="20" class="form-control">
                                                         </div>
                                                     </div>
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="vtab-maintenance" role="tabpanel" aria-labelledby="vtab-maintenance-tab">
-                        <div class="settings-stack">
-                            <section class="settings-section">
-                                <div class="settings-section-header">
-                                    <div>
-                                        <h3 class="mb-1">监控与维护</h3>
-                                        <p class="section-lead mb-0">集中处理并发策略、日志清理和下载目录维护动作。</p>
-                                    </div>
-                                </div>
-                                <div class="row g-4 settings-pane-grid">
-                                    <div class="col-md-6">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">运行控制</span>
-                                                    <h4>任务并发</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <div class="form-group">
-                                                    <label for="max-concurrent-tasks" class="form-label">最大并发任务数</label>
-                                                    <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 2) }}" min="1" max="10" class="form-control">
-                                                </div>
-                                                <div class="form-group mb-0">
-                                                    <label for="max-concurrent-uploads" class="form-label">最大并发上传数</label>
-                                                    <input type="number" id="max-concurrent-uploads" name="MAX_CONCURRENT_UPLOADS" value="{{ config.get('MAX_CONCURRENT_UPLOADS', 1) }}" min="1" max="5" class="form-control">
-                                                </div>
-                                            </div>
-                                        </article>
-                                    </div>
-
-                                    <div class="col-md-6">
-                                        <article class="settings-card">
-                                            <div class="settings-card-header">
-                                                <div>
-                                                    <span class="section-eyebrow">日志管理</span>
-                                                    <h4>日志清理</h4>
-                                                </div>
-                                            </div>
-                                            <div class="settings-card-body">
-                                                <label class="checkbox-label mb-3">
-                                                    <input type="checkbox" name="LOG_CLEANUP_ENABLED" {% if config.LOG_CLEANUP_ENABLED %}checked{% endif %}>
-                                                    启用自动日志清理
-                                                </label>
-                                                <div class="row g-3">
-                                                    <div class="col-md-6">
+                                                    <div class="col-md-4">
                                                         <div class="form-group">
-                                                            <label for="log-cleanup-hours" class="form-label">保留日志小时数</label>
-                                                            <input type="number" id="log-cleanup-hours" name="LOG_CLEANUP_HOURS" value="{{ config.LOG_CLEANUP_HOURS }}" min="1" max="8760" class="form-control">
+                                                            <label for="subtitle-max-retries" class="form-label">最大重试次数</label>
+                                                            <input type="number" id="subtitle-max-retries" name="SUBTITLE_MAX_RETRIES" value="{{ config.SUBTITLE_MAX_RETRIES }}" min="1" max="10" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-retry-delay" class="form-label">重试延迟（秒）</label>
+                                                            <input type="number" id="subtitle-retry-delay" name="SUBTITLE_RETRY_DELAY" value="{{ config.SUBTITLE_RETRY_DELAY }}" min="1" max="30" class="form-control">
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_EMBED_IN_VIDEO" {% if config.SUBTITLE_EMBED_IN_VIDEO %}checked{% endif %}>
+                                                            将字幕嵌入视频
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_KEEP_ORIGINAL" {% if config.SUBTITLE_KEEP_ORIGINAL %}checked{% endif %}>
+                                                            保留原始字幕文件
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-6">
                                                         <div class="form-group">
-                                                            <label for="log-cleanup-interval" class="form-label">清理间隔（小时）</label>
-                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168" class="form-control">
+                                                            <label for="subtitleMaxWorkers" class="form-label">字幕翻译最大并发线程数</label>
+                                                            <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 0) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
                                                         </div>
                                                     </div>
-                                                </div>
-                                                <div class="settings-inline-actions mt-3">
-                                                    <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
-                                                        <i class="bi bi-trash"></i> 按时间清理日志
-                                                    </button>
-                                                    <span class="help-text">将删除 <span class="text-primary">{{ config.LOG_CLEANUP_HOURS }}</span> 小时前的日志文件。</span>
                                                 </div>
                                                 <div class="mt-3">
-                                                    <button type="button" id="clear-logs-btn" class="btn btn-danger">
-                                                        <i class="bi bi-trash-fill"></i> 立即清空日志
+                                                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedSubtitleQc" aria-expanded="false" aria-controls="advancedSubtitleQc">
+                                                        <i class="bi bi-chevron-down"></i> 质检高级参数
                                                     </button>
-                                                    <button type="button" id="confirm-clear-btn" class="btn btn-outline-danger ms-2 d-none">
-                                                        <i class="bi bi-check-lg"></i> 确认清空
-                                                    </button>
-                                                    <button type="button" id="cancel-clear-btn" class="btn btn-outline-secondary ms-2 d-none">
-                                                        <i class="bi bi-x-lg"></i> 取消
-                                                    </button>
-                                                    <div id="clear-warning" class="alert alert-warning mt-3 d-none mb-0">
-                                                        <i class="bi bi-exclamation-triangle"></i> 此操作会清空 `task_manager.log`、`app.log` 并删除所有 `task_xxx.log` 文件，且无法恢复。
+                                                    <div class="collapse mt-3" id="advancedSubtitleQc">
+                                                        <div class="row g-3">
+                                                            <div class="col-md-4">
+                                                                <div class="form-group">
+                                                                    <label for="subtitle-qc-threshold" class="form-label">通过阈值</label>
+                                                                    <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.35) }}" class="form-control">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-4">
+                                                                <div class="form-group">
+                                                                    <label for="subtitle-qc-sample" class="form-label">AI 抽样上限</label>
+                                                                    <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-4">
+                                                                <div class="form-group">
+                                                                    <label for="subtitle-qc-maxchars" class="form-label">送检字符上限</label>
+                                                                    <input type="number" min="1000" max="30000" step="500" id="subtitle-qc-maxchars" name="SUBTITLE_QC_MAX_CHARS" value="{{ config.get('SUBTITLE_QC_MAX_CHARS', 9000) }}" class="form-control">
+                                                                </div>
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1853,43 +1400,202 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">文件维护</span>
-                                                    <h4>下载内容清理</h4>
+                                                    <span class="section-eyebrow">字幕翻译</span>
+                                                    <h4>字幕翻译主提示词</h4>
                                                 </div>
+                                                <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else 'is-neutral' }}">
+                                                    {{ '已自定义' if config.get('SUBTITLE_TRANSLATE_TEXT', '') else '使用内置' }}
+                                                </span>
                                             </div>
                                             <div class="settings-card-body">
-                                                <label class="checkbox-label mb-3">
-                                                    <input type="checkbox" name="DOWNLOAD_CLEANUP_ENABLED" {% if config.get('DOWNLOAD_CLEANUP_ENABLED', False) %}checked{% endif %}>
-                                                    启用自动下载内容清理
-                                                </label>
                                                 <div class="row g-3">
-                                                    <div class="col-md-6">
+                                                    <div class="col-md-4">
                                                         <div class="form-group">
-                                                            <label for="download-cleanup-hours" class="form-label">保留下载内容小时数</label>
-                                                            <input type="number" id="download-cleanup-hours" name="DOWNLOAD_CLEANUP_HOURS" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}" min="1" max="17520" class="form-control">
+                                                            <label for="subtitle-translate-mode" class="form-label">模式</label>
+                                                            <select id="subtitle-translate-mode" name="SUBTITLE_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-translate">
+                                                                <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                <option value="append" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                <option value="override" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                            </select>
                                                         </div>
                                                     </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="download-cleanup-interval" class="form-label">清理间隔（小时）</label>
-                                                            <input type="number" id="download-cleanup-interval" name="DOWNLOAD_CLEANUP_INTERVAL" value="{{ config.get('DOWNLOAD_CLEANUP_INTERVAL', 24) }}" min="1" max="168" class="form-control">
+                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-translate" {% if config.get('SUBTITLE_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                        <div class="alert alert-secondary mb-0">
+                                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-translate" aria-expanded="false">
+                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                </button>
+                                                            </div>
+                                                            <div class="collapse" id="builtin-text-subtitle-translate">
+                                                                <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('SUBTITLE_TRANSLATE', {}).get('builtin_text', '') }}</pre>
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
-                                                <div class="settings-inline-actions mt-3">
-                                                    <button type="button" id="manual-download-cleanup-btn" class="btn btn-warning">
-                                                        <i class="bi bi-trash"></i> 按时间清理下载内容
-                                                    </button>
-                                                    <span class="help-text">将删除 <span class="text-primary">{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}</span> 小时前的下载文件和目录。</span>
+                                                    <div class="col-12">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-translate-text" class="form-label">自定义指令</label>
+                                                            <textarea id="subtitle-translate-text" name="SUBTITLE_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：保留音乐术语不翻译；人名音译用常用写法；技术缩写保留原文">{{ config.get('SUBTITLE_TRANSLATE_TEXT', '') }}</textarea>
+                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>（目标语言名称）。留空则使用内置默认模板。</p>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </article>
                                     </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">字幕翻译 · 高级</span>
+                                                    <h4>严格补救提示词</h4>
+                                                </div>
+                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedStrictPrompt" aria-expanded="false" aria-controls="advancedStrictPrompt">
+                                                    <i class="bi bi-chevron-down"></i> 展开
+                                                </button>
+                                            </div>
+                                            <div class="collapse mt-2" id="advancedStrictPrompt">
+                                                <div class="settings-card-body pt-0">
+                                                    <p class="help-text">首轮翻译后若检测到大量漏译条目，会用此提示词以严格模式再补翻一次。</p>
+                                                    <div class="row g-3">
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-translate-strict-mode" class="form-label">模式</label>
+                                                                <select id="subtitle-translate-strict-mode" name="SUBTITLE_TRANSLATE_STRICT_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-subtitle-strict">
+                                                                    <option value="builtin" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                    <option value="append" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                    <option value="override" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-subtitle-strict" {% if config.get('SUBTITLE_TRANSLATE_STRICT_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                            <div class="alert alert-secondary mb-0">
+                                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-subtitle-strict" aria-expanded="false">
+                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                    </button>
+                                                                </div>
+                                                                <div class="collapse" id="builtin-text-subtitle-strict">
+                                                                    <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('SUBTITLE_TRANSLATE_STRICT', {}).get('builtin_text', '') }}</pre>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-group mb-0">
+                                                                <label for="subtitle-translate-strict-text" class="form-label">自定义指令</label>
+                                                                <textarea id="subtitle-translate-strict-text" name="SUBTITLE_TRANSLATE_STRICT_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('SUBTITLE_TRANSLATE_STRICT_TEXT', '') }}</textarea>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">标题/简介翻译</span>
+                                                    <h4>元数据翻译主提示词</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-info' if config.get('METADATA_TRANSLATE_TEXT', '') else 'is-neutral' }}">
+                                                    {{ '已自定义' if config.get('METADATA_TRANSLATE_TEXT', '') else '使用内置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="metadata-translate-mode" class="form-label">模式</label>
+                                                            <select id="metadata-translate-mode" name="METADATA_TRANSLATE_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-metadata-translate">
+                                                                <option value="builtin" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                <option value="append" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                <option value="override" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12 builtin-prompt-preview" id="builtin-preview-metadata-translate" {% if config.get('METADATA_TRANSLATE_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                        <div class="alert alert-secondary mb-0">
+                                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-metadata-translate" aria-expanded="false">
+                                                                    <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                </button>
+                                                            </div>
+                                                            <div class="collapse" id="builtin-text-metadata-translate">
+                                                                <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('METADATA_TRANSLATE', {}).get('builtin_text', '') }}</pre>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <div class="form-group mb-0">
+                                                            <label for="metadata-translate-text" class="form-label">自定义指令</label>
+                                                            <textarea id="metadata-translate-text" name="METADATA_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：标题风格偏口语化；简介保留原始段落结构">{{ config.get('METADATA_TRANSLATE_TEXT', '') }}</textarea>
+                                                            <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>。留空则使用内置默认模板。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">标题/简介翻译 · 高级</span>
+                                                    <h4>简介重试提示词</h4>
+                                                </div>
+                                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedDescRetryPrompt" aria-expanded="false" aria-controls="advancedDescRetryPrompt">
+                                                    <i class="bi bi-chevron-down"></i> 展开
+                                                </button>
+                                            </div>
+                                            <div class="collapse mt-2" id="advancedDescRetryPrompt">
+                                                <div class="settings-card-body pt-0">
+                                                    <p class="help-text">标题/简介首轮翻译后，若简介字段校验失败（如格式不自然、含导流残留等），会用此提示词单独重试简介。</p>
+                                                    <div class="row g-3">
+                                                        <div class="col-md-4">
+                                                            <div class="form-group">
+                                                                <label for="metadata-desc-retry-mode" class="form-label">模式</label>
+                                                                <select id="metadata-desc-retry-mode" name="METADATA_DESC_RETRY_MODE" class="form-select prompt-mode-select" data-preview-id="builtin-preview-desc-retry">
+                                                                    <option value="builtin" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'builtin' %}selected{% endif %}>内置</option>
+                                                                    <option value="append" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'append' %}selected{% endif %}>追加</option>
+                                                                    <option value="override" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') == 'override' %}selected{% endif %}>覆盖</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12 builtin-prompt-preview" id="builtin-preview-desc-retry" {% if config.get('METADATA_DESC_RETRY_MODE', 'builtin') != 'builtin' %}style="display:none"{% endif %}>
+                                                            <div class="alert alert-secondary mb-0">
+                                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                                    <strong><i class="bi bi-eye"></i> 当前内置提示词</strong>
+                                                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" data-bs-toggle="collapse" data-bs-target="#builtin-text-desc-retry" aria-expanded="false">
+                                                                        <i class="bi bi-chevron-down"></i> 展开/收起
+                                                                    </button>
+                                                                </div>
+                                                                <div class="collapse" id="builtin-text-desc-retry">
+                                                                    <pre class="mb-0 small text-muted builtin-prompt-pre">{{ builtin_prompts.get('METADATA_DESC_RETRY', {}).get('builtin_text', '') }}</pre>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <div class="form-group mb-0">
+                                                                <label for="metadata-desc-retry-text" class="form-label">自定义指令</label>
+                                                                <textarea id="metadata-desc-retry-text" name="METADATA_DESC_RETRY_TEXT" rows="4" class="form-control" maxlength="3000" placeholder="留空则使用内置默认模板">{{ config.get('METADATA_DESC_RETRY_TEXT', '') }}</textarea>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
                                 </div>
                             </section>
                         </div>
                     </div>
-
                     <div class="tab-pane fade" id="vtab-notifications" role="tabpanel" aria-labelledby="vtab-notifications-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
@@ -2061,74 +1767,277 @@
                             </section>
                         </div>
                     </div>
-
-                    <div class="tab-pane fade" id="vtab-security" role="tabpanel" aria-labelledby="vtab-security-tab">
+                    <div class="tab-pane fade" id="vtab-ops" role="tabpanel" aria-labelledby="vtab-ops-tab">
                         <div class="settings-stack">
                             <section class="settings-section">
                                 <div class="settings-section-header">
                                     <div>
-                                        <h3 class="mb-1">安全</h3>
-                                        <p class="section-lead mb-0">保护 Web 控制台访问，约束密码暴力尝试并控制空闲会话时长。</p>
+                                    <h3 class="mb-1">运维与安全</h3>
+                                    <p class="section-lead mb-0">任务并发、FFmpeg 环境、日志与下载清理、YouTube 监控 API 及访问控制。</p>
                                     </div>
                                 </div>
-                                <article class="settings-card">
-                                    <div class="settings-card-header">
-                                        <div>
-                                            <span class="section-eyebrow">访问控制</span>
-                                            <h4>密码保护</h4>
-                                        </div>
-                                    </div>
-                                    <div class="settings-card-body">
-                                        <div class="settings-field settings-field-switch">
-                                            <div>
-                                                <label class="checkbox-label">
-                                                    <input type="checkbox" name="password_protection_enabled" id="password_protection_enabled" {% if config.password_protection_enabled %}checked{% endif %}>
-                                                    启用 Web 界面密码保护
-                                                </label>
-                                            </div>
-                                        </div>
-                                        <div id="password-fields" class="mt-3">
-                                            <div class="row g-3">
-                                                <div class="col-md-6">
-                                                    <div class="form-group">
-                                                        <label for="new_password" class="form-label">新密码</label>
-                                                        <input type="password" id="new_password" name="new_password" class="form-control" autocomplete="new-password">
-                                                    </div>
-                                                </div>
-                                                <div class="col-md-6">
-                                                    <div class="form-group">
-                                                        <label for="confirm_password" class="form-label">确认新密码</label>
-                                                        <input type="password" id="confirm_password" name="confirm_password" class="form-control" autocomplete="new-password">
-                                                    </div>
+                                <div class="row g-4 settings-pane-grid">
+                                    <div class="col-md-6">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">运行控制</span>
+                                                    <h4>任务并发</h4>
                                                 </div>
                                             </div>
-                                            <div id="password-match-error" class="alert alert-danger mt-3 d-none">
-                                                <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
-                                            </div>
-                                        </div>
-                                        <div class="row g-3 mt-1">
-                                            <div class="col-md-4">
+                                            <div class="settings-card-body">
                                                 <div class="form-group">
-                                                    <label for="login-max-attempts" class="form-label">最大连续错误次数</label>
-                                                    <input type="number" id="login-max-attempts" name="LOGIN_MAX_FAILED_ATTEMPTS" value="{{ config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) }}" min="1" max="20" class="form-control">
+                                                    <label for="max-concurrent-tasks" class="form-label">最大并发任务数</label>
+                                                    <input type="number" id="max-concurrent-tasks" name="MAX_CONCURRENT_TASKS" value="{{ config.get('MAX_CONCURRENT_TASKS', 2) }}" min="1" max="10" class="form-control">
                                                 </div>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <div class="form-group">
-                                                    <label for="login-lock-minutes" class="form-label">锁定时长（分钟）</label>
-                                                    <input type="number" id="login-lock-minutes" name="LOGIN_LOCKOUT_MINUTES" value="{{ config.get('LOGIN_LOCKOUT_MINUTES', 15) }}" min="1" max="1440" class="form-control">
-                                                </div>
-                                            </div>
-                                            <div class="col-md-4">
                                                 <div class="form-group mb-0">
-                                                    <label for="login-session-timeout-minutes" class="form-label">会话超时（分钟）</label>
-                                                    <input type="number" id="login-session-timeout-minutes" name="LOGIN_SESSION_TIMEOUT_MINUTES" value="{{ config.get('LOGIN_SESSION_TIMEOUT_MINUTES', 30) }}" min="1" max="10080" class="form-control">
-                                                    <div class="form-text">连续无操作超过该时长后自动退出，访问受保护页面会自动续期。</div>
+                                                    <label for="max-concurrent-uploads" class="form-label">最大并发上传数</label>
+                                                    <input type="number" id="max-concurrent-uploads" name="MAX_CONCURRENT_UPLOADS" value="{{ config.get('MAX_CONCURRENT_UPLOADS', 1) }}" min="1" max="5" class="form-control">
                                                 </div>
                                             </div>
-                                        </div>
+                                        </article>
                                     </div>
-                                </article>
+
+                                    <div class="col-md-6">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">日志管理</span>
+                                                    <h4>日志清理</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <label class="checkbox-label mb-3">
+                                                    <input type="checkbox" name="LOG_CLEANUP_ENABLED" {% if config.LOG_CLEANUP_ENABLED %}checked{% endif %}>
+                                                    启用自动日志清理
+                                                </label>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="log-cleanup-hours" class="form-label">保留日志小时数</label>
+                                                            <input type="number" id="log-cleanup-hours" name="LOG_CLEANUP_HOURS" value="{{ config.LOG_CLEANUP_HOURS }}" min="1" max="8760" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="log-cleanup-interval" class="form-label">清理间隔（小时）</label>
+                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-inline-actions mt-3">
+                                                    <button type="button" id="manual-cleanup-btn" class="btn btn-warning">
+                                                        <i class="bi bi-trash"></i> 按时间清理日志
+                                                    </button>
+                                                    <span class="help-text">将删除 <span class="text-primary">{{ config.LOG_CLEANUP_HOURS }}</span> 小时前的日志文件。</span>
+                                                </div>
+                                                <div class="mt-3">
+                                                    <button type="button" id="clear-logs-btn" class="btn btn-danger">
+                                                        <i class="bi bi-trash-fill"></i> 立即清空日志
+                                                    </button>
+                                                    <button type="button" id="confirm-clear-btn" class="btn btn-outline-danger ms-2 d-none">
+                                                        <i class="bi bi-check-lg"></i> 确认清空
+                                                    </button>
+                                                    <button type="button" id="cancel-clear-btn" class="btn btn-outline-secondary ms-2 d-none">
+                                                        <i class="bi bi-x-lg"></i> 取消
+                                                    </button>
+                                                    <div id="clear-warning" class="alert alert-warning mt-3 d-none mb-0">
+                                                        <i class="bi bi-exclamation-triangle"></i> 此操作会清空 `task_manager.log`、`app.log` 并删除所有 `task_xxx.log` 文件，且无法恢复。
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">文件维护</span>
+                                                    <h4>下载内容清理</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <label class="checkbox-label mb-3">
+                                                    <input type="checkbox" name="DOWNLOAD_CLEANUP_ENABLED" {% if config.get('DOWNLOAD_CLEANUP_ENABLED', False) %}checked{% endif %}>
+                                                    启用自动下载内容清理
+                                                </label>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="download-cleanup-hours" class="form-label">保留下载内容小时数</label>
+                                                            <input type="number" id="download-cleanup-hours" name="DOWNLOAD_CLEANUP_HOURS" value="{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}" min="1" max="17520" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="download-cleanup-interval" class="form-label">清理间隔（小时）</label>
+                                                            <input type="number" id="download-cleanup-interval" name="DOWNLOAD_CLEANUP_INTERVAL" value="{{ config.get('DOWNLOAD_CLEANUP_INTERVAL', 24) }}" min="1" max="168" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-inline-actions mt-3">
+                                                    <button type="button" id="manual-download-cleanup-btn" class="btn btn-warning">
+                                                        <i class="bi bi-trash"></i> 按时间清理下载内容
+                                                    </button>
+                                                    <span class="help-text">将删除 <span class="text-primary">{{ config.get('DOWNLOAD_CLEANUP_HOURS', 72) }}</span> 小时前的下载文件和目录。</span>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">运行环境</span>
+                                                    <h4>FFmpeg 环境</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <label class="checkbox-label">
+                                                    <input type="checkbox" name="FFMPEG_AUTO_DOWNLOAD" {% if config.get('FFMPEG_AUTO_DOWNLOAD', True) %}checked{% endif %}>
+                                                    Windows 缺失时自动下载 FFmpeg
+                                                </label>
+                                                <div class="form-group mt-3 mb-0">
+                                                    <label for="ffmpeg-location" class="form-label">FFmpeg 自定义路径</label>
+                                                    <input type="text" id="ffmpeg-location" name="FFMPEG_LOCATION" value="{{ config.get('FFMPEG_LOCATION', '') }}" class="form-control" placeholder="留空使用内置 FFmpeg">
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">监控接入</span>
+                                                    <h4>YouTube 监控 API</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if config.YOUTUBE_API_KEY else 'is-warning' }}">
+                                                    {{ '已配置' if config.YOUTUBE_API_KEY else '未配置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="alert alert-info mb-3">
+                                                    <i class="bi bi-info-circle"></i>
+                                                    下载页中的“启用代理下载”只影响 `yt-dlp` 下载链路；这里的代理只影响 YouTube Data API 监控请求，且不会继承下载代理或环境变量代理。
+                                                </div>
+                                                <div class="row g-3">
+                                                    <div class="col-12">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-key" class="form-label">YouTube Data API v3 密钥</label>
+                                                            <input type="password" id="youtube-api-key" name="YOUTUBE_API_KEY" value="{{ config.YOUTUBE_API_KEY }}" class="form-control">
+                                                            <p class="help-text">配置后可在 <a href="{{ url_for('youtube_monitor_index') }}">YouTube 监控</a> 页面启用自动监控。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="YOUTUBE_API_PROXY_ENABLED" {% if config.get('YOUTUBE_API_PROXY_ENABLED', False) %}checked{% endif %}>
+                                                            为 YouTube 监控 API 启用独立代理
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-8">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-url" class="form-label">监控 API 代理地址</label>
+                                                            <input type="text" id="youtube-api-proxy-url" name="YOUTUBE_API_PROXY_URL" value="{{ config.get('YOUTUBE_API_PROXY_URL', '') }}" class="form-control" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                                                            <p class="help-text">关闭时强制直连，不会回退到下载代理或 `HTTP_PROXY/HTTPS_PROXY`。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label class="form-label d-block">&nbsp;</label>
+                                                            <div class="text-muted small pt-2">如果服务器本身无法直连 YouTube Data API，请在这里单独填写代理。</div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-username" class="form-label">监控 API 代理用户名</label>
+                                                            <input type="text" id="youtube-api-proxy-username" name="YOUTUBE_API_PROXY_USERNAME" value="{{ config.get('YOUTUBE_API_PROXY_USERNAME', '') }}" class="form-control" placeholder="可选">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="youtube-api-proxy-password" class="form-label">监控 API 代理密码</label>
+                                                            <input type="password" id="youtube-api-proxy-password" name="YOUTUBE_API_PROXY_PASSWORD" value="{{ config.get('YOUTUBE_API_PROXY_PASSWORD', '') }}" class="form-control" placeholder="可选">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                {% if config.YOUTUBE_API_KEY %}
+                                                <div class="alert alert-success mt-3 mb-0">
+                                                    <i class="bi bi-check-circle"></i> YouTube API 密钥已配置；如服务器无法直连，请同时配置上方监控 API 代理。
+                                                </div>
+                                                {% else %}
+                                                <div class="alert alert-warning mt-3 mb-0">
+                                                    <i class="bi bi-exclamation-triangle"></i> 尚未配置 YouTube API 密钥，请先完成接入。
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">访问控制</span>
+                                                    <h4>密码保护</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="password_protection_enabled" id="password_protection_enabled" {% if config.password_protection_enabled %}checked{% endif %}>
+                                                            启用 Web 界面密码保护
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <div id="password-fields" class="mt-3">
+                                                    <div class="row g-3">
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="new_password" class="form-label">新密码</label>
+                                                                <input type="password" id="new_password" name="new_password" class="form-control" autocomplete="new-password">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="confirm_password" class="form-label">确认新密码</label>
+                                                                <input type="password" id="confirm_password" name="confirm_password" class="form-control" autocomplete="new-password">
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div id="password-match-error" class="alert alert-danger mt-3 d-none">
+                                                        <i class="bi bi-exclamation-triangle"></i> 两次输入的密码不匹配。
+                                                    </div>
+                                                </div>
+                                                <div class="row g-3 mt-1">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="login-max-attempts" class="form-label">最大连续错误次数</label>
+                                                            <input type="number" id="login-max-attempts" name="LOGIN_MAX_FAILED_ATTEMPTS" value="{{ config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) }}" min="1" max="20" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="login-lock-minutes" class="form-label">锁定时长（分钟）</label>
+                                                            <input type="number" id="login-lock-minutes" name="LOGIN_LOCKOUT_MINUTES" value="{{ config.get('LOGIN_LOCKOUT_MINUTES', 15) }}" min="1" max="1440" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group mb-0">
+                                                            <label for="login-session-timeout-minutes" class="form-label">会话超时（分钟）</label>
+                                                            <input type="number" id="login-session-timeout-minutes" name="LOGIN_SESSION_TIMEOUT_MINUTES" value="{{ config.get('LOGIN_SESSION_TIMEOUT_MINUTES', 30) }}" min="1" max="10080" class="form-control">
+                                                            <div class="form-text">连续无操作超过该时长后自动退出，访问受保护页面会自动续期。</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
+                                </div>
                             </section>
                         </div>
                     </div>
@@ -3105,5 +3014,98 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 });
+
+    /* 设置项搜索：按名称/标签/占位符定位设置卡片并切换到对应 tab */
+    document.addEventListener('DOMContentLoaded', function () {
+        var searchInput = document.getElementById('settings-search-input');
+        var searchClear = document.getElementById('settings-search-clear');
+        var searchHint = document.getElementById('settings-search-hint');
+        if (!searchInput) { return; }
+
+        var cards = [];
+        document.querySelectorAll('#settings-tabContent .settings-card').forEach(function (card) {
+            var pane = card.closest('.tab-pane');
+            var texts = [];
+            card.querySelectorAll('.section-eyebrow, h4, .form-label, .checkbox-label, .help-text, .form-text, legend, optgroup').forEach(function (el) {
+                var t = (el.textContent || '').trim();
+                if (t) { texts.push(t); }
+            });
+            card.querySelectorAll('input, select, textarea').forEach(function (el) {
+                var ph = el.getAttribute('placeholder');
+                if (ph) { texts.push(ph); }
+                var nm = el.getAttribute('name');
+                if (nm) { texts.push(nm); }
+            });
+            cards.push({ card: card, paneId: pane ? pane.id : '', text: texts.join(' \n ').toLowerCase() });
+        });
+
+        function activatePane(paneId) {
+            if (!paneId) { return; }
+            var link = document.querySelector('.settings-nav .nav-link[href="#' + paneId + '"]');
+            if (link && typeof bootstrap !== 'undefined') {
+                bootstrap.Tab.getOrCreateInstance(link).show();
+            }
+        }
+
+        function clearHighlights() {
+            document.querySelectorAll('#settings-tabContent .settings-card.search-hit').forEach(function (c) { c.classList.remove('search-hit'); });
+            document.querySelectorAll('#settings-tabContent .settings-card.search-dim').forEach(function (c) { c.classList.remove('search-dim'); });
+        }
+
+        var debounceTimer = null;
+        function runSearch(q) {
+            clearHighlights();
+            if (!q) {
+                searchHint.classList.add('d-none');
+                searchHint.textContent = '';
+                searchClear.classList.add('d-none');
+                return;
+            }
+            searchClear.classList.remove('d-none');
+            var ql = q.toLowerCase();
+            var matches = cards.filter(function (c) { return c.text.indexOf(ql) !== -1; });
+            if (matches.length === 0) {
+                searchHint.classList.remove('d-none');
+                searchHint.textContent = '未找到匹配的设置项';
+                searchHint.className = 'form-text text-warning';
+                return;
+            }
+            matches.forEach(function (m) { m.card.classList.add('search-hit'); });
+            cards.forEach(function (c) { if (c.text.indexOf(ql) === -1) { c.card.classList.add('search-dim'); } });
+            searchHint.classList.remove('d-none');
+            searchHint.textContent = '找到 ' + matches.length + ' 项，已定位到第一个';
+            searchHint.className = 'form-text text-success';
+            activatePane(matches[0].paneId);
+            setTimeout(function () {
+                matches[0].card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 220);
+        }
+
+        searchInput.addEventListener('input', function () {
+            var v = searchInput.value.trim();
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(function () { runSearch(v); }, 180);
+        });
+
+        searchInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                clearTimeout(debounceTimer);
+                runSearch(searchInput.value.trim());
+            } else if (e.key === 'Escape') {
+                searchInput.value = '';
+                runSearch('');
+                searchInput.blur();
+            }
+        });
+
+        if (searchClear) {
+            searchClear.addEventListener('click', function () {
+                searchInput.value = '';
+                runSearch('');
+                searchInput.focus();
+            });
+        }
+    });
 </script>
 {% endblock %}

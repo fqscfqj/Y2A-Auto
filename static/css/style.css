@@ -363,6 +363,41 @@ body {
     font-size: 0.95rem;
 }
 
+.settings-search-bar .input-group {
+    max-width: 580px;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+    border-radius: 12px;
+    overflow: hidden;
+}
+.settings-search-bar .input-group-text {
+    background: #fff;
+    border-right: 0;
+    color: #94a3b8;
+}
+.settings-search-bar .form-control {
+    border-left: 0;
+}
+.settings-search-bar .form-control:focus {
+    box-shadow: none;
+    border-color: #e2e8f0;
+}
+.settings-card.search-hit {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.28), 0 10px 26px rgba(15, 23, 42, 0.1);
+    animation: settings-hit-pulse 1.2s ease-out 2;
+}
+.settings-card.search-dim {
+    opacity: 0.35;
+    filter: grayscale(0.4);
+}
+@keyframes settings-hit-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.55); }
+    100% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.28), 0 10px 26px rgba(15, 23, 42, 0.1); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .settings-card.search-hit { animation: none; }
+}
+
 .settings-card {
     border: 1px solid #e2e8f0;
     border-radius: 16px;
