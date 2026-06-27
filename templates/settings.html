@@ -691,6 +691,60 @@
                                                 </div>
                                             </div>
                                         </article>
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">视频理解</span>
+                                                    <h4>TwelveLabs Pegasus（可选）</h4>
+                                                </div>
+                                                <span class="settings-status-badge {{ 'is-success' if config.TWELVELABS_API_KEY else 'is-warning' }}">
+                                                    {{ 'API Key 已配置' if config.TWELVELABS_API_KEY else '未配置' }}
+                                                </span>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="TWELVELABS_VIDEO_ANALYSIS_ENABLED" {% if config.TWELVELABS_VIDEO_ANALYSIS_ENABLED %}checked{% endif %}>
+                                                            启用 TwelveLabs 视频理解
+                                                        </label>
+                                                        <p class="help-text mb-0">视频下载后用 Pegasus 做画面级安全检测并补全简介。免费 API Key 见 <a href="https://twelvelabs.io" target="_blank" rel="noopener">twelvelabs.io</a>。</p>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-field settings-field-switch">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="TWELVELABS_MODERATION_ENABLED" {% if config.TWELVELABS_MODERATION_ENABLED %}checked{% endif %}>
+                                                        画面级内容安全检测
+                                                    </label>
+                                                </div>
+                                                <div class="settings-field settings-field-switch">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="TWELVELABS_DESCRIPTION_ENABLED" {% if config.TWELVELABS_DESCRIPTION_ENABLED %}checked{% endif %}>
+                                                        根据画面生成/补全描述
+                                                    </label>
+                                                </div>
+                                                <div class="settings-field settings-field-switch">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" name="TWELVELABS_DESCRIPTION_OVERWRITE" {% if config.TWELVELABS_DESCRIPTION_OVERWRITE %}checked{% endif %}>
+                                                        始终覆盖已有描述（默认仅在为空时填充）
+                                                    </label>
+                                                </div>
+                                                <div class="row g-3 mt-1">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="twelvelabs-key" class="form-label">API Key</label>
+                                                            <input type="password" id="twelvelabs-key" name="TWELVELABS_API_KEY" value="{{ config.TWELVELABS_API_KEY }}" class="form-control" placeholder="留空则读取环境变量 TWELVELABS_API_KEY">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group mb-0">
+                                                            <label for="twelvelabs-model" class="form-label">模型</label>
+                                                            <input type="text" id="twelvelabs-model" name="TWELVELABS_MODEL_NAME" value="{{ config.TWELVELABS_MODEL_NAME }}" class="form-control" placeholder="默认 pegasus1.5">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
                                     </div>
                                 </div>
                             </section>

@@ -2348,6 +2348,18 @@ class TaskProcessor:
                     return
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DOWNLOAD_VIDEO)
 
+            # 4.5 TwelveLabs Pegasus 视频理解（如启用）：视频级安全检测 + 描述补全
+            if self.config.get('TWELVELABS_VIDEO_ANALYSIS_ENABLED', False):
+                try:
+                    self._analyze_video_with_twelvelabs(task_id, task_logger)
+                except Exception as e:
+                    task_logger.warning(f"TwelveLabs 视频分析失败，继续后续步骤: {e}")
+                _raise_if_cancelled(task_id, task_logger)
+                task = get_task(task_id)
+                if task is not None and task['status'] == TASK_STATES['AWAITING_REVIEW']:
+                    task_logger.info("视频内容需要人工审核，暂停任务处理")
+                    return
+
             # 5. 字幕翻译（如启用）
             if self.config.get('SUBTITLE_TRANSLATION_ENABLED', False):
                 if PIPELINE_STAGE_TRANSLATE_SUBTITLE in completed_stages:
@@ -7133,6 +7145,70 @@ class TaskProcessor:
         else:
             task_logger.info("内容审核不通过，需要人工审核")
             update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
+
+    def _analyze_video_with_twelvelabs(self, task_id, task_logger):
+        """使用 TwelveLabs Pegasus 对已下载视频做安全检测与描述补全（可选）。"""
+        from modules.twelvelabs_analyzer import TwelveLabsAnalyzer
+
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在，跳过 TwelveLabs 视频分析")
+            return
+
+        video_path = task.get('video_path_local')
+        if not video_path or not os.path.exists(video_path):
+            task_logger.info("未找到本地视频文件，跳过 TwelveLabs 视频分析")
+            return
+
+        want_moderation = bool(self.config.get('TWELVELABS_MODERATION_ENABLED', True))
+        want_description = bool(self.config.get('TWELVELABS_DESCRIPTION_ENABLED', True))
+        if not want_moderation and not want_description:
+            return
+
+        tl_config = {
+            'TWELVELABS_API_KEY': self.config.get('TWELVELABS_API_KEY', ''),
+            'TWELVELABS_MODEL_NAME': self.config.get('TWELVELABS_MODEL_NAME', 'pegasus1.5'),
+        }
+        task_logger.info("开始 TwelveLabs Pegasus 视频理解")
+        analyzer = TwelveLabsAnalyzer(tl_config, task_id)
+        result = analyzer.analyze_video(
+            video_path, want_moderation=want_moderation, want_description=want_description
+        )
+
+        if not result.get('available'):
+            task_logger.info(f"TwelveLabs 视频分析跳过: {result.get('reason')}")
+            return
+
+        # 描述补全：默认仅在描述为空时填充，避免覆盖人工/翻译结果
+        description = result.get('description') or ''
+        if want_description and description:
+            overwrite = bool(self.config.get('TWELVELABS_DESCRIPTION_OVERWRITE', False))
+            current = task.get('description_translated') or task.get('description_original') or ''
+            if overwrite or not str(current).strip():
+                update_task(task_id, description_translated=description)
+                task_logger.info("已用 TwelveLabs 生成的视频描述更新稿件简介")
+            else:
+                task_logger.info("已有描述，按配置保留（未覆盖）")
+
+        # 视频级安全检测：并入既有 moderation_result，未通过则转人工审核
+        if want_moderation:
+            video_moderation = result.get('moderation', {'pass': True, 'details': []})
+            task_logger.info(f"TwelveLabs 视频审核结果: pass={video_moderation.get('pass', True)}")
+            latest = get_task(task_id) or {}
+            try:
+                existing = json.loads(latest.get('moderation_result') or '{}')
+            except (ValueError, TypeError):
+                existing = {}
+            existing['twelvelabs_video'] = video_moderation
+            existing['overall_pass'] = bool(existing.get('overall_pass', True)) and bool(
+                video_moderation.get('pass', True)
+            )
+            update_task(task_id, moderation_result=json.dumps(existing, ensure_ascii=False))
+            if not video_moderation.get('pass', True):
+                task_logger.warning("TwelveLabs 视频审核未通过，转入人工审核")
+                for detail in video_moderation.get('details', []):
+                    task_logger.warning(f"视频风险: {detail.get('label')} - {detail.get('reason')}")
+                update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
 
     def _get_embedded_video_candidate(self, video_path: str) -> str:
         if not video_path:

@@ -100,6 +100,13 @@ DEFAULT_CONFIG = {
     "ALIYUN_ACCESS_KEY_SECRET": "",
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
     "ALIYUN_TEXT_MODERATION_SERVICE": "comment_detection_pro",
+    # TwelveLabs Pegasus 视频理解（可选）：在视频下载后做视频级安全检测 + 生成描述
+    "TWELVELABS_VIDEO_ANALYSIS_ENABLED": False,  # 总开关，默认关闭
+    "TWELVELABS_API_KEY": "",  # 留空则回退到环境变量 TWELVELABS_API_KEY
+    "TWELVELABS_MODEL_NAME": "pegasus1.5",  # Pegasus 模型版本
+    "TWELVELABS_MODERATION_ENABLED": True,  # 启用后做视频画面安全检测
+    "TWELVELABS_DESCRIPTION_ENABLED": True,  # 启用后用画面内容生成/补全描述
+    "TWELVELABS_DESCRIPTION_OVERWRITE": False,  # 仅在描述为空时填充；为 True 则始终覆盖
     "COVER_PROCESSING_MODE": "crop",
     # YouTube下载相关配置
     "YOUTUBE_PROXY_ENABLED": False,  # 是否启用代理

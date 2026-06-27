@@ -279,6 +279,22 @@ python app.py
 - `ALIYUN_CONTENT_MODERATION_REGION`：审核服务区域
 - `ALIYUN_TEXT_MODERATION_SERVICE`：文本审核服务名，默认 `comment_detection_pro`
 
+### TwelveLabs 视频理解（可选）
+
+使用 [TwelveLabs](https://twelvelabs.io) 的 Pegasus 视频理解模型，在视频下载后做
+**画面级内容安全检测**（补充阿里云的文本审核，覆盖纯画面/无字幕风险），并可根据画面
+**自动生成中文简介**。完全可选：未配置 API Key 或未安装 `twelvelabs` SDK 时静默跳过，
+不影响既有流程。免费 API Key 有较慷慨的免费额度，可在 <https://twelvelabs.io> 获取。
+
+- `TWELVELABS_VIDEO_ANALYSIS_ENABLED`：总开关，默认 `false`
+- `TWELVELABS_API_KEY`：API Key；留空则回退到环境变量 `TWELVELABS_API_KEY`
+- `TWELVELABS_MODEL_NAME`：模型版本，默认 `pegasus1.5`
+- `TWELVELABS_MODERATION_ENABLED`：启用画面级安全检测，未通过转人工审核，默认 `true`
+- `TWELVELABS_DESCRIPTION_ENABLED`：根据画面生成/补全描述，默认 `true`
+- `TWELVELABS_DESCRIPTION_OVERWRITE`：为 `true` 时始终覆盖已有描述；默认仅在描述为空时填充
+
+> 说明：本地文件通过 direct 方式上传，上限 200MB；超限会自动跳过分析（可改用公开 URL，最高 4GB）。
+
 ### 下载质量
 
 - `YOUTUBE_DOWNLOAD_QUALITY_MODE`：下载质量模式
