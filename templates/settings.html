@@ -2746,13 +2746,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
+            const passwordProtectionCheckbox = document.getElementById('password_protection_enabled');
             const newPasswordField = document.getElementById('new_password');
             const confirmPasswordField = document.getElementById('confirm_password');
             if (
-                newPasswordField
+                passwordProtectionCheckbox
+                && passwordProtectionCheckbox.checked
+                && newPasswordField
                 && confirmPasswordField
                 && newPasswordField.value !== confirmPasswordField.value
             ) {
+                event.preventDefault();
+                showSettingsToast('error', '两次输入的密码不匹配，请修正后再保存。');
+                const passwordError = document.getElementById('password-match-error');
+                if (passwordError) {
+                    passwordError.classList.remove('d-none');
+                }
                 return;
             }
 

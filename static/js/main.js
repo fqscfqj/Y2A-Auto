@@ -31,11 +31,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 newPassword && confirmPassword && newPassword.value !== confirmPassword.value) {
                 event.preventDefault(); // 阻止表单提交
                 if (passwordError) {
-                    passwordError.style.display = 'block';
+                    passwordError.classList.remove('d-none');
                 }
             } else {
                 if (passwordError) {
-                    passwordError.style.display = 'none';
+                    passwordError.classList.add('d-none');
                 }
             }
         });
