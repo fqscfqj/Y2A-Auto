@@ -225,7 +225,7 @@ class SpeechRecognizer:
             self.logger.info("Subtitle range: %.2fs -> %.2fs", cue_dicts[0]['start'], cue_dicts[-1]['end'])
             return output_path
         except Exception as exc:
-            self.last_error_message = self.last_error_message or f"Transcription failed: {exc}"
+            self.last_error_message = self.last_error_message or f"转录失败: {exc}"
             self.logger.exception("Transcription failed")
             return None
         finally:
