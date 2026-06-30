@@ -1321,7 +1321,7 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="subtitle-single-line-min-font-scale" class="form-label">单行最小字体缩放（0.5-1.0）</label>
-                                                            <input type="number" id="subtitle-single-line-min-font-scale" name="SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE" value="{{ config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', 0.78) }}" min="0.5" max="1.0" step="0.05" class="form-control">
+                                                            <input type="number" id="subtitle-single-line-min-font-scale" name="SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE" value="{{ config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', 0.78) }}" min="0.5" max="1.0" step="0.01" class="form-control">
                                                             <p class="help-text mb-0">默认字体放不下时，会尝试缩小到该比例；仍放不下则自动换行。</p>
                                                         </div>
                                                     </div>
@@ -2746,13 +2746,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
+            const passwordProtectionCheckbox = document.getElementById('password_protection_enabled');
             const newPasswordField = document.getElementById('new_password');
             const confirmPasswordField = document.getElementById('confirm_password');
             if (
-                newPasswordField
+                passwordProtectionCheckbox
+                && passwordProtectionCheckbox.checked
+                && newPasswordField
                 && confirmPasswordField
                 && newPasswordField.value !== confirmPasswordField.value
             ) {
+                event.preventDefault();
+                showSettingsToast('error', '两次输入的密码不匹配，请修正后再保存。');
+                const passwordError = document.getElementById('password-match-error');
+                if (passwordError) {
+                    passwordError.classList.remove('d-none');
+                }
                 return;
             }
 

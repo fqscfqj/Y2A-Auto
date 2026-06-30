@@ -71,8 +71,8 @@ RUN set -eux \
     && case "${FFMPEG_VARIANT}" in \
         btbn) \
             case "$arch" in \
-                amd64|x86_64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" ;; \
-                arm64|aarch64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz" ;; \
+                amd64|x86_64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz" ;; \
+                arm64|aarch64) ffmpeg_url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linuxarm64-gpl-8.1.tar.xz" ;; \
                 *) echo "FFMPEG_VARIANT=btbn is not available for $arch" >&2 && exit 1 ;; \
             esac ;; \
         static) \

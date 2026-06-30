@@ -223,7 +223,7 @@ class AsrApiClient:
 
     def _build_incompatible_error(self) -> RuntimeError:
         return AsrFormatIncompatibleError(
-            "ASR API incompatible: unable to negotiate a supported transcription format."
+            "ASR API 不兼容：无法协商出支持的转录格式。"
         )
 
     def _parse_requested_granularities(self) -> Tuple[str, ...]:
