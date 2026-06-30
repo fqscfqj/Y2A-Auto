@@ -501,6 +501,8 @@ def _build_task_notification_payload(task, overrides=None) -> dict:
         'video_title_original': str(merged_task.get('video_title_original') or '').strip(),
         'video_title_translated': str(merged_task.get('video_title_translated') or '').strip(),
         'error_message': str(merged_task.get('error_message') or '').strip(),
+        'asr_warning_message': str(merged_task.get('asr_warning_message') or '').strip(),
+        'subtitle_warning_message': str(merged_task.get('subtitle_warning_message') or '').strip(),
         'acfun_uploaded': bool(merged_task.get('acfun_upload_response')),
         'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')),
     }
@@ -1000,7 +1002,8 @@ def init_db():
         upload_progress TEXT,  -- 上传进度
         acfun_upload_response TEXT,
         bilibili_upload_response TEXT,
-        asr_warning_message TEXT  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
+        asr_warning_message TEXT,  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
+        subtitle_warning_message TEXT  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
     )
     ''')
     
@@ -1203,6 +1206,13 @@ def init_db():
             logger.info("数据库升级：添加asr_warning_message字段")
             conn.commit()
 
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'subtitle_warning_message' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_warning_message TEXT")
+            logger.info("数据库升级：添加subtitle_warning_message字段")
+            conn.commit()
+
         # 数据迁移：将 error_message 中纯 ASR/VAD 警告 token 挪至 asr_warning_message，清空 error_message
         cursor.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
@@ -1387,6 +1397,7 @@ def update_task(task_id, silent=False, **kwargs):
         'acfun_upload_response': 'acfun_upload_response = ?',
         'bilibili_upload_response': 'bilibili_upload_response = ?',
         'asr_warning_message': 'asr_warning_message = ?',
+        'subtitle_warning_message': 'subtitle_warning_message = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -3093,7 +3104,8 @@ class TaskProcessor:
                             video_path_local=embedded_video_path,
                             subtitle_path_original=subtitle_file,
                             subtitle_path_translated=None,
-                            subtitle_language_detected=subtitle_lang
+                            subtitle_language_detected=subtitle_lang,
+                            subtitle_warning_message=None,
                         )
                         task_logger.info("中文字幕烧录完成")
                         return True
@@ -3103,7 +3115,8 @@ class TaskProcessor:
                             task_id,
                             subtitle_path_original=subtitle_file,
                             subtitle_path_translated=None,
-                            subtitle_language_detected=subtitle_lang
+                            subtitle_language_detected=subtitle_lang,
+                            subtitle_warning_message='subtitle_embed_failed',
                         )
                         return False
                 else:
@@ -3182,7 +3195,8 @@ class TaskProcessor:
                             video_path_local=embedded_video_path,
                             subtitle_path_original=subtitle_file,
                             subtitle_path_translated=translated_subtitle_path,
-                            subtitle_language_detected=subtitle_lang
+                            subtitle_language_detected=subtitle_lang,
+                            subtitle_warning_message=None,
                         )
                     else:
                         task_logger.warning("字幕嵌入失败，保留原视频和字幕文件")
@@ -3190,7 +3204,8 @@ class TaskProcessor:
                             task_id,
                             subtitle_path_original=subtitle_file,
                             subtitle_path_translated=translated_subtitle_path,
-                            subtitle_language_detected=subtitle_lang
+                            subtitle_language_detected=subtitle_lang,
+                            subtitle_warning_message='subtitle_embed_failed',
                         )
                 else:
                     # 不嵌入字幕，只保存字幕文件信息
@@ -3376,6 +3391,12 @@ class TaskProcessor:
         'hwupload',
         'A hardware device reference is required to upload frames to.',
         'Failed to configure output pad on Parsed_hwupload',
+        'Driver does not support the required nvenc API version',
+        'The minimum required Nvidia driver for nvenc is',
+        'libamfrt64.so',
+        "failed to load library 'libX11.so.6'",
+        'cannot open shared object file',
+        'Assertion in generated code',
     )
 
     _HW_PROBE_DEFAULT_SIZE = '640x480'
@@ -7250,10 +7271,12 @@ class TaskProcessor:
                         subtitle_path_original=subtitle_path_original,
                         subtitle_path_translated=subtitle_path_translated,
                         subtitle_language_detected=subtitle_language,
+                        subtitle_warning_message=None,
                     )
                     task_logger.info("检测到已存在翻译字幕，仅补做烧录")
                 else:
                     task_logger.warning("复用已有翻译字幕烧录失败，保留原视频继续上传")
+                    update_task(task_id, subtitle_warning_message='subtitle_embed_failed')
                 return get_task(task_id)
 
             if translation_enabled and subtitle_path_original and str(subtitle_language or '').startswith('zh'):
@@ -7271,10 +7294,12 @@ class TaskProcessor:
                         subtitle_path_original=subtitle_path_original,
                         subtitle_path_translated=None,
                         subtitle_language_detected=subtitle_language or 'zh',
+                        subtitle_warning_message=None,
                     )
                     task_logger.info("检测到已存在中文字幕，仅补做烧录")
                 else:
                     task_logger.warning("复用已有中文字幕烧录失败，保留原视频继续上传")
+                    update_task(task_id, subtitle_warning_message='subtitle_embed_failed')
                 return get_task(task_id)
 
             if not translation_enabled and (subtitle_path_original or subtitle_path_translated):
