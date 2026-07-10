@@ -20,6 +20,9 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONIOENCODING=utf-8
+      # NVIDIA 用户取消下面两行及下方 `gpus: all` 的注释
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=video,utility
 
     # ========================================
     # GPU 硬件编码加速配置（可选）
@@ -29,16 +32,14 @@ services:
     # --- GPU 编码加速配置示例 ---
     # 根据显卡类型，取消对应部分的注释
     #
-    # NVIDIA 图形卡示例：
-    #   gpus: all
-    #   environment:
-    #     - NVIDIA_VISIBLE_DEVICES=all
-    #     - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    # NVIDIA 图形卡示例（主机需安装 nvidia-container-toolkit）：
+    # gpus: all
     #
     # 以下为 Intel/AMD 样板（保留）。若不需要 GPU，整个区块可忽略。
 
     # --- Intel GPU 配置 (QSV) ---
-    # 需要挂载 /dev/dri 设备
+    # 需要挂载 /dev/dri；容器用户还需有宿主 video/render 设备组权限。
+    # 若组名映射失败，请将下方名称替换为宿主 `getent group video/render` 返回的 GID。
     # devices:
     #   - /dev/dri:/dev/dri
     # group_add:

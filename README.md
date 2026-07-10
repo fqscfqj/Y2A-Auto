@@ -139,6 +139,8 @@ Y2A-Auto/
 docker compose up -d
 ```
 
+官方镜像同时提供 `linux/amd64` 和 `linux/arm64`，Docker 会按宿主架构自动选择镜像，适用于常见 x86-64 Linux、Apple Silicon Docker Desktop 和 ARM64 云主机。
+
 3. 打开 Web
 - 访问 `http://localhost:5000`
 - 首次进入建议先配置登录保护、平台账号和 YouTube Cookie
@@ -376,15 +378,19 @@ QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核�
 
 ### Docker GPU 示例
 
-NVIDIA（推荐）：
+官方镜像默认包含 VA-API 基础运行库以及可用的 Intel/AMD 用户态驱动，但不会默认授予容器 GPU 设备权限。硬件编码是否可用仍取决于宿主驱动、设备透传和 GPU 本身支持的编码格式。
+
+NVIDIA（Linux，推荐）：
 
 ```yaml
 # 在 docker-compose.yml 内取消以下注释即可启用：
-# gpus: all
-# environment:
-#   - NVIDIA_VISIBLE_DEVICES=all
-#   - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+gpus: all
+environment:
+  - NVIDIA_VISIBLE_DEVICES=all
+  - NVIDIA_DRIVER_CAPABILITIES=video,utility
 ```
+
+宿主需要先安装 NVIDIA 驱动和 `nvidia-container-toolkit`。可在容器内执行 `ffmpeg -hide_banner -encoders | grep nvenc` 检查 FFmpeg 是否包含编码器；最终可用性以应用的实际编码探测为准。
 
 Intel / AMD（Linux）：
 
@@ -395,6 +401,10 @@ group_add:
   - video
   - render
 ```
+
+如果 Compose 无法按组名映射权限，请执行 `getent group video` 和 `getent group render` 获取宿主 GID，并在 `group_add` 中填写数字 GID。设备通常应包含 `/dev/dri/renderD128`。本地构建默认安装 GPU 运行库；如只需要精简 CPU 镜像，可设置构建参数 `ENABLE_GPU_DRIVERS=false`。
+
+> `linux/arm64` 表示应用和 CPU 转码可在 ARM64 上原生运行，并不代表所有 ARM 设备都具备容器硬编能力。Apple Silicon 的 Docker 容器无法访问 macOS VideoToolbox；NVIDIA Jetson 需要 L4T 专用镜像；树莓派和 Rockchip 通常需要带 V4L2 M2M 或 MPP 的定制 FFmpeg。这些环境会自动回退到 `libx264`。
 
 > NVIDIA 专用覆盖文件已移除，相关配置已直接集成到主 `docker-compose.yml`。
 

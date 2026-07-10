@@ -27,9 +27,21 @@ COPY requirements.txt .
 # 安装Python依赖到本地目录
 # 先安装 CPU-only 版本的 torch 和 torchaudio（silero-vad 的硬依赖），避免从 PyPI 拉取包含 CUDA 的完整版本（~7GB）
 # 固定至 2.6.0：这是当前已验证与 silero-vad 6.2.x JIT 模型兼容的版本线
+ARG TARGETARCH
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user --no-compile "torch==2.6.0" "torchaudio==2.6.0" --index-url https://download.pytorch.org/whl/cpu \
+    set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+        amd64|x86_64) \
+            pip install --user --no-compile --only-binary=:all: \
+                "torch==2.6.0" "torchaudio==2.6.0" \
+                --index-url https://download.pytorch.org/whl/cpu ;; \
+        arm64|aarch64) \
+            pip install --user --no-compile --only-binary=:all: \
+                "torch==2.6.0" "torchaudio==2.6.0" ;; \
+        *) echo "Unsupported architecture for PyTorch: $arch" >&2; exit 1 ;; \
+    esac \
     && pip install --user --no-compile -r requirements.txt
 
 # 验证 yt-dlp 安装
@@ -104,7 +116,7 @@ RUN set -eux \
 # ============================================================
 FROM python:3.11-slim
 
-ARG ENABLE_GPU_DRIVERS=false
+ARG ENABLE_GPU_DRIVERS=true
 
 WORKDIR /app
 
@@ -156,7 +168,7 @@ RUN set -eux \
     && rm -f /tmp/install_deno.py \
     && deno --version
 
-# 可选：安装 GPU 编码支持库（VAAPI/Intel/AMD），通过 --build-arg ENABLE_GPU_DRIVERS=true 启用
+# 默认安装 GPU 编码支持库（VAAPI/Intel/AMD）；精简镜像可通过 --build-arg ENABLE_GPU_DRIVERS=false 关闭
 RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-gpu \
     if [ "${ENABLE_GPU_DRIVERS}" = "true" ]; then \
         rm -rf /var/lib/apt/lists/* \
@@ -165,8 +177,15 @@ RUN --mount=type=cache,target=/var/cache/apt,id=y2a-apt-cache-gpu \
             libva2 \
             libva-drm2 \
             vainfo \
-        && (apt-get install -y --no-install-recommends intel-media-va-driver-non-free 2>/dev/null || echo "Intel VA driver not available") \
-        && (apt-get install -y --no-install-recommends mesa-va-drivers 2>/dev/null || echo "Mesa VA drivers not available") \
+            mesa-va-drivers \
+        && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+            sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+            && apt-get update \
+            && apt-get install -y --no-install-recommends intel-media-va-driver-non-free 2>/dev/null \
+            || echo "Intel VA driver not available; Intel QSV requires a compatible host driver"; \
+        else \
+            echo "Skipping Intel VA driver on $(dpkg --print-architecture)"; \
+        fi \
         && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
         && apt-get clean \
         && echo "GPU driver packages installed"; \

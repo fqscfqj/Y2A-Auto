@@ -16,7 +16,18 @@ env:
 
 jobs:
   build-test-push:
-    runs-on: ubuntu-latest
+    name: Build and test ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -25,14 +36,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
       - name: Extract metadata for Docker Hub
         id: meta-dockerhub
         uses: docker/metadata-action@v6
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -56,25 +64,29 @@ jobs:
             exit 1
           fi
 
-      - name: Build local Docker image for validation (linux/amd64)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build local Docker image for validation
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           push: false
-          tags: ${{ env.LOCAL_IMAGE }}:${{ steps.meta-dockerhub.outputs.version }}
+          tags: ${{ env.LOCAL_IMAGE }}:${{ steps.meta-dockerhub.outputs.version }}-${{ matrix.arch }}
           labels: |
             ${{ steps.meta-dockerhub.outputs.labels }}
             ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
 
       - name: Test local Docker image
         shell: bash
         env:
           IMAGE_TAG: ${{ steps.meta-dockerhub.outputs.version }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
 
@@ -84,7 +96,7 @@ jobs:
           fi
 
           container_name="test-y2a-auto"
-          local_image="${{ env.LOCAL_IMAGE }}:${IMAGE_TAG}"
+          local_image="${{ env.LOCAL_IMAGE }}:${IMAGE_TAG}-${EXPECTED_ARCH}"
           trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
 
           docker run --rm -d --name "$container_name" -p 5001:5000 "$local_image"
@@ -98,8 +110,22 @@ jobs:
           done
 
           curl -f http://localhost:5001/
+          actual_arch="$(docker exec "$container_name" uname -m)"
+          case "$EXPECTED_ARCH:$actual_arch" in
+            amd64:x86_64|arm64:aarch64) ;;
+            *) echo "Unexpected container architecture: expected $EXPECTED_ARCH, got $actual_arch"; exit 1 ;;
+          esac
           docker exec "$container_name" yt-dlp --version
-          docker exec "$container_name" python -c "import torch, torchaudio, silero_vad; print('VAD deps OK')"
+          docker exec "$container_name" deno --version
+          docker exec "$container_name" ffmpeg -version
+          docker exec "$container_name" ffprobe -version
+          docker exec "$container_name" python -c "import torch, torchaudio, silero_vad, curl_cffi; print('Python runtime deps OK')"
+          docker exec "$container_name" sh -c "ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264"
+          if [ "$EXPECTED_ARCH" = "amd64" ]; then
+            docker exec "$container_name" sh -c "ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_nvenc"
+            docker exec "$container_name" sh -c "ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_qsv"
+            docker exec "$container_name" sh -c "ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_vaapi"
+          fi
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -115,18 +141,112 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push Docker image to registries (linux/amd64)
+      - name: Push architecture image to registries
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ${{ steps.meta-dockerhub.outputs.tags }}
-            ${{ steps.meta-ghcr.outputs.tags }}
+            ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.meta-dockerhub.outputs.version }}-${{ matrix.arch }}
+            ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto:${{ steps.meta-dockerhub.outputs.version }}-${{ matrix.arch }}
           labels: |
             ${{ steps.meta-dockerhub.outputs.labels }}
             ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+
+  merge-manifests:
+    name: Publish multi-platform manifests
+    needs: build-test-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Extract metadata for Docker Hub
+        id: meta-dockerhub
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Extract metadata for GHCR
+        id: meta-ghcr
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate manifest tag metadata
+        shell: bash
+        run: |
+          if [ -z "${{ steps.meta-dockerhub.outputs.tags }}" ] || [ -z "${{ steps.meta-ghcr.outputs.tags }}" ]; then
+            echo "No semver tags were generated for the manifest merge."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY_DOCKERHUB }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-platform manifests
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta-dockerhub.outputs.version }}
+          DOCKERHUB_IMAGE: ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          GHCR_IMAGE: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+          DOCKERHUB_TAGS: ${{ steps.meta-dockerhub.outputs.tags }}
+          GHCR_TAGS: ${{ steps.meta-ghcr.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          publish_tags() {
+            local image="$1"
+            local tags="$2"
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              docker buildx imagetools create \
+                --tag "$tag" \
+                "${image}:${VERSION}-amd64" \
+                "${image}:${VERSION}-arm64"
+            done <<< "$tags"
+          }
+
+          publish_tags "$DOCKERHUB_IMAGE" "$DOCKERHUB_TAGS"
+          publish_tags "$GHCR_IMAGE" "$GHCR_TAGS"
+
+      - name: Verify published platforms
+        shell: bash
+        env:
+          DOCKERHUB_IMAGE: ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          GHCR_IMAGE: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+          VERSION: ${{ steps.meta-dockerhub.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in "$DOCKERHUB_IMAGE" "$GHCR_IMAGE"; do
+            manifest="$(docker buildx imagetools inspect "${image}:${VERSION}")"
+            grep -q 'linux/amd64' <<< "$manifest"
+            grep -q 'linux/arm64' <<< "$manifest"
+          done
