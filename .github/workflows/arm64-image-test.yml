@@ -2,6 +2,9 @@ name: ARM64 Docker Image Test
 
 "on":
   workflow_dispatch:
+  push:
+    branches:
+      - feat/multi-arch-docker
 
 concurrency:
   group: arm64-image-test-${{ github.ref }}
