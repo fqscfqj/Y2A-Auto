@@ -1035,39 +1035,44 @@ class VideoUploader(AsyncEvent):
         total_chunk_count = len(chunk_offset_list)
         # 并发上传分块
         chunk_number = 0
-        # 上传队列
+        # 上传队列仅保存分块参数；单个分块的有限重试由 _upload_chunk 负责。
         chunks_pending = []
         # 缓存 upload_id，这玩意只能从上传的分块预检结果获得
         upload_id = preupload["upload_id"]
         for offset in chunk_offset_list:
-            chunks_pending.insert(
-                0,
-                self._upload_chunk(
-                    page, offset, chunk_number, total_chunk_count, preupload
-                ),
-            )
+            chunks_pending.append((offset, chunk_number))
             chunk_number += 1
+
+        try:
+            threads = max(1, int(preupload.get("threads") or 1))
+        except (TypeError, ValueError):
+            threads = 1
 
         while chunks_pending:
             tasks = []
 
-            while len(tasks) < preupload["threads"] and len(chunks_pending) > 0:
-                tasks.append(create_task(chunks_pending.pop()))
-
-            result = await asyncio.gather(*tasks)
-
-            for r in result:
-                if not r["ok"]:
-                    chunks_pending.insert(
-                        0,
+            while len(tasks) < threads and chunks_pending:
+                offset, chunk_number = chunks_pending.pop(0)
+                tasks.append(
+                    create_task(
                         self._upload_chunk(
                             page,
-                            r["offset"],
-                            r["chunk_number"],
+                            offset,
+                            chunk_number,
                             total_chunk_count,
                             preupload,
-                        ),
+                        )
                     )
+                )
+
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
 
         data = await self._complete_page(page, total_chunk_count, preupload, upload_id)
 
@@ -1118,7 +1123,6 @@ class VideoUploader(AsyncEvent):
             "chunk_number": chunk_number,
             "total_chunk_count": total_chunk_count,
         }
-        self.dispatch(VideoUploaderEvents.PRE_CHUNK.value, chunk_event_callback_data)
         session = get_client()
 
         stream = open(page.path, "rb")
@@ -1129,13 +1133,6 @@ class VideoUploader(AsyncEvent):
         # 上传目标 URL
         preupload = self._switch_upload_endpoint(preupload, self.line)
         url = self._get_upload_url(preupload)
-
-        err_return = {
-            "ok": False,
-            "chunk_number": chunk_number,
-            "offset": offset,
-            "page": page,
-        }
 
         real_chunk_size = len(chunk)
 
@@ -1157,41 +1154,63 @@ class VideoUploader(AsyncEvent):
             "page": page,
         }
 
-        try:
-            resp = await session.request(
-                method="PUT",
-                url=url,
-                data=chunk,  # type: ignore
-                params=params,
-                headers={"x-upos-auth": preupload["auth"]},
-            )
-            if resp.code >= 400:
-                chunk_event_callback_data["info"] = f"Status {resp.code}"
-                self.dispatch(
-                    VideoUploaderEvents.CHUNK_FAILED.value,
-                    chunk_event_callback_data,
+        max_attempts = 3
+        retryable_statuses = {408, 429, 500, 502, 503, 504}
+
+        for attempt in range(1, max_attempts + 1):
+            attempt_data = {
+                **chunk_event_callback_data,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
+            self.dispatch(VideoUploaderEvents.PRE_CHUNK.value, attempt_data)
+
+            status_code = None
+            try:
+                resp = await session.request(
+                    method="PUT",
+                    url=url,
+                    data=chunk,  # type: ignore
+                    params=params,
+                    headers={"x-upos-auth": preupload["auth"]},
                 )
-                return err_return
+                status_code = resp.code
+                if status_code >= 400:
+                    raise NetworkException(status_code, "上传视频分块失败")
 
-            data = resp.utf8_text()
+                data = resp.utf8_text()
+                if data != "MULTIPART_PUT_SUCCESS" and data != "":
+                    raise ApiException("分块上传响应异常")
 
-            if data != "MULTIPART_PUT_SUCCESS" and data != "":
-                chunk_event_callback_data["info"] = "分块上传失败"
                 self.dispatch(
-                    VideoUploaderEvents.CHUNK_FAILED.value,
-                    chunk_event_callback_data,
+                    VideoUploaderEvents.AFTER_CHUNK.value,
+                    attempt_data,
                 )
-                return err_return
+                return ok_return
+            except CancelledError:
+                raise
+            except Exception as err:
+                retryable = (
+                    not isinstance(err, NetworkException)
+                    or status_code in retryable_statuses
+                )
+                retrying = retryable and attempt < max_attempts
+                retry_delay = min(2 ** (attempt - 1), 8) if retrying else 0
+                failure_data = {
+                    **attempt_data,
+                    "info": str(err),
+                    "err": err,
+                    "status_code": status_code,
+                    "retrying": retrying,
+                    "retry_delay_seconds": retry_delay,
+                }
+                self.dispatch(VideoUploaderEvents.CHUNK_FAILED.value, failure_data)
 
-        except Exception as e:
-            chunk_event_callback_data["info"] = str(e)
-            self.dispatch(
-                VideoUploaderEvents.CHUNK_FAILED.value, chunk_event_callback_data
-            )
-            return err_return
+                if not retrying:
+                    raise
+                await asyncio.sleep(retry_delay)
 
-        self.dispatch(VideoUploaderEvents.AFTER_CHUNK.value, chunk_event_callback_data)
-        return ok_return
+        raise ApiException("分块上传重试耗尽")
 
     async def _complete_page(
         self, page: VideoUploaderPage, chunks: int, preupload: dict, upload_id: str

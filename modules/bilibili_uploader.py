@@ -191,6 +191,32 @@ def _bilibili_406_hint() -> str:
     )
 
 
+class _BilibiliChunkProgress:
+    def __init__(self):
+        self._completed = {}
+        self._totals = {}
+
+    def record(self, payload: Any) -> Optional[float]:
+        if not isinstance(payload, dict):
+            return None
+        page = payload.get("page")
+        chunk_number = payload.get("chunk_number")
+        total_chunk_count = payload.get("total_chunk_count")
+        if page is None or not isinstance(chunk_number, int):
+            return None
+        if not isinstance(total_chunk_count, int) or total_chunk_count <= 0:
+            return None
+
+        page_key = id(page)
+        self._totals[page_key] = total_chunk_count
+        self._completed.setdefault(page_key, set()).add(chunk_number)
+        completed = sum(len(chunks) for chunks in self._completed.values())
+        total = sum(self._totals.values())
+        if total <= 0:
+            return None
+        return min(95.0, completed / total * 95.0)
+
+
 class BilibiliUploader:
     """Bilibili uploader based on the internal SDK subset."""
 
@@ -277,8 +303,12 @@ class BilibiliUploader:
                 cover=cover_file_path,
             )
 
-            last_emitted_percent = 0.0
             last_emitted_text = ""
+            chunk_progress = _BilibiliChunkProgress()
+            page_positions = {
+                id(item): index for index, item in enumerate(uploader.pages, 1)
+            }
+            page_count = len(uploader.pages)
 
             def _emit_progress(text: str):
                 nonlocal last_emitted_text
@@ -295,88 +325,87 @@ class BilibiliUploader:
                 except Exception:
                     pass
 
-            def _to_float(value: Any) -> Optional[float]:
-                try:
-                    if value is None:
-                        return None
-                    return float(value)
-                except Exception:
-                    return None
+            def _page_label(data: Any) -> str:
+                page_obj = data.get("page") if isinstance(data, dict) else None
+                page_number = page_positions.get(id(page_obj), 1)
+                return f"第{page_number}/{page_count}P"
 
-            def _extract_progress_percent(payload: Any) -> Optional[float]:
-                if not isinstance(payload, dict):
-                    return None
-
-                candidates = []
-
-                for key in (
-                    "percent",
-                    "progress",
-                    "uploaded_percent",
-                    "upload_percent",
-                ):
-                    value = _to_float(payload.get(key))
-                    if value is None:
-                        continue
-                    if 0.0 <= value <= 1.0:
-                        value *= 100.0
-                    candidates.append(value)
-
-                total_keys = (
-                    "total_chunk_count",
-                    "chunk_count",
-                    "total_chunks",
-                    "chunks_total",
-                )
-                current_keys = (
-                    "chunk_number",
-                    "chunk_index",
-                    "uploaded_chunk_count",
-                    "uploaded_chunks",
-                    "chunk_id",
-                    "current_chunk",
-                )
-
-                totals = [_to_float(payload.get(k)) for k in total_keys]
-                currents = [_to_float(payload.get(k)) for k in current_keys]
-
-                for total in totals:
-                    if total is None or total <= 0:
-                        continue
-                    for current in currents:
-                        if current is None:
-                            continue
-                        candidates.append((current / total) * 100.0)
-                        candidates.append(((current + 1.0) / total) * 100.0)
-
-                normalized = [
-                    max(0.0, min(100.0, value))
-                    for value in candidates
-                    if value is not None
-                ]
-                if not normalized:
-                    return None
-
-                # 优先选择“略大于上一进度”的最小值，兼容 chunk 索引基数差异
-                forward = [value for value in normalized if value > (last_emitted_percent + 0.05)]
-                if forward:
-                    return min(forward)
-                return max(normalized)
+            def _event_error(data: Any) -> str:
+                err = data.get("err") if isinstance(data, dict) else data
+                return _compact_exception_text(str(err)) or "未知错误"
 
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_CHUNK.value)
             def on_after_chunk(data):
-                nonlocal last_emitted_percent
                 try:
-                    percent = _extract_progress_percent(data)
+                    percent = chunk_progress.record(data)
                     if percent is None:
                         _emit_progress("上传中...")
                         return
-                    if percent < last_emitted_percent:
-                        percent = last_emitted_percent
-                    last_emitted_percent = min(100.0, percent)
-                    _emit_progress(f"{last_emitted_percent:.1f}%")
+                    _emit_progress(f"{percent:.1f}%")
                 except Exception:
                     pass
+
+            @uploader.on(video_uploader.VideoUploaderEvents.CHUNK_FAILED.value)
+            def on_chunk_failed(data):
+                if not isinstance(data, dict):
+                    self.log("Bilibili 分块上传失败")
+                    return
+                chunk_number = int(data.get("chunk_number", 0)) + 1
+                total_chunks = data.get("total_chunk_count", "?")
+                attempt = data.get("attempt", "?")
+                max_attempts = data.get("max_attempts", "?")
+                info = _compact_exception_text(str(data.get("info") or "未知错误"))
+                if data.get("retrying"):
+                    delay = data.get("retry_delay_seconds", 0)
+                    self.log(
+                        f"Bilibili {_page_label(data)} 分块 {chunk_number}/{total_chunks} 上传失败，"
+                        f"尝试 {attempt}/{max_attempts}，{delay} 秒后重试：{info}"
+                    )
+                else:
+                    self.log(
+                        f"Bilibili {_page_label(data)} 分块 {chunk_number}/{total_chunks} 上传失败，"
+                        f"已停止重试（{attempt}/{max_attempts}）：{info}"
+                    )
+
+            @uploader.on(video_uploader.VideoUploaderEvents.PRE_PAGE_SUBMIT.value)
+            def on_pre_page_submit(data):
+                _emit_progress("95.0%")
+                self.log(f"Bilibili {_page_label(data)} 分块上传完成，正在提交分P")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.AFTER_PAGE_SUBMIT.value)
+            def on_after_page_submit(data):
+                self.log(f"Bilibili {_page_label(data)} 分P提交成功")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.PAGE_SUBMIT_FAILED.value)
+            def on_page_submit_failed(data):
+                self.log(f"Bilibili {_page_label(data)} 分P提交失败：{_event_error(data)}")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.PRE_COVER.value)
+            def on_pre_cover(_data):
+                _emit_progress("96.0%")
+                self.log("开始上传Bilibili封面")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.AFTER_COVER.value)
+            def on_after_cover(_data):
+                _emit_progress("98.0%")
+                self.log("Bilibili封面上传成功")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.COVER_FAILED.value)
+            def on_cover_failed(data):
+                self.log(f"Bilibili封面上传失败：{_event_error(data)}")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.PRE_SUBMIT.value)
+            def on_pre_submit(_data):
+                _emit_progress("99.0%")
+                self.log("视频和封面上传完成，正在提交Bilibili投稿")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.AFTER_SUBMIT.value)
+            def on_after_submit(_data):
+                self.log("Bilibili投稿接口提交成功")
+
+            @uploader.on(video_uploader.VideoUploaderEvents.SUBMIT_FAILED.value)
+            def on_submit_failed(data):
+                self.log(f"Bilibili投稿提交失败：{_event_error(data)}")
 
             @uploader.on(video_uploader.VideoUploaderEvents.FAILED.value)
             def on_failed(data):
@@ -396,7 +425,6 @@ class BilibiliUploader:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     result = pool.submit(asyncio.run, uploader.start()).result()
 
-            last_emitted_percent = 100.0
             _emit_progress("100.0%")
             self.log(f"bilibili上传完成: {result}")
 
