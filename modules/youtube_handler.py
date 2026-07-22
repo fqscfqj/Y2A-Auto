@@ -1019,10 +1019,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             subtitles_paths = []
             
             # 查找实际的视频文件与封面
+            # 识别视频文件：以video.开头，匹配标准视频扩展名，排除info/json/字幕/图片
+            video_exts = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'}
             for file in os.listdir(task_dir):
                 file_path = os.path.join(task_dir, file)
                 if os.path.isfile(file_path):
-                    if file.startswith('video.') and not (file.endswith('.info.json') or '.vtt' in file or '.srt' in file or file.endswith('.jpg') or file.endswith('.webp') or file.endswith('.png')):
+                    if file.startswith('video.') and file.lower().endswith(tuple(video_exts)):
                         video_path = file_path
                     elif file.endswith('.info.json'):
                         metadata_path = file_path
