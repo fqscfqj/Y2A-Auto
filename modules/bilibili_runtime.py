@@ -23,6 +23,22 @@ def configure_bilibili_runtime() -> bool:
         impersonate = os.environ.get("BILIBILI_IMPERSONATE", "chrome131").strip()
         if impersonate:
             request_settings.set("impersonate", impersonate)
+
+        proxy = os.environ.get("BILIBILI_PROXY", "").strip()
+        if proxy:
+            request_settings.set_proxy(proxy)
+            logger.info("Bilibili SDK 代理已设置为: %s", proxy)
+
+        timeout_env = os.environ.get("BILIBILI_TIMEOUT", "").strip()
+        if timeout_env:
+            try:
+                timeout_val = float(timeout_env)
+                if timeout_val > 0:
+                    request_settings.set_timeout(timeout_val)
+                    logger.info("Bilibili SDK 超时已设置为: %s 秒", timeout_val)
+            except ValueError:
+                pass
+
         _INITIALIZED = True
         _LAST_ERROR = None
         return True
