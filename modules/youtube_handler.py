@@ -87,7 +87,7 @@ def _get_youtube_runtime_args() -> list[str]:
     args = _detect_js_runtime_args()
     if not args:
         logger.warning("未检测到 JavaScript 运行时（node/deno），yt-dlp 的 n challenge 求解可能失败")
-    args.extend(['--remote-components', 'ejs:github'])
+    args.extend(['--remote-components', 'ejs:github', '--impersonate', 'chrome'])
     return args
 
 
@@ -1022,7 +1022,9 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             for file in os.listdir(task_dir):
                 file_path = os.path.join(task_dir, file)
                 if os.path.isfile(file_path):
-                    if file.startswith('video.') and not (file.endswith('.info.json') or '.vtt' in file or '.srt' in file or file.endswith('.jpg') or file.endswith('.webp') or file.endswith('.png')):
+                    # 识别视频文件：以video.开头，排除json/字幕/图片/直播聊天等非视频文件
+                    video_exts = ('.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v')
+                    if file.startswith('video.') and file.lower().endswith(video_exts):
                         video_path = file_path
                     elif file.endswith('.info.json'):
                         metadata_path = file_path

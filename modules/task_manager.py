@@ -6318,7 +6318,7 @@ class TaskProcessor:
                     # 默认参数：按固定质量（CRF）设置
                     return [
                         '-c:v', 'libx264',
-                        '-preset', 'medium',
+                        '-preset', 'ultrafast',
                         '-crf', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
