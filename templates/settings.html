@@ -300,6 +300,31 @@
                                                         </label>
                                                     </div>
                                                 </div>
+                                                {% set x264_presets = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] %}
+                                                <div class="row g-3 mt-2">
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="video-cpu-preset" class="form-label">CPU 转码 preset</label>
+                                                            <select id="video-cpu-preset" name="VIDEO_CPU_PRESET" class="form-select">
+                                                                {% for preset in x264_presets %}
+                                                                <option value="{{ preset }}" {% if config.get('VIDEO_CPU_PRESET', 'medium') == preset %}selected{% endif %}>{{ preset }}</option>
+                                                                {% endfor %}
+                                                            </select>
+                                                            <p class="help-text mb-0">常规 CPU/libx264 字幕烧录使用，默认 medium。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="video-cpu-preset-hd" class="form-label">高分辨率长视频 preset</label>
+                                                            <select id="video-cpu-preset-hd" name="VIDEO_CPU_PRESET_HD" class="form-select">
+                                                                {% for preset in x264_presets %}
+                                                                <option value="{{ preset }}" {% if config.get('VIDEO_CPU_PRESET_HD', 'veryfast') == preset %}selected{% endif %}>{{ preset }}</option>
+                                                                {% endfor %}
+                                                            </select>
+                                                            <p class="help-text mb-0">1440p 及以上且超过 10 分钟时使用，默认 veryfast。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                                 <div class="row g-3 mt-2" id="custom-params-section">
                                                     <div class="col-12">
                                                         <div class="form-group">

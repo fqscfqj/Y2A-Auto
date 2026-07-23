@@ -34,6 +34,7 @@ _YOUTUBE_USER_AGENT = (
 )
 _INTERNAL_YT_DLP_FLAG = '--y2a-internal-yt-dlp'
 _YT_DLP_UNAVAILABLE_MESSAGE = '本地 yt-dlp 不可用，请重新安装依赖或重新下载完整便携包。'
+_VIDEO_OUTPUT_EXTENSIONS = frozenset({'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'})
 
 
 class YtDlpUnavailableError(RuntimeError):
@@ -44,6 +45,12 @@ def _format_unexpected_download_error(exc: Exception) -> str:
     if isinstance(exc, YtDlpUnavailableError):
         return str(exc)
     return f"下载过程中发生未预期的错误: {exc}"
+
+
+def _is_video_output_file(filename: str) -> bool:
+    """判断 yt-dlp 产物是否为可上传的视频文件。"""
+    name = str(filename or '')
+    return name.startswith('video.') and Path(name).suffix.lower() in _VIDEO_OUTPUT_EXTENSIONS
 
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
@@ -1019,12 +1026,11 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             subtitles_paths = []
             
             # 查找实际的视频文件与封面
-            # 识别视频文件：以video.开头，匹配标准视频扩展名，排除info/json/字幕/图片
-            video_exts = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'}
+            # 识别视频文件，排除 info/json/字幕/图片/直播聊天等产物。
             for file in os.listdir(task_dir):
                 file_path = os.path.join(task_dir, file)
                 if os.path.isfile(file_path):
-                    if file.startswith('video.') and file.lower().endswith(tuple(video_exts)):
+                    if _is_video_output_file(file):
                         video_path = file_path
                     elif file.endswith('.info.json'):
                         metadata_path = file_path

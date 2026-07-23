@@ -249,6 +249,8 @@ python app.py
 ### 视频转码与维护
 
 - `VIDEO_ENCODER`：`auto` / `cpu` / `nvidia` / `intel` / `amd`
+- `VIDEO_CPU_PRESET`：常规 CPU/libx264 转码 preset，默认 `medium`
+- `VIDEO_CPU_PRESET_HD`：1440p+ 且超过 10 分钟时使用的 preset，默认 `veryfast`
 - `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数
 - `MAX_CONCURRENT_TASKS`：最大并发任务数，默认 `2`
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
@@ -312,6 +314,8 @@ python app.py
   "SPEECH_RECOGNITION_PROVIDER": "whisper",
   "VAD_ENABLED": true,
   "VIDEO_ENCODER": "auto",
+  "VIDEO_CPU_PRESET": "medium",
+  "VIDEO_CPU_PRESET_HD": "veryfast",
   "FFMPEG_AUTO_DOWNLOAD": true,
   "MAX_CONCURRENT_TASKS": 2,
   "MAX_CONCURRENT_UPLOADS": 1
