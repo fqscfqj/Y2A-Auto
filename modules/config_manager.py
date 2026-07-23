@@ -18,6 +18,12 @@ _YOUTUBE_DOWNLOAD_QUALITY_MODES = ('highest', 'manual')
 _YOUTUBE_DOWNLOAD_MAX_HEIGHT_VALUES = ('2160', '1440', '1080', '720', '480', '360')
 _YOUTUBE_DOWNLOAD_QUALITY_MODE_DEFAULT = 'highest'
 _YOUTUBE_DOWNLOAD_MAX_HEIGHT_DEFAULT = '1080'
+_VIDEO_CPU_PRESETS = (
+    'ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+    'medium', 'slow', 'slower', 'veryslow',
+)
+_VIDEO_CPU_PRESET_DEFAULT = 'medium'
+_VIDEO_CPU_PRESET_HD_DEFAULT = 'veryfast'
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -146,6 +152,8 @@ DEFAULT_CONFIG = {
     "STUCK_TASK_CHECK_INTERVAL_SECONDS": 300,  # 自动扫描并恢复卡住任务的时间间隔（秒）
     # 视频转码相关（硬编默认输出 HEVC/H.265，CPU 保持 H.264）
     "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd - 自动检测或指定编码器
+    "VIDEO_CPU_PRESET": _VIDEO_CPU_PRESET_DEFAULT,  # 常规 CPU/libx264 转码 preset
+    "VIDEO_CPU_PRESET_HD": _VIDEO_CPU_PRESET_HD_DEFAULT,  # 1440p+ 且超过 10 分钟时使用
     "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
     "VIDEO_CUSTOM_PARAMS": "",  # 自定义 FFmpeg 视频编码参数（启用自定义参数时使用）
     # 语音识别（无字幕转写）
@@ -234,6 +242,14 @@ def normalize_youtube_download_max_height(value):
     return normalized
 
 
+def normalize_video_cpu_preset(value, default=_VIDEO_CPU_PRESET_DEFAULT):
+    fallback = str(default or _VIDEO_CPU_PRESET_DEFAULT).strip().lower()
+    if fallback not in _VIDEO_CPU_PRESETS:
+        fallback = _VIDEO_CPU_PRESET_DEFAULT
+    normalized = str(value or fallback).strip().lower()
+    return normalized if normalized in _VIDEO_CPU_PRESETS else fallback
+
+
 def normalize_login_session_timeout_minutes(value):
     try:
         normalized = int(str(value).strip())
@@ -293,6 +309,18 @@ def load_config():
                     config['VIDEO_ENCODER'] = 'auto'
                     encoder_changed = True
 
+                cpu_preset_before = config.get('VIDEO_CPU_PRESET')
+                config['VIDEO_CPU_PRESET'] = normalize_video_cpu_preset(
+                    cpu_preset_before, _VIDEO_CPU_PRESET_DEFAULT
+                )
+                cpu_preset_changed = config['VIDEO_CPU_PRESET'] != cpu_preset_before
+
+                cpu_preset_hd_before = config.get('VIDEO_CPU_PRESET_HD')
+                config['VIDEO_CPU_PRESET_HD'] = normalize_video_cpu_preset(
+                    cpu_preset_hd_before, _VIDEO_CPU_PRESET_HD_DEFAULT
+                )
+                cpu_preset_hd_changed = config['VIDEO_CPU_PRESET_HD'] != cpu_preset_hd_before
+
                 upload_target_before = config.get('UPLOAD_TARGET_DEFAULT')
                 upload_target_normalized = str(upload_target_before or 'acfun').strip().lower()
                 if upload_target_normalized not in ('acfun', 'bilibili', 'both'):
@@ -339,6 +367,8 @@ def load_config():
                 if (
                     missing_keys
                     or encoder_changed
+                    or cpu_preset_changed
+                    or cpu_preset_hd_changed
                     or upload_target_changed
                     or quality_mode_changed
                     or quality_height_changed
@@ -420,6 +450,14 @@ def update_config(new_config):
                 else:
                     logger.warning("无效的视频编码器配置值，已回退为 auto")
                     current_config[key] = 'auto'
+            elif key == 'VIDEO_CPU_PRESET':
+                current_config[key] = normalize_video_cpu_preset(
+                    new_config[key], _VIDEO_CPU_PRESET_DEFAULT
+                )
+            elif key == 'VIDEO_CPU_PRESET_HD':
+                current_config[key] = normalize_video_cpu_preset(
+                    new_config[key], _VIDEO_CPU_PRESET_HD_DEFAULT
+                )
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
                 current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'

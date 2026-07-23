@@ -23,6 +23,7 @@ from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_root_dir, get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
+from .config_manager import normalize_video_cpu_preset
 from .notifications import (
     EVENT_TASK_ADDED,
     EVENT_TASK_COMPLETED,
@@ -6315,10 +6316,21 @@ class TaskProcessor:
                 def build_cpu_params():
                     if custom_video_params:
                         return list(custom_video_params)
+                    cpu_preset = normalize_video_cpu_preset(
+                        self.config.get('VIDEO_CPU_PRESET'), 'medium'
+                    )
+                    # 1440p+ 且超过 10 分钟时使用独立的快速 preset，避免字幕烧录超时。
+                    if input_height >= 1440 and video_duration and video_duration > 600:
+                        cpu_preset = normalize_video_cpu_preset(
+                            self.config.get('VIDEO_CPU_PRESET_HD'), 'veryfast'
+                        )
+                        task_logger.info(
+                            f"检测到 {input_height}p 长视频，CPU preset 自动调整为 {cpu_preset}"
+                        )
                     # 默认参数：按固定质量（CRF）设置
                     return [
                         '-c:v', 'libx264',
-                        '-preset', 'medium',
+                        '-preset', cpu_preset,
                         '-crf', target_quality_str,
                         '-vsync', 'cfr',
                         '-profile:v', 'high',
