@@ -1859,6 +1859,71 @@ def retry_failed_tasks(config=None):
         'failed_ids': failed_ids
     }
 
+
+def is_metadata_translation_retryable(task):
+    """判断人工审核任务是否由元数据自动翻译失败导致。"""
+    if not task or task.get('status') != TASK_STATES['AWAITING_REVIEW']:
+        return False
+
+    error_message = str(task.get('error_message') or '').strip()
+    return error_message.startswith(('自动翻译失败', '自动翻译未完成'))
+
+
+def retry_metadata_translation_task(task_id, config=None):
+    """重置元数据翻译及其下游阶段，并重新调度任务。"""
+    task = get_task(task_id)
+    if not is_metadata_translation_retryable(task):
+        return False
+
+    reset_stages = {
+        PIPELINE_STAGE_TRANSLATE_CONTENT,
+        PIPELINE_STAGE_GENERATE_TAGS,
+        PIPELINE_STAGE_RECOMMEND_PARTITION,
+        PIPELINE_STAGE_MODERATE_CONTENT,
+    }
+    checkpoint = _parse_pipeline_checkpoint(task.get(PIPELINE_CHECKPOINT_FIELD))
+    remaining_stages = [
+        stage for stage in checkpoint.get('completed', [])
+        if stage not in reset_stages
+    ]
+    reset_checkpoint = json.dumps({
+        'version': checkpoint.get('version', 1),
+        'completed': remaining_stages,
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }, ensure_ascii=False)
+
+    reset_values = {
+        'status': TASK_STATES['PENDING'],
+        'video_title_translated': '',
+        'description_translated': '',
+        'tags_generated': None,
+        'recommended_partition_id': None,
+        'recommended_partition_id_acfun': None,
+        'recommended_partition_id_bilibili': None,
+        'moderation_result': None,
+        'error_message': None,
+        'pipeline_checkpoint': reset_checkpoint,
+        'upload_progress': None,
+    }
+    rollback_values = {
+        key: task.get(key)
+        for key in reset_values
+        if key != 'status'
+    }
+    rollback_values['status'] = task.get('status')
+
+    if not update_task(task_id, silent=True, **reset_values):
+        return False
+
+    try:
+        if start_task(task_id, config):
+            return True
+    except Exception as exc:
+        logger.error(f"重新调度元数据翻译任务 {task_id} 出错: {exc}")
+
+    update_task(task_id, silent=True, **rollback_values)
+    return False
+
 def delete_task_files(task_id):
     """
     删除任务相关文件
