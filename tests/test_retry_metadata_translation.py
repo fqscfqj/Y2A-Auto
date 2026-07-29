@@ -41,6 +41,9 @@ class RetryMetadataTranslationTests(unittest.TestCase):
             'recommended_partition_id': '1',
             'recommended_partition_id_acfun': '2',
             'recommended_partition_id_bilibili': '3',
+            'selected_partition_id': '4',
+            'selected_partition_id_acfun': '5',
+            'selected_partition_id_bilibili': '6',
             'moderation_result': '{"overall_pass": false}',
             'error_message': '自动翻译失败，简介：简介格式不自然。任务已转入人工审核。',
             'upload_progress': '旧进度',
@@ -76,6 +79,9 @@ class RetryMetadataTranslationTests(unittest.TestCase):
         self.assertIsNone(task['upload_progress'])
         self.assertIsNone(task['recommended_partition_id_acfun'])
         self.assertIsNone(task['recommended_partition_id_bilibili'])
+        self.assertIsNone(task['selected_partition_id'])
+        self.assertIsNone(task['selected_partition_id_acfun'])
+        self.assertIsNone(task['selected_partition_id_bilibili'])
         checkpoint = json.loads(task['pipeline_checkpoint'])
         self.assertEqual(checkpoint['completed'], [tm.PIPELINE_STAGE_FETCH_INFO])
         self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_CONTENT, tm._get_completed_stages(task))
@@ -108,6 +114,9 @@ class RetryMetadataTranslationTests(unittest.TestCase):
             'recommended_partition_id': '1',
             'recommended_partition_id_acfun': '2',
             'recommended_partition_id_bilibili': '3',
+            'selected_partition_id': '4',
+            'selected_partition_id_acfun': '5',
+            'selected_partition_id_bilibili': '6',
             'moderation_result': '{"overall_pass": false}',
             'error_message': '自动翻译失败，简介：简介格式不自然。任务已转入人工审核。',
             'pipeline_checkpoint': '{"version": 1, "completed": ["fetch_info"]}',
