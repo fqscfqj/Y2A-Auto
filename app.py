@@ -24,7 +24,7 @@ from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
-from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
+from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
@@ -2241,8 +2241,14 @@ def retry_metadata_translation_route(task_id):
         flash('当前任务不是可重试的自动翻译失败任务', 'warning')
         return redirect(url_for('manual_review'))
 
+    config = load_config()
+    retry_block_reason = get_metadata_translation_retry_block_reason(task, config)
+    if retry_block_reason:
+        flash(retry_block_reason, 'warning')
+        return redirect(url_for('manual_review'))
+
     try:
-        if retry_metadata_translation_task(task_id, load_config()):
+        if retry_metadata_translation_task(task_id, config):
             flash('已重新启动自动翻译，任务将在后台继续处理', 'success')
         else:
             flash('重新启动自动翻译失败，请稍后重试', 'danger')
