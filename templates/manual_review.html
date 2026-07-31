@@ -180,10 +180,18 @@
                         </div>
                         
                         <div class="card-footer">
-                            <div class="d-flex justify-content-between">
+                            <div class="d-flex flex-wrap gap-2 justify-content-between">
                                 <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-primary">
                                     <i class="bi bi-pencil"></i> 修改后上传
                                 </a>
+                                {% if task.can_retry_translation %}
+                                <button type="button" class="btn btn-warning"
+                                        data-task-id="{{ task.id }}"
+                                        data-task-title="{{ task.video_title_translated or task.video_title_original }}"
+                                        onclick="confirmRetryTranslation(this.dataset.taskId, this.dataset.taskTitle)">
+                                    <i class="bi bi-arrow-clockwise"></i> 重新翻译
+                                </button>
+                                {% endif %}
                                 <button type="button" class="btn btn-success" 
                                         data-task-id="{{ task.id }}"
                                         data-task-title="{{ task.video_title_translated or task.video_title_original }}"
@@ -208,6 +216,38 @@
             <i class="bi bi-info-circle"></i> 当前没有需要人工审核的任务。
         </div>
     {% endif %}
+</div>
+
+<!-- 重新翻译确认对话框 -->
+<div class="modal fade" id="retryTranslationModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-arrow-clockwise"></i> 确认重新翻译</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要重新翻译任务 <strong id="retryTranslationTitle"></strong> 吗？</p>
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    已手动修改的标题、简介、标签和分区选择将被清空并重新生成。
+                </div>
+                <div class="alert alert-info">
+                    将重新生成标题和简介，并在成功后继续执行标签、分区推荐和内容审核等后续流程。
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> 取消
+                </button>
+                <form id="retryTranslationForm" method="post" action="">
+                    <button type="submit" class="btn btn-warning">
+                        <i class="bi bi-arrow-clockwise"></i> 确认重新翻译
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- 强制上传确认对话框 -->
@@ -321,6 +361,14 @@
 
 {% block extra_js %}
 <script>
+    // 重新翻译确认
+    function confirmRetryTranslation(taskId, taskTitle) {
+        document.getElementById('retryTranslationTitle').textContent = taskTitle;
+        document.getElementById('retryTranslationForm').action = "{{ url_for('retry_metadata_translation_route', task_id='TASK_ID') }}".replace('TASK_ID', taskId);
+
+        new bootstrap.Modal(document.getElementById('retryTranslationModal')).show();
+    }
+
     // 强制上传确认
     function confirmForceUpload(taskId, taskTitle) {
         document.getElementById('forceUploadTitle').textContent = taskTitle;

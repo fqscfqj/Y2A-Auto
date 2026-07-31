@@ -24,7 +24,7 @@ from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
-from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
+from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
@@ -1814,6 +1814,8 @@ def manual_review():
     """人工审核列表页面"""
     logger.info("访问人工审核列表页面")
     review_tasks = get_tasks_by_status(TASK_STATES['AWAITING_REVIEW'])
+    for task in review_tasks:
+        task['can_retry_translation'] = is_metadata_translation_retryable(task)
     
     # 封面图片现在直接从downloads目录提供
     
@@ -1876,6 +1878,7 @@ def edit_task(task_id):
             'selected_partition_id_bilibili': partition_id_bilibili,
             'tags_generated': tags_json,
             'error_message': None,
+            'error_category': None,
         }
 
         # 只有在安全状态下才允许设置为可上传状态，避免与正在处理的任务产生竞态条件
@@ -2224,6 +2227,37 @@ def retry_failed_tasks_route():
         logger.error(f"重试失败任务失败: {e}")
         flash(f'重试失败任务失败: {e}', 'danger')
     return redirect(url_for('tasks'))
+
+
+@app.route('/tasks/<task_id>/retry_translation', methods=['POST'])
+@login_required
+def retry_metadata_translation_route(task_id):
+    """重新执行因自动翻译失败而暂停的任务。"""
+    task = get_task(task_id)
+    if not task:
+        flash('任务不存在', 'danger')
+        return redirect(url_for('manual_review'))
+
+    if not is_metadata_translation_retryable(task):
+        flash('当前任务不是可重试的自动翻译失败任务', 'warning')
+        return redirect(url_for('manual_review'))
+
+    config = load_config()
+    retry_block_reason = get_metadata_translation_retry_block_reason(task, config)
+    if retry_block_reason:
+        flash(retry_block_reason, 'warning')
+        return redirect(url_for('manual_review'))
+
+    try:
+        if retry_metadata_translation_task(task_id, config):
+            flash('已重新启动自动翻译，任务将在后台继续处理', 'success')
+        else:
+            flash('重新启动自动翻译失败，请稍后重试', 'danger')
+    except Exception as exc:
+        logger.error(f"重试任务 {task_id} 的自动翻译失败: {exc}")
+        flash('重新启动自动翻译失败，请查看日志', 'danger')
+
+    return redirect(url_for('manual_review'))
 
 @app.route('/tasks/<task_id>/force_upload', methods=['POST'])
 @login_required

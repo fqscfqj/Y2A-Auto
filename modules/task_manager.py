@@ -74,6 +74,8 @@ DB_CONNECT_TIMEOUT_SECONDS = 10
 DB_BUSY_TIMEOUT_MS = 30000
 DB_WRITE_RETRY_TIMES = 5
 DB_WRITE_RETRY_SLEEP_SECONDS = 0.2
+METADATA_TRANSLATION_ERROR_CATEGORY = 'metadata_translation_failed'
+CONTENT_MODERATION_ERROR_CATEGORY = 'content_moderation_failed'
 
 
 def _convert_vtt_text_to_srt_text(vtt_content: str) -> str:
@@ -1039,6 +1041,7 @@ def init_db():
         metadata_json_path_local TEXT,
         moderation_result TEXT,  -- JSON
         error_message TEXT,
+        error_category TEXT,
         pipeline_checkpoint TEXT,  -- JSON: 断点续跑已完成阶段
         upload_progress TEXT,  -- 上传进度
         acfun_upload_response TEXT,
@@ -1090,6 +1093,24 @@ def init_db():
         if 'pipeline_checkpoint' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN pipeline_checkpoint TEXT")
             logger.info("数据库升级：添加pipeline_checkpoint字段")
+            conn.commit()
+
+        if 'error_category' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN error_category TEXT")
+            cursor.execute(
+                """
+                UPDATE tasks
+                SET error_category = ?
+                WHERE status = ?
+                  AND error_category IS NULL
+                  AND (
+                    error_message LIKE '自动翻译失败%'
+                    OR error_message LIKE '自动翻译未完成%'
+                  )
+                """,
+                (METADATA_TRANSLATION_ERROR_CATEGORY, TASK_STATES['AWAITING_REVIEW'])
+            )
+            logger.info("数据库升级：添加error_category字段并迁移历史翻译失败任务")
             conn.commit()
 
         if 'upload_target' not in columns:
@@ -1433,6 +1454,7 @@ def update_task(task_id, silent=False, **kwargs):
         'metadata_json_path_local': 'metadata_json_path_local = ?',
         'moderation_result': 'moderation_result = ?',
         'error_message': 'error_message = ?',
+        'error_category': 'error_category = ?',
         'pipeline_checkpoint': 'pipeline_checkpoint = ?',
         'upload_progress': 'upload_progress = ?',
         'acfun_upload_response': 'acfun_upload_response = ?',
@@ -1858,6 +1880,98 @@ def retry_failed_tasks(config=None):
         'scheduled': scheduled,
         'failed_ids': failed_ids
     }
+
+
+def is_metadata_translation_retryable(task):
+    """判断人工审核任务是否由元数据自动翻译失败导致。"""
+    if not task or task.get('status') != TASK_STATES['AWAITING_REVIEW']:
+        return False
+
+    return task.get('error_category') == METADATA_TRANSLATION_ERROR_CATEGORY
+
+
+def get_metadata_translation_retry_block_reason(task, config) -> str | None:
+    """返回当前配置下不能重新翻译的原因；可重试时返回 None。"""
+    config = config or {}
+    can_translate_title = (
+        _as_bool(config.get('TRANSLATE_TITLE', True))
+        and bool(_normalize_task_text(task.get('video_title_original')))
+    )
+    can_translate_description = (
+        _as_bool(config.get('TRANSLATE_DESCRIPTION', True))
+        and bool(_normalize_task_text(task.get('description_original')))
+    )
+    if not can_translate_title and not can_translate_description:
+        return '当前未启用可用的标题或简介自动翻译，无法重新翻译。'
+    if not _normalize_task_text(config.get('OPENAI_API_KEY')):
+        return '未配置 OpenAI API Key，无法重新翻译。'
+    return None
+
+
+def retry_metadata_translation_task(task_id, config=None):
+    """重置元数据翻译及其下游阶段，并重新调度任务。"""
+    task = get_task(task_id)
+    if not is_metadata_translation_retryable(task):
+        return False
+    if get_metadata_translation_retry_block_reason(task, config):
+        return False
+    if _is_task_active(task_id):
+        logger.warning(f"任务 {task_id} 仍在运行，拒绝重新调度元数据翻译")
+        return False
+
+    reset_stages = {
+        PIPELINE_STAGE_TRANSLATE_CONTENT,
+        PIPELINE_STAGE_GENERATE_TAGS,
+        PIPELINE_STAGE_RECOMMEND_PARTITION,
+        PIPELINE_STAGE_MODERATE_CONTENT,
+    }
+    checkpoint = _parse_pipeline_checkpoint(task.get(PIPELINE_CHECKPOINT_FIELD))
+    remaining_stages = [
+        stage for stage in checkpoint.get('completed', [])
+        if stage not in reset_stages
+    ]
+    reset_checkpoint = json.dumps({
+        'version': checkpoint.get('version', 1),
+        'completed': remaining_stages,
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }, ensure_ascii=False)
+
+    reset_values = {
+        'status': TASK_STATES['PENDING'],
+        'video_title_translated': '',
+        'description_translated': '',
+        'tags_generated': None,
+        'recommended_partition_id': None,
+        'recommended_partition_id_acfun': None,
+        'recommended_partition_id_bilibili': None,
+        'selected_partition_id': None,
+        'selected_partition_id_acfun': None,
+        'selected_partition_id_bilibili': None,
+        'moderation_result': None,
+        'error_message': None,
+        'error_category': None,
+        'pipeline_checkpoint': reset_checkpoint,
+        'upload_progress': None,
+    }
+    rollback_values = {
+        key: task.get(key)
+        for key in reset_values
+        if key != 'status'
+    }
+    rollback_values['status'] = task.get('status')
+
+    if not update_task(task_id, silent=True, **reset_values):
+        return False
+
+    try:
+        if start_task(task_id, config):
+            return True
+    except Exception as exc:
+        logger.error(f"重新调度元数据翻译任务 {task_id} 出错: {exc}")
+
+    if not update_task(task_id, silent=True, **rollback_values):
+        logger.warning(f"重新调度元数据翻译任务 {task_id} 失败，且状态回滚失败")
+    return False
 
 def delete_task_files(task_id):
     """
@@ -2971,6 +3085,7 @@ class TaskProcessor:
         if translated.get('success'):
             if updates:
                 updates['error_message'] = None
+                updates['error_category'] = None
                 update_task(task_id, **updates)
             task_logger.info("翻译完成")
             return True
@@ -2979,6 +3094,7 @@ class TaskProcessor:
         updates.update({
             'status': TASK_STATES['AWAITING_REVIEW'],
             'error_message': review_message,
+            'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
         })
         update_task(task_id, **updates)
         task_logger.warning(review_message)
@@ -3001,6 +3117,7 @@ class TaskProcessor:
             task_id,
             status=TASK_STATES['AWAITING_REVIEW'],
             error_message=missing_message,
+            error_category=METADATA_TRANSLATION_ERROR_CATEGORY,
             upload_progress=None,
         )
         return False
@@ -7278,7 +7395,11 @@ class TaskProcessor:
             task_logger.info("内容审核通过")
         else:
             task_logger.info("内容审核不通过，需要人工审核")
-            update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
+            update_task(
+                task_id,
+                status=TASK_STATES['AWAITING_REVIEW'],
+                error_category=CONTENT_MODERATION_ERROR_CATEGORY,
+            )
 
     def _get_embedded_video_candidate(self, video_path: str) -> str:
         if not video_path:
