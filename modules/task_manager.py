@@ -75,6 +75,7 @@ DB_BUSY_TIMEOUT_MS = 30000
 DB_WRITE_RETRY_TIMES = 5
 DB_WRITE_RETRY_SLEEP_SECONDS = 0.2
 METADATA_TRANSLATION_ERROR_CATEGORY = 'metadata_translation_failed'
+CONTENT_MODERATION_ERROR_CATEGORY = 'content_moderation_failed'
 
 
 def _convert_vtt_text_to_srt_text(vtt_content: str) -> str:
@@ -7394,7 +7395,11 @@ class TaskProcessor:
             task_logger.info("内容审核通过")
         else:
             task_logger.info("内容审核不通过，需要人工审核")
-            update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'])
+            update_task(
+                task_id,
+                status=TASK_STATES['AWAITING_REVIEW'],
+                error_category=CONTENT_MODERATION_ERROR_CATEGORY,
+            )
 
     def _get_embedded_video_candidate(self, video_path: str) -> str:
         if not video_path:

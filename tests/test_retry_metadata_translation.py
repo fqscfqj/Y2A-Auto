@@ -21,7 +21,7 @@ class RetryMetadataTranslationTests(unittest.TestCase):
         }))
         self.assertFalse(tm.is_metadata_translation_retryable({
             'status': tm.TASK_STATES['AWAITING_REVIEW'],
-            'error_category': 'content_moderation_failed',
+            'error_category': tm.CONTENT_MODERATION_ERROR_CATEGORY,
         }))
 
     def test_retry_requires_enabled_translation_and_api_key(self):
@@ -203,6 +203,26 @@ class RetryMetadataTranslationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         retry_mock.assert_not_called()
+
+    def test_edit_task_clears_error_category(self):
+        task = {
+            'id': 'edited-review-task',
+            'status': tm.TASK_STATES['AWAITING_REVIEW'],
+            'upload_target': 'acfun',
+            'error_category': tm.METADATA_TRANSLATION_ERROR_CATEGORY,
+        }
+        with patch.object(web_app, 'get_task', return_value=task), \
+             patch.object(web_app, 'load_config', return_value={'password_protection_enabled': False}), \
+             patch.object(web_app, 'update_task', return_value=True) as update_mock:
+            response = web_app.app.test_client().post('/tasks/edited-review-task/edit', data={
+                'video_title_translated': '人工标题',
+                'description_translated': '人工简介',
+                'selected_partition_id_acfun': '1',
+                'tags_json': '[]',
+            })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(update_mock.call_args.kwargs['error_category'])
 
     def test_manual_review_template_includes_server_side_eligibility_and_data_loss_warning(self):
         root = pathlib.Path(__file__).resolve().parents[1]

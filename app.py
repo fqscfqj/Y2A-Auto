@@ -1878,6 +1878,7 @@ def edit_task(task_id):
             'selected_partition_id_bilibili': partition_id_bilibili,
             'tags_generated': tags_json,
             'error_message': None,
+            'error_category': None,
         }
 
         # 只有在安全状态下才允许设置为可上传状态，避免与正在处理的任务产生竞态条件
