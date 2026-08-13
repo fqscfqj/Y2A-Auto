@@ -2098,8 +2098,11 @@ def validate_cookies(cookies_path, service_name="Unknown"):
         
         # 基本格式验证
         if content.startswith('# Netscape HTTP Cookie File') or '\t' in content:
-            # Netscape格式
-            lines = [line for line in content.split('\n') if line.strip() and not line.startswith('#')]
+            # Netscape格式（#HttpOnly_ 前缀行是带 HttpOnly 标志的合法数据行，不算注释）
+            lines = [
+                line for line in content.split('\n')
+                if line.strip() and (not line.startswith('#') or line.startswith('#HttpOnly_'))
+            ]
             if not lines:
                 return False, "Netscape格式cookies文件没有有效的cookie条目"
             logger.debug(f"{service_name} Netscape格式cookies, {len(lines)} 个条目")
@@ -2111,6 +2114,15 @@ def validate_cookies(cookies_path, service_name="Unknown"):
                 return False, "JSON格式cookies文件为空数组"
             logger.debug(f"{service_name} JSON格式cookies, {len(cookies_data)} 个条目")
         else:
+            # YouTube 允许 CSV / 空格分隔的文本表格格式，由后续的自动转换处理
+            if service_name == "YouTube":
+                try:
+                    from modules.tools.convert_cookies import convert_to_netscape_lines
+                    if convert_to_netscape_lines(content) is not None:
+                        logger.debug(f"{service_name} 文本表格格式cookies可自动转换为Netscape")
+                        return True, "Cookies文件格式正确"
+                except Exception:
+                    pass
             logger.warning(f"{service_name} Cookies文件格式不明")
             return False, "Cookies文件格式不明"
         

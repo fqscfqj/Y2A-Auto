@@ -1,81 +1,1358 @@
-*** Begin Patch
-*** Update File: modules/youtube_handler.py
-@@
- from urllib.parse import parse_qs, urlparse
- import re
-+import tempfile
-@@
- def _youtube_cookies_look_authenticated(cookies_path: str | None) -> tuple[bool, str | None]:
-@@
-     except Exception as exc:
-         return False, f"读取cookies失败: {exc}"
-+
-+
-+def _is_netscape_cookie_file(path: str) -> bool:
-+    """快速判断是否为 Netscape cookies.txt（简单检测头或行列数）。"""
-+    try:
-+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-+            for i, ln in enumerate(f):
-+                ln = ln.strip()
-+                if i == 0 and ln.startswith("# Netscape HTTP Cookie File"):
-+                    return True
-+                if not ln or ln.startswith("#"):
-+                    continue
-+                parts = ln.split("\t")
-+                if len(parts) >= 7:
-+                    return True
-+                if i > 50:
-+                    break
-+    except Exception:
-+        return False
-+    return False
-+
-+
-+def _convert_any_to_netscape(input_path: str, output_path: str) -> bool:
-+    """
-+    简单尝试把非标准导出（制表或表格形式）转换为 Netscape 格式。
-+    这是一个启发式实现，适用于常见的浏览器导出样式。
-+    """
-+    try:
-+        from modules.tools.convert_cookies import convert_any_to_netscape as _conv
-+    except Exception:
-+        return False
-+    try:
-+        res = _conv(input_path, output_path)
-+        return bool(res and os.path.exists(res))
-+    except Exception:
-+        return False
-+
-+
-+def _ensure_netscape_cookies(cookies_path: str, log: logging.Logger | None = None) -> str | None:
-+    """
-+    如果 cookies_path 不是 Netscape 格式，尝试把它转换为临时的 Netscape 文件并返回新路径；
-+    若已是 Netscape，直接返回原路径；若转换失败，返回原路径并在日志中记录警告。
-+    """
-+    _log = log or logger
-+    try:
-+        if not cookies_path or not os.path.exists(cookies_path):
-+            return None
-+        if _is_netscape_cookie_file(cookies_path):
-+            return cookies_path
-+
-+        # create temp output path next to original for visibility
-+        tmp_dir = os.path.dirname(os.path.realpath(cookies_path)) or tempfile.gettempdir()
-+        fd, tmp_path = tempfile.mkstemp(prefix="y2a_yt_cookies_", suffix=".txt", dir=tmp_dir)
-+        os.close(fd)
-+        success = _convert_any_to_netscape(cookies_path, tmp_path)
-+        if success and os.path.exists(tmp_path):
-+            _log.info("自动将 cookies 转换为 Netscape 格式: %s", tmp_path)
-+            return tmp_path
-+        # 清理若转换失败
-+        try:
-+            if os.path.exists(tmp_path):
-+                os.remove(tmp_path)
-+        except Exception:
-+            pass
-+        _log.warning("无法将 cookies 自动转换为 Netscape 格式，仍使用原文件: %s", cookies_path)
-+        return cookies_path
-+    except Exception as exc:
-+        _log.warning("检查/转换 cookies 时出错，仍尝试使用原文件: %s", exc)
-+        return cookies_path
-*** End Patch
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import json
+import time
+import uuid
+import shutil
+import hashlib
+import logging
+import subprocess
+import sys
+import threading
+from pathlib import Path
+from typing import Any, cast
+from modules.config_manager import (
+    load_config,
+    normalize_youtube_download_max_height,
+    normalize_youtube_download_quality_mode,
+)
+from logging.handlers import RotatingFileHandler
+from .utils import get_app_subdir, get_app_root_dir
+from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
+from .cookiecloud import try_cookiecloud_youtube_sync
+from shutil import which as _which
+from urllib.parse import parse_qs, urlparse
+import re
+import tempfile
+
+# 其他导入和常量定义
+logger = logging.getLogger(__name__)
+# YouTube playlist ID 仅允许字母、数字、下划线和连字符
+_YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_YOUTUBE_USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+)
+_INTERNAL_YT_DLP_FLAG = '--y2a-internal-yt-dlp'
+_YT_DLP_UNAVAILABLE_MESSAGE = '本地 yt-dlp 不可用，请重新安装依赖或重新下载完整便携包。'
+_VIDEO_OUTPUT_EXTENSIONS = frozenset({'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'})
+
+
+class YtDlpUnavailableError(RuntimeError):
+    """本地 yt-dlp 命令入口不可用。"""
+
+
+def _format_unexpected_download_error(exc: Exception) -> str:
+    if isinstance(exc, YtDlpUnavailableError):
+        return str(exc)
+    return f"下载过程中发生未预期的错误: {exc}"
+
+
+def _is_video_output_file(filename: str) -> bool:
+    """判断 yt-dlp 产物是否为可上传的视频文件。"""
+    name = str(filename or '')
+    return name.startswith('video.') and Path(name).suffix.lower() in _VIDEO_OUTPUT_EXTENSIONS
+
+# 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
+_BASE_DIR = os.path.realpath(get_app_root_dir())
+
+def _resolve_safe_cookies_path(cookies_file_path: str, log: logging.Logger | None = None) -> str | None:
+    """将 cookies_file_path 解析为安全的绝对路径。
+
+    使用 realpath 解析符号链接后，通过 commonpath 校验路径仍在项目根目录内，
+    防止目录遍历及通过 symlink 越界访问。支持相对路径和位于项目根目录内的绝对路径，
+    返回安全的绝对路径，或在路径无效/文件不存在时返回 None。
+    """
+    _log = log or logger
+    if os.path.isabs(cookies_file_path):
+        resolved = os.path.realpath(cookies_file_path)
+    else:
+        resolved = os.path.realpath(os.path.join(_BASE_DIR, cookies_file_path))
+    try:
+        common = os.path.commonpath([_BASE_DIR, resolved])
+    except ValueError:
+        common = ""
+    if common != _BASE_DIR:
+        _log.warning(f"检测到位于受信任根目录之外的cookies文件路径，已拒绝: {cookies_file_path}")
+        return None
+    if not os.path.isfile(resolved):
+        _log.warning(f"cookies文件不存在或不是普通文件，已忽略: {cookies_file_path}")
+        return None
+    return resolved
+
+
+def _detect_js_runtime_args() -> list[str]:
+    """检测可供 yt-dlp 使用的 JS runtime。"""
+    args: list[str] = []
+    for runtime in ('deno', 'node'):
+        if _which(runtime):
+            args.extend(['--js-runtimes', runtime])
+    return args
+
+
+def _get_youtube_runtime_args() -> list[str]:
+    """统一 YouTube 运行时参数。"""
+    args = _detect_js_runtime_args()
+    if not args:
+        logger.warning("未检测到 JavaScript 运行时（node/deno），yt-dlp 的 n challenge 求解可能失败")
+    args.extend(['--remote-components', 'ejs:github'])
+    return args
+
+
+def _youtube_cookies_look_authenticated(cookies_path: str | None) -> tuple[bool, str | None]:
+    """粗略判断 cookies 是否包含可用于 YouTube 登录的一方凭据。"""
+    if not cookies_path or not os.path.isfile(cookies_path):
+        return False, "cookies文件不存在"
+
+    auth_cookie_names = {
+        'SAPISID', 'APISID', 'SID', 'HSID', 'SSID',
+        '__Secure-1PSID', '__Secure-1PAPISID', 'LOGIN_INFO',
+    }
+
+    try:
+        present_names: set[str] = set()
+        with open(cookies_path, 'r', encoding='utf-8', errors='replace') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 7:
+                    present_names.add(parts[5].strip())
+        if present_names & auth_cookie_names:
+            return True, None
+        return False, "cookies中缺少 Google/YouTube 一方登录态关键字段"
+    except Exception as exc:
+        return False, f"读取cookies失败: {exc}"
+
+
+def _is_netscape_cookie_file(path: str) -> bool:
+    """快速判断文件是否为 Netscape cookies.txt 格式。"""
+    try:
+        from modules.tools.convert_cookies import is_netscape_file
+        return bool(is_netscape_file(path))
+    except Exception:
+        return False
+
+
+def _convert_any_to_netscape(input_path: str, output_path: str) -> bool:
+    """将非标准 cookies 导出转换为 Netscape 格式，返回是否成功。"""
+    try:
+        from modules.tools.convert_cookies import convert_any_to_netscape as _conv
+    except Exception:
+        return False
+    try:
+        res = _conv(input_path, output_path)
+        return bool(res and os.path.isfile(res))
+    except Exception:
+        return False
+
+
+# 每个派生文件一把进程内锁，保证同一源文件并发转换时只有一个线程执行「转换 + 替换」，
+# 其它线程等待后复用已生成的派生文件，避免 Windows 下并发 os.replace 同一目标报 WinError 5。
+_DERIVED_LOCKS: dict[str, threading.Lock] = {}
+_DERIVED_LOCKS_GUARD = threading.Lock()
+
+
+def _get_derived_lock(key: str) -> threading.Lock:
+    """按派生路径取一把进程内锁（不存在则创建）。"""
+    with _DERIVED_LOCKS_GUARD:
+        lock = _DERIVED_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _DERIVED_LOCKS[key] = lock
+        return lock
+
+
+def _ensure_netscape_cookies(cookies_path: str | None, log: logging.Logger | None = None) -> str | None:
+    """确保 cookies 为 yt-dlp 可用的 Netscape 格式。
+
+    若已是 Netscape 格式则直接返回原路径；否则尝试转换为 Netscape 文件并返回新路径。
+    派生文件名基于源文件绝对路径的哈希：不同源文件互不覆盖，同一源文件重复转换复用
+    同一派生文件，避免临时文件累积。写入采用「临时文件 + os.replace 原子替换」，
+    避免并发读/写截断。转换失败时返回原路径（交给 yt-dlp 报错），并记录警告。
+    """
+    _log = log or logger
+    if not cookies_path or not os.path.isfile(cookies_path):
+        return None
+    try:
+        if _is_netscape_cookie_file(cookies_path):
+            return cookies_path
+    except Exception:
+        pass
+
+    try:
+        # 派生文件放在原文件同目录，便于用户定位；原文件已经过 _resolve_safe_cookies_path 校验，
+        # 原目录不可用时回退到系统临时目录
+        original_dir = os.path.dirname(os.path.realpath(cookies_path))
+        if os.path.isdir(original_dir):
+            tmp_dir = original_dir
+        else:
+            tmp_dir = tempfile.gettempdir()
+    except Exception as exc:
+        _log.warning("无法创建临时cookies文件，仍使用原文件: %s", exc)
+        return cookies_path
+
+    try:
+        # 基于源文件绝对路径的哈希派生文件名，保证不同源文件互不覆盖、同源复用同一文件
+        digest = hashlib.sha1(os.path.realpath(cookies_path).encode("utf-8")).hexdigest()[:12]
+        derived = os.path.join(tmp_dir, "yt_cookies." + digest + ".netscape.txt")
+    except Exception as exc:
+        _log.warning("无法生成临时cookies文件名，仍使用原文件: %s", exc)
+        return cookies_path
+
+    # 同一源文件并发转换时用派生路径对应的锁串行化「转换 + 替换」，
+    # 等待的线程复用已生成的派生文件，避免 Windows 下并发 os.replace 同一目标失败。
+    lock = _get_derived_lock(derived)
+    with lock:
+        # 并发场景下其它线程可能已完成转换，直接复用
+        if os.path.isfile(derived) and _is_netscape_cookie_file(derived):
+            return derived
+
+        tmp_file: str | None = None
+        try:
+            # 先写入临时文件，成功后再 os.replace 原子重命名，避免并发读/写截断派生文件
+            fd, tmp_file = tempfile.mkstemp(prefix="yt_cookies_", suffix=".tmp", dir=tmp_dir)
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            if not _convert_any_to_netscape(cookies_path, tmp_file):
+                raise RuntimeError("cookie转换失败")
+            os.replace(tmp_file, derived)
+            tmp_file = None
+            _log.info("已将 cookies 自动转换为 Netscape 格式: %s", derived)
+            return derived
+        except Exception as exc:
+            # 替换失败但已有可用派生文件时优先返回它，避免把原始非 Netscape 文件传给 yt-dlp
+            if os.path.isfile(derived) and _is_netscape_cookie_file(derived):
+                return derived
+            _log.warning("cookies自动转换失败: %s", exc)
+            return cookies_path
+        finally:
+            # 失败时清理临时文件，避免残留
+            if tmp_file and os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
+
+
+def _append_yt_dlp_network_args(
+    cmd: list[str],
+    *,
+    proxy_url: str | None = None,
+    cookies_path: str | None = None,
+) -> list[str]:
+    """为 yt-dlp 命令附加网络与认证相关参数。"""
+    cmd.extend(_get_youtube_runtime_args())
+    if proxy_url:
+        cmd.extend(['--proxy', proxy_url])
+    if cookies_path and os.path.exists(cookies_path):
+        cmd.extend(['--cookies', cookies_path])
+    return cmd
+
+
+def _build_quality_retry_strategies(config: dict[str, Any] | None, has_ffmpeg: bool) -> dict[str, Any]:
+    mode = normalize_youtube_download_quality_mode((config or {}).get('YOUTUBE_DOWNLOAD_QUALITY_MODE'))
+    max_height = normalize_youtube_download_max_height((config or {}).get('YOUTUBE_DOWNLOAD_MAX_HEIGHT'))
+    manual = mode == 'manual'
+
+    if manual:
+        primary_selector = f'bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]'
+        fallback_selector = f'best[height<={max_height}]'
+    else:
+        primary_selector = 'bestvideo+bestaudio/best'
+        fallback_selector = 'best'
+
+    strategies: list[dict[str, Any]] = []
+    if has_ffmpeg:
+        strategies.append({
+            'selector': primary_selector,
+            'merge_output_format': 'mp4',
+            'label': 'bestvideo+bestaudio',
+        })
+    strategies.append({
+        'selector': fallback_selector,
+        'merge_output_format': None,
+        'label': 'best',
+    })
+    return {
+        'mode': mode,
+        'max_height': max_height if manual else None,
+        'strategies': strategies,
+    }
+
+
+def _build_quality_format_selector(config: dict[str, Any] | None, has_ffmpeg: bool) -> str:
+    plan = _build_quality_retry_strategies(config, has_ffmpeg)
+    strategies = plan.get('strategies') or []
+    if not strategies:
+        return 'best'
+    return str(strategies[0].get('selector') or 'best')
+
+
+def _set_yt_dlp_format_options(
+    cmd: list[str],
+    selector: str,
+    *,
+    merge_output_format: str | None = None,
+) -> None:
+    while '--format' in cmd:
+        idx = cmd.index('--format')
+        del cmd[idx:idx + 2]
+    while '--merge-output-format' in cmd:
+        idx = cmd.index('--merge-output-format')
+        del cmd[idx:idx + 2]
+    cmd.extend(['--format', selector])
+    if merge_output_format:
+        cmd.extend(['--merge-output-format', merge_output_format])
+
+
+def _build_subtitle_download_args(
+    config: dict[str, Any] | None,
+    *,
+    include_subtitles: bool,
+) -> list[str]:
+    if not include_subtitles:
+        return ['--no-write-subs']
+
+    # 仅当用户显式允许 YouTube 自动生成字幕时才下载字幕。
+    # yt-dlp 的 --write-subs 会下载所有字幕（含自动生成），
+    # --no-write-auto-subs 在新版本中无效，无法可靠区分。
+    # 因此当 YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED=False 时，
+    # 直接禁用字幕下载，让后续 ASR 流程负责生成字幕。
+    if not bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
+        return ['--no-write-subs']
+
+    return [
+        '--write-subs',
+        '--all-subs',
+        '--convert-subs', 'srt',
+        '--write-auto-subs',
+    ]
+
+
+def _is_format_selection_error(error_text: str | None) -> bool:
+    """判断是否属于格式选择失败，而非视频不可访问。"""
+    if not error_text:
+        return False
+    normalized = str(error_text)
+    indicators = (
+        "Requested format is not available",
+        "Only images are available",
+    )
+    return any(indicator in normalized for indicator in indicators)
+
+
+def _looks_like_youtube_bot_challenge(error_text: str | None) -> bool:
+    """判断是否像是 YouTube 反机器人/登录校验问题。"""
+    if not error_text:
+        return False
+    normalized = str(error_text)
+    indicators = (
+        "Sign in to confirm",
+        "not a bot",
+        "Signature extraction failed",
+        "Some formats may be missing",
+        "HTTP Error 403",
+        "player",
+        "decodeURIComponent",
+        "The page needs to be reloaded.",
+    )
+    return any(indicator in normalized for indicator in indicators)
+
+
+def _summarize_yt_dlp_error(stdout_text: str | None, stderr_text: str | None) -> str:
+    """从 yt-dlp 输出中提取更有价值的错误摘要。"""
+    candidates: list[str] = []
+    for text in (stderr_text, stdout_text):
+        if not text:
+            continue
+        for raw_line in str(text).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("ERROR:"):
+                candidates.append(line)
+            elif "[youtube]" in line or "[download]" in line:
+                candidates.append(line)
+
+    if candidates:
+        return candidates[-1]
+
+    merged = (stderr_text or stdout_text or "").strip()
+    if not merged:
+        return "未知错误"
+
+    lines = [line.strip() for line in merged.splitlines() if line.strip()]
+    return lines[-1] if lines else "未知错误"
+
+
+def _find_yt_dlp_command(log: logging.Logger) -> list[str]:
+    """解析 yt-dlp 调用命令，冻结环境优先使用主程序内置入口。"""
+    log.info("开始查找yt-dlp执行命令...")
+
+    current_python = sys.executable
+    if current_python:
+        if getattr(sys, 'frozen', False):
+            current_command = [current_python, _INTERNAL_YT_DLP_FLAG]
+            command_label = f"冻结程序内置yt-dlp: {current_python} {_INTERNAL_YT_DLP_FLAG}"
+        else:
+            current_command = [current_python, '-m', 'yt_dlp']
+            command_label = f"当前Python解释器调用yt-dlp: {current_python} -m yt_dlp"
+        try:
+            result = subprocess.run(
+                [*current_command, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding='utf-8',
+                errors='replace'
+            )
+            if result.returncode == 0:
+                log.info(f"使用{command_label}")
+                return current_command
+        except Exception as exc:
+            log.debug(f"验证{command_label}失败: {exc}")
+
+    found = _which('yt-dlp')
+    if found:
+        log.info(f"找到系统中的yt-dlp: {found}")
+        return [found]
+
+    possible_paths = [
+        '/home/y2a/.local/bin/yt-dlp',
+        '/usr/local/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            log.info(f"找到存在的yt-dlp路径: {path}")
+            return [path]
+
+    if os.name == 'nt':
+        venv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.venv', 'Scripts', 'yt-dlp.exe')
+        if os.path.exists(venv_path):
+            log.info(f"回退到虚拟环境中的yt-dlp.exe: {venv_path}")
+            return [venv_path]
+
+    log.error(_YT_DLP_UNAVAILABLE_MESSAGE)
+    raise YtDlpUnavailableError(_YT_DLP_UNAVAILABLE_MESSAGE)
+
+
+def is_docker_env() -> bool:
+    """粗略判断是否运行在 Docker 中"""
+    try:
+        if os.path.exists('/.dockerenv'):
+            return True
+        cgroup_path = '/proc/1/cgroup'
+        if os.path.exists(cgroup_path):
+            with open(cgroup_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read().lower()
+                return 'docker' in content or 'kubepods' in content
+    except Exception:
+        pass
+    return False
+
+
+def merge_streams_with_ffmpeg(task_dir: str, ffmpeg_path: str | None = None, logger: logging.Logger | None = None) -> str | None:
+    """Fallback merger for cases where yt-dlp fails during the internal merging phase."""
+    log = logger or logging.getLogger(__name__)
+    task_path = Path(task_dir)
+    if not task_path.exists():
+        log.warning("手动合并失败: 任务目录不存在")
+        return None
+
+    output_file = task_path / 'video.mp4'
+    try:
+        if output_file.exists() and output_file.stat().st_size > 0:
+            log.info("检测到已存在的合并视频文件: %s", output_file)
+            return str(output_file)
+    except OSError as exc:
+        log.debug("检查视频输出文件出错: %s", exc)
+
+    def _pick_largest(paths):
+        valid = [p for p in paths if p.exists() and p.is_file()]
+        if not valid:
+            return None
+        return max(valid, key=lambda p: p.stat().st_size)
+
+    video_exts = {'.mp4', '.webm', '.mkv', '.mov'}
+    audio_exts = {'.m4a', '.weba', '.webm', '.opus', '.mp3'}
+
+    video_candidates = [p for p in task_path.glob('video.*')
+                        if p.suffix.lower() in video_exts and p.name not in {'video.mp4'} and '.info' not in p.name]
+    audio_candidates = [p for p in task_path.glob('video.*')
+                        if p.suffix.lower() in audio_exts and '.info' not in p.name]
+
+    video_file = _pick_largest(video_candidates)
+    audio_file = _pick_largest(audio_candidates)
+
+    if not video_file or not audio_file:
+        log.warning("手动合并失败: 未找到可用的视频/音频分离文件")
+        return None
+
+    candidates = []
+    if ffmpeg_path:
+        candidates.append(ffmpeg_path)
+
+    which_target = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+    path_ffmpeg = _which(which_target)
+    if path_ffmpeg and path_ffmpeg not in candidates:
+        candidates.append(path_ffmpeg)
+
+    # 最后尝试项目内置目录（防止绝对路径因为被移动而失效）
+    bundled = os.path.join(get_app_root_dir(), 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if bundled not in candidates:
+        candidates.append(bundled)
+
+    for candidate in candidates:
+        if not candidate or not is_ffmpeg_usable(candidate, log):
+            continue
+
+        cmd = [candidate, '-y', '-i', str(video_file), '-i', str(audio_file), '-c', 'copy', str(output_file)]
+        log.info("尝试通过ffmpeg手动合并音视频: %s", ' '.join(cmd))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+        except Exception as exc:
+            log.warning(f"手动合并过程中发生异常: {exc}")
+            continue
+
+        if result.returncode == 0:
+            log.info("已通过ffmpeg成功合并音视频: %s", output_file)
+            return str(output_file)
+
+        log.warning("手动合并失败，ffmpeg输出: %s", result.stderr)
+
+    log.warning("所有可用ffmpeg路径均无法完成手动合并")
+    return None
+
+
+def build_proxy_url(config):
+    """
+    构建代理URL，包含认证信息（如果有）
+    
+    Args:
+        config (dict): 配置字典
+        
+    Returns:
+        str: 完整的代理URL，如果没有启用代理则返回None
+    """
+    if not config.get('YOUTUBE_PROXY_ENABLED', False):
+        return None
+        
+    proxy_url = config.get('YOUTUBE_PROXY_URL', '').strip()
+    if not proxy_url:
+        return None
+        
+    proxy_username = config.get('YOUTUBE_PROXY_USERNAME', '').strip()
+    proxy_password = config.get('YOUTUBE_PROXY_PASSWORD', '').strip()
+    
+    # 如果有用户名和密码，构建认证代理URL
+    if proxy_username and proxy_password:
+        # 解析原始代理URL
+        if '://' in proxy_url:
+            protocol, rest = proxy_url.split('://', 1)
+            # 构建包含认证的代理URL
+            auth_proxy_url = f"{protocol}://{proxy_username}:{proxy_password}@{rest}"
+            return auth_proxy_url
+        else:
+            # 如果没有协议前缀，默认添加http://
+            return f"http://{proxy_username}:{proxy_password}@{proxy_url}"
+    
+    return proxy_url
+
+def setup_task_logger(task_id):
+    """
+    为特定任务设置日志记录器
+    
+    Args:
+        task_id: 任务ID
+        
+    Returns:
+        logger: 配置好的日志记录器
+    """
+    log_dir = get_app_subdir('logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, f'task_{task_id}.log')
+    logger = logging.getLogger(f'youtube_handler_{task_id}')
+    
+    if not logger.handlers:  # 避免重复添加处理器
+        logger.setLevel(logging.INFO)
+        
+        # 文件处理器
+        file_handler = RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5, encoding='utf-8')
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        
+        # 确保消息不会传播到根日志记录器
+        logger.propagate = False
+    
+    return logger
+
+def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=None):
+    """
+    测试视频可用性和格式
+    
+    Args:
+        youtube_url: YouTube视频URL
+        yt_dlp_cmd: yt-dlp执行命令
+        cookies_path: Cookie文件路径
+        logger: 日志记录器
+        
+    Returns:
+        tuple: (是否可用, 可用格式列表, 错误信息)
+    """
+    if not logger:
+        logger = logging.getLogger(__name__)
+        
+    # 仅检查视频是否可访问，不在预检阶段触发格式选择，避免把“格式不可用”误判为“视频不可用”
+    cmd = [
+        *yt_dlp_cmd,
+        youtube_url,
+        '--skip-download',
+        '--no-warnings',
+        '--no-playlist',
+        '--ignore-no-formats-error',
+        '--print', '%(id)s\t%(title)s'
+    ]
+    
+    # 检查是否需要使用代理
+    config = load_config()
+    proxy_url = build_proxy_url(config)
+    _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+    if proxy_url and logger:
+        logger.info("测试视频可用性时已启用代理")
+    
+    max_attempts = 3
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(f"测试视频可用性和格式（尝试 {attempt}/{max_attempts}）...")
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=45,
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            if process.returncode == 0:
+                info_text = process.stdout
+                logger.info("视频可用性检查成功")
+                return True, info_text, None
+
+            error_text = (process.stderr or process.stdout or "").strip()
+            last_error = error_text or f"格式检查返回非零状态码: {process.returncode}"
+            logger.warning(f"格式检查返回非零状态码: {process.returncode}")
+
+            if "The page needs to be reloaded." in last_error and attempt < max_attempts:
+                logger.warning("YouTube返回页面需重载，等待后重试")
+                time.sleep(2)
+                continue
+
+            return False, None, last_error
+
+        except subprocess.TimeoutExpired:
+            last_error = "格式检查超时"
+            logger.error(last_error)
+            if attempt < max_attempts:
+                time.sleep(2)
+                continue
+            return False, None, last_error
+        except FileNotFoundError as exc:
+            logger.error(_YT_DLP_UNAVAILABLE_MESSAGE)
+            raise YtDlpUnavailableError(_YT_DLP_UNAVAILABLE_MESSAGE) from exc
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"格式检查出错: {last_error}")
+            if attempt < max_attempts:
+                time.sleep(1)
+                continue
+            return False, None, last_error
+
+    return False, None, last_error or "格式检查失败"
+
+def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_download=False, only_video=False, progress_callback=None, cancel_event=None):
+    """
+    下载YouTube视频数据
+    
+    Args:
+        youtube_url (str): YouTube视频URL
+        task_id (str, optional): 任务ID，如果未提供则自动生成
+        cookies_file_path (str, optional): cookies.txt文件路径
+        skip_download (bool): 只采集元数据和封面，不下载视频本体
+        only_video (bool): 只下载视频本体，不采集元数据和封面
+    
+    Returns:
+        tuple: (成功标志, 结果数据或错误信息)
+    """
+    # 如果没有提供task_id，生成一个
+    if not task_id:
+        task_id = str(uuid.uuid4())
+    
+    # 设置任务日志记录器
+    logger = setup_task_logger(task_id)
+    logger.info(f"开始下载视频: {youtube_url}, 任务ID: {task_id}")
+    
+    # 创建任务目录
+    task_dir = os.path.join(get_app_subdir('downloads'), task_id)
+    if os.path.exists(task_dir):
+        if only_video:
+            # 当只下载视频文件时不清空目录，保留之前的元数据和封面
+            logger.info(f"任务目录已存在，保留元数据和封面: {task_dir}")
+        else:
+            logger.info(f"任务目录已存在，正在清空: {task_dir}")
+            shutil.rmtree(task_dir)
+    
+    # 确保目录存在
+    os.makedirs(task_dir, exist_ok=True)
+    logger.info(f"创建任务目录: {task_dir}")
+    
+    # 构建基本命令
+    video_output = os.path.join(task_dir, 'video.%(ext)s')
+    metadata_output = os.path.join(task_dir, 'metadata.json')
+    thumbnail_output = os.path.join(task_dir, 'cover.jpg')
+    
+    try:
+        yt_dlp_cmd = _find_yt_dlp_command(logger)
+        
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
+        cookies_path = None
+        if cookies_file_path:
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
+            if cookies_path:
+                # 自动把非 Netscape 导出（表格/JSON 等）转换为 yt-dlp 可用的 cookies.txt
+                cookies_path = _ensure_netscape_cookies(cookies_path, logger)
+                logger.info(f"使用cookies文件: {cookies_path}")
+                cookies_auth_ok, cookies_auth_reason = _youtube_cookies_look_authenticated(cookies_path)
+                if cookies_auth_ok:
+                    logger.info("检测到YouTube cookies包含完整登录态标记")
+                else:
+                    logger.warning(f"YouTube cookies疑似不完整: {cookies_auth_reason}")
+        
+        # 验证yt-dlp路径有效性
+        logger.info(f"最终确定的yt-dlp命令: {' '.join(yt_dlp_cmd)}")
+        
+        # 首先测试视频可用性
+        available, formats_info, error_msg = test_video_availability(youtube_url, yt_dlp_cmd, cookies_path, logger)
+        if not available:
+            # 预检查若只是格式选择问题，则继续进入正式下载，让后续降级格式策略接管
+            if _is_format_selection_error(error_msg):
+                logger.warning(f"视频预检查遇到格式选择问题，继续进入下载阶段处理: {error_msg}")
+            elif _looks_like_youtube_bot_challenge(error_msg):
+                # 检测到反机器人验证，尝试通过 CookieCloud 自动刷新 Cookie 后重试
+                logger.warning("检测到YouTube反机器人验证，尝试通过CookieCloud刷新Cookie")
+                config = load_config()
+                sync_ok, sync_info = try_cookiecloud_youtube_sync(config)
+                if sync_ok and isinstance(sync_info, dict):
+                    new_path = sync_info.get("output_path") or sync_info.get("output_path_display")
+                    if new_path and os.path.isfile(new_path):
+                        cookies_path = new_path
+                        logger.info("CookieCloud同步成功，使用刷新后的Cookie重试")
+                        available, formats_info, error_msg = test_video_availability(
+                            youtube_url, yt_dlp_cmd, cookies_path, logger,
+                        )
+                    else:
+                        logger.warning("CookieCloud同步成功但未生成有效的cookie文件")
+                else:
+                    logger.warning("CookieCloud同步失败: %s", sync_info)
+            if not available:
+                logger.error("视频不可用或无法访问")
+                return False, "视频不可用或无法访问"
+
+        if not available and error_msg and _looks_like_youtube_bot_challenge(error_msg):
+            # 对于同时存在格式/访问混合异常的场景，保留诊断日志但不阻塞后续下载重试
+            logger.warning("预检查存在潜在YouTube风控迹象，下载阶段将继续重试")
+        
+        # 预先检测 ffmpeg（内部会在未提供config时自行加载配置）
+        ffmpeg_location = get_ffmpeg_path(logger=logger)
+
+        # 准备yt-dlp命令
+        cmd = [
+            *yt_dlp_cmd,
+            youtube_url,
+            '--output', video_output,  # 输出视频文件
+            '--no-check-certificates',  # 不检查SSL证书
+            '--geo-bypass',  # 尝试绕过地理限制
+            '--extractor-retries', '10',  # 增加提取器重试次数
+            '--fragment-retries', '10',  # 增加片段重试次数
+            '--retry-sleep', '3',  # 重试间隔
+            '--ignore-errors',  # 忽略错误继续下载
+            '--no-playlist',  # 不下载播放列表，仅下载单个视频
+            '--user-agent', _YOUTUBE_USER_AGENT,  # 设置User-Agent
+        ]
+        
+        # 检查是否需要使用代理
+        config = load_config()
+        proxy_url = build_proxy_url(config)
+        _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+        if proxy_url:
+            logger.info("下载 YouTube 时已启用代理")
+        
+        # 配置下载线程数
+        download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)
+        cmd.extend(['--concurrent-fragments', str(download_threads)])
+        logger.info(f"使用下载线程数: {download_threads}")
+        
+        # 配置下载速度限制
+        throttled_rate = config.get('YOUTUBE_THROTTLED_RATE', '').strip()
+        if throttled_rate:
+            cmd.extend(['--throttled-rate', throttled_rate])
+            logger.info(f"启用下载速度限制: {throttled_rate}")
+
+        has_ffmpeg = bool(ffmpeg_location) or is_docker_env()
+        quality_plan: dict[str, Any] | None = None
+        quality_strategy_index = 0
+        if not skip_download:
+            quality_plan = _build_quality_retry_strategies(config, has_ffmpeg)
+            quality_strategy = quality_plan['strategies'][quality_strategy_index]
+            _set_yt_dlp_format_options(
+                cmd,
+                cast(str, quality_strategy['selector']),
+                merge_output_format=cast(str | None, quality_strategy.get('merge_output_format'))
+            )
+            logger.info(
+                "YouTube 下载画质策略: mode=%s, target_height=%s, format_selector=%s, has_ffmpeg=%s",
+                quality_plan['mode'],
+                quality_plan['max_height'] or 'unlimited',
+                quality_strategy['selector'],
+                has_ffmpeg,
+            )
+        
+        # 根据参数调整命令（不再进行缩略图格式转换，直接使用原生格式）
+        if skip_download:
+            # “采集信息”阶段当前只依赖 metadata + cover；
+            # 不要把字幕下载失败放大成整步失败。
+            # 使用 --ignore-no-formats-error 允许在无可用视频格式时仍然提取元数据和封面
+            cmd.extend([
+                '--skip-download',
+                '--write-info-json',
+                '--write-thumbnail',
+                '--ignore-no-formats-error',
+            ])
+        elif only_video:
+            subtitle_download_enabled = bool(
+                config.get('SUBTITLE_TRANSLATION_ENABLED', False)
+                or config.get('SUBTITLE_EMBED_IN_VIDEO', False)
+            )
+            cmd.extend([
+                '--no-write-info-json',
+                '--no-write-thumbnail',
+            ])
+            cmd.extend(_build_subtitle_download_args(
+                config,
+                include_subtitles=subtitle_download_enabled,
+            ))
+        else:
+            # 默认全下载
+            cmd.extend([
+                '--write-info-json',
+                '--write-thumbnail',
+            ])
+            cmd.extend(_build_subtitle_download_args(config, include_subtitles=True))
+
+        # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）
+        if ffmpeg_location and os.path.isabs(ffmpeg_location):
+            cmd.extend(['--ffmpeg-location', ffmpeg_location])
+        
+        # 添加进度显示选项
+        if progress_callback and not skip_download:
+            cmd.extend(['--progress'])
+
+        # 重试机制
+        max_retries = 3
+        # 预先初始化，避免在异常分支中未绑定导致静态分析报错
+        process = None
+        output = ""
+        manual_merge_success = False
+        cookiecloud_tried_in_download = False
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
+
+                if progress_callback and not skip_download:
+                    # 使用Popen实时获取进度，设置UTF-8编码
+                    logger.info(f"准备执行yt-dlp命令: {' '.join(yt_dlp_cmd)}")
+                    logger.debug(f"完整命令: {' '.join(cmd)}")
+                    
+                    try:
+                        process = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                            universal_newlines=True,
+                            encoding='utf-8',
+                            errors='replace'  # 遇到无法解码的字符时用?替换
+                        )
+                        logger.info(f"subprocess.Popen创建成功，PID: {process.pid}")
+                    except Exception as e:
+                        logger.error(f"subprocess.Popen创建失败: {str(e)}")
+                        raise
+                    
+                    # 检查process.stdout是否为None
+                    if process.stdout is None:
+                        logger.error("process.stdout为None，无法读取输出")
+                        raise RuntimeError("进程创建成功但stdout为None")
+                    
+                    output_lines = []
+                    logger.info("开始读取yt-dlp输出...")
+                    
+                    # 确保process.stdout不为None且可迭代
+                    if process.stdout is None:
+                        logger.error("process.stdout为None，无法读取输出")
+                        raise RuntimeError("进程创建成功但stdout为None")
+                    
+                    for line in process.stdout:
+                        if cancel_event is not None and cancel_event.is_set():
+                            logger.info("检测到任务取消请求，准备终止yt-dlp进程")
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                            raise RuntimeError("任务已取消")
+                        output_lines.append(line)
+                        line = line.strip()
+                        logger.debug(f"yt-dlp输出: {line}")
+                        
+                        # 解析进度信息
+                        if '[download]' in line and '%' in line:
+                            try:
+                                # 解析进度百分比，例如: [download]  45.2% of 123.45MiB at 1.23MiB/s ETA 00:30
+                                if 'of' in line and 'at' in line:
+                                    parts = line.split()
+                                    for i, part in enumerate(parts):
+                                        if part.endswith('%'):
+                                            percent_str = part.replace('%', '')
+                                            progress_percent = float(percent_str)
+                                            
+                                            # 提取文件大小和下载速度
+                                            file_size = ""
+                                            download_speed = ""
+                                            eta = ""
+                                            
+                                            if i + 2 < len(parts) and parts[i + 1] == 'of':
+                                                file_size = parts[i + 2]
+                                            
+                                            for j in range(i + 3, len(parts)):
+                                                if parts[j] == 'at' and j + 1 < len(parts):
+                                                    download_speed = parts[j + 1]
+                                                elif parts[j] == 'ETA' and j + 1 < len(parts):
+                                                    eta = parts[j + 1]
+                                                    break
+                                            
+                                            progress_info = {
+                                                'percent': progress_percent,
+                                                'file_size': file_size,
+                                                'speed': download_speed,
+                                                'eta': eta
+                                            }
+                                            
+                                            progress_callback(progress_info)
+                                            break
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"解析进度信息失败: {e}")
+                    
+                    process.wait()
+                    output = ''.join(output_lines)
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        logger.info("yt-dlp执行完成后检测到任务取消请求")
+                        raise RuntimeError("任务已取消")
+                    
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd, output)
+                else:
+                    # 不需要进度回调时使用原来的方式，设置UTF-8编码
+                    process = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        check=True, 
+                        timeout=300,
+                        encoding='utf-8',
+                        errors='replace'  # 遇到无法解码的字符时用?替换
+                    )
+                    if cancel_event is not None and cancel_event.is_set():
+                        logger.info("检测到任务取消请求，终止yt-dlp命令执行")
+                        raise RuntimeError("任务已取消")
+                    output = process.stdout
+                
+                break  # 成功执行，跳出重试循环
+                
+            except subprocess.CalledProcessError as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
+                logger.warning(f"尝试 {attempt + 1} 失败: {str(e)}")
+                # 使用已初始化的 output 优先，其次回退到异常对象中的 stdout/stderr
+                error_output = output or getattr(e, 'stdout', "")
+                error_stderr = getattr(e, 'stderr', "") or ""
+                logger.warning(f"标准输出: {error_output}")
+                logger.warning(f"标准错误: {error_stderr}")
+                
+                # 检查是否是格式问题
+                combined_error = error_output + error_stderr
+
+                if "'NoneType' object has no attribute 'lower'" in combined_error:
+                    merged_file = merge_streams_with_ffmpeg(task_dir, ffmpeg_location, logger)
+                    if merged_file:
+                        manual_merge_success = True
+                        logger.info("yt-dlp在合并阶段触发NoneType错误，已使用ffmpeg手动合并成功")
+                        break
+                    logger.warning("手动合并失败，将继续进行下载重试")
+
+                if _looks_like_youtube_bot_challenge(combined_error):
+                    # 下载阶段检测到反机器人验证，尝试通过 CookieCloud 刷新 Cookie 后重试
+                    if attempt < max_retries - 1 and not cookiecloud_tried_in_download:
+                        cookiecloud_tried_in_download = True
+                        logger.warning("下载阶段检测到YouTube反机器人验证，尝试通过CookieCloud刷新Cookie")
+                        try:
+                            config = load_config()
+                            sync_ok, sync_info = try_cookiecloud_youtube_sync(config)
+                            if sync_ok and isinstance(sync_info, dict):
+                                new_path = sync_info.get("output_path") or sync_info.get("output_path_display")
+                                if new_path and os.path.isfile(new_path):
+                                    cookies_path = new_path
+                                    logger.info("CookieCloud同步成功，使用刷新后的Cookie重试下载")
+                                    # 更新 cmd 中的 --cookies 参数
+                                    if '--cookies' in cmd:
+                                        idx = cmd.index('--cookies')
+                                        cmd[idx + 1] = new_path
+                                    else:
+                                        _append_yt_dlp_network_args(cmd, cookies_path=cookies_path)
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    logger.warning("CookieCloud同步成功但未生成有效的cookie文件")
+                            else:
+                                logger.warning("CookieCloud同步失败: %s", sync_info)
+                        except Exception as cc_exc:
+                            logger.warning("CookieCloud刷新Cookie时发生未预期错误: %s", type(cc_exc).__name__)
+
+                if "The page needs to be reloaded." in combined_error:
+                    if attempt < max_retries - 1 and '--cookies' in cmd:
+                        logger.warning("YouTube session 不匹配（page needs to be reloaded），移除 cookies 后重试公开视频")
+                        # 移除 --cookies <path>
+                        idx = cmd.index('--cookies')
+                        cmd.pop(idx + 1)
+                        cmd.pop(idx)
+                        # 兼容旧命令模板：若存在残留 extractor-args，一并移除后重试
+                        if '--extractor-args' in cmd:
+                            idx = cmd.index('--extractor-args')
+                            cmd.pop(idx + 1)
+                            cmd.pop(idx)
+                        time.sleep(2)
+                        continue
+
+                if "Requested format is not available" in combined_error or "Only images are available" in combined_error:
+                    if attempt < max_retries - 1:
+                        strategy_switched = False
+                        if quality_plan is not None:
+                            strategies = cast(list[dict[str, Any]], quality_plan.get('strategies') or [])
+                            if quality_strategy_index + 1 < len(strategies):
+                                quality_strategy_index += 1
+                                next_strategy = strategies[quality_strategy_index]
+                                _set_yt_dlp_format_options(
+                                    cmd,
+                                    cast(str, next_strategy['selector']),
+                                    merge_output_format=cast(str | None, next_strategy.get('merge_output_format'))
+                                )
+                                logger.info(
+                                    "使用降级格式策略: mode=%s, target_height=%s, format_selector=%s",
+                                    quality_plan.get('mode'),
+                                    quality_plan.get('max_height') or 'unlimited',
+                                    next_strategy['selector'],
+                                )
+                                strategy_switched = True
+                        if not strategy_switched and quality_plan is not None:
+                            current_selector = None
+                            strategies = cast(list[dict[str, Any]], quality_plan.get('strategies') or [])
+                            if quality_strategy_index < len(strategies):
+                                current_selector = strategies[quality_strategy_index].get('selector')
+                            logger.warning(
+                                "当前画质策略已无更多回退候选，将保留现有格式限制重试: mode=%s, target_height=%s, format_selector=%s",
+                                quality_plan.get('mode'),
+                                quality_plan.get('max_height') or 'unlimited',
+                                current_selector or _build_quality_format_selector(config, has_ffmpeg),
+                            )
+                        time.sleep(2)  # 等待2秒后重试
+                        continue
+                
+                if attempt == max_retries - 1:
+                    # 最后一次尝试也失败
+                    error_summary = _summarize_yt_dlp_error(error_output, error_stderr)
+                    error_msg = f"yt-dlp执行错误: {error_summary}"
+                    logger.error(error_msg)
+                    logger.error(f"标准输出: {error_output}")
+                    logger.error(f"标准错误: {error_stderr}")
+                    return False, error_msg
+                    
+            except subprocess.TimeoutExpired:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
+                logger.warning(f"尝试 {attempt + 1} 超时")
+                if attempt == max_retries - 1:
+                    error_msg = "下载超时"
+                    logger.error(error_msg)
+                    return False, error_msg
+                time.sleep(3)  # 超时后等待更长时间
+                continue
+
+            except FileNotFoundError as exc:
+                logger.error(_YT_DLP_UNAVAILABLE_MESSAGE)
+                raise YtDlpUnavailableError(_YT_DLP_UNAVAILABLE_MESSAGE) from exc
+                
+            except Exception as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return False, "任务已取消"
+                logger.warning(f"尝试 {attempt + 1} 出现异常: {str(e)}")
+                if attempt == max_retries - 1:
+                    error_msg = f"下载过程中发生错误: {str(e)}"
+                    logger.error(error_msg)
+                    return False, error_msg
+                time.sleep(2)
+                continue
+        
+        # 处理输出结果 — 使用安全检查以防 process 未被创建
+        download_success = manual_merge_success or (process is not None and getattr(process, 'returncode', None) == 0)
+        if download_success:
+            logger.info("下载完成，正在收集文件信息")
+            
+            # 获取下载的文件信息
+            video_path = None
+            metadata_path = None
+            cover_path = None
+            subtitles_paths = []
+            
+            # 查找实际的视频文件与封面
+            # 识别视频文件，排除 info/json/字幕/图片/直播聊天等产物。
+            for file in os.listdir(task_dir):
+                file_path = os.path.join(task_dir, file)
+                if os.path.isfile(file_path):
+                    if _is_video_output_file(file):
+                        video_path = file_path
+                    elif file.endswith('.info.json'):
+                        metadata_path = file_path
+                    elif file.endswith('.jpg'):
+                        # 将视频封面重命名为cover.jpg
+                        if file != 'cover.jpg':
+                            cover_path = os.path.join(task_dir, 'cover.jpg')
+                            shutil.copy(file_path, cover_path)
+                            logger.info(f"将封面图片 {file} 重命名为 cover.jpg")
+                        else:
+                            cover_path = file_path
+                    elif (file.lower().endswith('.webp') or file.lower().endswith('.png')) and file.startswith('video'):
+                        # 直接使用 webp/png 作为封面（AcFun 已支持，不强制转 jpg）
+                        if not cover_path:
+                            cover_path = file_path
+                            logger.info(f"检测到封面 {os.path.basename(file_path)}，将直接作为封面文件")
+                    elif file.startswith('video.') and ('.vtt' in file or '.srt' in file):
+                        subtitles_paths.append(file_path)
+            
+            # 重命名metadata文件
+            if metadata_path and os.path.exists(metadata_path):
+                shutil.copy(metadata_path, metadata_output)
+                metadata_path = metadata_output
+            
+            # 结果处理
+            result = {
+                "video_path": video_path,
+                "metadata_path": metadata_path,
+                "cover_path": cover_path,
+                "subtitles_paths": subtitles_paths,
+                "task_id": task_id,
+                "task_dir": task_dir
+            }
+            # skip_download 时允许 video_path 为空
+            if skip_download:
+                logger.info(f"仅采集信息成功: {json.dumps(result, ensure_ascii=False)}")
+                return True, result
+            # only_video 时只关心视频文件
+            if only_video:
+                if not video_path:
+                    logger.error("未找到下载的视频文件")
+                    return False, "未找到下载的视频文件"
+                
+                # 即使在only_video模式下，也检查元数据和封面是否存在
+                if not metadata_path:
+                    metadata_path_default = os.path.join(task_dir, 'metadata.json')
+                    if os.path.exists(metadata_path_default):
+                        metadata_path = metadata_path_default
+                
+                if not cover_path:
+                    # 优先 jpg，其次 webp、png
+                    for name in ['cover.jpg', 'video.webp', 'video.png', 'cover.webp', 'cover.png']:
+                        p = os.path.join(task_dir, name)
+                        if os.path.exists(p):
+                            cover_path = p
+                            break
+                
+                result["metadata_path"] = metadata_path
+                result["cover_path"] = cover_path
+                
+                logger.info(f"仅下载视频文件成功: {json.dumps(result, ensure_ascii=False)}")
+                return True, result
+            # 默认全下载
+            if not video_path:
+                logger.error("未找到下载的视频文件")
+                return False, "未找到下载的视频文件"
+            logger.info(f"下载成功: {json.dumps(result, ensure_ascii=False)}")
+            return True, result
+        else:
+            proc_code = getattr(process, 'returncode', None)
+            error_msg = f"yt-dlp返回非零状态码: {proc_code}"
+            logger.error(error_msg)
+            final_output = output or (getattr(process, 'stdout', "") if process is not None else "")
+            final_stderr = (getattr(process, 'stderr', "") or "") if process is not None else ""
+            logger.error(f"标准输出: {final_output}")
+            logger.error(f"标准错误: {final_stderr}")
+            return False, error_msg
+        
+    except Exception as e:
+        error_msg = _format_unexpected_download_error(e)
+        logger.error(error_msg)
+        return False, error_msg
+
+def _is_safe_playlist_url(raw_url, logger):
+    """
+    对用户提供的播放列表URL进行严格校验，确保仅为合理的YouTube播放列表链接。
+    """
+    if not raw_url:
+        return None
+    # 限制URL最大长度，避免异常长输入
+    # 使用2048作为常见浏览器URL长度上限
+    if len(raw_url) > 2048:
+        logger.warning(f"播放列表URL过长，已拒绝: 长度={len(raw_url)}")
+        return None
+    normalized_url = raw_url.strip()
+    if not normalized_url:
+        return None
+    # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
+    if normalized_url and not urlparse(normalized_url).scheme:
+        if normalized_url.startswith("//"):
+            normalized_url = "https:" + normalized_url
+        else:
+            normalized_url = "https://" + normalized_url
+    # 仅允许URL中出现常见安全字符，防止奇异控制字符或空白
+    # 允许: 字母数字和 -._~:/?#[]@!$&'()*+,;=%
+    if not re.fullmatch(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", normalized_url):
+        logger.warning("播放列表URL包含非法字符，已拒绝: %r", normalized_url)
+        return None
+    parsed = urlparse(normalized_url)
+    allowed_schemes = {"http", "https"}
+    # 仅允许 http/https 协议
+    if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
+        logger.warning("无效的播放列表URL协议: %r", normalized_url)
+        return None
+    # 显式拒绝URL中的userinfo（以及畸形netloc里残留的@），避免混淆主机与日志污染风险
+    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
+        logger.warning("播放列表URL包含不允许的userinfo: %r", normalized_url)
+        return None
+    hostname = (parsed.hostname or "").rstrip('.').lower()
+    # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
+    is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
+    is_short_youtube = hostname == "youtu.be"
+    if not (is_youtube_domain or is_short_youtube):
+        logger.warning("不受信任的播放列表URL主机名: %r (原始URL: %r, 规范化URL: %r)", hostname, raw_url, normalized_url)
+        return None
+    # 额外检查其看起来像播放列表链接（查询参数中包含合法list）
+    query = parse_qs(parsed.query or "")
+    list_ids = query.get("list", [])
+    valid_list_ids = []
+    for value in list_ids:
+        value_stripped = value.strip()
+        if value_stripped and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value_stripped):
+            valid_list_ids.append(value_stripped)
+    # 要求至少存在一个通过校验的 list 参数，避免仅凭 /playlist 路径就放行
+    if not valid_list_ids:
+        logger.warning("URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: %r", normalized_url)
+        return None
+    return normalized_url
+
+def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
+    """
+    提取YouTube播放列表中的所有视频URL
+    Args:
+        playlist_url (str): 播放列表URL
+        cookies_file_path (str, optional): cookies.txt文件路径
+    Returns:
+        list: 视频URL列表
+    """
+    video_urls = []
+    try:
+        # 验证播放列表URL，避免将任意用户输入传递给外部命令
+        normalized_url = _is_safe_playlist_url(playlist_url, logger)
+        if not normalized_url:
+            logger.warning("播放列表URL未通过安全校验，已跳过提取: %r", playlist_url)
+            return video_urls
+
+        try:
+            import yt_dlp
+        except ImportError as exc:
+            logger.error("无法导入yt_dlp模块，无法提取播放列表: %s", exc)
+            return video_urls
+
+        # 处理cookies路径，仅允许在项目根目录下的文件（realpath防止symlink越界）
+        cookies_path = None
+        if cookies_file_path:
+            cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
+        if cookies_path:
+            cookies_path = _ensure_netscape_cookies(cookies_path, logger)
+            logger.info("播放列表提取使用cookies文件: %s", cookies_path)
+
+        ydl_opts: dict[str, Any] = {
+            'extract_flat': True,
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        if cookies_path:
+            ydl_opts['cookiefile'] = cookies_path
+
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
+            data = ydl.extract_info(normalized_url, download=False)
+
+        if not isinstance(data, dict):
+            logger.error("yt_dlp返回了非预期的播放列表数据类型: %s", type(data).__name__)
+            return video_urls
+
+        entries = data.get('entries')
+        if entries is None:
+            logger.error("yt_dlp播放列表结果缺少entries字段")
+            return video_urls
+
+        try:
+            iterator = iter(entries)
+        except TypeError:
+            logger.error("yt_dlp播放列表entries不可迭代: %s", type(entries).__name__)
+            return video_urls
+
+        for entry in iterator:
+            if not isinstance(entry, dict):
+                logger.debug("跳过非字典类型的播放列表条目: %r", entry)
+                continue
+            video_id = entry.get('id')
+            if video_id:
+                video_urls.append(f'https://www.youtube.com/watch?v={video_id}')
+    except Exception as e:
+        logger.error(f"extract_video_urls_from_playlist异常: {str(e)}")
+    return video_urls
+
