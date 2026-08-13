@@ -127,6 +127,9 @@ hiddenimports = [
     'openai',
     'requests',
     'apscheduler',
+
+    # 项目内部模块（运行时懒加载，显式收集以免冻结环境缺失）
+    'modules.tools.convert_cookies',
     
     # Flask相关
     'flask_cors',

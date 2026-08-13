@@ -6,9 +6,11 @@ import json
 import time
 import uuid
 import shutil
+import hashlib
 import logging
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, cast
 from modules.config_manager import (
@@ -23,6 +25,7 @@ from .cookiecloud import try_cookiecloud_youtube_sync
 from shutil import which as _which
 from urllib.parse import parse_qs, urlparse
 import re
+import tempfile
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
@@ -123,6 +126,118 @@ def _youtube_cookies_look_authenticated(cookies_path: str | None) -> tuple[bool,
         return False, "cookies中缺少 Google/YouTube 一方登录态关键字段"
     except Exception as exc:
         return False, f"读取cookies失败: {exc}"
+
+
+def _is_netscape_cookie_file(path: str) -> bool:
+    """快速判断文件是否为 Netscape cookies.txt 格式。"""
+    try:
+        from modules.tools.convert_cookies import is_netscape_file
+        return bool(is_netscape_file(path))
+    except Exception:
+        return False
+
+
+def _convert_any_to_netscape(input_path: str, output_path: str) -> bool:
+    """将非标准 cookies 导出转换为 Netscape 格式，返回是否成功。"""
+    try:
+        from modules.tools.convert_cookies import convert_any_to_netscape as _conv
+    except Exception:
+        return False
+    try:
+        res = _conv(input_path, output_path)
+        return bool(res and os.path.isfile(res))
+    except Exception:
+        return False
+
+
+# 每个派生文件一把进程内锁，保证同一源文件并发转换时只有一个线程执行「转换 + 替换」，
+# 其它线程等待后复用已生成的派生文件，避免 Windows 下并发 os.replace 同一目标报 WinError 5。
+_DERIVED_LOCKS: dict[str, threading.Lock] = {}
+_DERIVED_LOCKS_GUARD = threading.Lock()
+
+
+def _get_derived_lock(key: str) -> threading.Lock:
+    """按派生路径取一把进程内锁（不存在则创建）。"""
+    with _DERIVED_LOCKS_GUARD:
+        lock = _DERIVED_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _DERIVED_LOCKS[key] = lock
+        return lock
+
+
+def _ensure_netscape_cookies(cookies_path: str | None, log: logging.Logger | None = None) -> str | None:
+    """确保 cookies 为 yt-dlp 可用的 Netscape 格式。
+
+    若已是 Netscape 格式则直接返回原路径；否则尝试转换为 Netscape 文件并返回新路径。
+    派生文件名基于源文件绝对路径的哈希：不同源文件互不覆盖，同一源文件重复转换复用
+    同一派生文件，避免临时文件累积。写入采用「临时文件 + os.replace 原子替换」，
+    避免并发读/写截断。转换失败时返回原路径（交给 yt-dlp 报错），并记录警告。
+    """
+    _log = log or logger
+    if not cookies_path or not os.path.isfile(cookies_path):
+        return None
+    try:
+        if _is_netscape_cookie_file(cookies_path):
+            return cookies_path
+    except Exception:
+        pass
+
+    try:
+        # 派生文件放在原文件同目录，便于用户定位；原文件已经过 _resolve_safe_cookies_path 校验，
+        # 原目录不可用时回退到系统临时目录
+        original_dir = os.path.dirname(os.path.realpath(cookies_path))
+        if os.path.isdir(original_dir):
+            tmp_dir = original_dir
+        else:
+            tmp_dir = tempfile.gettempdir()
+    except Exception as exc:
+        _log.warning("无法创建临时cookies文件，仍使用原文件: %s", exc)
+        return cookies_path
+
+    try:
+        # 基于源文件绝对路径的哈希派生文件名，保证不同源文件互不覆盖、同源复用同一文件
+        digest = hashlib.sha1(os.path.realpath(cookies_path).encode("utf-8")).hexdigest()[:12]
+        derived = os.path.join(tmp_dir, "yt_cookies." + digest + ".netscape.txt")
+    except Exception as exc:
+        _log.warning("无法生成临时cookies文件名，仍使用原文件: %s", exc)
+        return cookies_path
+
+    # 同一源文件并发转换时用派生路径对应的锁串行化「转换 + 替换」，
+    # 等待的线程复用已生成的派生文件，避免 Windows 下并发 os.replace 同一目标失败。
+    lock = _get_derived_lock(derived)
+    with lock:
+        # 并发场景下其它线程可能已完成转换，直接复用
+        if os.path.isfile(derived) and _is_netscape_cookie_file(derived):
+            return derived
+
+        tmp_file: str | None = None
+        try:
+            # 先写入临时文件，成功后再 os.replace 原子重命名，避免并发读/写截断派生文件
+            fd, tmp_file = tempfile.mkstemp(prefix="yt_cookies_", suffix=".tmp", dir=tmp_dir)
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            if not _convert_any_to_netscape(cookies_path, tmp_file):
+                raise RuntimeError("cookie转换失败")
+            os.replace(tmp_file, derived)
+            tmp_file = None
+            _log.info("已将 cookies 自动转换为 Netscape 格式: %s", derived)
+            return derived
+        except Exception as exc:
+            # 替换失败但已有可用派生文件时优先返回它，避免把原始非 Netscape 文件传给 yt-dlp
+            if os.path.isfile(derived) and _is_netscape_cookie_file(derived):
+                return derived
+            _log.warning("cookies自动转换失败: %s", exc)
+            return cookies_path
+        finally:
+            # 失败时清理临时文件，避免残留
+            if tmp_file and os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
 
 
 def _append_yt_dlp_network_args(
@@ -621,6 +736,8 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if cookies_file_path:
             cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
             if cookies_path:
+                # 自动把非 Netscape 导出（表格/JSON 等）转换为 yt-dlp 可用的 cookies.txt
+                cookies_path = _ensure_netscape_cookies(cookies_path, logger)
                 logger.info(f"使用cookies文件: {cookies_path}")
                 cookies_auth_ok, cookies_auth_reason = _youtube_cookies_look_authenticated(cookies_path)
                 if cookies_auth_ok:
@@ -1198,6 +1315,7 @@ def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
         if cookies_file_path:
             cookies_path = _resolve_safe_cookies_path(cookies_file_path, logger)
         if cookies_path:
+            cookies_path = _ensure_netscape_cookies(cookies_path, logger)
             logger.info("播放列表提取使用cookies文件: %s", cookies_path)
 
         ydl_opts: dict[str, Any] = {
