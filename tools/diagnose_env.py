@@ -3,17 +3,20 @@
 """
 快速诊断脚本：检查 yt-dlp / ffmpeg 可用性、cookies 文件存在与基本格式、并尝试用 yt-dlp 做一次格式列举。
 在项目根运行： python tools/diagnose_env.py
+默认不会在没有明确 --use-cookies 的情况下对外发起带 cookies 的网络请求以避免触发反爬。
 """
 import os
 import shutil
 import subprocess
 import json
 from pathlib import Path
+import argparse
 
 ROOT = Path(".").resolve()
 COOKIES_DIR = ROOT / "cookies"
 YT_COOKIES = COOKIES_DIR / "yt_cookies.txt"
 BILI_COOKIES = COOKIES_DIR / "bili_cookies.json"
+
 
 def check_command(cmd):
     path = shutil.which(cmd)
@@ -25,7 +28,12 @@ def check_command(cmd):
             return True, path, f"无法获取版本信息: {e}"
     return False, None, None
 
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use-cookies", action="store_true", help="If set, run the gentle yt-dlp format test using the yt_cookies.txt file (only when present).")
+    args = parser.parse_args()
+
     report = {"yt-dlp": None, "ffmpeg": None, "yt_cookies": None, "bili_cookies": None, "yt_dlp_test": None}
     ok, path, info = check_command("yt-dlp")
     report["yt-dlp"] = {"found": ok, "path": path, "info": info}
@@ -35,8 +43,8 @@ def main():
     report["yt_cookies"] = {"exists": YT_COOKIES.exists(), "size": YT_COOKIES.stat().st_size if YT_COOKIES.exists() else 0}
     report["bili_cookies"] = {"exists": BILI_COOKIES.exists(), "size": BILI_COOKIES.stat().st_size if BILI_COOKIES.exists() else 0}
 
-    # If yt-dlp exists and yt_cookies exists, try a quick format list (no download) on a public short video (this is a gentle test)
-    if report["yt-dlp"]["found"] and report["yt_cookies"]["exists"]:
+    # Only run the gentle online test when user explicitly requests using --use-cookies
+    if args.use_cookies and report["yt-dlp"]["found"] and report["yt_cookies"]["exists"]:
         test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # known public video
         try:
             cmd = ["yt-dlp", "--no-warnings", "--skip-download", "--print", "%(id)s\t%(title)s", test_url, "--cookies", str(YT_COOKIES)]
@@ -46,6 +54,7 @@ def main():
             report["yt_dlp_test"] = {"error": str(e)}
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()

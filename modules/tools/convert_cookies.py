@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
 """
 将多种浏览器导出格式（表格型 / 简易制表符 / Netscape 标准）尝试转换为 yt-dlp 可用的 Netscape cookies.txt。
 提供命令行使用也可供程序内 import 使用。
@@ -20,9 +21,15 @@ def is_netscape_file(path: str) -> bool:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for i, ln in enumerate(f):
                 ln = ln.strip()
+                # explicit Netscape header
                 if i == 0 and ln.startswith("# Netscape HTTP Cookie File"):
                     return True
                 if not ln or ln.startswith("#"):
+                    continue
+                # Skip a common CSV/TSV header like: name value domain path expiration
+                lower = ln.lower()
+                if all(tok in lower for tok in ("name", "value", "domain")) and len(lower.split()) <= 8:
+                    # treat as header line and skip
                     continue
                 parts = ln.split("\t")
                 if len(parts) >= 7:
@@ -42,6 +49,9 @@ def _iso8601_to_epoch(s: str) -> str:
         if s2.endswith("Z"):
             s2 = s2[:-1] + "+00:00"
         dt = datetime.datetime.fromisoformat(s2)
+        # Treat naive datetimes as UTC to avoid local tz surprises
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
         return str(int(dt.timestamp()))
     except Exception:
         return "0"
@@ -76,21 +86,25 @@ def convert_any_to_netscape(input_path: str, output_path: Optional[str] = None) 
 
     # heuristics parse each non-empty line
     with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
+        for i, raw in enumerate(f):
             line = raw.strip()
             if not line or line.startswith("#"):
+                continue
+            # Skip header lines like: name value domain path expiration
+            lower = line.lower()
+            if all(tok in lower for tok in ("name", "value", "domain")) and len(lower.split()) <= 8:
                 continue
             parts = re.split(r"\t|,\s*|\s{2,}", line)
             # try to find domain index
             domain_idx = None
-            for i, p in enumerate(parts):
+            for j, p in enumerate(parts):
                 if _DOMAIN_YOUTUBE_RX.search(p.strip()):
-                    domain_idx = i
+                    domain_idx = j
                     break
             if domain_idx is None:
-                for i, p in enumerate(parts):
+                for j, p in enumerate(parts):
                     if "youtube" in p.lower():
-                        domain_idx = i
+                        domain_idx = j
                         break
 
             # common case in your sample: name value domain path iso_expiration ...
