@@ -1093,10 +1093,14 @@ class YouTubeMonitor:
 
         if failed_keywords:
             logger.warning(f"多关键词搜索中有 {len(failed_keywords)} 个关键词失败（已跳过并继续其余）：{failed_keywords}")
-            logger.warning("注意：多关键词会线性增加 search.list 配额消耗（每关键词 1 次请求）。")
+        # 多关键词会线性增加 search.list 配额消耗（每关键词 1 次请求），无论是否失败都提示
+        if len(batch_results) > 1:
+            logger.warning(f"多关键词 OR 搜索共 {len(batch_results)} 个关键词，将线性增加 search.list 配额消耗（每关键词 1 次请求）。")
 
         # 公平合并：round-robin 交错各关键词候选，去重后截断，
         # 确保每个关键词至少有机会进入最终候选集，避免前面的热门关键词占满名额。
+        # 每次成功 append 后立即检查预算并跳出，避免单轮内越过 total_budget（≤50），
+        # 否则会向 videos.list 传入超过 50 个 ID 而触发 400。
         total_budget = min(config['max_results'] * 2, 50)
         video_ids = []
         seen = set()
@@ -1105,6 +1109,7 @@ class YouTubeMonitor:
             active = list(iterators)
             while active and len(video_ids) < total_budget:
                 still_active = []
+                budget_reached = False
                 for it in active:
                     try:
                         vid = next(it)
@@ -1113,11 +1118,14 @@ class YouTubeMonitor:
                     if vid not in seen:
                         seen.add(vid)
                         video_ids.append(vid)
+                        if len(video_ids) >= total_budget:
+                            budget_reached = True
+                            break  # 立即跳出内层，停止本轮其余关键词
                     # 该批仍有剩余则保留，继续顺序轮转（即便本批本轮贡献为重复项）
                     still_active.append(it)
                 active = still_active
-                if len(video_ids) >= total_budget:
-                    break
+                if budget_reached:
+                    break  # 跳出外层 while
         logger.info(f"多关键词合并后候选 {len(video_ids)} 个（预算 {total_budget}，来源批次 {len(batch_results)}）")
         
         if not video_ids:
