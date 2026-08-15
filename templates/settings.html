@@ -2938,7 +2938,7 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     };
 
-    if (settingsForm && saveProgressModal) {
+    if (settingsForm) {
         settingsForm.addEventListener('submit', function (event) {
             if (event.defaultPrevented) {
                 return;
@@ -2984,7 +2984,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 detail: '如果缺少 FFmpeg，这里会显示下载进度。',
                 percent: null
             });
-            saveProgressModal.show();
+            if (saveProgressModal) {
+                saveProgressModal.show();
+            }
 
             fetch(settingsForm.action || window.location.pathname, {
                 method: 'POST',
