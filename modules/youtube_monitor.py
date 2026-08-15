@@ -1069,26 +1069,56 @@ class YouTubeMonitor:
             # 无关键词则按空查询搜索（返回热门视频），保持原有行为
             search_batches = [dict(search_params)]
 
-        all_video_ids = []
+        # 多关键词 OR 搜索：逐个关键词请求，并在每个 batch 外层单独容错，
+        # 单个关键词失败不影响其他关键词与整轮监控。
+        batch_results = []  # 每个关键词的 videoId 列表
+        failed_keywords = []
         for idx, sp in enumerate(search_batches, 1):
-            logger.debug(f"准备执行搜索请求({idx}/{len(search_batches)})，参数: {sp}")
-            search_request = self.youtube.search().list(**sp)
-            search_response = self._execute_with_retry(search_request, 'search.list')
+            kw_label = sp.get('q') or f'batch{idx}'
+            try:
+                logger.debug(f"准备执行搜索请求({idx}/{len(search_batches)})，参数: {sp}")
+                search_request = self.youtube.search().list(**sp)
+                search_response = self._execute_with_retry(search_request, 'search.list')
+            except Exception as e:
+                # 单批失败只跳过该关键词，继续处理其余关键词
+                logger.error(f"关键词搜索失败，跳过该关键词继续其他：q={kw_label}, 错误: {e}")
+                failed_keywords.append(kw_label)
+                continue
             if not search_response or 'items' not in search_response:
-                logger.error(f"搜索响应异常: {search_response}")
+                logger.error(f"搜索响应异常（关键词: {kw_label}）：{search_response}")
+                failed_keywords.append(kw_label)
                 continue
             ids = [item['id']['videoId'] for item in search_response['items'] if 'id' in item and 'videoId' in item['id']]
-            all_video_ids.extend(ids)
+            batch_results.append(ids)
 
-        # 去重并限制数量
+        if failed_keywords:
+            logger.warning(f"多关键词搜索中有 {len(failed_keywords)} 个关键词失败（已跳过并继续其余）：{failed_keywords}")
+            logger.warning("注意：多关键词会线性增加 search.list 配额消耗（每关键词 1 次请求）。")
+
+        # 公平合并：round-robin 交错各关键词候选，去重后截断，
+        # 确保每个关键词至少有机会进入最终候选集，避免前面的热门关键词占满名额。
+        total_budget = min(config['max_results'] * 2, 50)
         video_ids = []
         seen = set()
-        for vid in all_video_ids:
-            if vid not in seen:
-                seen.add(vid)
-                video_ids.append(vid)
-            if len(video_ids) >= min(config['max_results'] * 2, 50):
-                break
+        if batch_results:
+            iterators = [iter(ids) for ids in batch_results]
+            active = list(iterators)
+            while active and len(video_ids) < total_budget:
+                still_active = []
+                for it in active:
+                    try:
+                        vid = next(it)
+                    except StopIteration:
+                        continue
+                    if vid not in seen:
+                        seen.add(vid)
+                        video_ids.append(vid)
+                    # 该批仍有剩余则保留，继续顺序轮转（即便本批本轮贡献为重复项）
+                    still_active.append(it)
+                active = still_active
+                if len(video_ids) >= total_budget:
+                    break
+        logger.info(f"多关键词合并后候选 {len(video_ids)} 个（预算 {total_budget}，来源批次 {len(batch_results)}）")
         
         if not video_ids:
             return []
