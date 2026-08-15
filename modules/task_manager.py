@@ -8045,7 +8045,10 @@ class TaskProcessor:
                 # 避免大视频长期占用磁盘导致后续任务因 No space left on device 失败。
                 # 双平台(both)场景由 B 站上传分支（最后平台）统一删除，这里不重复删。
                 try:
-                    if _get_task_upload_target(task) == UPLOAD_TARGET_ACFUN:
+                    if (
+                        self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
+                        and _get_task_upload_target(task) == UPLOAD_TARGET_ACFUN
+                    ):
                         delete_task_files(task_id)
                         task_logger.info(f"AcFun 上传完成，已删除本地文件释放空间: {task_id}")
                 except Exception as _e:
@@ -8309,7 +8312,10 @@ class TaskProcessor:
                 # - both 双平台：AcFun 已先上传完成，B 站为最后平台，同样删除；
                 # - acfun 单平台：不会进入本分支，由 AcFun 分支处理。
                 try:
-                    if _get_task_upload_target(task) != UPLOAD_TARGET_ACFUN:
+                    if (
+                        self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
+                        and _get_task_upload_target(task) != UPLOAD_TARGET_ACFUN
+                    ):
                         delete_task_files(task_id)
                         task_logger.info(f"bilibili 上传完成，已删除本地文件释放空间: {task_id}")
                 except Exception as _e:
