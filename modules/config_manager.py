@@ -90,6 +90,11 @@ DEFAULT_CONFIG = {
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     "OPENAI_THINKING_ENABLED": False,
     "OPENAI_TIMEOUT_SECONDS": 600,  # OpenAI API 请求超时秒数；思考模型输出可达64k token，建议不低于300
+    # 兜底 AI 端点（可选）：当主端点 OPENAI_* 不可用（连接错误 / 超时 / 5xx）时自动切换。
+    # 未配置 FALLBACK_OPENAI_API_KEY 时退化为单端点，行为与原来完全一致。
+    "FALLBACK_OPENAI_API_KEY": "",
+    "FALLBACK_OPENAI_BASE_URL": "",
+    "FALLBACK_OPENAI_MODEL_NAME": "",
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
     # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID

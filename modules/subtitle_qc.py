@@ -187,14 +187,26 @@ def _classify_suspicious_text(text: str, normalized: str) -> Optional[str]:
     return None
 
 
-def _build_openai_client(api_key: str, base_url: str):
-    import openai
+def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
+    """构建 AI 客户端（统一走 ai_fallback_client，主端点不可用时自动切换兜底端点）。"""
+    from modules.ai_fallback_client import get_ai_client
 
-    options: Dict[str, Any] = {}
-    if base_url:
-        options['base_url'] = base_url
-    options['timeout'] = 120.0
-    return openai.OpenAI(api_key=api_key, **options)
+    cfg: Dict[str, Any] = {
+        'OPENAI_API_KEY': api_key,
+        'OPENAI_BASE_URL': base_url,
+    }
+    if model_name:
+        cfg['OPENAI_MODEL_NAME'] = model_name
+    # 兜底端点来自全局配置（FALLBACK_OPENAI_*）；未配置则退化为单端点，行为不变。
+    try:
+        from modules.config_manager import load_config
+        g = load_config() or {}
+        for k in ('FALLBACK_OPENAI_API_KEY', 'FALLBACK_OPENAI_BASE_URL', 'FALLBACK_OPENAI_MODEL_NAME'):
+            if g.get(k):
+                cfg[k] = g[k]
+    except Exception:
+        pass
+    return get_ai_client(cfg)
 
 
 def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -713,7 +725,7 @@ def _call_ai_judge(
     if not api_key:
         return None, None, None, 'missing_openai_api_key'
 
-    client = _build_openai_client(api_key=api_key, base_url=base_url)
+    client = _build_openai_client(api_key=api_key, base_url=base_url, model_name=model_name)
     from .utils import openai_chat_create_with_thinking_control
 
     system = (
