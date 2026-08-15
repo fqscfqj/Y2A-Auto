@@ -16,6 +16,7 @@ from googleapiclient.http import DEFAULT_HTTP_TIMEOUT_SEC
 import httplib2
 import threading
 import time
+import re
 from urllib.parse import quote, urlsplit
 from apscheduler.schedulers.background import BackgroundScheduler
 from logging.handlers import RotatingFileHandler
@@ -1048,16 +1049,25 @@ class YouTubeMonitor:
         if published_before:
             search_params['publishedBefore'] = published_before
         
-        # 添加关键词搜索
-        if config['keywords']:
-            search_params['q'] = config['keywords']
-        
         # 添加分类过滤
         if config['category_id'] and config['category_id'] != '0':
             search_params['videoCategoryId'] = config['category_id']
-        
-        # 不再按 videoDuration 分批搜索，统一一次搜索后在详情阶段精确分类
-        search_batches = [dict(search_params)]
+
+        # 添加关键词搜索：支持多关键词 OR 搜索。
+        # 多个关键词可用逗号/分号/空格/换行分隔，每个关键词单独发起一次搜索请求，
+        # 最后合并并去重，实现“任一关键词匹配即搬运”的语义（原先是整串 AND 搜索）。
+        raw_kw = (config.get('keywords') or '').strip()
+        keywords_list = [k for k in re.split(r'[\s,;，；\n]+', raw_kw) if k] if raw_kw else []
+        if keywords_list:
+            search_batches = []
+            for kw in keywords_list:
+                sp = dict(search_params)
+                sp['q'] = kw
+                search_batches.append(sp)
+            logger.info(f"多关键词 OR 搜索，共 {len(keywords_list)} 个: {keywords_list}")
+        else:
+            # 无关键词则按空查询搜索（返回热门视频），保持原有行为
+            search_batches = [dict(search_params)]
 
         all_video_ids = []
         for idx, sp in enumerate(search_batches, 1):
