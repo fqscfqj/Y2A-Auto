@@ -982,14 +982,10 @@ class YouTubeMonitor:
                         logger.info("最新跟进模式：首次运行，仅从当前时间开始跟进新发布的视频")
                 else:
                     # 其他模式或全局检索：使用配置的时间段
-                    if config.get('channel_mode') == 'latest':
-                        # 保持原有行为：对于非频道监控的'latest'，按调度间隔*2估算窗口
-                        interval_hours = config.get('schedule_interval', 120) / 60 * 2
-                        days = max(1, interval_hours / 24)  # 至少1天
-                        logger.info(f"使用动态时间段: 最近 {days:.1f} 天（基于调度间隔 {config.get('schedule_interval', 120)} 分钟）")
-                    else:
-                        days = config.get('time_period', 7)
-                        logger.info(f"使用时间段: 最近 {days} 天")
+                    # 统一使用配置的时间段（time_period，默认7天）作为搜索窗口，
+                    # 避免动态1天窗口漏掉稍早发布的视频；配合任务去重不会重复建任务。
+                    days = max(config.get('time_period', 7), 1)
+                    logger.info(f"使用时间段: 最近 {days} 天（time_period 配置）")
                     published_after = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             # 如果指定了频道，优先使用频道搜索
