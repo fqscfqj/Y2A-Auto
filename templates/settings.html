@@ -216,7 +216,12 @@
                                                                 <input type="checkbox" name="UPLOAD_APPEND_REPOST_NOTICE" {% if config.get('UPLOAD_APPEND_REPOST_NOTICE', True) %}checked{% endif %}>
                                                                 自动追加转载声明
                                                             </label>
+                                                            <label class="checkbox-label">
+                                                                <input type="checkbox" name="DELETE_DOWNLOAD_FILES_AFTER_UPLOAD" {% if config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False) %}checked{% endif %}>
+                                                                上传成功后不保留下载文件
+                                                            </label>
                                                         </div>
+                                                        <p class="help-text mt-2 mb-0">开启后，仅在任务的所有目标平台均上传成功时立即删除该任务的本地视频、封面和字幕；关闭时保留下载文件。</p>
                                                     </div>
                                                     <div class="col-md-6">
                                                         <div class="form-group">
