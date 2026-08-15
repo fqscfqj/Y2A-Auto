@@ -188,7 +188,11 @@ def _classify_suspicious_text(text: str, normalized: str) -> Optional[str]:
 
 
 def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
-    """构建 AI 客户端（统一走 ai_fallback_client，主端点不可用时自动切换兜底端点）。"""
+    """构建 AI 客户端（统一走 ai_fallback_client，主端点不可用时自动切换兜底端点）。
+
+    兜底端点（FALLBACK_OPENAI_*）由 get_ai_client 从传入配置或全局配置统一解析，
+    无需在此单独重载全局配置。
+    """
     from modules.ai_fallback_client import get_ai_client
 
     cfg: Dict[str, Any] = {
@@ -197,15 +201,6 @@ def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     }
     if model_name:
         cfg['OPENAI_MODEL_NAME'] = model_name
-    # 兜底端点来自全局配置（FALLBACK_OPENAI_*）；未配置则退化为单端点，行为不变。
-    try:
-        from modules.config_manager import load_config
-        g = load_config() or {}
-        for k in ('FALLBACK_OPENAI_API_KEY', 'FALLBACK_OPENAI_BASE_URL', 'FALLBACK_OPENAI_MODEL_NAME'):
-            if g.get(k):
-                cfg[k] = g[k]
-    except Exception:
-        pass
     return get_ai_client(cfg)
 
 

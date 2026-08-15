@@ -600,6 +600,13 @@ class SubtitleTranslator:
             'PROMPT_STRICT_MODE': getattr(config, 'prompt_strict_mode', 'builtin'),
             'PROMPT_STRICT_TEXT': getattr(config, 'prompt_strict_text', ''),
         }
+        # 兜底端点（FALLBACK_OPENAI_*）来自全局配置；统一客户端 get_ai_client 也会兜底补齐，
+        # 这里显式透传以保证字幕翻译路径必然拿到兜底端点。
+        try:
+            from modules.ai_fallback_client import _global_fallback_fields
+            self.openai_config.update(_global_fallback_fields())
+        except Exception:
+            pass
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
         self.reader = SubtitleReader()

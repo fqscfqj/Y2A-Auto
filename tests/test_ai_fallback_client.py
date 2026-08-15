@@ -1,0 +1,311 @@
+"""针对 ai_fallback_client 的单元测试。
+
+覆盖审查反馈中要求的故障转移矩阵与配置传播路径：
+- 5xx / 连接超时 / 超时 → 切换兜底端点
+- 4xx（含错误文本出现 "500"）→ 不切换，原样抛出
+- 读取超时不被硬性截断为 20s；连接阶段使用可配置 failover 超时
+- 兜底配置（FALLBACK_OPENAI_*）即便调用方未显式透传，也能从全局配置补齐
+- 各调用路径（元数据翻译 / 标签 / 分区 / 字幕）都能实际拿到兜底配置
+"""
+import unittest
+from unittest.mock import patch
+
+import openai
+from openai import APIConnectionError, APITimeoutError, APIStatusError
+
+from modules import ai_fallback_client as afc
+
+
+# ---------------------------------------------------------------------------
+# 异常桩：避免构造真实 APIStatusError（需要 request/response 上下文）
+# ---------------------------------------------------------------------------
+class _StubStatusError(APIStatusError):
+    def __init__(self, message, status_code):
+        self.status_code = status_code
+        self.message = message
+        self.request = None
+        self.body = None
+
+    def __str__(self):
+        return self.message
+
+
+class _StubTimeoutError(APITimeoutError):
+    def __init__(self, message="timed out"):
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+class _StubConnectionError(APIConnectionError):
+    def __init__(self, message="connection refused"):
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+class _StubGenericError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 假 OpenAI 客户端
+# ---------------------------------------------------------------------------
+class _FakeCompletions:
+    def __init__(self, owner):
+        self._owner = owner
+
+    def create(self, **kwargs):
+        return self._owner._create(kwargs)
+
+
+class _FakeChat:
+    def __init__(self, owner):
+        self.completions = _FakeCompletions(owner)
+
+
+class _FakeClient:
+    def __init__(self, name, side_effect=None, response=None):
+        self._name = name
+        self._side_effect = side_effect
+        self._response = response
+        self.chat = _FakeChat(self)
+        self.last_kwargs = None
+
+    def _create(self, kwargs):
+        self.last_kwargs = kwargs
+        if self._side_effect is not None:
+            raise self._side_effect
+        return self._response
+
+
+def _fake_maker(primary_side_effect=None, primary_response=None, fallback_response=None):
+    """返回 (maker, primary_fake, fallback_fake)。"""
+    primary = _FakeClient("primary", side_effect=primary_side_effect, response=primary_response)
+    fallback = _FakeClient("fb", response=fallback_response)
+
+    def maker(ep):
+        # 端点 label 由 _build_endpoint 生成：主=openai:<base>，兜=fallback_openai:<base>
+        if "fallback" in (ep.get("label") or ""):
+            return fallback
+        return primary
+
+    return maker, primary, fallback
+
+
+def _full_config(**overrides):
+    cfg = {
+        "OPENAI_API_KEY": "k1",
+        "OPENAI_BASE_URL": "http://primary",
+        "OPENAI_MODEL_NAME": "m1",
+        "OPENAI_TIMEOUT_SECONDS": 600,
+        "FALLBACK_OPENAI_API_KEY": "k2",
+        "FALLBACK_OPENAI_BASE_URL": "http://fb",
+        "FALLBACK_OPENAI_MODEL_NAME": "m2",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+class IsUnavailableErrorTests(unittest.TestCase):
+    def test_connection_error_is_unavailable(self):
+        self.assertTrue(afc._is_unavailable_error(_StubConnectionError()))
+
+    def test_timeout_error_is_unavailable(self):
+        self.assertTrue(afc._is_unavailable_error(_StubTimeoutError()))
+
+    def test_5xx_is_unavailable(self):
+        self.assertTrue(afc._is_unavailable_error(_StubStatusError("down", 503)))
+        self.assertTrue(afc._is_unavailable_error(_StubStatusError("down", 500)))
+
+    def test_4xx_is_not_unavailable(self):
+        self.assertFalse(afc._is_unavailable_error(_StubStatusError("bad request", 400)))
+        self.assertFalse(afc._is_unavailable_error(_StubStatusError("not found", 404)))
+
+    def test_4xx_with_500_in_text_is_not_unavailable(self):
+        # 关键回归：HTTP 400 但消息含 "500 tokens" 不应触发兜底
+        err = _StubStatusError("maximum output is 500 tokens", 400)
+        self.assertFalse(afc._is_unavailable_error(err))
+
+    def test_generic_connection_signal_is_unavailable(self):
+        self.assertTrue(afc._is_unavailable_error(_StubGenericError("connection refused: errno 111")))
+        self.assertTrue(afc._is_unavailable_error(_StubGenericError("name or service not known")))
+
+    def test_generic_5xx_text_with_context_is_unavailable(self):
+        # 无结构化状态码，但文本带明确 5xx 语境
+        self.assertTrue(afc._is_unavailable_error(_StubGenericError("Error code: 502")))
+        self.assertTrue(afc._is_unavailable_error(_StubGenericError("502 Bad Gateway")))
+
+    def test_generic_500_in_text_without_context_is_not_unavailable(self):
+        # "500 tokens" 这种 4xx 语义文本，不应被误判为 5xx 宕机
+        self.assertFalse(afc._is_unavailable_error(_StubGenericError("maximum output is 500 tokens")))
+        self.assertFalse(afc._is_unavailable_error(_StubGenericError("some unrelated error")))
+
+
+class FallbackSwitchingTests(unittest.TestCase):
+    def test_5xx_on_primary_switches_to_fallback(self):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("down", 503),
+            fallback_response={"choices": [{"message": {"content": "FB"}}]},
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+        result = client.chat.completions.create(model="ignored", messages=[])
+        self.assertEqual(result["choices"][0]["message"]["content"], "FB")
+        self.assertIsNotNone(primary.last_kwargs)
+        self.assertIsNotNone(fallback.last_kwargs)
+
+    def test_connection_timeout_on_primary_switches_to_fallback(self):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubTimeoutError(),
+            fallback_response={"choices": [{"message": {"content": "FB"}}]},
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+        result = client.chat.completions.create(model="ignored", messages=[])
+        self.assertEqual(result["choices"][0]["message"]["content"], "FB")
+        self.assertIsNotNone(fallback.last_kwargs)
+
+    def test_4xx_on_primary_does_not_switch(self):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("bad request", 400),
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+        with self.assertRaises(APIStatusError):
+            client.chat.completions.create(model="ignored", messages=[])
+        # 兜底端点绝不应被调用
+        self.assertIsNone(fallback.last_kwargs)
+
+    def test_4xx_with_500_in_text_does_not_switch(self):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("maximum output is 500 tokens", 400),
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+        with self.assertRaises(APIStatusError):
+            client.chat.completions.create(model="ignored", messages=[])
+        self.assertIsNone(fallback.last_kwargs)
+
+    def test_model_is_taken_from_each_endpoint(self):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("down", 503),
+            fallback_response={"ok": True},
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+        client.chat.completions.create(model="caller-wants-this", messages=[])
+        # 主端点用自己的模型，兜底端点用自己的模型（调用方 model 被覆盖）
+        self.assertEqual(primary.last_kwargs["model"], "m1")
+        self.assertEqual(fallback.last_kwargs["model"], "m2")
+
+    def test_no_fallback_config_single_endpoint_no_switch(self):
+        cfg = _full_config()
+        for k in afc.FALLBACK_KEYS:
+            cfg.pop(k, None)
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("down", 503),
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(cfg)
+        # 单端点：直接返回裸客户端，而非 FallbackChatClient
+        self.assertNotIsInstance(client, afc.FallbackChatClient)
+        with self.assertRaises(APIStatusError):
+            client.chat.completions.create(model="x", messages=[])
+
+    def test_no_fallback_config_single_endpoint_success(self):
+        cfg = _full_config()
+        for k in afc.FALLBACK_KEYS:
+            cfg.pop(k, None)
+        maker, primary, fallback = _fake_maker(primary_response={"choices": [{"message": {"content": "OK"}}]})
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(cfg)
+        result = client.chat.completions.create(model="x", messages=[])
+        self.assertEqual(result["choices"][0]["message"]["content"], "OK")
+        self.assertIsNone(fallback.last_kwargs)
+
+
+class ConfigPropagationTests(unittest.TestCase):
+    def test_global_fallback_fields_only_returns_set_keys(self):
+        with patch.object(afc, "_load_global_config", return_value={
+            "FALLBACK_OPENAI_API_KEY": "k",
+            "FALLBACK_OPENAI_BASE_URL": "",  # 空，不应返回
+            "FALLBACK_OPENAI_MODEL_NAME": "m",
+        }):
+            fields = afc._global_fallback_fields()
+        self.assertEqual(set(fields.keys()), {"FALLBACK_OPENAI_API_KEY", "FALLBACK_OPENAI_MODEL_NAME"})
+
+    def test_resolve_fallback_merges_from_global(self):
+        with patch.object(afc, "_load_global_config", return_value={
+            "FALLBACK_OPENAI_API_KEY": "k",
+            "FALLBACK_OPENAI_BASE_URL": "u",
+            "FALLBACK_OPENAI_MODEL_NAME": "m",
+        }):
+            merged = afc._resolve_fallback_fields({"OPENAI_API_KEY": "x"})
+        self.assertEqual(merged["FALLBACK_OPENAI_API_KEY"], "k")
+        self.assertEqual(merged["FALLBACK_OPENAI_BASE_URL"], "u")
+        self.assertEqual(merged["FALLBACK_OPENAI_MODEL_NAME"], "m")
+
+    def test_resolve_fallback_keeps_explicit_values(self):
+        with patch.object(afc, "_load_global_config", return_value={
+            "FALLBACK_OPENAI_API_KEY": "global-k",
+            "FALLBACK_OPENAI_BASE_URL": "global-u",
+            "FALLBACK_OPENAI_MODEL_NAME": "global-m",
+        }):
+            merged = afc._resolve_fallback_fields({
+                "OPENAI_API_KEY": "x",
+                "FALLBACK_OPENAI_API_KEY": "local-k",
+            })
+        # 显式传入的优先，缺失项才从全局补齐
+        self.assertEqual(merged["FALLBACK_OPENAI_API_KEY"], "local-k")
+        self.assertEqual(merged["FALLBACK_OPENAI_BASE_URL"], "global-u")
+
+    def test_call_path_without_explicit_fallback_still_gets_fallback(self):
+        # 模拟各调用路径早期只透传 OPENAI_* 的配置（旧 task_manager / subtitle 字典形态）
+        # 只要全局配置了兜底端点，统一客户端都应拿到 → 返回多端点 FallbackChatClient。
+        partial_configs = [
+            {"OPENAI_API_KEY": "x", "OPENAI_BASE_URL": "u", "OPENAI_MODEL_NAME": "m",
+             "OPENAI_THINKING_ENABLED": False},
+            {"OPENAI_API_KEY": "x", "OPENAI_BASE_URL": "u", "OPENAI_MODEL_NAME": "m",
+             "OPENAI_TIMEOUT_SECONDS": 600, "FIXED_PARTITION_ID": ""},
+            {"OPENAI_API_KEY": "x", "OPENAI_BASE_URL": "u"},
+        ]
+        with patch.object(afc, "_load_global_config", return_value={
+            "FALLBACK_OPENAI_API_KEY": "fk",
+            "FALLBACK_OPENAI_BASE_URL": "fu",
+            "FALLBACK_OPENAI_MODEL_NAME": "fm",
+        }):
+            for cfg in partial_configs:
+                with patch.object(afc, "_make_raw_client", side_effect=lambda ep: _FakeClient(ep.get("label"))):
+                    client = afc.get_ai_client(cfg)
+                self.assertIsInstance(client, afc.FallbackChatClient,
+                                      f"调用路径 {cfg} 未拿到兜底配置")
+                self.assertEqual(len(client._endpoints), 2)
+
+
+class TimeoutPreservationTests(unittest.TestCase):
+    def test_read_timeout_preserved_not_capped(self):
+        # 回归测试：读取超时不得被硬性截断为 20s
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 600})
+        self.assertEqual(client.timeout.read, 600.0)
+        # 连接阶段使用默认 failover 短超时
+        self.assertEqual(client.timeout.connect, afc._FAILOVER_CONNECT_TIMEOUT_DEFAULT)
+        self.assertEqual(client.max_retries, 0)
+
+    def test_read_timeout_custom_preserved(self):
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 30})
+        self.assertEqual(client.timeout.read, 30.0)
+
+    def test_failover_connect_timeout_configurable(self):
+        with patch.object(afc, "_load_global_config", return_value={"AI_FAILOVER_TIMEOUT_SECONDS": 3}):
+            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 600})
+        self.assertEqual(client.timeout.connect, 3.0)
+        self.assertEqual(client.timeout.read, 600.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

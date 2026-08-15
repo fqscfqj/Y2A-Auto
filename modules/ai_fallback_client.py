@@ -14,11 +14,43 @@ AI 客户端兜底层：当主 OpenAI 兼容端点不可用时，自动切换到
   长时间挂起把整条 AI 链路（翻译 / 标签 / 字幕）拖死。
 """
 import logging
+import re
 
 import httpx
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 
 logger = logging.getLogger(__name__)
+
+# 兜底端点字段；统一客户端需要在所有调用路径上可靠拿到它们。
+FALLBACK_KEYS = (
+    "FALLBACK_OPENAI_API_KEY",
+    "FALLBACK_OPENAI_BASE_URL",
+    "FALLBACK_OPENAI_MODEL_NAME",
+)
+
+# 连接阶段（failover 探测）默认超时秒数；可通过全局配置
+# AI_FAILOVER_TIMEOUT_SECONDS 覆盖。仅用于快速判断主端点是否可达，
+# 不影响正常响应的读取超时。
+_FAILOVER_CONNECT_TIMEOUT_DEFAULT = 8.0
+
+# 无结构化 HTTP 状态码时，仅匹配「带明确语境」的 5xx 文本，避免把
+# "maximum output is 500 tokens" 这类 4xx 误判为端点宕机。
+_5XX_TEXT_RE = re.compile(
+    r"(?:error code|status|http/?|response|code)\D{0,15}5\d{2}"
+    r"|\b5\d{2}\s*(?:bad gateway|service unavailable|gateway timeout|internal server error)\b",
+    re.IGNORECASE,
+)
+# 连接类失败信号（无状态码时的谨慎文本匹配，不含泛化的 "500"/"502" 子串）。
+_CONNECTION_TEXT_SIGNALS = (
+    "name or service not known",
+    "failed to connect",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "connecttimeout",
+    "errno 61",   # macOS 连接被拒
+    "errno 111",  # Linux 连接被拒
+)
 
 
 def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
@@ -43,36 +75,91 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
     }
 
 
+def _load_global_config():
+    """读取全局配置；导入或读取失败时（如依赖缺失）返回空字典，降级为单端点。
+
+    集中到单一函数，便于在无 config_manager 依赖的测试环境中被稳妥替换。
+    """
+    try:
+        from modules.config_manager import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
+def _get_failover_connect_timeout():
+    """读取全局配置中的 failover 连接超时（秒），默认 8s。"""
+    try:
+        v = _load_global_config().get("AI_FAILOVER_TIMEOUT_SECONDS")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    return _FAILOVER_CONNECT_TIMEOUT_DEFAULT
+
+
 def _make_raw_client(ep):
+    """构造单个端点的 OpenAI 客户端。
+
+    读取 / 写入超时严格保留用户配置（OPENAI_TIMEOUT_SECONDS，默认 600s），
+    不截断——思考模型 / 长输出 / 字幕批量翻译等正常请求不应被 20s 误杀；
+    原先「无兜底配置时 20s 必失败」的回归在此消除。
+
+    仅连接阶段使用可配置的短超时（AI_FAILOVER_TIMEOUT_SECONDS，默认 8s）
+    做 failover 快速探测：主端点连不上时快速失败并切到下一个端点，
+    但响应较慢（只是读得久）不会被当作宕机重复请求。
+    """
     opts = {}
     if ep.get("base_url"):
         opts["base_url"] = ep["base_url"]
-    to = ep.get("timeout") or 0
-    if to and to > 0:
-        # 显式 httpx.Timeout 对象，确保连接 / 读取超时真正生效：
-        # 连接超时短（8s）、读取超时封顶 20s——主端点挂起时快速失败并切换兜底，
-        # 避免单个端点长时间挂起把整条 AI 链路拖死。
-        read = min(float(to), 20.0)
-        opts["timeout"] = httpx.Timeout(connect=8.0, read=read, write=read, pool=8.0)
-    # 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点
+    to = float(ep.get("timeout") or 600)
+    connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
+    # 显式 httpx.Timeout：连接短、读取/写入保留用户配置。
+    opts["timeout"] = httpx.Timeout(connect=connect_to, read=to, write=to, pool=connect_to)
+    # 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点；
+    # 但读取超时仍保留用户配置，避免把“响应较慢”误当成宕机并重复请求。
     opts["max_retries"] = 0
     return OpenAI(api_key=ep["api_key"], **opts)
 
 
+def _extract_status_code(exc):
+    """从异常中提取 HTTP 状态码；无结构化状态码时返回 None。"""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        # 个别 provider 把状态码放在消息里，如 "Error code: 502"
+        m = re.search(r"error code:\s*(\d{3})", str(exc) or "", re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+    return status
+
+
 def _is_unavailable_error(exc):
-    """判断是否为「端点不可用」类错误（应触发兜底切换）。"""
+    """判断是否为「端点不可用」类错误（应触发兜底切换）。
+
+    规则：
+    - 连接错误 / 超时错误 → 端点不可用（True）。
+    - 带明确 HTTP 状态码的 APIStatusError：
+        * 5xx → 端点不可用（True）。
+        * 4xx 及更低 → 请求本身的问题，不切换（False）。
+    - 仅对「无结构化状态码」的异常做谨慎文本匹配：只匹配带明确语境的
+      5xx 或连接失败信号，避免把 "maximum output is 500 tokens" 这类
+      4xx（消息中含 "500" 子串）误判为端点宕机而错误地切换 / 重发。
+    """
     if isinstance(exc, (APIConnectionError, APITimeoutError)):
         return True
-    if isinstance(exc, APIStatusError):
-        status = getattr(exc, "status_code", 0) or 0
-        if status >= 500:
-            return True
+    status = _extract_status_code(exc)
+    if status is not None:
+        # 有结构化状态码：严格按状态码判定，4xx 一律不切换（修复前会把含 "500" 的 4xx 误判）。
+        return int(status) >= 500
     text = (str(exc) or "").lower()
-    for sig in ("connection", "timed out", "timeout",
-                "name or service not known", "failed to connect",
-                "503", "502", "500", "504", "bad gateway", "service unavailable"):
+    for sig in _CONNECTION_TEXT_SIGNALS:
         if sig in text:
             return True
+    if _5XX_TEXT_RE.search(text):
+        return True
     return False
 
 
@@ -134,17 +221,47 @@ class FallbackChatClient:
         raise last_exc if last_exc else RuntimeError("all AI endpoints failed")
 
 
+def _global_fallback_fields():
+    """从全局配置读取已配置的兜底端点字段（FALLBACK_OPENAI_*）。"""
+    cfg = _load_global_config()
+    return {k: cfg[k] for k in FALLBACK_KEYS if cfg.get(k)}
+
+
+def _resolve_fallback_fields(openai_config):
+    """补齐 FALLBACK_OPENAI_* 字段，使统一客户端在所有调用路径上都能可靠拿到兜底配置。
+
+    优先使用 openai_config 中已携带的兜底字段；缺失项回退到全局配置
+    （config_manager.load_config）。这样无论调用方（task_manager 的元数据翻译 /
+    标签生成 / 分区推荐、subtitle_translator 字幕翻译、subtitle_qc 字幕质检）
+    是否显式透传兜底配置，只要用户在全局配置里填了兜底端点，客户端都会拿到它，
+    消除「用户已配置兜底却仍是单端点」的回归。
+    """
+    if not openai_config:
+        return openai_config
+    # 已完整携带兜底字段则无需回退（也避免每次都读全局配置）。
+    if all(openai_config.get(k) for k in FALLBACK_KEYS):
+        return openai_config
+    merged = dict(openai_config)
+    for k, v in _global_fallback_fields().items():
+        if not merged.get(k):
+            merged[k] = v
+    return merged
+
+
 def get_ai_client(openai_config):
     """
     返回 AI 客户端。
 
-    - 若配置了 FALLBACK_OPENAI_API_KEY，则返回带兜底能力的 FallbackChatClient；
+    - 若解析后存在 FALLBACK_OPENAI_API_KEY（可来自传入配置或全局配置），
+      则返回带兜底能力的 FallbackChatClient；
     - 否则返回与原来一致的裸 OpenAI 客户端（行为完全不变）。
     - 仅当主端点出现「连接 / 超时 / 5xx」时才切换兜底；4xx 类请求错误不切换。
 
     Args:
         openai_config: 配置字典，需包含 OPENAI_*，可选包含 FALLBACK_OPENAI_*。
+            缺失的兜底字段会自动从全局配置补齐。
     """
+    openai_config = _resolve_fallback_fields(openai_config)
     primary = _build_endpoint("OPENAI_", openai_config)
     endpoints = [primary] if primary else []
 

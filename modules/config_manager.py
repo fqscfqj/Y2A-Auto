@@ -95,6 +95,9 @@ DEFAULT_CONFIG = {
     "FALLBACK_OPENAI_API_KEY": "",
     "FALLBACK_OPENAI_BASE_URL": "",
     "FALLBACK_OPENAI_MODEL_NAME": "",
+    # 故障转移连接探测超时（秒）：仅用于快速判断主端点是否可达，
+    # 不影响正常响应的读取超时（读取超时始终保留 OPENAI_TIMEOUT_SECONDS，默认 600s）。
+    "AI_FAILOVER_TIMEOUT_SECONDS": 8,
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
     # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID
