@@ -379,7 +379,7 @@ class YouTubeMonitor:
             
             for config in configs:
                 if config['enabled'] and config['schedule_type'] == 'auto':
-                    self._schedule_monitor(config['id'], config['schedule_interval'])
+                    self._schedule_monitor(config['id'], self._monitor_schedule_interval_minutes())
                     restored_schedules += 1
             
             if restored_schedules > 0:
@@ -627,10 +627,11 @@ class YouTubeMonitor:
             # 保存配置到文件
             self._save_config_to_file(config_id, config_data)
             
-            # 如果是自动调度，添加到调度器
+            # 如果是自动调度，添加到调度器（统一走每日预算节拍）
             if config_data.get('schedule_type') == 'auto':
-                logger.info(f"配置 {config_id} 启用自动调度，间隔: {config_data.get('schedule_interval', 120)}分钟")
-                self._schedule_monitor(config_id, config_data.get('schedule_interval', 120))
+                interval = self._monitor_schedule_interval_minutes()
+                logger.info(f"配置 {config_id} 启用自动调度，间隔: {interval}分钟（按天轮流模式）")
+                self._schedule_monitor(config_id, interval)
             
             return config_id
         except Exception as e:
@@ -1061,7 +1062,9 @@ class YouTubeMonitor:
             # 策略：每轮最多只发 MONITOR_SEARCHES_PER_RUN 次 search（默认 2），
             # 并按「当天日期」在全部关键词里轮流挑选，使配额均匀分摊到各关键词、
             # 且相邻多天能覆盖不同关键词，而非每轮把所有关键词都搜一遍。
-            max_searches = max(int(config.get('MONITOR_SEARCHES_PER_RUN', 2)), 1)
+            # MONITOR_SEARCHES_PER_RUN 是「全局应用配置」，monitor DB 记录上并无此字段；
+            # 必须从全局配置显式读取（带非整数校验），否则会恒为默认值 2 而失效。
+            max_searches = self._resolve_monitor_searches_per_run()
             day_index = (datetime.utcnow() - datetime(1970, 1, 1)).days  # 按 UTC 天轮换
             if len(keywords_list) > max_searches:
                 start = (day_index * max_searches) % len(keywords_list)
@@ -1860,6 +1863,36 @@ class YouTubeMonitor:
             )
             conn.commit()
     
+    def _monitor_schedule_interval_minutes(self):
+        """统一调度间隔（配额预算节拍，单一策略来源）。
+
+        YouTube Data API 免费配额仅 10000 单位/天，一次 search 消耗 100 单位。
+        配额预算按「每天」分摊：无论用户在配置里填多少分钟，实际调度统一为每天
+        一次（1440 分钟），配合 _fetch_search_videos 内「按天轮流选关键词」实现
+        均匀分布，避免高频调度 + 多关键词把每日配额打满（429 quotaExceeded）。
+
+        所有调度入口（启动 start_all_schedules / 恢复 _restart_restored_schedules /
+        新建 / 编辑 _update_schedule）都必须走这里，不能各自用 config['schedule_interval']，
+        否则会绕过每日预算。
+        """
+        return 1440
+
+    def _resolve_monitor_searches_per_run(self):
+        """从全局应用配置读取每轮 search 次数上限，并做非整数校验。
+
+        MONITOR_SEARCHES_PER_RUN 属于全局应用配置（config_manager.DEFAULT_CONFIG），
+        而传入 _fetch_search_videos 的是 monitor DB 记录，上面没有该字段；若直接用
+        config.get(...) 会恒为默认值 2 而从未真正生效。这里显式从全局配置读取并校验。
+        """
+        try:
+            raw = (load_config() or {}).get('MONITOR_SEARCHES_PER_RUN')
+            if raw is None or raw == '':
+                return 2
+            return max(int(raw), 1)
+        except (TypeError, ValueError):
+            logger.warning("MONITOR_SEARCHES_PER_RUN 非整数，回退到默认值 2")
+            return 2
+
     def _schedule_monitor(self, config_id, interval_minutes):
         """添加监控任务到调度器"""
         job_id = f"monitor_{config_id}"
@@ -1892,9 +1925,9 @@ class YouTubeMonitor:
         # 移除现有任务
         self._remove_schedule(config_id)
         
-        # 如果是自动调度，重新添加
+        # 如果是自动调度，重新添加（统一走每日预算节拍）
         if config_data.get('schedule_type') == 'auto' and config_data.get('enabled'):
-            self._schedule_monitor(config_id, config_data.get('schedule_interval', 120))
+            self._schedule_monitor(config_id, self._monitor_schedule_interval_minutes())
     
     def _remove_schedule(self, config_id):
         """移除调度任务"""
@@ -2001,10 +2034,8 @@ class YouTubeMonitor:
         logger.info(f"找到 {len(auto_configs)} 个启用的自动调度配置")
         
         for config in auto_configs:
-            # 按天轮流模式：无论 DB 中配置何种间隔，统一以每天（1440 分钟）跑一次，
-            # 配合 _fetch_search_videos 内「按天轮流挑选关键词」实现均匀分布，避免
-            # 高频调度 + 多关键词把每日 search 配额打满（429 quotaExceeded）。
-            run_interval = 1440
+            # 统一走每日预算节拍（所有调度入口一致，避免高频调度打满配额）
+            run_interval = self._monitor_schedule_interval_minutes()
             logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {run_interval}分钟（按天轮流模式）")
             self._schedule_monitor(config['id'], run_interval)
             # 启动/重启后立即触发一次检查，避免首次检查被推到一整个间隔之后
