@@ -147,6 +147,11 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）
+
+    # 监控配速：每轮 search 次数上限（每次 search 消耗 YouTube Data API 100 配额单位，
+    # 免费额度 10000/天）。多关键词 OR 搜索时按天轮流挑选，结合每天仅跑一次，可避免
+    # 高频调度在一天内把配额打满（429 quotaExceeded）。
+    "MONITOR_SEARCHES_PER_RUN": 2,
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数

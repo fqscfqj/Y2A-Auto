@@ -1055,12 +1055,32 @@ class YouTubeMonitor:
         raw_kw = (config.get('keywords') or '').strip()
         keywords_list = [k for k in re.split(r'[\s,;，；\n]+', raw_kw) if k] if raw_kw else []
         if keywords_list:
+            # 配速（节流）：YouTube Data API 免费配额仅 10000 单位/天，一次 search 消耗
+            # 100 单位。多关键词 OR 搜索（每个关键词单独 search）在高频调度下极易把每日
+            # 配额打满（429 quotaExceeded），导致后续监控全部 0 结果。
+            # 策略：每轮最多只发 MONITOR_SEARCHES_PER_RUN 次 search（默认 2），
+            # 并按「当天日期」在全部关键词里轮流挑选，使配额均匀分摊到各关键词、
+            # 且相邻多天能覆盖不同关键词，而非每轮把所有关键词都搜一遍。
+            max_searches = max(int(config.get('MONITOR_SEARCHES_PER_RUN', 2)), 1)
+            day_index = (datetime.utcnow() - datetime(1970, 1, 1)).days  # 按 UTC 天轮换
+            if len(keywords_list) > max_searches:
+                start = (day_index * max_searches) % len(keywords_list)
+                selected = []
+                for i in range(max_searches):
+                    selected.append(keywords_list[(start + i) % len(keywords_list)])
+                logger.info(
+                    f"配速：关键词共 {len(keywords_list)} 个，仅本轮搜索 {max_searches} 个"
+                    f"（按天轮流，起始下标 {start}）：{selected}"
+                )
+            else:
+                selected = keywords_list
+                logger.info(f"多关键词 OR 搜索，共 {len(keywords_list)} 个: {keywords_list}")
+
             search_batches = []
-            for kw in keywords_list:
+            for kw in selected:
                 sp = dict(search_params)
                 sp['q'] = kw
                 search_batches.append(sp)
-            logger.info(f"多关键词 OR 搜索，共 {len(keywords_list)} 个: {keywords_list}")
         else:
             # 无关键词则按空查询搜索（返回热门视频），保持原有行为
             search_batches = [dict(search_params)]
@@ -1981,8 +2001,26 @@ class YouTubeMonitor:
         logger.info(f"找到 {len(auto_configs)} 个启用的自动调度配置")
         
         for config in auto_configs:
-            logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {config['schedule_interval']}分钟")
-            self._schedule_monitor(config['id'], config['schedule_interval'])
+            # 按天轮流模式：无论 DB 中配置何种间隔，统一以每天（1440 分钟）跑一次，
+            # 配合 _fetch_search_videos 内「按天轮流挑选关键词」实现均匀分布，避免
+            # 高频调度 + 多关键词把每日 search 配额打满（429 quotaExceeded）。
+            run_interval = 1440
+            logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {run_interval}分钟（按天轮流模式）")
+            self._schedule_monitor(config['id'], run_interval)
+            # 启动/重启后立即触发一次检查，避免首次检查被推到一整个间隔之后
+            try:
+                self.scheduler.add_job(
+                    func=self.run_monitor,
+                    trigger='date',
+                    run_date=datetime.now() + timedelta(seconds=15),
+                    args=[config['id']],
+                    id=f"monitor_immediate_{config['id']}",
+                    replace_existing=True,
+                    misfire_grace_time=600,
+                )
+                logger.info(f"已安排启动后立即检查: {config['name']} (ID: {config['id']})")
+            except Exception as e:
+                logger.error(f"安排启动后立即检查失败: {str(e)}")
         
         if not self.scheduler.running:
             self.scheduler.start()
