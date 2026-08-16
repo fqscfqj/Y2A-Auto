@@ -743,6 +743,46 @@
 
                                                 <div class="settings-subcard">
                                                     <div class="settings-subcard-header">
+                                                        <h5>兜底端点（故障转移）</h5>
+                                                        <span class="settings-status-badge {{ 'is-success' if config.get('FALLBACK_OPENAI_API_KEY') else 'is-neutral' }}">
+                                                            {{ '已配置' if config.get('FALLBACK_OPENAI_API_KEY') else '未配置（单端点）' }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="settings-hint mb-2">
+                                                        主端点（上方「全局模型」）出现连接失败 / 超时 / 5xx 时，自动切换到此兜底端点继续调用；
+                                                        留空则维持原有单端点行为，不影响任何其它功能。
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-url" class="form-label">兜底端接口地址</label>
+                                                                <input type="text" id="fallback-openai-url" name="FALLBACK_OPENAI_BASE_URL" value="{{ config.get('FALLBACK_OPENAI_BASE_URL', '') }}" class="form-control" placeholder="如 https://api.openai.com/v1（留空则沿用主端点地址）">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-key" class="form-label">兜底端 API 密钥</label>
+                                                                <input type="password" id="fallback-openai-key" name="FALLBACK_OPENAI_API_KEY" value="{{ config.get('FALLBACK_OPENAI_API_KEY', '') }}" class="form-control" placeholder="留空则不启用故障转移">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-model" class="form-label">兜底端模型名</label>
+                                                                <input type="text" id="fallback-openai-model" name="FALLBACK_OPENAI_MODEL_NAME" value="{{ config.get('FALLBACK_OPENAI_MODEL_NAME', '') }}" class="form-control" placeholder="留空则沿用主端点模型">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="failover-timeout" class="form-label">故障转移连接超时（秒）</label>
+                                                                <input type="number" min="1" max="60" step="1" id="failover-timeout" name="AI_FAILOVER_TIMEOUT_SECONDS" value="{{ config.get('AI_FAILOVER_TIMEOUT_SECONDS', 8) }}" class="form-control" placeholder="默认 8">
+                                                                <div class="form-text">仅用于探测兜底端点的连接阶段；读取/写入超时仍沿用全局 OPENAI_TIMEOUT_SECONDS（默认 600s），不会被此值截断。</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="settings-subcard">
+                                                    <div class="settings-subcard-header">
                                                         <h5>字幕质检大模型</h5>
                                                         <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_QC_API_KEY') or config.get('SUBTITLE_QC_MODEL_NAME') or config.get('SUBTITLE_QC_BASE_URL') else 'is-neutral' }}">
                                                             {{ '已覆盖质检配置' if config.get('SUBTITLE_QC_API_KEY') or config.get('SUBTITLE_QC_MODEL_NAME') or config.get('SUBTITLE_QC_BASE_URL') else '留空即继承字幕翻译/全局配置' }}
