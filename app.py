@@ -1832,7 +1832,12 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
-        action = request.form.get('action', 'save_metadata').strip().lower()
+        # 主表单的隐藏字段已改名 default_action（避免与上传按钮的同名 action 冲突）。
+        # 这里优先取显式提交的 action（如 force_upload），回退到 default_action（save_metadata）。
+        _submitted_actions = [a for a in request.form.getlist('action') if a]
+        action = (_submitted_actions[0]
+                  if _submitted_actions
+                  else request.form.get('default_action', 'save_metadata')).strip().lower()
         redirect_target = url_for('edit_task', task_id=task_id)
 
         if action == 'replace_cover':
