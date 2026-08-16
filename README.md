@@ -162,6 +162,37 @@ docker compose up -d
 docker compose -f docker-compose-build.yml up -d --build
 ```
 
+### 挂载目录权限（重要）
+
+容器内应用以**非 root 用户（uid 1000）**运行。若宿主机挂载目录由其它 uid 创建（例如在 Ubuntu 上以普通用户部署），请确保其对该目录可写，否则会出现类似以下的错误：
+
+```
+PermissionError: [Errno 13] Permission denied: '/app/config/config.json'
+PermissionError: [Errno 13] Permission denied: '/app/logs/task_manager.log'
+```
+
+启动容器前，请先创建挂载目录并修正其属主，使其对容器内 uid 1000 可写：
+
+1. 创建目录（如尚未存在）：
+
+   ```
+   mkdir -p config db downloads logs cookies temp
+   ```
+
+2. 将目录属主改为容器内应用使用的 uid/gid（默认为 `1000:1000`）。在多数宿主机上需要 `sudo`：
+
+   ```
+   sudo chown -R 1000:1000 config db downloads logs cookies temp
+   ```
+
+   > 注意：若 Docker 启用了 `userns-remap`，容器内 uid 1000 会被映射到宿主机的某个 subordinate uid（如 `100000+`），此时应将目录属主改为该**映射后的 uid**，而非 `1000`。`user: "1000:1000"` 无法覆盖宿主机上由其它 uid 拥有、权限为 `0755` 的目录，因此不能作为通用解决方案。
+
+3. （仅作临时排障、不推荐）若暂时无法修改属主，可临时放宽权限——但这会把 Cookie、配置与数据库设为**全局可读写**，任何本地用户都能读取或篡改：
+
+   ```
+   chmod -R 777 config db downloads logs cookies temp   # 高风险：仅临时排障用，排障后请改回 chown 方案
+   ```
+
 ### 方案 B：本地运行
 
 前置要求：
