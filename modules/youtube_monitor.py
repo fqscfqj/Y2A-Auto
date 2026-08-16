@@ -892,30 +892,36 @@ class YouTubeMonitor:
                 logger.info(f"本次最大添加到任务队列数量: {max_add_to_tasks}")
             
             for video in filtered_videos:
-                # 检查是否已经处理过
-                if not self._is_video_processed(video['id'], config_id):
-                    # 检查是否还能添加到任务队列
-                    should_add_to_tasks = auto_add_enabled and added_count < max_add_to_tasks
-                    
-                    # 始终保存到历史记录，但是否添加到任务队列由auto_add_enabled控制
-                    self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
-                    processed_count += 1
-                    
-                    if should_add_to_tasks:
-                        added_count += 1
-                        logger.info(f"视频已添加到任务队列 ({added_count}/{max_add_to_tasks}): {video['title']}")
-                    else:
-                        if auto_add_enabled:
-                            logger.info(f"视频已保存到历史记录: {video['title']}")
-                        else:
-                            logger.info(f"视频已保存到历史记录（未添加到任务队列）: {video['title']}")
-                    
-                    # 如果启用了自动添加且达到上限，跳出循环
-                    if auto_add_enabled and added_count >= max_add_to_tasks:
-                        logger.info(f"已达到本次添加上限 {max_add_to_tasks}，剩余视频将在下次运行时处理")
-                        break
-                else:
+                # 先去重：已处理过的直接跳过，不参与本轮统计
+                if self._is_video_processed(video['id'], config_id):
                     logger.debug(f"视频已处理过，跳过: {video['title']}")
+                    continue
+
+                # 未处理（新视频）：记录到历史（去重），并按配置决定是否加入任务队列。
+                should_add_to_tasks = auto_add_enabled and added_count < max_add_to_tasks
+
+                # 始终保存到历史记录，但是否添加到任务队列由 auto_add_enabled 控制
+                self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                processed_count += 1
+
+                if should_add_to_tasks:
+                    added_count += 1
+                    logger.info(f"视频已添加到任务队列 ({added_count}/{max_add_to_tasks}): {video['title']}")
+                else:
+                    if auto_add_enabled:
+                        logger.info(f"视频已保存到历史记录: {video['title']}")
+                    else:
+                        logger.info(f"视频已保存到历史记录（未添加到任务队列）: {video['title']}")
+
+                # max_results 的截断必须在「去重之后」：每轮最多处理 max_results 条
+                # 新视频，剩余候选留到后续轮次继续去重（避免 max_results 过小导致长期 0 新视频）。
+                if processed_count >= config['max_results']:
+                    logger.info(f"已达到本轮 max_results={config['max_results']} 新视频上限，剩余候选将在后续轮次处理")
+                    break
+                # 若启用了自动添加且达到任务队列上限，也跳出循环
+                if auto_add_enabled and added_count >= max_add_to_tasks:
+                    logger.info(f"已达到本次添加上限 {max_add_to_tasks}，剩余视频将在下次运行时处理")
+                    break
             
             # 更新最后运行时间（若本次抓取存在错误则跳过，避免漏掉新视频）
             if not self._last_fetch_had_errors:
@@ -1479,11 +1485,11 @@ class YouTubeMonitor:
                 continue
                 
             filtered.append(video_info)
-            
-            # 限制结果数量
-            if len(filtered) >= config['max_results']:
-                break
         
+        # 注意：此处**不再**按 max_results 截断。截断必须在「历史去重之后」进行
+        # （见 run_monitor）：否则 max_results 过小时（如 1）会直接把候选截断在
+        # 去重之前，仅保留第一条候选，而该候选若已在历史中则整轮 0 新视频，
+        # 且其余候选永远没有机会参与去重（见 Issue #125）。
         return filtered
 
     def _detect_video_type(self, video: Dict[str, Any]) -> str:
