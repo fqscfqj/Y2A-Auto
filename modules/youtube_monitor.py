@@ -1025,7 +1025,10 @@ class YouTubeMonitor:
             'type': 'video',
             'order': config.get('order_by', 'viewCount'),
             'publishedAfter': published_after,
-            'maxResults': min(config['max_results'] * 2, 50),  # 获取更多结果用于筛选
+            # 候选数量下限保护：max_results 过小时（如 1）会导致每轮候选极少，
+            # 在 monitor_history 已饱和时去重后恒为 0 新视频（即使 YouTube 上有新视频）。
+            # 这里对「每轮获取量」设下限 10，确保总能采样到足够候选以命中真正的新视频。
+            'maxResults': max(min(config['max_results'] * 2, 50), 10),  # 获取更多结果用于筛选（含下限保护）
             'regionCode': config['region_code']
         }
 
@@ -1097,7 +1100,10 @@ class YouTubeMonitor:
         # 确保每个关键词至少有机会进入最终候选集，避免前面的热门关键词占满名额。
         # 每次成功 append 后立即检查预算并跳出，避免单轮内越过 total_budget（≤50），
         # 否则会向 videos.list 传入超过 50 个 ID 而触发 400。
-        total_budget = min(config['max_results'] * 2, 50)
+        # 候选数量下限保护：max_results 过小时（如 1）会让 total_budget 仅 2，
+        # 在 monitor_history 已饱和时去重后恒为 0 新视频。设下限 10，确保每轮
+        # 仍能采样到足够候选以命中真正的新视频（历史去重仍是正确设计，仅防止候选过小）。
+        total_budget = max(min(config['max_results'] * 2, 50), 10)
         video_ids = []
         seen = set()
         if batch_results:
@@ -1215,7 +1221,7 @@ class YouTubeMonitor:
                 'channelId': channel_id,
                 'q': keywords or None,
                 'publishedAfter': published_after,
-                'maxResults': config.get('max_results', 10),
+                'maxResults': max(config.get('max_results', 10), 10),  # 候选下限保护，避免 max_results 过小导致恒为 0 新视频
                 'order': config.get('order_by', 'relevance')
             }
             # 根据选择增加 eventType/videoDuration
