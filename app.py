@@ -824,7 +824,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'MAX_CONCURRENT_TASKS': 2,
                         'MAX_CONCURRENT_UPLOADS': 1,
                         'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 24,
+                        'LOG_CLEANUP_INTERVAL': 12,
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
@@ -3407,7 +3407,7 @@ def schedule_log_cleanup():
     """为日志清理创建并启动一个BackgroundScheduler, 返回调度器对象"""
     try:
         config = load_config()
-        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
+        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 12))
         if not config.get('LOG_CLEANUP_ENABLED', False):
             return None
 

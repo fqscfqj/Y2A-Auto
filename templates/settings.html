@@ -1863,7 +1863,7 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="log-cleanup-interval" class="form-label">清理间隔（小时）</label>
-                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168" class="form-control">
+                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.get('LOG_CLEANUP_INTERVAL', 12) }}" min="1" max="168" class="form-control">
                                                         </div>
                                                     </div>
                                                 </div>
