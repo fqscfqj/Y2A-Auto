@@ -379,7 +379,7 @@ class YouTubeMonitor:
             
             for config in configs:
                 if config['enabled'] and config['schedule_type'] == 'auto':
-                    self._schedule_monitor(config['id'], self._monitor_schedule_interval_minutes())
+                    self._schedule_monitor(config['id'], self._resolve_schedule_interval_minutes(config))
                     restored_schedules += 1
             
             if restored_schedules > 0:
@@ -627,10 +627,10 @@ class YouTubeMonitor:
             # 保存配置到文件
             self._save_config_to_file(config_id, config_data)
             
-            # 如果是自动调度，添加到调度器（统一走每日预算节拍）
+            # 如果是自动调度，添加到调度器（尊重用户配置的间隔，配额由共享每日预算兜底）
             if config_data.get('schedule_type') == 'auto':
-                interval = self._monitor_schedule_interval_minutes()
-                logger.info(f"配置 {config_id} 启用自动调度，间隔: {interval}分钟（按天轮流模式）")
+                interval = self._resolve_schedule_interval_minutes(config_data)
+                logger.info(f"配置 {config_id} 启用自动调度，间隔: {interval}分钟")
                 self._schedule_monitor(config_id, interval)
             
             return config_id
@@ -1090,6 +1090,17 @@ class YouTubeMonitor:
 
         # 多关键词 OR 搜索：逐个关键词请求，并在每个 batch 外层单独容错，
         # 单个关键词失败不影响其他关键词与整轮监控。
+        # 跨配置共享的每日配额预算：限制今天实际发出的 search 次数，避免多配置/高频调度打满配额。
+        planned_searches = len(search_batches)
+        allowed_searches = self._consume_quota_budget(planned_searches)
+        if allowed_searches < planned_searches:
+            logger.warning(
+                f"每日跨配置 search 预算不足（已用 {self._quota_used}/{self._MONITOR_DAILY_SEARCH_BUDGET}），"
+                f"本轮仅执行 {allowed_searches}/{planned_searches} 个关键词搜索，其余跳过"
+            )
+            search_batches = search_batches[:allowed_searches]
+        if not search_batches:
+            logger.warning("每日跨配置 search 预算已耗尽，本轮监控跳过所有搜索（配额将在次日 UTC 重置）")
         batch_results = []  # 每个关键词的 videoId 列表
         failed_keywords = []
         for idx, sp in enumerate(search_batches, 1):
@@ -1257,7 +1268,12 @@ class YouTubeMonitor:
                 search_params['publishedBefore'] = published_before
             
             logger.info(f"在频道 {channel_id} 内搜索关键词: {keywords}")
-            
+
+            # 计入跨配置共享的每日 search 预算（频道内搜索每次消耗 1 次 search.list）
+            if self._consume_quota_budget(1) < 1:
+                logger.warning(f"每日跨配置 search 预算已耗尽，跳过频道 {channel_id} 的搜索（配额将在次日 UTC 重置）")
+                return []
+
             # 执行搜索（带重试）
             logger.debug(f"准备执行频道搜索请求，YouTube API 对象: {type(self.youtube)}")
             # 清理 None 值，避免 API 报错
@@ -1863,32 +1879,80 @@ class YouTubeMonitor:
             )
             conn.commit()
     
-    def _monitor_schedule_interval_minutes(self):
-        """统一调度间隔（配额预算节拍，单一策略来源）。
+    # YouTube Data API 免费配额：10000 单位/天，一次 search.list 消耗 100 单位。
+    # 多个监控配置共享同一个 API key 的每日配额，因此用一个跨配置共享的
+    # 「每日 search 次数」令牌桶统一兜底，避免高频调度 + 多配置把配额打满（429 quotaExceeded）。
+    _MONITOR_DAILY_QUOTA_UNITS = 10000
+    _MONITOR_QUOTA_PER_SEARCH = 100
+    # 实际可用 search 次数 = 配额 / 单次消耗，再留 5% 余量防边界 429
+    _MONITOR_DAILY_SEARCH_BUDGET = int(_MONITOR_DAILY_QUOTA_UNITS / _MONITOR_QUOTA_PER_SEARCH * 0.95)  # 95 次/天
 
-        YouTube Data API 免费配额仅 10000 单位/天，一次 search 消耗 100 单位。
-        配额预算按「每天」分摊：无论用户在配置里填多少分钟，实际调度统一为每天
-        一次（1440 分钟），配合 _fetch_search_videos 内「按天轮流选关键词」实现
-        均匀分布，避免高频调度 + 多关键词把每日配额打满（429 quotaExceeded）。
+    def _resolve_schedule_interval_minutes(self, config):
+        """返回该配置的调度间隔（分钟），尊重用户在设置页填写的 schedule_interval。
 
-        所有调度入口（启动 start_all_schedules / 恢复 _restart_restored_schedules /
-        新建 / 编辑 _update_schedule）都必须走这里，不能各自用 config['schedule_interval']，
-        否则会绕过每日预算。
+        之前无条件强制 1440（每日一次）属于行为回归：UI 仍允许 1–43200 并显示旧间隔，
+        但系统忽略了它，导致用户设的间隔不生效。这里恢复「尊重用户配置」的语义。
+
+        配额安全不再靠强制每日调度来保证，而是统一交由跨配置共享的每日 search 令牌桶
+        （见 _consume_quota_budget）兜底：无论调度多频繁，每天实际发出的 search 请求
+        总量被限制在 _MONITOR_DAILY_SEARCH_BUDGET 以内，且立即检查（start_all_schedules
+        的 15s 触发）也计入同一预算，不会绕过。
+
+        为安全与调度资源考虑，间隔下限 1 分钟、上限 1440 分钟（每日一次）：
+        低于每日的更高频对抓取新视频意义有限；超过每日无实际意义。
         """
-        return 1440
+        raw = config.get('schedule_interval')
+        try:
+            iv = int(raw)
+        except (TypeError, ValueError):
+            iv = 120
+        iv = max(1, min(iv, 1440))
+        return iv
+
+    def _quota_budget_remaining(self):
+        """返回今日跨配置共享的 search 预算剩余次数（自动按 UTC 日重置）。"""
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        if not hasattr(self, '_quota_date') or self._quota_date != today:
+            self._quota_date = today
+            self._quota_used = 0
+        return max(0, self._MONITOR_DAILY_SEARCH_BUDGET - self._quota_used)
+
+    def _consume_quota_budget(self, searches):
+        """尝试从跨配置共享的每日 search 预算中扣减 searches 次请求。
+
+        返回实际可执行的 search 次数（受今日预算上限约束，不会超过 searches）。
+        立即检查与定时运行都走同一份 _fetch_search_videos，因此都会计入本预算。
+        """
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        if not hasattr(self, '_quota_date') or self._quota_date != today:
+            self._quota_date = today
+            self._quota_used = 0
+        remaining = max(0, self._MONITOR_DAILY_SEARCH_BUDGET - self._quota_used)
+        allowed = min(searches, remaining)
+        self._quota_used += allowed
+        return allowed
 
     def _resolve_monitor_searches_per_run(self):
-        """从全局应用配置读取每轮 search 次数上限，并做非整数校验。
+        """从全局应用配置读取每轮 search 次数上限，并做严格校验。
 
         MONITOR_SEARCHES_PER_RUN 属于全局应用配置（config_manager.DEFAULT_CONFIG），
         而传入 _fetch_search_videos 的是 monitor DB 记录，上面没有该字段；若直接用
         config.get(...) 会恒为默认值 2 而从未真正生效。这里显式从全局配置读取并校验。
+
+        校验规则：必须为正整数，且受上限约束（默认上限 10），避免过大值一次性把
+        跨配置每日配额预算打满。非法或越界值回退到默认值 2。
         """
         try:
             raw = (load_config() or {}).get('MONITOR_SEARCHES_PER_RUN')
             if raw is None or raw == '':
                 return 2
-            return max(int(raw), 1)
+            val = int(raw)
+            if val < 1:
+                val = 1
+            if val > 10:
+                logger.warning("MONITOR_SEARCHES_PER_RUN 超过上限 10，已截断为 10")
+                val = 10
+            return val
         except (TypeError, ValueError):
             logger.warning("MONITOR_SEARCHES_PER_RUN 非整数，回退到默认值 2")
             return 2
@@ -1925,9 +1989,9 @@ class YouTubeMonitor:
         # 移除现有任务
         self._remove_schedule(config_id)
         
-        # 如果是自动调度，重新添加（统一走每日预算节拍）
+        # 如果是自动调度，重新添加（尊重用户配置的间隔，配额由共享每日预算兜底）
         if config_data.get('schedule_type') == 'auto' and config_data.get('enabled'):
-            self._schedule_monitor(config_id, self._monitor_schedule_interval_minutes())
+            self._schedule_monitor(config_id, self._resolve_schedule_interval_minutes(config_data))
     
     def _remove_schedule(self, config_id):
         """移除调度任务"""
@@ -2024,8 +2088,13 @@ class YouTubeMonitor:
             logger.error(f"清除所有监控历史记录失败: {str(e)}")
             return False, f"清除历史记录失败: {str(e)}"
     
-    def start_all_schedules(self):
-        """启动所有自动调度的监控任务"""
+    def start_all_schedules(self, immediate=True):
+        """启动所有自动调度的监控任务。
+
+        immediate=True 时，对「此前不存在对应定时任务」的配置额外安排一次 15s 后的立即检查；
+        对已有定时任务（例如设置保存触发的重启）不再重复安排，避免每次保存都触发一次立即运行
+        从而绕过每日配额预算。该立即检查同样走 _fetch_search_videos，会计入跨配置每日预算。
+        """
         logger.info("开始启动所有自动调度的监控任务")
         
         configs = self.get_monitor_configs()
@@ -2034,24 +2103,26 @@ class YouTubeMonitor:
         logger.info(f"找到 {len(auto_configs)} 个启用的自动调度配置")
         
         for config in auto_configs:
-            # 统一走每日预算节拍（所有调度入口一致，避免高频调度打满配额）
-            run_interval = self._monitor_schedule_interval_minutes()
-            logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {run_interval}分钟（按天轮流模式）")
+            # 尊重用户配置的调度间隔（而非强制每日），配额安全由共享每日预算兜底
+            job_existed = self.scheduler.get_job(f"monitor_{config['id']}") is not None
+            run_interval = self._resolve_schedule_interval_minutes(config)
+            logger.info(f"启动调度: {config['name']} (ID: {config['id']}), 间隔: {run_interval}分钟")
             self._schedule_monitor(config['id'], run_interval)
-            # 启动/重启后立即触发一次检查，避免首次检查被推到一整个间隔之后
-            try:
-                self.scheduler.add_job(
-                    func=self.run_monitor,
-                    trigger='date',
-                    run_date=datetime.now() + timedelta(seconds=15),
-                    args=[config['id']],
-                    id=f"monitor_immediate_{config['id']}",
-                    replace_existing=True,
-                    misfire_grace_time=600,
-                )
-                logger.info(f"已安排启动后立即检查: {config['name']} (ID: {config['id']})")
-            except Exception as e:
-                logger.error(f"安排启动后立即检查失败: {str(e)}")
+            # 仅当定时任务此前不存在时才安排「启动后立即检查」，避免每次保存都绕过每日预算
+            if immediate and not job_existed:
+                try:
+                    self.scheduler.add_job(
+                        func=self.run_monitor,
+                        trigger='date',
+                        run_date=datetime.now() + timedelta(seconds=15),
+                        args=[config['id']],
+                        id=f"monitor_immediate_{config['id']}",
+                        replace_existing=True,
+                        misfire_grace_time=600,
+                    )
+                    logger.info(f"已安排启动后立即检查: {config['name']} (ID: {config['id']})")
+                except Exception as e:
+                    logger.error(f"安排启动后立即检查失败: {str(e)}")
         
         if not self.scheduler.running:
             self.scheduler.start()
