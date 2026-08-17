@@ -185,7 +185,20 @@ PermissionError: [Errno 13] Permission denied: '/app/logs/task_manager.log'
    sudo chown -R 1000:1000 config db downloads logs cookies temp
    ```
 
-   > 注意：若 Docker 启用了 `userns-remap`，容器内 uid 1000 会被映射到宿主机的某个 subordinate uid（如 `100000+`），此时应将目录属主改为该**映射后的 uid**，而非 `1000`。`user: "1000:1000"` 无法覆盖宿主机上由其它 uid 拥有、权限为 `0755` 的目录，因此不能作为通用解决方案。
+   > **映射后的 uid/gid 不一定是 `1000`。** 容器内的 `uid 1000` 在宿主机上的实际属主取决于 Docker 的隔离模式，按 `chown 1000:1000` 后目录仍不可写，多半是映射没对上：
+   >
+   > - **`userns-remap` 模式**：容器内 `uid 1000` 被映射到宿主机的某个 subordinate uid（如 `100000+`），应改为该**映射后的 uid**，而非 `1000`。`user: "1000:1000"` 无法覆盖宿主机上由其它 uid 拥有、权限为 `0755` 的目录，因此不能作为通用解决方案。
+   > - **rootless Docker 模式**：映射公式与 `userns-remap` 不同。容器 `uid 1000` 通常映射到 `/etc/subuid`、`/etc/subgid` 中分配给当前用户的 subordinate ID（例如基值 `100000` 起，则容器内 `1000` → 宿主 `101000`）。详见 Docker 官方文档：<https://docs.docker.com/engine/security/rootless/uid-gid-mapping/>。
+   >
+   > **如何确认实际映射的宿主 uid/gid（与模式无关）**：让容器在挂载目录里建一个空文件，再看它在宿主机上的属主即可：
+   >
+   > ```bash
+   > docker run --rm -v "$PWD/config:/data" alpine sh -c 'touch /data/.writetest && ls -n /data/.writetest'
+   > # 输出类似： -rw-r--r-- 1 101000 101000 0 ...  → 说明容器 uid 1000 映射到宿主 101000
+   > rm -f config/.writetest
+   > ```
+   >
+   > 然后把目录属主改为上一步查到的实际 uid/gid，例如 `sudo chown -R 101000:101000 config db downloads logs cookies temp`。若不确定映射，优先用上述“建文件看属主”的方法，而不是盲目 `chown 1000:1000`。
 
 3. （仅作临时排障、不推荐）若暂时无法修改属主，可临时放宽权限——但这会把 Cookie、配置与数据库设为**全局可读写**，任何本地用户都能读取或篡改：
 
