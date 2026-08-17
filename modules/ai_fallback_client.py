@@ -8,10 +8,11 @@ AI 客户端兜底层：当主 OpenAI 兼容端点不可用时，自动切换到
   4xx（请求本身的问题，例如 JSON 模式不被某些网关支持）不切换，交由上层既有逻辑处理。
 - 调用方式与 openai.OpenAI 完全兼容：client.chat.completions.create(...)。
 - 每个端点的 model 以自身配置为准（主端点用 OPENAI_MODEL_NAME，兜底端点用
-  FALLBACK_OPENAI_MODEL_NAME），调用方传入的 model 参数会被端点自身配置覆盖，
-  以保证兜底端点使用正确的模型名。
-- 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点，避免单个端点
-  长时间挂起把整条 AI 链路（翻译 / 标签 / 字幕）拖死。
+  FALLBACK_OPENAI_MODEL_NAME）；兜底端点的 base_url / model 若留空则**继承主端点**，
+  与设置页「留空则沿用主端点」语义一致，而不是回退到硬编码的官方默认值。
+- 仅在多端点（故障转移）模式下关闭 SDK 内部自动重试并使用 failover 连接短超时；
+  单端点（无兜底）保留 SDK 默认重试（2 次）与用户配置的超时，行为与原先一致，
+  不丢失瞬时 5xx / 连接失败的恢复能力。
 """
 import logging
 import re
@@ -88,37 +89,52 @@ def _load_global_config():
 
 
 def _get_failover_connect_timeout():
-    """读取全局配置中的 failover 连接超时（秒），默认 8s。"""
+    """读取全局配置中的 failover 连接超时（秒），默认 8s。
+
+    仅在 [1, 60] 区间有效；越界或非法（手工配置 / 直接 POST 负值）一律回退默认 8s，
+    避免 httpx 在创建客户端 / 请求时抛 timeout range error。
+    """
     try:
         v = _load_global_config().get("AI_FAILOVER_TIMEOUT_SECONDS")
-        if v:
-            return float(v)
+        if v is not None and str(v).strip() != "":
+            fv = float(str(v).strip())
+            if 1.0 <= fv <= 60.0:
+                return fv
     except Exception:
         pass
     return _FAILOVER_CONNECT_TIMEOUT_DEFAULT
 
 
-def _make_raw_client(ep):
+def _make_raw_client(ep, multi_endpoint=False):
     """构造单个端点的 OpenAI 客户端。
 
     读取 / 写入超时严格保留用户配置（OPENAI_TIMEOUT_SECONDS，默认 600s），
     不截断——思考模型 / 长输出 / 字幕批量翻译等正常请求不应被 20s 误杀；
     原先「无兜底配置时 20s 必失败」的回归在此消除。
 
-    仅连接阶段使用可配置的短超时（AI_FAILOVER_TIMEOUT_SECONDS，默认 8s）
-    做 failover 快速探测：主端点连不上时快速失败并切到下一个端点，
-    但响应较慢（只是读得久）不会被当作宕机重复请求。
+    multi_endpoint=True（故障转移模式）时：
+    - 仅连接阶段使用可配置的短超时（AI_FAILOVER_TIMEOUT_SECONDS，默认 8s）
+      做 failover 快速探测：主端点连不上时快速失败并切到下一个端点，
+      但响应较慢（只是读得久）不会被当作宕机重复请求；
+    - 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点。
+    multi_endpoint=False（单端点，无兜底）时：
+    - 保留 SDK 默认重试（默认 2 次）与用户配置的超时（连接/读取/写入一致），
+      不强制 8s 连接超时，避免把“响应较慢”误当成宕机并丢失瞬时 5xx/连接恢复能力
+      —— 即“未配置兜底时行为完全不变”。
     """
     opts = {}
     if ep.get("base_url"):
         opts["base_url"] = ep["base_url"]
     to = float(ep.get("timeout") or 600)
-    connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
-    # 显式 httpx.Timeout：连接短、读取/写入保留用户配置。
-    opts["timeout"] = httpx.Timeout(connect=connect_to, read=to, write=to, pool=connect_to)
-    # 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点；
-    # 但读取超时仍保留用户配置，避免把“响应较慢”误当成宕机并重复请求。
-    opts["max_retries"] = 0
+    if multi_endpoint:
+        connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
+        # 显式 httpx.Timeout：连接短、读取/写入保留用户配置。
+        opts["timeout"] = httpx.Timeout(connect=connect_to, read=to, write=to, pool=connect_to)
+        # 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点。
+        opts["max_retries"] = 0
+    else:
+        # 单端点：连接/读取/写入一致使用用户配置超时，保留 SDK 默认重试。
+        opts["timeout"] = httpx.Timeout(connect=to, read=to, write=to, pool=to)
     return OpenAI(api_key=ep["api_key"], **opts)
 
 
@@ -181,7 +197,8 @@ class FallbackChatClient:
 
     def __init__(self, endpoints):
         self._endpoints = endpoints
-        self._raw = [_make_raw_client(ep) for ep in endpoints]
+        # 仅故障转移（多端点）模式下关闭 SDK 重试、使用 failover 连接短超时
+        self._raw = [_make_raw_client(ep, multi_endpoint=True) for ep in endpoints]
         # 兼容 client.chat.completions.create(...) 调用链
         self.chat = _ChatProxy(self)
 
@@ -265,13 +282,20 @@ def get_ai_client(openai_config):
     primary = _build_endpoint("OPENAI_", openai_config)
     endpoints = [primary] if primary else []
 
-    # 兜底端点（可选）
-    fb = _build_endpoint("FALLBACK_OPENAI_", openai_config)
+    # 兜底端点（可选）。设置页声明“兜底 URL / 模型留空则沿用主端点”，
+    # 因此空字段继承主端点的 base_url / model，而不是回退到硬编码的官方默认值。
+    fb_default_base = (primary or {}).get("base_url") or "https://api.openai.com/v1"
+    fb_default_model = (primary or {}).get("model") or "gpt-3.5-turbo"
+    fb = _build_endpoint(
+        "FALLBACK_OPENAI_", openai_config,
+        default_base=fb_default_base, default_model=fb_default_model,
+    )
     if fb:
         endpoints.append(fb)
 
     if not endpoints:
         raise RuntimeError("未配置任何可用 AI 端点（OPENAI_API_KEY 为空）")
     if len(endpoints) == 1:
-        return _make_raw_client(endpoints[0])
+        # 单端点（无兜底）：保留 SDK 默认重试与用户配置超时，行为与原先一致
+        return _make_raw_client(endpoints[0], multi_endpoint=False)
     return FallbackChatClient(endpoints)

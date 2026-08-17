@@ -190,14 +190,17 @@ def _classify_suspicious_text(text: str, normalized: str) -> Optional[str]:
 def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     """构建 AI 客户端（统一走 ai_fallback_client，主端点不可用时自动切换兜底端点）。
 
-    兜底端点（FALLBACK_OPENAI_*）由 get_ai_client 从传入配置或全局配置统一解析，
-    无需在此单独重载全局配置。
+    兜底端点（FALLBACK_OPENAI_*）由 get_ai_client 从传入配置或全局配置统一解析；
+    同时显式透传全局配置的 OPENAI_TIMEOUT_SECONDS，避免统一客户端回退到 600s
+    而忽略用户配置、并改掉 QC 原先的超时语义。
     """
     from modules.ai_fallback_client import get_ai_client
+    from modules.config_manager import load_config
 
     cfg: Dict[str, Any] = {
         'OPENAI_API_KEY': api_key,
         'OPENAI_BASE_URL': base_url,
+        'OPENAI_TIMEOUT_SECONDS': load_config().get('OPENAI_TIMEOUT_SECONDS', 600),
     }
     if model_name:
         cfg['OPENAI_MODEL_NAME'] = model_name

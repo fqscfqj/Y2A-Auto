@@ -847,6 +847,19 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(defaults.get(field, 1))
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
 
+        # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
+        # 越界或非法（手工配置 / 直接 POST 负值）回退默认 8 秒，
+        # 避免 httpx 在创建客户端 / 请求时抛 timeout range error。
+        _fkey = 'AI_FAILOVER_TIMEOUT_SECONDS'
+        if _fkey in form_data:
+            try:
+                _fv = int(str(form_data[_fkey]).strip())
+            except (ValueError, TypeError):
+                _fv = None
+            if _fv is None or _fv < 1 or _fv > 60:
+                logger.debug(f"{_fkey} 越界或非法，回退默认 8: {form_data.get(_fkey)}")
+                form_data[_fkey] = '8'
+
         float_fields = [
             'VAD_SILERO_THRESHOLD',
             'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',

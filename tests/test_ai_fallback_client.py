@@ -86,7 +86,7 @@ def _fake_maker(primary_side_effect=None, primary_response=None, fallback_respon
     primary = _FakeClient("primary", side_effect=primary_side_effect, response=primary_response)
     fallback = _FakeClient("fb", response=fallback_response)
 
-    def maker(ep):
+    def maker(ep, **kwargs):
         # 端点 label 由 _build_endpoint 生成：主=openai:<base>，兜=fallback_openai:<base>
         if "fallback" in (ep.get("label") or ""):
             return fallback
@@ -278,7 +278,7 @@ class ConfigPropagationTests(unittest.TestCase):
             "FALLBACK_OPENAI_MODEL_NAME": "fm",
         }):
             for cfg in partial_configs:
-                with patch.object(afc, "_make_raw_client", side_effect=lambda ep: _FakeClient(ep.get("label"))):
+                with patch.object(afc, "_make_raw_client", side_effect=lambda ep, **kw: _FakeClient(ep.get("label"))):
                     client = afc.get_ai_client(cfg)
                 self.assertIsInstance(client, afc.FallbackChatClient,
                                       f"调用路径 {cfg} 未拿到兜底配置")
@@ -286,25 +286,99 @@ class ConfigPropagationTests(unittest.TestCase):
 
 
 class TimeoutPreservationTests(unittest.TestCase):
-    def test_read_timeout_preserved_not_capped(self):
-        # 回归测试：读取超时不得被硬性截断为 20s
+    def test_read_timeout_preserved_not_capped_multi(self):
+        # 回归测试：多端点（故障转移）模式下，读取超时不得被硬性截断为 20s
         with patch.object(afc, "_load_global_config", return_value={}):
-            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 600})
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": 600}, multi_endpoint=True)
         self.assertEqual(client.timeout.read, 600.0)
-        # 连接阶段使用默认 failover 短超时
+        # 连接阶段使用默认 failover 短超时，并关闭 SDK 重试
         self.assertEqual(client.timeout.connect, afc._FAILOVER_CONNECT_TIMEOUT_DEFAULT)
         self.assertEqual(client.max_retries, 0)
 
+    def test_single_endpoint_preserves_sdk_retry_and_user_timeout(self):
+        # P2：单端点（无兜底）不应强制 max_retries=0，连接超时应与读取一致（用户配置），
+        # 保留 SDK 默认重试以恢复瞬时 5xx / 连接失败；即“未配置兜底时行为完全不变”。
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": 600}, multi_endpoint=False)
+        self.assertEqual(client.timeout.read, 600.0)
+        self.assertEqual(client.timeout.connect, 600.0)
+        self.assertEqual(client.max_retries, 2)  # OpenAI SDK 默认 2 次
+
     def test_read_timeout_custom_preserved(self):
         with patch.object(afc, "_load_global_config", return_value={}):
-            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 30})
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": 30}, multi_endpoint=True)
         self.assertEqual(client.timeout.read, 30.0)
 
     def test_failover_connect_timeout_configurable(self):
         with patch.object(afc, "_load_global_config", return_value={"AI_FAILOVER_TIMEOUT_SECONDS": 3}):
-            client = afc._make_raw_client({"api_key": "k", "base_url": "http://x", "timeout": 600})
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": 600}, multi_endpoint=True)
         self.assertEqual(client.timeout.connect, 3.0)
         self.assertEqual(client.timeout.read, 600.0)
+
+    def test_failover_connect_timeout_out_of_range_falls_back(self):
+        # P2：AI_FAILOVER_TIMEOUT_SECONDS 越界（如 -5 / 99）读路径应回退默认 8s
+        for bad in (-5, 0, 99, 1000):
+            with patch.object(afc, "_load_global_config", return_value={"AI_FAILOVER_TIMEOUT_SECONDS": bad}):
+                self.assertEqual(
+                    afc._get_failover_connect_timeout(),
+                    afc._FAILOVER_CONNECT_TIMEOUT_DEFAULT,
+                    f"越界值 {bad} 应回退默认 8s")
+        # 合法区间返回原值
+        with patch.object(afc, "_load_global_config", return_value={"AI_FAILOVER_TIMEOUT_SECONDS": 30}):
+            self.assertEqual(afc._get_failover_connect_timeout(), 30.0)
+
+
+class FallbackInheritsPrimaryTests(unittest.TestCase):
+    def test_empty_fallback_url_model_inherits_primary(self):
+        # P1：设置页声明“兜底 URL / 模型留空则沿用主端点”，空字段应继承主端点，
+        # 而非回退到硬编码的 api.openai.com/v1 + gpt-3.5-turbo。
+        cfg = {
+            "OPENAI_API_KEY": "k1",
+            "OPENAI_BASE_URL": "https://primary.example/v1",
+            "OPENAI_MODEL_NAME": "primary-model",
+            "FALLBACK_OPENAI_API_KEY": "k2",
+            # FALLBACK_OPENAI_BASE_URL / FALLBACK_OPENAI_MODEL_NAME 故意留空
+        }
+        with patch.object(afc, "_load_global_config", return_value={}), \
+             patch.object(afc, "_make_raw_client", side_effect=lambda ep, **kw: dict(ep)):
+            client = afc.get_ai_client(cfg)
+        self.assertIsInstance(client, afc.FallbackChatClient)
+        fb_ep = client._endpoints[1]
+        self.assertEqual(fb_ep["base_url"], "https://primary.example/v1")
+        self.assertEqual(fb_ep["model"], "primary-model")
+
+    def test_explicit_fallback_url_not_overridden_by_primary(self):
+        # 显式填写的兜底 URL / 模型应保留，不被主端点覆盖
+        cfg = {
+            "OPENAI_API_KEY": "k1",
+            "OPENAI_BASE_URL": "https://primary.example/v1",
+            "OPENAI_MODEL_NAME": "primary-model",
+            "FALLBACK_OPENAI_API_KEY": "k2",
+            "FALLBACK_OPENAI_BASE_URL": "https://fb.example/v1",
+            "FALLBACK_OPENAI_MODEL_NAME": "fb-model",
+        }
+        with patch.object(afc, "_load_global_config", return_value={}), \
+             patch.object(afc, "_make_raw_client", side_effect=lambda ep, **kw: dict(ep)):
+            client = afc.get_ai_client(cfg)
+        fb_ep = client._endpoints[1]
+        self.assertEqual(fb_ep["base_url"], "https://fb.example/v1")
+        self.assertEqual(fb_ep["model"], "fb-model")
+
+    def test_primary_only_single_endpoint_returns_raw_client(self):
+        # 仅主端点（无兜底 key）时仍返回裸客户端，且保留 SDK 重试
+        cfg = {
+            "OPENAI_API_KEY": "k1",
+            "OPENAI_BASE_URL": "https://primary.example/v1",
+            "OPENAI_MODEL_NAME": "primary-model",
+        }
+        with patch.object(afc, "_load_global_config", return_value={}), \
+             patch.object(afc, "_make_raw_client", side_effect=lambda ep, **kw: ep):
+            client = afc.get_ai_client(cfg)
+        self.assertNotIsInstance(client, afc.FallbackChatClient)
 
 
 if __name__ == "__main__":
