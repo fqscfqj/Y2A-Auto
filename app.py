@@ -953,6 +953,23 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             youtube_monitor.stop_all_schedules()
             logger.info("YouTube API密钥未配置，已跳过监控系统初始化")
 
+        # Issue 101: 非阻断提示——CookieCloud 已启用时，逐项检查服务地址/UUID/密码是否缺失
+        if str(updated_config.get('COOKIECLOUD_ENABLED', False)).lower() in ('true', '1', 'on'):
+            _cookiecloud_missing = []
+            if not str(updated_config.get('COOKIECLOUD_SERVER_URL', '') or '').strip():
+                _cookiecloud_missing.append('服务地址')
+            if not str(updated_config.get('COOKIECLOUD_UUID', '') or '').strip():
+                _cookiecloud_missing.append('UUID')
+            if not str(updated_config.get('COOKIECLOUD_PASSWORD', '') or '').strip():
+                _cookiecloud_missing.append('密码')
+            if _cookiecloud_missing:
+                _append_settings_message(
+                    messages, 'warning',
+                    f'CookieCloud 已启用，但以下必填项为空：{"、".join(_cookiecloud_missing)}。'
+                    'CookieCloud 需要服务地址、UUID、密码三者均非空才能正常同步，'
+                    '请补全后保存，或暂时关闭 CookieCloud。'
+                )
+
         _append_settings_message(messages, 'success', '配置已成功保存')
         final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'
         final_stage = 'warning' if final_level == 'warning' else 'completed'
