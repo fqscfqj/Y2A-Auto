@@ -1,3 +1,4 @@
+import datetime
 import os
 import shutil
 import sys
@@ -63,8 +64,9 @@ class YoutubeMonitorQuotaBudgetTests(unittest.TestCase):
         self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": 1440}), 1440)
 
     def test_interval_clamps_to_bounds(self):
-        # 超过每日（1440）截断为 1440；低于 1 截断为 1
-        self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": 100000}), 1440)
+        # 超过 30 天（43200 分钟）截断为 43200；低于 1 截断为 1
+        self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": 100000}), 43200)
+        self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": 43200}), 43200)
         self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": 0}), 1)
         self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": -30}), 1)
 
@@ -146,6 +148,261 @@ class YoutubeMonitorQuotaBudgetTests(unittest.TestCase):
         # immediate=False 时也不应新增
         self.monitor.start_all_schedules(immediate=False)
         self.assertEqual(immediate_job_ids(), first_immediate)
+
+
+class QuotaPersistenceAndAtomicTests(unittest.TestCase):
+    """PR #127 第三轮：预算 SQLite 持久化 + PT 配额日 + 跨实例可见 + 原子扣减。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_quota_day_is_pt_aligned_date_string(self):
+        day = self.monitor._quota_day_str()
+        # YYYY-MM-DD 且为合法日期（洛杉矶本地日期）
+        self.assertRegex(day, r"^\d{4}-\d{2}-\d{2}$")
+        datetime.datetime.strptime(day, "%Y-%m-%d")
+
+    def test_quota_budget_persists_across_instances(self):
+        # 扣减后重建实例（模拟进程重启），剩余量应保留而非归零
+        self.assertEqual(self.monitor._consume_quota_budget(10), 10)
+        m2 = YouTubeMonitor()
+        self.assertEqual(
+            m2._quota_budget_remaining(),
+            self.monitor._MONITOR_DAILY_SEARCH_BUDGET - 10,
+        )
+        # 新实例继续扣减同一份持久化预算
+        self.assertEqual(m2._consume_quota_budget(5), 5)
+        self.assertEqual(self.monitor._quota_budget_remaining(),
+                         self.monitor._MONITOR_DAILY_SEARCH_BUDGET - 15)
+
+    def test_consume_budget_atomic_cap(self):
+        budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
+        # 第一次打满
+        self.assertEqual(self.monitor._consume_quota_budget(budget + 50), budget)
+        # 之后再扣 0
+        self.assertEqual(self.monitor._consume_quota_budget(1), 0)
+        self.assertEqual(self.monitor._quota_budget_remaining(), 0)
+
+    def test_try_consume_quota_shared_budget_cap(self):
+        budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
+        cid = self.monitor.create_monitor_config(
+            {"name": "auto", "schedule_type": "auto", "enabled": True})
+        for _ in range(budget):
+            self.assertTrue(self.monitor._try_consume_quota(cid, 1))
+        self.assertFalse(self.monitor._try_consume_quota(cid, 1))
+
+
+class ExecuteWithRetryQuotaTests(unittest.TestCase):
+    """PR #127 第三轮：每次实际 attempt 原子扣减 + 429 不重试 + 预算耗尽即止。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    class _FakeRequest:
+        def __init__(self, behavior):
+            self._behavior = behavior  # list of outcomes
+
+        def execute(self):
+            outcome = self._behavior.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    def test_retries_deduct_budget_per_attempt(self):
+        import ssl
+        from modules.youtube_monitor import QuotaBudgetExhausted
+        req = self._FakeRequest([ssl.SSLError("boom"), ssl.SSLError("boom"), {"ok": True}])
+        calls = []
+
+        def consumer():
+            calls.append(1)
+            return True
+
+        result = self.monitor._execute_with_retry(
+            req, "search.list", max_attempts=3, backoff_seconds=0.01,
+            quota_consumer=consumer)
+        self.assertEqual(result, {"ok": True})
+        # 3 次 attempt 各扣一次 → 重试没有绕过预算
+        self.assertEqual(len(calls), 3)
+
+    def test_budget_exhausted_stops_without_executing(self):
+        from modules.youtube_monitor import QuotaBudgetExhausted
+        req = self._FakeRequest([])  # execute 不应被调用
+        calls = []
+
+        def consumer():
+            calls.append(1)
+            return False
+
+        with self.assertRaises(QuotaBudgetExhausted):
+            self.monitor._execute_with_retry(
+                req, "search.list", quota_consumer=consumer)
+        self.assertEqual(len(calls), 1)
+
+    def test_429_raises_without_retry(self):
+        from googleapiclient.errors import HttpError
+        from modules.youtube_monitor import QuotaBudgetExhausted
+
+        class _Resp:
+            status = 429
+            reason = "quotaExceeded"
+
+        err = HttpError(_Resp(), b"{}", uri="http://x")
+        req = self._FakeRequest([err, {"should-not-happen": True}])
+        calls = []
+
+        def consumer():
+            calls.append(1)
+            return True
+
+        with self.assertRaises(HttpError):
+            self.monitor._execute_with_retry(
+                req, "search.list", max_attempts=3, backoff_seconds=0.01,
+                quota_consumer=consumer)
+        # 429 当日跳过：只扣 1 次、不重试
+        self.assertEqual(len(calls), 1)
+
+
+class KeywordRotationCursorTests(unittest.TestCase):
+    """PR #127 第三轮：关键词轮转游标持久化、每轮推进。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_cursor_advances_each_round_and_persists(self):
+        # 10 个关键词、每轮 2 个：0 → 2 → 4 → ...（每轮推进，而非按天固定）
+        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 0)
+        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 2)
+        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 4)
+        # 新实例（模拟重启）读到同一游标，继续推进
+        m2 = YouTubeMonitor()
+        self.assertEqual(m2._next_keyword_rotation_start(1, 10, 2), 6)
+
+    def test_cursor_wraps_around(self):
+        # 2 个关键词、每轮 2 个：0 → 0（覆盖全部后回到开头）
+        self.assertEqual(self.monitor._next_keyword_rotation_start(9, 2, 2), 0)
+        self.assertEqual(self.monitor._next_keyword_rotation_start(9, 2, 2), 0)
+
+
+class DisableCancelsImmediateTests(unittest.TestCase):
+    """PR #127 第三轮：禁用配置取消立即任务 + run_monitor 入口复核状态。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_remove_schedule_cancels_immediate_job(self):
+        cid = self.monitor.create_monitor_config(
+            {"name": "auto", "schedule_type": "auto", "enabled": True})
+        # 先移除 interval，再启动 → 模拟首次启动，立即任务被安排
+        self.monitor._remove_schedule(cid)
+        self.monitor.start_all_schedules(immediate=True)
+        immediate_id = f"monitor_immediate_{cid}"
+        interval_id = f"monitor_{cid}"
+        self.assertIsNotNone(self.monitor.scheduler.get_job(immediate_id))
+        self.assertIsNotNone(self.monitor.scheduler.get_job(interval_id))
+        # 禁用/删除时 _remove_schedule 必须同时取消立即任务
+        self.monitor._remove_schedule(cid)
+        self.assertIsNone(self.monitor.scheduler.get_job(immediate_id))
+        self.assertIsNone(self.monitor.scheduler.get_job(interval_id))
+
+    def test_run_monitor_skips_when_config_disabled(self):
+        # 让 API 对象存在以绕过 init 检查，走到 enabled 复核
+        self.monitor.youtube = object()
+        cid = self.monitor.create_monitor_config(
+            {"name": "disabled", "schedule_type": "manual", "enabled": False})
+        with patch.object(self.monitor, "_fetch_trending_videos",
+                          side_effect=AssertionError("禁用配置不应抓取")):
+            ok, msg = self.monitor.run_monitor(cid)
+        self.assertFalse(ok)
+        self.assertIn("已禁用", msg)
 
 
 if __name__ == "__main__":

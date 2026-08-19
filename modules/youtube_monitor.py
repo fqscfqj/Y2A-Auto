@@ -24,6 +24,10 @@ from modules.task_manager import add_task
 from .config_manager import load_config
 from .utils import get_app_subdir
 
+class QuotaBudgetExhausted(Exception):
+    """当日跨配置 search 配额预算（或该配置公平份额）已耗尽，本轮搜索跳过。"""
+
+
 def setup_youtube_monitor_logger():
     """设置YouTube监控专用日志"""
     logger = logging.getLogger('Y2A-Auto.YouTube-Monitor')
@@ -853,7 +857,13 @@ class YouTubeMonitor:
         if not config:
             logger.error(f"监控配置不存在: {config_id}")
             return False, "监控配置不存在"
-        
+
+        # 执行入口复核配置状态：配置在 15s 立即任务触发前被禁用/删除时，
+        # 不得再发 API 请求或写历史（配合 _remove_schedule 取消立即任务双保险）。
+        if not config.get('enabled', True):
+            logger.info(f"监控配置已禁用，跳过执行: {config.get('name', config_id)} (ID: {config_id})")
+            return False, "监控配置已禁用，跳过执行"
+
         logger.info(f"执行监控配置: {config['name']} (ID: {config_id})")
         logger.info(f"监控类型: {config.get('monitor_type', 'youtube_search')}, "
                    f"频道模式: {config.get('channel_mode', 'latest')}")
@@ -861,8 +871,9 @@ class YouTubeMonitor:
         try:
             # 获取视频
             logger.info("开始获取视频数据...")
-            # 每次运行前重置错误标记
+            # 每次运行前重置错误标记与预算跳过标记
             self._last_fetch_had_errors = False
+            self._last_fetch_quota_skipped = False
             videos = self._fetch_trending_videos(config)
             logger.info(f"获取到 {len(videos)} 个视频")
             
@@ -924,8 +935,13 @@ class YouTubeMonitor:
             else:
                 logger.warning("本次抓取存在错误，跳过更新last_run_time以避免漏掉新视频")
             
+            # 预算跳过是明确的独立状态（区别于正常“0 结果”），并入完成消息
+            quota_note = (
+                "（部分搜索因配额预算耗尽被跳过，配额将在次日太平洋时间重置）"
+                if getattr(self, '_last_fetch_quota_skipped', False) else ""
+            )
             logger.info(f"监控任务完成 - 配置: {config['name']}, "
-                       f"处理新视频: {processed_count}, 添加到任务队列: {added_count}")
+                       f"处理新视频: {processed_count}, 添加到任务队列: {added_count}{quota_note}")
             
             # 更新历史搬运进度（如果是历史模式）
             if config.get('channel_mode') == 'historical':
@@ -933,7 +949,7 @@ class YouTubeMonitor:
                 original_filtered = self._filter_videos(videos, config)
                 self._update_historical_progress(config_id, original_filtered, added_count)
             
-            return True, f"监控完成，处理了 {processed_count} 个新视频，添加了 {added_count} 个到任务队列"
+            return True, f"监控完成，处理了 {processed_count} 个新视频，添加了 {added_count} 个到任务队列{quota_note}"
             
         except Exception as e:
             logger.error(f"监控任务执行失败 - 配置: {config['name']} (ID: {config_id}), 错误: {str(e)}")
@@ -1065,15 +1081,17 @@ class YouTubeMonitor:
             # MONITOR_SEARCHES_PER_RUN 是「全局应用配置」，monitor DB 记录上并无此字段；
             # 必须从全局配置显式读取（带非整数校验），否则会恒为默认值 2 而失效。
             max_searches = self._resolve_monitor_searches_per_run()
-            day_index = (datetime.utcnow() - datetime(1970, 1, 1)).days  # 按 UTC 天轮换
             if len(keywords_list) > max_searches:
-                start = (day_index * max_searches) % len(keywords_list)
-                selected = []
-                for i in range(max_searches):
-                    selected.append(keywords_list[(start + i) % len(keywords_list)])
+                # 持久化轮转游标：每轮推进（而非按 UTC 天选词），高频调度也能轮流
+                # 覆盖全部关键词，避免整天只重复同一组关键词、其余关键词一次也不搜。
+                start = self._next_keyword_rotation_start(config['id'], len(keywords_list), max_searches)
+                selected = [
+                    keywords_list[(start + i) % len(keywords_list)]
+                    for i in range(max_searches)
+                ]
                 logger.info(
                     f"配速：关键词共 {len(keywords_list)} 个，仅本轮搜索 {max_searches} 个"
-                    f"（按天轮流，起始下标 {start}）：{selected}"
+                    f"（轮转游标起始下标 {start}）：{selected}"
                 )
             else:
                 selected = keywords_list
@@ -1090,25 +1108,31 @@ class YouTubeMonitor:
 
         # 多关键词 OR 搜索：逐个关键词请求，并在每个 batch 外层单独容错，
         # 单个关键词失败不影响其他关键词与整轮监控。
-        # 跨配置共享的每日配额预算：限制今天实际发出的 search 次数，避免多配置/高频调度打满配额。
-        planned_searches = len(search_batches)
-        allowed_searches = self._consume_quota_budget(planned_searches)
-        if allowed_searches < planned_searches:
-            logger.warning(
-                f"每日跨配置 search 预算不足（已用 {self._quota_used}/{self._MONITOR_DAILY_SEARCH_BUDGET}），"
-                f"本轮仅执行 {allowed_searches}/{planned_searches} 个关键词搜索，其余跳过"
-            )
-            search_batches = search_batches[:allowed_searches]
-        if not search_batches:
-            logger.warning("每日跨配置 search 预算已耗尽，本轮监控跳过所有搜索（配额将在次日 UTC 重置）")
+        # 跨配置共享的每日配额预算：每个实际 search.list 请求（含重试的每次 attempt）
+        # 都从共享预算原子扣减（SQLite 持久化，按 America/Los_Angeles 配额日重置）；
+        # 预算或该配置公平份额耗尽时，剩余关键词整轮跳过，并记录为明确的
+        # 「预算跳过」状态而非正常「0 结果」。
         batch_results = []  # 每个关键词的 videoId 列表
         failed_keywords = []
+        budget_exhausted = False
         for idx, sp in enumerate(search_batches, 1):
             kw_label = sp.get('q') or f'batch{idx}'
             try:
                 logger.debug(f"准备执行搜索请求({idx}/{len(search_batches)})，参数: {sp}")
                 search_request = self.youtube.search().list(**sp)
-                search_response = self._execute_with_retry(search_request, 'search.list')
+                search_response = self._execute_with_retry(
+                    search_request, 'search.list',
+                    quota_consumer=lambda: self._try_consume_quota(config['id'], 1),
+                )
+            except QuotaBudgetExhausted:
+                budget_exhausted = True
+                self._last_fetch_quota_skipped = True
+                logger.warning(
+                    f"每日 search 配额预算或本配置公平份额已耗尽，关键词 {kw_label} 及剩余关键词跳过"
+                    "（配额将在次日太平洋时间重置）"
+                )
+                failed_keywords.append(f"{kw_label}(预算跳过)")
+                break
             except Exception as e:
                 # 单批失败只跳过该关键词，继续处理其余关键词
                 logger.error(f"关键词搜索失败，跳过该关键词继续其他：q={kw_label}, 错误: {e}")
@@ -1122,7 +1146,7 @@ class YouTubeMonitor:
             batch_results.append(ids)
 
         if failed_keywords:
-            logger.warning(f"多关键词搜索中有 {len(failed_keywords)} 个关键词失败（已跳过并继续其余）：{failed_keywords}")
+            logger.warning(f"多关键词搜索中有 {len(failed_keywords)} 个关键词失败/跳过（已继续其余）：{failed_keywords}")
         # 多关键词会线性增加 search.list 配额消耗（每关键词 1 次请求），无论是否失败都提示
         if len(batch_results) > 1:
             logger.warning(f"多关键词 OR 搜索共 {len(batch_results)} 个关键词，将线性增加 search.list 配额消耗（每关键词 1 次请求）。")
@@ -1269,18 +1293,24 @@ class YouTubeMonitor:
             
             logger.info(f"在频道 {channel_id} 内搜索关键词: {keywords}")
 
-            # 计入跨配置共享的每日 search 预算（频道内搜索每次消耗 1 次 search.list）
-            if self._consume_quota_budget(1) < 1:
-                logger.warning(f"每日跨配置 search 预算已耗尽，跳过频道 {channel_id} 的搜索（配额将在次日 UTC 重置）")
-                return []
-
-            # 执行搜索（带重试）
+            # 计入跨配置共享的每日 search 预算：每个实际 attempt（含重试）都原子扣减，
+            # 预算/该配置公平份额耗尽时静默跳过，并记录为明确的「预算跳过」状态。
             logger.debug(f"准备执行频道搜索请求，YouTube API 对象: {type(self.youtube)}")
             # 清理 None 值，避免 API 报错
             search_params = {k: v for k, v in search_params.items() if v is not None}
             search_request = self.youtube.search().list(**search_params)
-            logger.debug(f"频道搜索请求已创建: {type(search_request)}")
-            search_response = self._execute_with_retry(search_request, f'search.list (channel {channel_id})')
+            try:
+                search_response = self._execute_with_retry(
+                    search_request, f'search.list (channel {channel_id})',
+                    quota_consumer=lambda: self._try_consume_quota(config['id'], 1),
+                )
+            except QuotaBudgetExhausted:
+                self._last_fetch_quota_skipped = True
+                logger.warning(
+                    f"每日 search 配额预算或本配置公平份额已耗尽，跳过频道 {channel_id} 的搜索"
+                    "（配额将在次日太平洋时间重置）"
+                )
+                return []
             
             # 添加调试日志 - 检查频道搜索响应
             logger.debug(f"频道搜索响应类型: {type(search_response)}, 值: {search_response}")
@@ -1444,11 +1474,20 @@ class YouTubeMonitor:
             # 向上抛出让上层决定是否继续以及是否更新last_run_time
             raise
 
-    def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3, backoff_seconds: float = 1.0) -> Any:
-        """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题"""
+    def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3, backoff_seconds: float = 1.0, quota_consumer: Optional[Any] = None) -> Any:
+        """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题。
+
+        quota_consumer: 可选可调用对象，在**每次实际 attempt 前**调用一次；
+        返回 False 表示当日配额预算 / 该配置公平份额已耗尽，立即以
+        QuotaBudgetExhausted 中止（不再发起请求、不再重试）。
+        重试的每次 attempt 都是一次真实 API 请求，因此每次 attempt 都扣减配额
+        （修复“重试绕过每日预算”的回归）。
+        """
         attempt = 0
         last_exception: Optional[Exception] = None
         while attempt < max_attempts:
+            if quota_consumer is not None and not quota_consumer():
+                raise QuotaBudgetExhausted(description)
             try:
                 return request.execute()
             except HttpError as e:
@@ -1460,12 +1499,13 @@ class YouTubeMonitor:
                     status = None
                 if status and 500 <= status < 600:
                     last_exception = e
+                elif status == 429:
+                    # 429 / quotaExceeded / rate limit：当日配额受限，静默跳过、不再重试，
+                    # 避免继续烧配额（issue 明确要求 429 当日跳过）。
+                    logger.warning(f"调用 {description} 触发 429/配额限制，当日跳过（不再重试）: {e}")
+                    raise
                 else:
-                    # 429或配额等错误也可适当重试
-                    if status in (429,):
-                        last_exception = e
-                    else:
-                        raise
+                    raise
             except ssl.SSLError as e:
                 # 记录并重试，同时尝试重建客户端
                 last_exception = e
@@ -1882,10 +1922,13 @@ class YouTubeMonitor:
     # YouTube Data API 免费配额：10000 单位/天，一次 search.list 消耗 100 单位。
     # 多个监控配置共享同一个 API key 的每日配额，因此用一个跨配置共享的
     # 「每日 search 次数」令牌桶统一兜底，避免高频调度 + 多配置把配额打满（429 quotaExceeded）。
+    # 官方配额按太平洋时间（America/Los_Angeles）0 点重置，见
+    # https://developers.google.com/youtube/v3/determine_quota_cost
     _MONITOR_DAILY_QUOTA_UNITS = 10000
     _MONITOR_QUOTA_PER_SEARCH = 100
     # 实际可用 search 次数 = 配额 / 单次消耗，再留 5% 余量防边界 429
     _MONITOR_DAILY_SEARCH_BUDGET = int(_MONITOR_DAILY_QUOTA_UNITS / _MONITOR_QUOTA_PER_SEARCH * 0.95)  # 95 次/天
+    _QUOTA_TZ_NAME = 'America/Los_Angeles'
 
     def _resolve_schedule_interval_minutes(self, config):
         """返回该配置的调度间隔（分钟），尊重用户在设置页填写的 schedule_interval。
@@ -1894,43 +1937,184 @@ class YouTubeMonitor:
         但系统忽略了它，导致用户设的间隔不生效。这里恢复「尊重用户配置」的语义。
 
         配额安全不再靠强制每日调度来保证，而是统一交由跨配置共享的每日 search 令牌桶
-        （见 _consume_quota_budget）兜底：无论调度多频繁，每天实际发出的 search 请求
+        （见 _try_consume_quota）兜底：无论调度多频繁，每天实际发出的 search 请求
         总量被限制在 _MONITOR_DAILY_SEARCH_BUDGET 以内，且立即检查（start_all_schedules
         的 15s 触发）也计入同一预算，不会绕过。
 
-        为安全与调度资源考虑，间隔下限 1 分钟、上限 1440 分钟（每日一次）：
-        低于每日的更高频对抓取新视频意义有限；超过每日无实际意义。
+        为安全与调度资源考虑，间隔下限 1 分钟、上限 43200 分钟（30 天），与设置页
+        声明（1–43200，最长 30 天）一致：用户配置每周/每月等长周期调度被真正尊重，
+        不再被静默截断成每日一次。
         """
         raw = config.get('schedule_interval')
         try:
             iv = int(raw)
         except (TypeError, ValueError):
             iv = 120
-        iv = max(1, min(iv, 1440))
+        iv = max(1, min(iv, 43200))
         return iv
 
+    def _quota_day_str(self):
+        """返回 YouTube 配额日（America/Los_Angeles 本地日期，与官方重置对齐）。
+
+        UTC 0 点比太平洋时间早约 7/8 小时，若按 UTC 日重置会提前放出第二天的额度，
+        导致边界多发一轮搜索；改用洛杉矶本地日期后与官方配额日一致。
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo(self._QUOTA_TZ_NAME)).strftime('%Y-%m-%d')
+        except Exception:
+            # 极少数无系统 tzdata 的环境：退化为 UTC-7（近似洛杉矶时间）
+            return (datetime.utcnow() - timedelta(hours=7)).strftime('%Y-%m-%d')
+
+    def _quota_reset_tables(self):
+        """惰性创建配额/轮转相关表（幂等）。"""
+        if getattr(self, '_quota_tables_ready', False):
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS monitor_quota_budget ('
+                '  quota_date TEXT PRIMARY KEY,'
+                '  used INTEGER NOT NULL'
+                ')'
+            )
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS monitor_quota_usage ('
+                '  config_id INTEGER NOT NULL,'
+                '  quota_date TEXT NOT NULL,'
+                '  used INTEGER NOT NULL,'
+                '  PRIMARY KEY (config_id, quota_date)'
+                ')'
+            )
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS monitor_keyword_cursor ('
+                '  config_id INTEGER PRIMARY KEY,'
+                '  cursor_index INTEGER NOT NULL,'
+                '  updated_at TEXT'
+                ')'
+            )
+            conn.commit()
+        self._quota_tables_ready = True
+
     def _quota_budget_remaining(self):
-        """返回今日跨配置共享的 search 预算剩余次数（自动按 UTC 日重置）。"""
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        if not hasattr(self, '_quota_date') or self._quota_date != today:
-            self._quota_date = today
-            self._quota_used = 0
-        return max(0, self._MONITOR_DAILY_SEARCH_BUDGET - self._quota_used)
+        """返回今日跨配置共享的 search 预算剩余次数（SQLite 持久化，按 PT 配额日重置）。"""
+        self._quota_reset_tables()
+        day = self._quota_day_str()
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                'SELECT used FROM monitor_quota_budget WHERE quota_date = ?', (day,)
+            ).fetchone()
+        used = row[0] if row else 0
+        return max(0, self._MONITOR_DAILY_SEARCH_BUDGET - used)
 
     def _consume_quota_budget(self, searches):
-        """尝试从跨配置共享的每日 search 预算中扣减 searches 次请求。
+        """（兼容入口）从跨配置共享的每日 search 预算中原子扣减，返回实际可执行次数。
 
-        返回实际可执行的 search 次数（受今日预算上限约束，不会超过 searches）。
-        立即检查与定时运行都走同一份 _fetch_search_videos，因此都会计入本预算。
+        基于 SQLite 条件更新实现跨线程 / 跨进程原子性：逐次 UPDATE 且仅当
+        `used < budget` 时生效，避免不同 APScheduler 线程在边界同时超额。
         """
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        if not hasattr(self, '_quota_date') or self._quota_date != today:
-            self._quota_date = today
-            self._quota_used = 0
-        remaining = max(0, self._MONITOR_DAILY_SEARCH_BUDGET - self._quota_used)
-        allowed = min(searches, remaining)
-        self._quota_used += allowed
-        return allowed
+        self._quota_reset_tables()
+        day = self._quota_day_str()
+        granted = 0
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute(
+                'INSERT INTO monitor_quota_budget (quota_date, used) VALUES (?, 0) '
+                'ON CONFLICT(quota_date) DO NOTHING', (day,)
+            )
+            for _ in range(int(searches)):
+                cur = conn.execute(
+                    'UPDATE monitor_quota_budget SET used = used + 1 '
+                    'WHERE quota_date = ? AND used < ?',
+                    (day, self._MONITOR_DAILY_SEARCH_BUDGET),
+                )
+                if cur.rowcount != 1:
+                    break
+                granted += 1
+            conn.commit()
+        return granted
+
+    def _monitor_config_quota_share(self):
+        """返回每个启用自动调度配置的每日公平份额（预算均分，最少 1 次）。
+
+        防止「先到先得」的高频配置吃光整个预算、持续饿死后面的配置：
+        每个配置每天最多使用自己的份额，预算因此按配置数公平分配。
+        """
+        try:
+            configs = self.get_monitor_configs()
+            auto_count = len([
+                c for c in configs
+                if c.get('enabled') and c.get('schedule_type') == 'auto'
+            ])
+        except Exception:
+            auto_count = 0
+        return max(1, self._MONITOR_DAILY_SEARCH_BUDGET // (auto_count or 1))
+
+    def _try_consume_quota(self, config_id, n=1):
+        """原子扣减 n 次 search 配额（全局共享预算 + 该配置当日公平份额）。
+
+        返回 True 表示扣减成功；False 表示全局预算或该配置份额已耗尽。
+        条件 UPDATE 为单语句原子操作，跨线程 / 跨进程安全；
+        配置份额不足时回滚全局扣减，把额度让给其它配置。
+        """
+        self._quota_reset_tables()
+        day = self._quota_day_str()
+        share = self._monitor_config_quota_share()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute(
+                'INSERT INTO monitor_quota_budget (quota_date, used) VALUES (?, 0) '
+                'ON CONFLICT(quota_date) DO NOTHING', (day,)
+            )
+            cur = conn.execute(
+                'UPDATE monitor_quota_budget SET used = used + ? '
+                'WHERE quota_date = ? AND used + ? <= ?',
+                (n, day, n, self._MONITOR_DAILY_SEARCH_BUDGET),
+            )
+            if cur.rowcount != 1:
+                return False  # 全局预算已耗尽
+            conn.execute(
+                'INSERT INTO monitor_quota_usage (config_id, quota_date, used) '
+                'VALUES (?, ?, 0) ON CONFLICT(config_id, quota_date) DO NOTHING',
+                (config_id, day),
+            )
+            cur2 = conn.execute(
+                'UPDATE monitor_quota_usage SET used = used + ? '
+                'WHERE config_id = ? AND quota_date = ? AND used + ? <= ?',
+                (n, config_id, day, n, share),
+            )
+            if cur2.rowcount != 1:
+                # 该配置当日份额用尽：回滚全局扣减，公平让位给其它配置
+                conn.execute(
+                    'UPDATE monitor_quota_budget SET used = MAX(0, used - ?) '
+                    'WHERE quota_date = ?', (n, day)
+                )
+                conn.commit()
+                return False
+            conn.commit()
+        return True
+
+    def _next_keyword_rotation_start(self, config_id, keyword_count, max_searches):
+        """返回本轮关键词轮转起始下标，并持久化推进游标（每轮推进，跨重启保持）。
+
+        旧实现按「UTC 日期」算起点，高频调度（如每小时一轮）会在整天重复同一组
+        关键词、其余关键词一次也不搜；改为每轮推进并落库后，高频模式也能轮流覆盖
+        全部关键词。
+        """
+        self._quota_reset_tables()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            row = conn.execute(
+                'SELECT cursor_index FROM monitor_keyword_cursor WHERE config_id = ?',
+                (config_id,),
+            ).fetchone()
+            start = (row[0] % keyword_count) if row else 0
+            next_cursor = (start + max_searches) % keyword_count
+            conn.execute(
+                'INSERT INTO monitor_keyword_cursor (config_id, cursor_index, updated_at) '
+                'VALUES (?, ?, ?) '
+                'ON CONFLICT(config_id) DO UPDATE SET '
+                '  cursor_index = excluded.cursor_index, updated_at = excluded.updated_at',
+                (config_id, next_cursor, datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            )
+            conn.commit()
+        return start
 
     def _resolve_monitor_searches_per_run(self):
         """从全局应用配置读取每轮 search 次数上限，并做严格校验。
@@ -1994,15 +2178,17 @@ class YouTubeMonitor:
             self._schedule_monitor(config_id, self._resolve_schedule_interval_minutes(config_data))
     
     def _remove_schedule(self, config_id):
-        """移除调度任务"""
+        """移除调度任务（含启动后立即检查任务）"""
         job_id = f"monitor_{config_id}"
-        
-        try:
-            if self.scheduler.get_job(job_id):
-                self.scheduler.remove_job(job_id)
-                logger.info(f"移除监控调度任务: {job_id}")
-        except Exception as e:
-            logger.error(f"移除调度任务失败: {str(e)}")
+        immediate_id = f"monitor_immediate_{config_id}"
+
+        for jid in (job_id, immediate_id):
+            try:
+                if self.scheduler.get_job(jid):
+                    self.scheduler.remove_job(jid)
+                    logger.info(f"移除监控调度任务: {jid}")
+            except Exception as e:
+                logger.error(f"移除调度任务失败: {jid}, 错误: {str(e)}")
     
     def get_monitor_history(self, config_id=None, limit=100):
         """获取监控历史记录"""
