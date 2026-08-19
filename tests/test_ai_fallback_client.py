@@ -8,7 +8,7 @@
 - 各调用路径（元数据翻译 / 标签 / 分区 / 字幕）都能实际拿到兜底配置
 """
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import openai
 from openai import APIConnectionError, APITimeoutError, APIStatusError
@@ -383,3 +383,119 @@ class FallbackInheritsPrimaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepSeekThinkingControlTests(unittest.TestCase):
+    """P2 回归：DeepSeek 端点仅在调用方显式要求禁用思考时才注入 enable_thinking=False，
+    不得覆盖调用方显式开启的思考模式。"""
+
+    def _create_with_extra(self, extra_body, deepseek_base="https://api.deepseek.com/v1"):
+        maker, primary, fallback = _fake_maker(
+            primary_side_effect=_StubStatusError("down", 503),
+            fallback_response={"ok": True},
+        )
+        cfg = _full_config(
+            FALLBACK_OPENAI_BASE_URL=deepseek_base,
+            FALLBACK_OPENAI_MODEL_NAME="deepseek-reasoner",
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(cfg)
+        kwargs = {"model": "ignored", "messages": []}
+        if extra_body is not None:
+            kwargs["extra_body"] = extra_body
+        client.chat.completions.create(**kwargs)
+        return fallback.last_kwargs.get("extra_body")
+
+    def test_thinking_enabled_is_not_overridden(self):
+        # 调用方启用思考：不发送 thinking 键 → 不得注入 enable_thinking=False
+        extra = self._create_with_extra(None)
+        self.assertIsNone(extra)
+        # 即使带其它 extra_body（无 thinking 键）也不得注入 enable_thinking
+        extra2 = self._create_with_extra({"temperature": 0.5})
+        self.assertEqual(extra2, {"temperature": 0.5})  # 调用方 extra 原样保留
+        self.assertNotIn("enable_thinking", extra2)
+
+    def test_thinking_disabled_injects_deepseek_flag(self):
+        # 调用方显式禁用思考：thinking={type:disabled,enabled:False}
+        # → 移除 thinking 键并写入 DeepSeek 原生 enable_thinking=False
+        extra = self._create_with_extra(
+            {"thinking": {"type": "disabled", "enabled": False}})
+        self.assertIsNotNone(extra)
+        self.assertNotIn("thinking", extra)
+        self.assertIs(extra.get("enable_thinking"), False)
+
+    def test_thinking_disabled_flag_true_is_not_overridden(self):
+        # 若调用方发送 thinking={enabled: True}（部分实现用该形式表示启用），
+        # 也不得强制关闭
+        extra = self._create_with_extra({"thinking": {"enabled": True}})
+        self.assertIsNotNone(extra)
+        self.assertIsNone(extra.get("enable_thinking"))
+
+
+class TimeoutNonPositiveNormalizationTests(unittest.TestCase):
+    """P2 回归：OPENAI_TIMEOUT_SECONDS<=0 视为未配置，沿用 SDK 默认超时，
+    不得抛 httpx timeout range error。"""
+
+    def test_build_endpoint_normalizes_non_positive_to_zero(self):
+        for bad in (0, -1, "-30", "0"):
+            with patch.object(afc, "_load_global_config", return_value={}):
+                ep = afc._build_endpoint("OPENAI_", {"OPENAI_API_KEY": "k",
+                                                     "OPENAI_TIMEOUT_SECONDS": bad})
+            self.assertEqual(ep["timeout"], 0.0, f"非正值 {bad} 应规范化为 0.0 哨兵")
+
+    def test_single_endpoint_non_positive_uses_sdk_default_timeout(self):
+        # <=0 单端点：不传 timeout → OpenAI SDK 默认（connect 5s，read/write 600s）
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": 0.0}, multi_endpoint=False)
+        self.assertEqual(client.timeout.connect, 5.0)
+        self.assertEqual(client.timeout.read, 600.0)
+        self.assertEqual(client.max_retries, 2)  # SDK 默认重试仍保留
+
+    def test_multi_endpoint_non_positive_uses_failover_connect_and_sdk_read(self):
+        # <=0 多端点：连接用 failover 短超时，读取/写入用 SDK 默认 600s
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": -5}, multi_endpoint=True)
+        self.assertEqual(client.timeout.connect, afc._FAILOVER_CONNECT_TIMEOUT_DEFAULT)
+        self.assertEqual(client.timeout.read, 600.0)
+        self.assertEqual(client.max_retries, 0)
+
+    def test_negative_timeout_does_not_crash(self):
+        # 负数直接进 _make_raw_client（绕过 _build_endpoint）也不得抛 range error
+        with patch.object(afc, "_load_global_config", return_value={}):
+            client = afc._make_raw_client(
+                {"api_key": "k", "base_url": "http://x", "timeout": -999}, multi_endpoint=False)
+        self.assertIsNotNone(client)
+
+
+class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
+    """P2 回归：QC 仅在用户显式配置 OPENAI_TIMEOUT_SECONDS 时覆盖，
+    未配置保持 120s 默认，不放大到 600s。"""
+
+    def _capture_cfg(self, global_cfg):
+        captured = {}
+
+        def _fake_get_ai_client(cfg):
+            captured['cfg'] = dict(cfg)
+            return MagicMock()
+
+        # _build_openai_client 函数内是 `from X import Y` 运行时绑定，
+        # 需 patch 源模块属性（modules.config_manager.load_config 等）。
+        with patch("modules.config_manager.load_config", return_value=global_cfg), \
+             patch("modules.ai_fallback_client.get_ai_client", side_effect=_fake_get_ai_client):
+            from modules.subtitle_qc import _build_openai_client
+            _build_openai_client("k", "https://x/v1", "m")
+        return captured['cfg']
+
+    def test_unconfigured_defaults_to_120(self):
+        cfg = self._capture_cfg({})
+        self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 120)
+
+    def test_explicitly_configured_value_is_used(self):
+        cfg = self._capture_cfg({"OPENAI_TIMEOUT_SECONDS": 30})
+        self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 30)
+
+    def test_empty_string_treated_as_unconfigured(self):
+        cfg = self._capture_cfg({"OPENAI_TIMEOUT_SECONDS": ""})
+        self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 120)

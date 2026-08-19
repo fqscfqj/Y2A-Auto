@@ -67,6 +67,10 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
         timeout = float(str(timeout).strip())
     except Exception:
         timeout = 600.0
+    if timeout <= 0:
+        # <=0 视为“未配置”：沿用 OpenAI SDK 默认超时（connect 5s，read/write 600s），
+        # 而非全阶段 600s 或负数导致 httpx 抛 timeout range error（旧配置语义回归）。
+        timeout = 0.0
     return {
         "api_key": api_key,
         "base_url": base_url,
@@ -125,10 +129,22 @@ def _make_raw_client(ep, multi_endpoint=False):
     opts = {}
     if ep.get("base_url"):
         opts["base_url"] = ep["base_url"]
-    to = float(ep.get("timeout") or 600)
-    if multi_endpoint:
-        connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
+    raw_to = ep.get("timeout")
+    try:
+        to = float(raw_to) if raw_to is not None else 600.0
+    except (TypeError, ValueError):
+        to = 600.0
+    if to <= 0:
+        # <=0（含 _build_endpoint 规范化的 0.0 哨兵）：旧语义视为未配置 timeout，
+        # 单端点不传 timeout，沿用 OpenAI SDK 默认（connect 5s，read/write 600s）；
+        # 多端点仍用 failover 连接短超时快速探测，读取/写入保留 SDK 默认 600s。
+        if multi_endpoint:
+            connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
+            opts["timeout"] = httpx.Timeout(connect=connect_to, read=600.0, write=600.0, pool=connect_to)
+            opts["max_retries"] = 0
+    elif multi_endpoint:
         # 显式 httpx.Timeout：连接短、读取/写入保留用户配置。
+        connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
         opts["timeout"] = httpx.Timeout(connect=connect_to, read=to, write=to, pool=connect_to)
         # 关闭 SDK 内部自动重试：失败立即交由兜底层切换到下一个端点。
         opts["max_retries"] = 0
@@ -215,10 +231,16 @@ class FallbackChatClient:
             if isinstance(caller_extra, dict):
                 merged_extra.update(caller_extra)
             # 部分推理模型（如 DeepSeek 的推理系列）默认把结果放在 reasoning_content、
-            # content 为空；翻译 / 质检等场景需要 content 有值，故对这类端点关闭思考。
+            # content 为空；翻译 / 质检等场景需要 content 有值。但仅在调用方**显式要求
+            # 关闭思考**（extra_body.thinking = {type:disabled, enabled:False}，由
+            # utils.openai_chat_create_with_thinking_control 在 thinking_enabled=False
+            # 时注入）时才改写为 DeepSeek 原生禁用参数；调用方启用思考（无 thinking 键）
+            # 时不得覆盖，否则用户显式开启的思考模式会被静默关掉。
             if "deepseek" in (ep.get("base_url") or "").lower():
-                merged_extra.pop("thinking", None)
-                merged_extra["enable_thinking"] = False
+                thinking_cfg = merged_extra.get("thinking")
+                if isinstance(thinking_cfg, dict) and thinking_cfg.get("enabled") is False:
+                    merged_extra.pop("thinking", None)
+                    merged_extra["enable_thinking"] = False
             if merged_extra:
                 call_kwargs["extra_body"] = merged_extra
             try:

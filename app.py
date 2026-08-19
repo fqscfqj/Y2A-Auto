@@ -841,7 +841,11 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'VAD_SILERO_SPEECH_PAD_MS': 120,
                         'VAD_MAX_SEGMENT_S': 15,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000
+                        'SUBTITLE_QC_MAX_CHARS': 9000,
+                        # 转换失败的 AI_FAILOVER_TIMEOUT_SECONDS 必须先落到 8，
+                        # 否则 defaults.get(field, 1) 会把它变成 1 秒（合法区间内，
+                        # 后续 1–60 范围校验不再回退），正常稍慢的连接会被 1s 误判宕机。
+                        'AI_FAILOVER_TIMEOUT_SECONDS': 8
                     }
                     defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
