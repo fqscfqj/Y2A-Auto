@@ -15,8 +15,11 @@ from unittest.mock import patch, MagicMock
 
 try:
     import app as web_app
+    from werkzeug.datastructures import MultiDict
     _HAS_APP = True
-except Exception:  # 依赖缺失（如本地未装 Flask）时跳过，避免影响其它测试
+except ImportError:
+    # 仅依赖缺失（如本地未装 Flask / 项目依赖）时跳过；
+    # 应用自身语法 / 初始化等其它错误应让测试失败，避免“绿了但没覆盖”的假阳性。
     _HAS_APP = False
 
 
@@ -57,7 +60,10 @@ class EditTaskForceUploadMultiValueRouteTests(unittest.TestCase):
         try:
             resp = self.client.post(
                 '/tasks/1/edit',
-                data=[('action', 'save_metadata'), ('action', 'force_upload')],
+                # Werkzeug 3.1 的 _iter_data() 要求 data.items() 存在，
+                # plain list 会在请求发出前抛 AttributeError → 必须用 MultiDict
+                # 保留 action 的 DOM 顺序（save_metadata 在前，force_upload 在后）。
+                data=MultiDict([('action', 'save_metadata'), ('action', 'force_upload')]),
             )
         finally:
             for p in patchers:
@@ -78,7 +84,7 @@ class EditTaskForceUploadMultiValueRouteTests(unittest.TestCase):
         try:
             resp = self.client.post(
                 '/tasks/1/edit',
-                data=[('action', 'save_metadata')],
+                data=MultiDict([('action', 'save_metadata')]),
             )
         finally:
             for p in patchers:
