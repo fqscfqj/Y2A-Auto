@@ -197,14 +197,17 @@ def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     from modules.ai_fallback_client import get_ai_client
     from modules.config_manager import load_config
 
-    # 仅当用户**显式配置**了 OPENAI_TIMEOUT_SECONDS 时才覆盖 QC 的超时；
-    # 未配置（None / 空）保持 QC 原有的 120s 默认，避免统一客户端回退到 600s
-    # 使普通安装在上游无响应时等待放大 5 倍。
-    _raw_timeout = (load_config() or {}).get('OPENAI_TIMEOUT_SECONDS')
-    if _raw_timeout is None or str(_raw_timeout).strip() == '':
+    # QC 使用**独立配置键** SUBTITLE_QC_TIMEOUT_SECONDS（默认 120s），
+    # 不再依赖「全局 OPENAI_TIMEOUT_SECONDS 是否显式配置」来判断——
+    # 因为 load_config() 会把 DEFAULT_CONFIG 的 600 合并进返回值，
+    # 普通默认安装中该键永远为 600，is-explicit 判断恒为假、120s 分支永不生效
+    # （reviewer 第三轮指出的行为回归）。独立键语义清晰、无回归：
+    # 未配置 → 120s（QC 原默认）；配置 → 用之。
+    _qc_timeout_raw = (load_config() or {}).get('SUBTITLE_QC_TIMEOUT_SECONDS')
+    if _qc_timeout_raw is None or str(_qc_timeout_raw).strip() == '':
         _qc_timeout = 120
     else:
-        _qc_timeout = _raw_timeout
+        _qc_timeout = _qc_timeout_raw
 
     cfg: Dict[str, Any] = {
         'OPENAI_API_KEY': api_key,

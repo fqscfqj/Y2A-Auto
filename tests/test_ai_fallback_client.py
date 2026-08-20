@@ -470,8 +470,12 @@ class TimeoutNonPositiveNormalizationTests(unittest.TestCase):
 
 
 class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
-    """P2 回归：QC 仅在用户显式配置 OPENAI_TIMEOUT_SECONDS 时覆盖，
-    未配置保持 120s 默认，不放大到 600s。"""
+    """P2 回归：QC 用独立配置键 SUBTITLE_QC_TIMEOUT_SECONDS（默认 120s）。
+
+    不再依赖「全局 OPENAI_TIMEOUT_SECONDS 是否显式配置」——因为 load_config()
+    会把 DEFAULT_CONFIG 的 600 合并进返回值，真实默认安装中该键恒为 600，
+    旧 is-explicit 判断永不触发、120s 分支从不生效（reviewer 第三轮指出）。
+    """
 
     def _capture_cfg(self, global_cfg):
         captured = {}
@@ -480,8 +484,7 @@ class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
             captured['cfg'] = dict(cfg)
             return MagicMock()
 
-        # _build_openai_client 函数内是 `from X import Y` 运行时绑定，
-        # 需 patch 源模块属性（modules.config_manager.load_config 等）。
+        # _build_openai_client 内 `from X import Y` 运行时绑定，需 patch 源模块属性。
         with patch("modules.config_manager.load_config", return_value=global_cfg), \
              patch("modules.ai_fallback_client.get_ai_client", side_effect=_fake_get_ai_client):
             from modules.subtitle_qc import _build_openai_client
@@ -489,13 +492,20 @@ class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
         return captured['cfg']
 
     def test_unconfigured_defaults_to_120(self):
-        cfg = self._capture_cfg({})
+        # 模拟真实默认安装：load_config 合并 DEFAULT_CONFIG 含 OPENAI_TIMEOUT_SECONDS=600
+        cfg = self._capture_cfg({'OPENAI_TIMEOUT_SECONDS': 600})
+        # 未配置 SUBTITLE_QC_TIMEOUT_SECONDS → 仍为 QC 原 120s，不受全局 600 影响
         self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 120)
 
     def test_explicitly_configured_value_is_used(self):
-        cfg = self._capture_cfg({"OPENAI_TIMEOUT_SECONDS": 30})
+        cfg = self._capture_cfg({'SUBTITLE_QC_TIMEOUT_SECONDS': 30})
         self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 30)
 
     def test_empty_string_treated_as_unconfigured(self):
-        cfg = self._capture_cfg({"OPENAI_TIMEOUT_SECONDS": ""})
+        cfg = self._capture_cfg({'SUBTITLE_QC_TIMEOUT_SECONDS': ''})
         self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 120)
+
+    def test_global_timeout_does_not_override_qc(self):
+        # 全局 600 与 QC 独立键并存时，QC 只看独立键
+        cfg = self._capture_cfg({'OPENAI_TIMEOUT_SECONDS': 600, 'SUBTITLE_QC_TIMEOUT_SECONDS': 45})
+        self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 45)
