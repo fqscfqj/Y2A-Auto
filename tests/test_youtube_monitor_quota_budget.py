@@ -99,17 +99,19 @@ class YoutubeMonitorQuotaBudgetTests(unittest.TestCase):
     def test_quota_budget_caps_daily_searches(self):
         budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
         self.assertGreater(budget, 0)
-        # 第一次把预算打满
-        allowed = self.monitor._consume_quota_budget(budget + 50)
-        self.assertEqual(allowed, budget)
-        # 之后再请求应被拒绝
-        self.assertEqual(self.monitor._consume_quota_budget(10), 0)
+        # 每次 search 只扣 1 次（真实用法）：逐次扣满后，下一次拒绝。
+        for _ in range(budget):
+            self.assertTrue(self.monitor._try_consume_quota(1))
+        # 预算用尽后再次请求应被拒绝
+        self.assertFalse(self.monitor._try_consume_quota(1))
         self.assertEqual(self.monitor._quota_budget_remaining(), 0)
 
     def test_quota_budget_partial_consumption(self):
-        self.assertEqual(self.monitor._consume_quota_budget(10), 10)
+        for _ in range(10):
+            self.assertTrue(self.monitor._try_consume_quota(1))
         self.assertEqual(self.monitor._quota_budget_remaining(), self.monitor._MONITOR_DAILY_SEARCH_BUDGET - 10)
-        self.assertEqual(self.monitor._consume_quota_budget(5), 5)
+        for _ in range(5):
+            self.assertTrue(self.monitor._try_consume_quota(1))
 
     # ---- 立即检查不绕过预算：仅首次（定时任务不存在时）安排 ----
 
@@ -186,32 +188,36 @@ class QuotaPersistenceAndAtomicTests(unittest.TestCase):
 
     def test_quota_budget_persists_across_instances(self):
         # 扣减后重建实例（模拟进程重启），剩余量应保留而非归零
-        self.assertEqual(self.monitor._consume_quota_budget(10), 10)
+        for _ in range(10):
+            self.assertTrue(self.monitor._try_consume_quota(1))
         m2 = YouTubeMonitor()
         self.assertEqual(
             m2._quota_budget_remaining(),
             self.monitor._MONITOR_DAILY_SEARCH_BUDGET - 10,
         )
         # 新实例继续扣减同一份持久化预算
-        self.assertEqual(m2._consume_quota_budget(5), 5)
+        for _ in range(5):
+            self.assertTrue(m2._try_consume_quota(1))
         self.assertEqual(self.monitor._quota_budget_remaining(),
                          self.monitor._MONITOR_DAILY_SEARCH_BUDGET - 15)
 
     def test_consume_budget_atomic_cap(self):
         budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
-        # 第一次打满
-        self.assertEqual(self.monitor._consume_quota_budget(budget + 50), budget)
-        # 之后再扣 0
-        self.assertEqual(self.monitor._consume_quota_budget(1), 0)
+        # 逐次扣满
+        for _ in range(budget):
+            self.assertTrue(self.monitor._try_consume_quota(1))
+        # 之后再扣被拒绝
+        self.assertFalse(self.monitor._try_consume_quota(1))
         self.assertEqual(self.monitor._quota_budget_remaining(), 0)
 
     def test_try_consume_quota_shared_budget_cap(self):
+        # 单一全局令牌桶：搜索型配置共享同一天额度，不受配置数量/类型影响
+        # （不再按「每配置份额」分配，故 10 个 playlist + 1 个搜索时，搜索配置
+        #  仍能用满 95 次，而非旧模型被分母虚大压到 8 次而过度限流）。
         budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
-        cid = self.monitor.create_monitor_config(
-            {"name": "auto", "schedule_type": "auto", "enabled": True})
         for _ in range(budget):
-            self.assertTrue(self.monitor._try_consume_quota(cid, 1))
-        self.assertFalse(self.monitor._try_consume_quota(cid, 1))
+            self.assertTrue(self.monitor._try_consume_quota(1))
+        self.assertFalse(self.monitor._try_consume_quota(1))
 
 
 class ExecuteWithRetryQuotaTests(unittest.TestCase):
@@ -283,7 +289,7 @@ class ExecuteWithRetryQuotaTests(unittest.TestCase):
                 req, "search.list", quota_consumer=consumer)
         self.assertEqual(len(calls), 1)
 
-    def test_429_raises_without_retry(self):
+    def test_429_triggers_day_circuit_breaker(self):
         from googleapiclient.errors import HttpError
         from modules.youtube_monitor import QuotaBudgetExhausted
 
@@ -291,20 +297,31 @@ class ExecuteWithRetryQuotaTests(unittest.TestCase):
             status = 429
             reason = "quotaExceeded"
 
-        err = HttpError(_Resp(), b"{}", uri="http://x")
+        err = HttpError(_Resp(), b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}', uri="http://x")
         req = self._FakeRequest([err, {"should-not-happen": True}])
         calls = []
 
         def consumer():
             calls.append(1)
-            return True
+            return True  # 预算充足，但远端 429 仍应触发当日熔断
 
-        with self.assertRaises(HttpError):
+        with self.assertRaises(QuotaBudgetExhausted):
             self.monitor._execute_with_retry(
                 req, "search.list", max_attempts=3, backoff_seconds=0.01,
                 quota_consumer=consumer)
-        # 429 当日跳过：只扣 1 次、不重试
+        # 429 触发集中式当日熔断：只发 1 次请求、不重试；并标记当日耗尽
         self.assertEqual(len(calls), 1)
+        self.assertTrue(self.monitor._last_fetch_quota_skipped)
+        self.assertEqual(self.monitor._quota_budget_remaining(), 0)
+
+    def test_circuit_breaker_blocks_subsequent_searches(self):
+        # 当日熔断后，任何 search 入口的 _try_consume_quota / 前置检查都应短路，
+        # 解决旧实现「第一个关键词 429 后第二个仍真实发请求」的缺陷。
+        self.monitor._mark_quota_depleted_today()
+        self.assertEqual(self.monitor._quota_budget_remaining(), 0)
+        self.assertFalse(self.monitor._try_consume_quota(1))
+        # _fetch_search_videos / _fetch_channel_search_videos 的前置检查也会跳过
+        # （依赖 _quota_budget_remaining() <= 0），无需再发请求。
 
 
 class KeywordRotationCursorTests(unittest.TestCase):

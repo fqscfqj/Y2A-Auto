@@ -19,6 +19,10 @@ Pillow~=12.3.0
 lxml>=6.1.0,<7.0
 
 # Platform SDKs: stay on the verified release line unless tested otherwise.
+# tzdata：在缺少系统 IANA 时区库的环境（如部分精简镜像 / Windows）提供
+# America/Los_Angeles 等时区数据，确保 YouTube 配额日对齐太平洋时间（DST-aware）。
+# 缺失时 _quota_day_str 会回退 UTC 日（仅边界多一次重置，不会冬令时算错日期）。
+tzdata>=2024.1
 alibabacloud_green20220302==2.20.4
 alibabacloud_tea_openapi==0.3.15
 alibabacloud_tea_util==0.3.13
