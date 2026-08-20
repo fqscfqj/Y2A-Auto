@@ -162,6 +162,18 @@ docker compose up -d
 docker compose -f docker-compose-build.yml up -d --build
 ```
 
+如果启动日志出现写入 `config/`、`db/` 或 `logs/` 等挂载目录的
+`PermissionError`，请在项目目录中创建这些目录，并将其属主改为容器内应用使用的
+UID/GID（默认 `1000:1000`）：
+
+```bash
+mkdir -p config db downloads logs cookies temp
+sudo chown -R 1000:1000 config db downloads logs cookies temp
+```
+
+启用了 rootless Docker 或 `userns-remap` 时，请使用容器 UID 1000 实际映射到宿主机的
+UID/GID；映射方式参见 [Docker 官方文档](https://docs.docker.com/engine/security/rootless/uid-gid-mapping/)。
+
 ### 方案 B：本地运行
 
 前置要求：
