@@ -190,17 +190,30 @@ PermissionError: [Errno 13] Permission denied: '/app/logs/task_manager.log'
    > - **`userns-remap` 模式**：容器内 `uid 1000` 被映射到宿主机的某个 subordinate uid（如 `100000+`），映射公式为 `subuid + n`，即容器 `uid 1000` → 宿主 `101000`（基值 `100000` 时）。应改为该**映射后的 uid**，而非 `1000`。`user: "1000:1000"` 无法覆盖宿主机上由其它 uid 拥有、权限为 `0755` 的目录，因此不能作为通用解决方案。
    > - **rootless Docker 模式**：映射公式与 `userns-remap` 不同，容器内非 0 的 uid `n`（n ≥ 1）映射为 `subuid + (n - 1)`。例如 `/etc/subuid` 中基值 `100000` 起，容器 `uid 1000` → 宿主 `100999`（不是 `101000`）。详见 Docker 官方文档：<https://docs.docker.com/engine/security/rootless/uid-gid-mapping/>。
    >
-   > **如何确认实际映射的宿主 uid/gid（与模式无关）**：在**临时探测目录**中，让容器以**应用相同的 uid（`--user 1000:1000`）**建一个空文件，再看它在宿主机上的属主即可（不要拿真实 `config` 目录做探测，也不要省略 `--user`——省略时容器默认以 root/uid 0 运行，测出来的不是应用 uid 的映射）：
+   > **如何确定实际映射的宿主 uid/gid**：推荐用**确定性计算**，而不是依赖一次可能失败的探测：
+   >
+   > 1. 查看当前用户的 subordinate ID 基值：
+   >    ```bash
+   >    grep "^$(id -un):" /etc/subuid   # 例如输出 evan:100000:65536
+   >    ```
+   >    基值 `BASE=100000`（冒号后第一个数）。
+   > 2. 按隔离模式套公式（见上方 `userns-remap` / `rootless` 两条）：
+   >    - `userns-remap`：映射 uid = `BASE + 1000`
+   >    - `rootless`：映射 uid = `BASE + 1000 - 1`
+   > 3. 直接 `sudo chown -R <映射uid>:<映射gid> config db downloads logs cookies temp`。
+   >
+   > **（可选验证）** 若仍想实地确认，用 `mktemp -d` 建**唯一临时目录**并临时放开其写权限（仅该目录、用完即删，绝不碰真实数据），再以应用 uid 运行容器建文件看属主：
    >
    > ```bash
-   > mkdir -p .uid-probe && \
-   > docker run --rm -v "$PWD/.uid-probe:/data" --user 1000:1000 alpine \
+   > PROBE="$(mktemp -d)" && \
+   > chmod 777 "$PROBE" && \   # 仅限本次临时探测目录；解决「0755 不可由映射 uid 写入」的问题
+   > trap 'rm -rf "$PROBE"' EXIT && \   # 脚本退出时只删 mktemp 创建的临时目录，不会误删其它文件
+   > docker run --rm -v "$PROBE:/data" --user 1000:1000 alpine \
    >   sh -c 'touch /data/.probe && ls -n /data/.probe'
-   > # 输出类似： -rw-r--r-- 1 100999 100999 0 ...  → 说明容器 uid 1000 映射到宿主 100999
-   > rm -rf .uid-probe
+   > # 输出类似： -rw-r--r-- 1 100999 100999 0 ...  → 容器 uid 1000 映射到宿主 100999
    > ```
    >
-   > 然后把目录属主改为上一步查到的实际 uid/gid，例如 `sudo chown -R 100999:100999 config db downloads logs cookies temp`。若不确定映射，优先用上述“建文件看属主”的方法，而不是盲目 `chown 1000:1000`。
+   > 然后把目录属主改为查到的实际 uid/gid，例如 `sudo chown -R 100999:100999 config db downloads logs cookies temp`。若不确定映射，优先用上方“确定性计算”的方法，而不是盲目 `chown 1000:1000`。
 
 3. （仅作临时排障、不推荐）若暂时无法修改属主，可临时放宽权限——但这会把 Cookie、配置与数据库设为**全局可读写**，任何本地用户都能读取或篡改：
 
