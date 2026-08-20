@@ -12,7 +12,7 @@
     {% set default_target_label = 'AcFun' %}
 {% endif %}
 {% set account_ready_count = (1 if config.get('ACFUN_COOKIES_PATH') else 0) + (1 if config.get('BILIBILI_COOKIES_PATH') else 0) + (1 if config.get('YOUTUBE_COOKIES_PATH') else 0) %}
-{% set ai_ready = config.get('OPENAI_API_KEY') or config.get('SUBTITLE_OPENAI_API_KEY') or config.get('WHISPER_API_KEY') or config.get('VOXTRAL_API_KEY') %}
+{% set ai_ready = config.get('OPENAI_API_KEY') or config.get('ORCAROUTER_API_KEY') or config.get('SUBTITLE_OPENAI_API_KEY') or config.get('WHISPER_API_KEY') or config.get('VOXTRAL_API_KEY') %}
 {% set moderation_ready = config.get('ALIYUN_ACCESS_KEY_ID') and config.get('ALIYUN_ACCESS_KEY_SECRET') %}
 
 <div class="settings-container">
@@ -713,6 +713,41 @@
 
                                                 <div class="settings-subcard">
                                                     <div class="settings-subcard-header">
+                                                        <h5>OrcaRouter 网关</h5>
+                                                        <span class="settings-status-badge {{ 'is-success' if config.get('ORCAROUTER_API_KEY') else 'is-warning' }}">
+                                                            {{ '已配置' if config.get('ORCAROUTER_API_KEY') else '未配置' }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="orcarouter-url" class="form-label">OrcaRouter 接口地址</label>
+                                                                <input type="text" id="orcarouter-url" name="ORCAROUTER_BASE_URL" value="{{ config.get('ORCAROUTER_BASE_URL', 'https://api.orcarouter.ai/v1') }}" class="form-control" placeholder="https://api.orcarouter.ai/v1">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="orcarouter-key" class="form-label">OrcaRouter API 密钥</label>
+                                                                <input type="password" id="orcarouter-key" name="ORCAROUTER_API_KEY" value="{{ config.get('ORCAROUTER_API_KEY', '') }}" class="form-control" placeholder="sk-orca-...">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="orcarouter-model" class="form-label">OrcaRouter 模型</label>
+                                                                <input type="text" id="orcarouter-model" name="ORCAROUTER_MODEL" value="{{ config.get('ORCAROUTER_MODEL', 'orcarouter/auto') }}" class="form-control" placeholder="orcarouter/auto">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <p class="help-text mb-0">
+                                                                <a href="https://www.orcarouter.ai" target="_blank" rel="noopener">OrcaRouter</a> 是一个 OpenAI 兼容的多模型网关（https://api.orcarouter.ai/v1）。
+                                                                配置了 OrcaRouter API 密钥后，元数据翻译、标签生成、分区推荐与智能分段将自动路由到 OrcaRouter；字幕翻译/质检可在下方选择 orcarouter 提供商。
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="settings-subcard">
+                                                    <div class="settings-subcard-header">
                                                         <h5>字幕翻译专用覆盖</h5>
                                                         <span class="settings-status-badge {{ 'is-info' if config.get('SUBTITLE_OPENAI_API_KEY') or config.get('SUBTITLE_OPENAI_MODEL_NAME') or config.get('SUBTITLE_OPENAI_BASE_URL') else 'is-neutral' }}">
                                                             {{ '已覆盖全局配置' if config.get('SUBTITLE_OPENAI_API_KEY') or config.get('SUBTITLE_OPENAI_MODEL_NAME') or config.get('SUBTITLE_OPENAI_BASE_URL') else '留空即继承全局' }}
@@ -1305,6 +1340,28 @@
                                                             <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
                                                             启用 ASR 源字幕质检
                                                         </label>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-api-provider" class="form-label">字幕翻译提供商</label>
+                                                            <select id="subtitle-api-provider" name="SUBTITLE_API_PROVIDER" class="form-select">
+                                                                <option value="openai" {% if config.get('SUBTITLE_API_PROVIDER', 'openai') == 'openai' %}selected{% endif %}>OpenAI 兼容</option>
+                                                                <option value="orcarouter" {% if config.get('SUBTITLE_API_PROVIDER', 'openai') == 'orcarouter' %}selected{% endif %}>OrcaRouter</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-qc-provider" class="form-label">字幕质检提供商</label>
+                                                            <select id="subtitle-qc-provider" name="SUBTITLE_QC_PROVIDER" class="form-select">
+                                                                <option value="openai" {% if config.get('SUBTITLE_QC_PROVIDER', 'openai') == 'openai' %}selected{% endif %}>OpenAI 兼容</option>
+                                                                <option value="orcarouter" {% if config.get('SUBTITLE_QC_PROVIDER', 'openai') == 'orcarouter' %}selected{% endif %}>OrcaRouter</option>
+                                                                <option value="none" {% if config.get('SUBTITLE_QC_PROVIDER', 'openai') == 'none' %}selected{% endif %}>关闭（仅规则判定）</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <p class="help-text mb-0">选择 OrcaRouter 时使用上方「OrcaRouter 网关」配置的接口地址 / 密钥 / 模型（orcarouter/auto 自适应路由）。</p>
                                                     </div>
                                                     <div class="col-md-6">
                                                         <label class="checkbox-label">

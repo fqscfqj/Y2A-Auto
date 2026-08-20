@@ -91,6 +91,11 @@ DEFAULT_CONFIG = {
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     "OPENAI_THINKING_ENABLED": False,
     "OPENAI_TIMEOUT_SECONDS": 600,  # OpenAI API 请求超时秒数；思考模型输出可达64k token，建议不低于300
+    # OrcaRouter 命名接入（OpenAI 兼容网关，https://www.orcarouter.ai）
+    # 配置了 ORCAROUTER_API_KEY 时，全局 AI（元数据翻译/标签/分区推荐/智能分段）自动路由到 OrcaRouter
+    "ORCAROUTER_API_KEY": "",
+    "ORCAROUTER_BASE_URL": "https://api.orcarouter.ai/v1",
+    "ORCAROUTER_MODEL": "orcarouter/auto",  # orcarouter/auto 自适应路由，也可指定 orcarouter/<模型名>
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
     # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID
@@ -129,7 +134,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_SOURCE_LANGUAGE": "auto",  # 源语言 (auto, en, ja, ko等)
     "SUBTITLE_TARGET_LANGUAGE": "zh",  # 目标语言 (zh, en, ja, ko等)
     "SUBTITLE_FONT_NAME": "NotoSansCJKsc-Regular.otf",  # 烧录字幕使用的内置字体文件名
-    "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (仅支持openai)
+    "SUBTITLE_API_PROVIDER": "openai",  # API提供商 (openai / orcarouter)
     "SUBTITLE_BATCH_SIZE": 3,  # 批次大小
     "SUBTITLE_MAX_RETRIES": 3,  # 最大重试次数
     "SUBTITLE_RETRY_DELAY": 2,  # 重试延迟(秒)
@@ -139,7 +144,7 @@ DEFAULT_CONFIG = {
 
     # ASR 源字幕预检（可选）
     "SUBTITLE_QC_ENABLED": True,  # 质量优先：失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
-    "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
+    "SUBTITLE_QC_PROVIDER": "openai",  # openai / orcarouter / none
     "SUBTITLE_QC_BASE_URL": "",  # 留空则回退到 SUBTITLE_OPENAI_BASE_URL / OPENAI_BASE_URL
     "SUBTITLE_QC_API_KEY": "",  # 留空则回退到 SUBTITLE_OPENAI_API_KEY / OPENAI_API_KEY
     "SUBTITLE_QC_MODEL_NAME": "",  # 留空则回退到 SUBTITLE_OPENAI_MODEL_NAME / OPENAI_MODEL_NAME

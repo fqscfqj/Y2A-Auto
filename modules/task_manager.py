@@ -3051,15 +3051,9 @@ class TaskProcessor:
         upload_target = _get_task_upload_target(task)
         effective_limits = _get_effective_metadata_limits(upload_target)
         
-        # 构建OpenAI配置
-        openai_config = {
-            'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
-            'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
-            'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
-            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
-            # 可选：允许用户配置固定分区ID，确保一次命中
-            'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
-        }
+        # 构建OpenAI配置（配置了 ORCAROUTER_API_KEY 时自动路由到 OrcaRouter）
+        from modules.utils import build_ai_openai_config
+        openai_config = build_ai_openai_config(self.config)
         # 传递 Prompt 中心配置（元数据翻译）
         for prompt_key in (
             'METADATA_TRANSLATE_MODE', 'METADATA_TRANSLATE_TEXT',
@@ -7067,15 +7061,10 @@ class TaskProcessor:
         title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
         description = safe_str(task.get('description_translated') or task.get('description_original'))
         
-        # 构建OpenAI配置
-        openai_config = {
-            'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
-            'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
-            'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
-            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
-            'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
-        }
-        
+        # 构建OpenAI配置（配置了 ORCAROUTER_API_KEY 时自动路由到 OrcaRouter）
+        from modules.utils import build_ai_openai_config
+        openai_config = build_ai_openai_config(self.config)
+
         if self.config.get('GENERATE_TAGS', True) and (title or description):
             tags = generate_acfun_tags(
                 title, 
@@ -7124,16 +7113,13 @@ class TaskProcessor:
             task_logger.warning("解析 AI 标签失败或标签为空，分区推荐将忽略标签上下文")
         upload_target = _get_task_upload_target(task)
 
-        openai_config = {
-            'OPENAI_API_KEY': self.config.get('OPENAI_API_KEY', ''),
-            'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
-            'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
-            'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
-            'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
+        from modules.utils import build_ai_openai_config
+        openai_config = build_ai_openai_config(self.config)
+        openai_config.update({
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
             'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
             'RECOMMEND_PARTITION_WITH_COVER': self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
-        }
+        })
         cover_path = task.get('cover_path_local', '')
 
         task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")

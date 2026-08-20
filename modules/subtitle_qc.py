@@ -693,22 +693,34 @@ def _call_ai_judge(
     metrics: Dict[str, Any],
     config: Dict[str, Any],
 ) -> Tuple[Optional[bool], Optional[float], Optional[Dict[str, Any]], str]:
-    api_key = (
-        (config.get('SUBTITLE_QC_API_KEY') or '').strip()
-        or (config.get('SUBTITLE_OPENAI_API_KEY') or '').strip()
-        or (config.get('OPENAI_API_KEY') or '').strip()
-    )
-    base_url = (
-        (config.get('SUBTITLE_QC_BASE_URL') or '').strip()
-        or (config.get('SUBTITLE_OPENAI_BASE_URL') or '').strip()
-        or (config.get('OPENAI_BASE_URL') or '').strip()
-    )
+    provider = str(config.get('SUBTITLE_QC_PROVIDER', 'openai')).lower().strip()
+    if provider == 'orcarouter':
+        from .utils import resolve_orca_llm_settings
+        base_url, api_key, model_name = resolve_orca_llm_settings(config)
+        # QC 专用覆盖优先于全局（保持与 openai 分支一致的回退顺序）
+        if (config.get('SUBTITLE_QC_BASE_URL') or '').strip():
+            base_url = str(config['SUBTITLE_QC_BASE_URL']).strip()
+        if (config.get('SUBTITLE_QC_API_KEY') or '').strip():
+            api_key = str(config['SUBTITLE_QC_API_KEY']).strip()
+        if (config.get('SUBTITLE_QC_MODEL_NAME') or '').strip():
+            model_name = str(config['SUBTITLE_QC_MODEL_NAME']).strip()
+    else:
+        api_key = (
+            (config.get('SUBTITLE_QC_API_KEY') or '').strip()
+            or (config.get('SUBTITLE_OPENAI_API_KEY') or '').strip()
+            or (config.get('OPENAI_API_KEY') or '').strip()
+        )
+        base_url = (
+            (config.get('SUBTITLE_QC_BASE_URL') or '').strip()
+            or (config.get('SUBTITLE_OPENAI_BASE_URL') or '').strip()
+            or (config.get('OPENAI_BASE_URL') or '').strip()
+        )
 
-    model_name = (
-        (config.get('SUBTITLE_QC_MODEL_NAME') or '').strip()
-        or (config.get('SUBTITLE_OPENAI_MODEL_NAME') or '').strip()
-        or (config.get('OPENAI_MODEL_NAME') or 'gpt-3.5-turbo')
-    )
+        model_name = (
+            (config.get('SUBTITLE_QC_MODEL_NAME') or '').strip()
+            or (config.get('SUBTITLE_OPENAI_MODEL_NAME') or '').strip()
+            or (config.get('OPENAI_MODEL_NAME') or 'gpt-3.5-turbo')
+        )
 
     if not api_key:
         return None, None, None, 'missing_openai_api_key'
@@ -863,7 +875,7 @@ def run_subtitle_qc(
         )
 
     provider = str(config.get('SUBTITLE_QC_PROVIDER', 'openai')).lower().strip()
-    if provider != 'openai':
+    if provider not in ('openai', 'orcarouter'):
         return _resolve_ai_unavailable_result(
             rule_result=rule_result,
             metrics=metrics,

@@ -117,7 +117,7 @@ class TranslationConfig:
     """翻译配置"""
     source_language: str = "auto"
     target_language: str = "zh"
-    api_provider: str = "openai"  # 仅支持openai
+    api_provider: str = "openai"  # openai / orcarouter
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     model_name: str = "gpt-3.5-turbo"
@@ -608,6 +608,7 @@ class SubtitleTranslator:
             'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
             'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
             'OPENAI_TIMEOUT_SECONDS': config.timeout_seconds,
+            'API_PROVIDER': getattr(config, 'api_provider', 'openai'),
             # Prompt 中心配置（快照，避免热修改影响进行中的翻译）
             'PROMPT_MODE': getattr(config, 'prompt_mode', 'builtin'),
             'PROMPT_TEXT': getattr(config, 'prompt_text', ''),
@@ -1130,15 +1131,21 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         if isinstance(max_workers, str):
             max_workers = int(max_workers)
         
-        # 计算字幕翻译专用Base URL（优先使用SUBTITLE_OPENAI_BASE_URL，否则回退到OPENAI_BASE_URL）
-        subtitle_base_url = app_config.get('SUBTITLE_OPENAI_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+        # 解析 API 提供商：字幕翻译专用覆盖（SUBTITLE_API_PROVIDER）
+        subtitle_provider = str(app_config.get('SUBTITLE_API_PROVIDER', 'openai')).strip().lower()
+        if subtitle_provider == 'orcarouter':
+            from .utils import resolve_orca_llm_settings
+            subtitle_base_url, subtitle_api_key, subtitle_model = resolve_orca_llm_settings(app_config)
+        else:
+            # 计算字幕翻译专用Base URL（优先使用SUBTITLE_OPENAI_BASE_URL，否则回退到OPENAI_BASE_URL）
+            subtitle_base_url = app_config.get('SUBTITLE_OPENAI_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
 
-        # 计算字幕翻译专用Key/模型，未配置则回退通用值
-        subtitle_api_key = app_config.get('SUBTITLE_OPENAI_API_KEY') or app_config.get('OPENAI_API_KEY', '')
-        subtitle_model = app_config.get('SUBTITLE_OPENAI_MODEL_NAME') or app_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
-        
+            # 计算字幕翻译专用Key/模型，未配置则回退通用值
+            subtitle_api_key = app_config.get('SUBTITLE_OPENAI_API_KEY') or app_config.get('OPENAI_API_KEY', '')
+            subtitle_model = app_config.get('SUBTITLE_OPENAI_MODEL_NAME') or app_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
+
         # 添加调试日志：检查配置值
-        logger.debug(f"配置值检查 - subtitle_base_url: {subtitle_base_url is None}, subtitle_api_key: {subtitle_api_key is None}, subtitle_model: {subtitle_model is None}")
+        logger.debug(f"配置值检查 - provider: {subtitle_provider}, subtitle_base_url: {subtitle_base_url is None}, subtitle_api_key: {subtitle_api_key is None}, subtitle_model: {subtitle_model is None}")
 
         # 读取 Prompt 中心配置
         prompt_mode = 'builtin'
@@ -1155,7 +1162,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         translation_config = TranslationConfig(
             source_language=app_config.get('SUBTITLE_SOURCE_LANGUAGE', 'auto'),
             target_language=app_config.get('SUBTITLE_TARGET_LANGUAGE', 'zh'),
-            api_provider=app_config.get('SUBTITLE_API_PROVIDER', 'openai'),
+            api_provider=subtitle_provider,
             api_key=subtitle_api_key,
             base_url=subtitle_base_url,
             model_name=subtitle_model,

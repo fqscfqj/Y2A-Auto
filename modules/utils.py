@@ -353,3 +353,63 @@ def openai_chat_create_with_thinking_control(
                     "thinking 控制参数不受支持，继续普通请求"
                 )
         return client.chat.completions.create(**create_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# OrcaRouter 命名接入（OpenAI 兼容网关）
+# 提供统一的 OrcaRouter 参数解析，供字幕翻译/字幕质检/全局 AI 消费复用。
+# ---------------------------------------------------------------------------
+
+ORCAROUTER_DEFAULT_BASE_URL = 'https://api.orcarouter.ai/v1'
+ORCAROUTER_DEFAULT_MODEL = 'orcarouter/auto'
+
+
+def resolve_orca_llm_settings(config):
+    """
+    解析 OrcaRouter 接入参数。
+
+    优先级：ORCAROUTER_* 显式配置 > 字幕专用覆盖（SUBTITLE_OPENAI_*）> OrcaRouter 默认值。
+    注意：不继承全局 OPENAI_BASE_URL / OPENAI_MODEL_NAME（它们总是存在且有默认值，
+    继承会让命名 OrcaRouter 接入错误地指向 OpenAI 端点/模型）。
+
+    Returns:
+        tuple[str, str, str]: (base_url, api_key, model)
+    """
+    base_url = (
+        str(config.get('ORCAROUTER_BASE_URL') or '').strip()
+        or str(config.get('SUBTITLE_OPENAI_BASE_URL') or '').strip()
+        or ORCAROUTER_DEFAULT_BASE_URL
+    )
+    api_key = (
+        str(config.get('ORCAROUTER_API_KEY') or '').strip()
+        or str(config.get('SUBTITLE_OPENAI_API_KEY') or '').strip()
+        or str(config.get('OPENAI_API_KEY') or '').strip()
+    )
+    model = (
+        str(config.get('ORCAROUTER_MODEL') or '').strip()
+        or str(config.get('SUBTITLE_OPENAI_MODEL_NAME') or '').strip()
+        or ORCAROUTER_DEFAULT_MODEL
+    )
+    return base_url, api_key, model
+
+
+def build_ai_openai_config(config):
+    """
+    构建全局 AI 消费（元数据翻译/标签/分区推荐/智能分段等）的 openai_config。
+
+    配置了 ORCAROUTER_API_KEY 时自动路由到 OrcaRouter 网关（命名接入）；
+    否则退回 OPENAI_* 通用配置，行为与原来完全一致。
+    """
+    openai_config = {
+        'OPENAI_API_KEY': config.get('OPENAI_API_KEY', ''),
+        'OPENAI_BASE_URL': config.get('OPENAI_BASE_URL', ''),
+        'OPENAI_MODEL_NAME': config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+        'OPENAI_THINKING_ENABLED': config.get('OPENAI_THINKING_ENABLED', False),
+        'OPENAI_TIMEOUT_SECONDS': config.get('OPENAI_TIMEOUT_SECONDS', 600),
+    }
+    if str(config.get('ORCAROUTER_API_KEY') or '').strip():
+        base_url, api_key, model = resolve_orca_llm_settings(config)
+        openai_config['OPENAI_API_KEY'] = api_key
+        openai_config['OPENAI_BASE_URL'] = base_url
+        openai_config['OPENAI_MODEL_NAME'] = model
+    return openai_config

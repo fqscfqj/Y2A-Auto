@@ -159,10 +159,12 @@ class AISegmentationConfig:
             boundary_window=int(app_config.get('AI_SEGMENTATION_BOUNDARY_WINDOW', 3) or 3),
             rhythm_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_RHYTHM_ENABLED', False)),
         )
-        # 留空继承全局 OPENAI_*
-        cfg.resolved_base_url = cfg.base_url or str(app_config.get('OPENAI_BASE_URL', '') or '').strip()
-        cfg.resolved_api_key = cfg.api_key or str(app_config.get('OPENAI_API_KEY', '') or '').strip()
-        cfg.resolved_model_name = cfg.model_name or str(app_config.get('OPENAI_MODEL_NAME', '') or '').strip()
+        # 留空继承全局 OPENAI_*；配置了 ORCAROUTER_API_KEY 时全局自动路由到 OrcaRouter
+        from .utils import build_ai_openai_config
+        _resolved = build_ai_openai_config(app_config)
+        cfg.resolved_base_url = cfg.base_url or _resolved.get('OPENAI_BASE_URL', '') or ''
+        cfg.resolved_api_key = cfg.api_key or _resolved.get('OPENAI_API_KEY', '') or ''
+        cfg.resolved_model_name = cfg.model_name or _resolved.get('OPENAI_MODEL_NAME', '') or ''
         return cfg
 
     @property

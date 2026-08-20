@@ -227,8 +227,11 @@ python app.py
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
 - `OPENAI_THINKING_ENABLED`：全局思考模式开关
+- `ORCAROUTER_API_KEY` / `ORCAROUTER_BASE_URL` / `ORCAROUTER_MODEL`：OrcaRouter 网关接入（OpenAI 兼容多模型网关，默认 `https://api.orcarouter.ai/v1`、模型 `orcarouter/auto`）。配置了 `ORCAROUTER_API_KEY` 时，元数据翻译、标签生成、分区推荐与智能分段会自动路由到 [OrcaRouter](https://www.orcarouter.ai)
 - `SUBTITLE_OPENAI_*`：字幕翻译专用覆盖配置，留空则回退全局
 - `SUBTITLE_QC_*`：字幕质检专用覆盖配置，留空则回退字幕翻译 / 全局配置
+- `SUBTITLE_API_PROVIDER`：字幕翻译提供商，支持 `openai` / `orcarouter`（orcarouter 时使用上方 OrcaRouter 网关配置）
+- `SUBTITLE_QC_PROVIDER`：字幕质检提供商，支持 `openai` / `orcarouter` / `none`
 - `TRANSLATE_TITLE` / `TRANSLATE_DESCRIPTION` / `GENERATE_TAGS`：自动生成标题、简介、标签
 - `RECOMMEND_PARTITION`：自动推荐分区
 - `FIXED_PARTITION_ID` / `FIXED_PARTITION_ID_BILIBILI`：固定分区
@@ -321,6 +324,9 @@ python app.py
   "OPENAI_BASE_URL": "https://api.openai.com/v1",
   "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
   "OPENAI_THINKING_ENABLED": false,
+  "ORCAROUTER_API_KEY": "",
+  "ORCAROUTER_BASE_URL": "https://api.orcarouter.ai/v1",
+  "ORCAROUTER_MODEL": "orcarouter/auto",
   "SUBTITLE_TRANSLATION_ENABLED": false,
   "SUBTITLE_QC_ENABLED": false,
   "SPEECH_RECOGNITION_ENABLED": false,
