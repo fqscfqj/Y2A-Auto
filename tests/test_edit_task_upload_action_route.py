@@ -8,42 +8,23 @@
 优先被选中（重定向到 manual_review 并触发后台上传），而非回退到 save_metadata
 （重定向回编辑页）。
 
-CI 环境已安装 Flask 等依赖，可直接运行；本地若缺少依赖则自动跳过。
+CI 环境已安装全部依赖，导入即硬依赖、不做跳过。
+
+导入策略（根因修复）：直接 import app 与 MultiDict，**不包裹任何 try/except 跳过**。
+任何导入错误——无论项目内部模块（app / modules.*）还是外部依赖——都代表真实回归，
+必须让测试失败，否则会出现「绿了但没覆盖」的假阳性（reviewer 曾复现：注入项目内部
+ImportError 会让整组路由测试被标记为 skipped）。原先基于白名单区分「外部依赖缺失
+vs 内部模块缺失」的做法既误分类普通 ImportError，又漏掉 flask_cors / Pillow /
+APScheduler / requests / googleapiclient / Cryptodome 等，维护成本高且仍可能假绿。
+统一改为「导入即硬依赖」后，缺依赖时测试直接报错，问题暴露得更早、更可靠。
 """
 import unittest
 from unittest.mock import patch, MagicMock
 
-# 仅当缺失的是明确的外部依赖（Flask 生态）时跳过测试；
-# 项目内部模块（app / modules.*）的导入错误属于真实回归，必须让测试失败，
-# 否则会出现「绿了但没覆盖」的假阳性（reviewer 已复现：注入项目内部 ImportError
-# 会让整组路由测试被标记为 skipped）。
-_EXTERNAL_DEPS = {
-    'flask', 'werkzeug', 'wtforms', 'markupsafe',
-    'itsdangerous', 'jinja2', 'click', 'blinker',
-}
+import app as web_app
+from werkzeug.datastructures import MultiDict
 
 
-def _missing_external_dep(exc):
-    name = getattr(exc, 'name', None)
-    if name is None:
-        return False
-    return name.split('.')[0] in _EXTERNAL_DEPS
-
-
-try:
-    import app as web_app
-    from werkzeug.datastructures import MultiDict
-    _HAS_APP = True
-except ImportError as e:
-    if _missing_external_dep(e):
-        # 外部依赖缺失：CI 环境之外无法运行，跳过
-        _HAS_APP = False
-    else:
-        # 项目内部模块缺失：真实回归，重新抛出让测试失败
-        raise
-
-
-@unittest.skipUnless(_HAS_APP, "app 依赖未安装，CI 环境可运行")
 class EditTaskForceUploadMultiValueRouteTests(unittest.TestCase):
     def setUp(self):
         web_app.app.config['TESTING'] = True
