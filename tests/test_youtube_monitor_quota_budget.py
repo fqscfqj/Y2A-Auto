@@ -1,5 +1,6 @@
 import datetime
 import os
+import sqlite3
 import shutil
 import sys
 import tempfile
@@ -298,6 +299,7 @@ class ExecuteWithRetryQuotaTests(unittest.TestCase):
             reason = "quotaExceeded"
 
         err = HttpError(_Resp(), b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}', uri="http://x")
+        err.error_details = [{"reason": "quotaExceeded"}]  # 模拟 googleapiclient 从响应解析
         req = self._FakeRequest([err, {"should-not-happen": True}])
         calls = []
 
@@ -308,11 +310,135 @@ class ExecuteWithRetryQuotaTests(unittest.TestCase):
         with self.assertRaises(QuotaBudgetExhausted):
             self.monitor._execute_with_retry(
                 req, "search.list", max_attempts=3, backoff_seconds=0.01,
-                quota_consumer=consumer)
-        # 429 触发集中式当日熔断：只发 1 次请求、不重试；并标记当日耗尽
+                quota_consumer=consumer, operation_type='search')
+        # 429 + 当日配额耗尽 reason + search 操作 → 集中式当日熔断：
+        # 只发 1 次请求、不重试；并标记当日耗尽（全局桶置满）。
         self.assertEqual(len(calls), 1)
         self.assertTrue(self.monitor._last_fetch_quota_skipped)
         self.assertEqual(self.monitor._quota_budget_remaining(), 0)
+
+    def test_rate_limit_reason_retries_without_breaker(self):
+        # 短时速率限制（rateLimitExceeded）仅重试，不触发当日熔断。
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 429
+            reason = "rateLimitExceeded"
+
+        err = HttpError(_Resp(), b'{"error": {"errors": [{"reason": "rateLimitExceeded"}]}}', uri="http://x")
+        err.error_details = [{"reason": "rateLimitExceeded"}]
+        req = self._FakeRequest([err, err, {"ok": True}])
+        calls = []
+
+        def consumer():
+            calls.append(1)
+            return True
+
+        # search 操作 + rateLimitExceeded：应重试并最终成功，且不熔断
+        result = self.monitor._execute_with_retry(
+            req, "search.list", max_attempts=3, backoff_seconds=0.001,
+            quota_consumer=consumer, operation_type='search')
+        self.assertEqual(result, {"ok": True})
+        self.assertFalse(self.monitor._last_fetch_quota_skipped)
+        self.assertGreater(self.monitor._quota_budget_remaining(), 0)
+
+    def test_non_search_daily_quota_does_not_trip_breaker(self):
+        # 非 search 操作（videos.list 等）即便触发配额错误，也不熔断 search 预算。
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 429
+            reason = "quotaExceeded"
+
+        err = HttpError(_Resp(), b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}', uri="http://x")
+        err.error_details = [{"reason": "quotaExceeded"}]
+        req = self._FakeRequest([err])
+        calls = []
+
+        def consumer():
+            calls.append(1)
+            return True
+
+        with self.assertRaises(HttpError):
+            self.monitor._execute_with_retry(
+                req, "videos.list", max_attempts=1, backoff_seconds=0.001,
+                quota_consumer=consumer, operation_type='other')
+        # 非 search 配额错误不熔断：breaker 标志未置、search 预算未受影响
+        self.assertFalse(self.monitor._last_fetch_quota_skipped)
+        self.assertEqual(self.monitor._quota_budget_remaining(), self.monitor._MONITOR_DAILY_SEARCH_BUDGET)
+
+    def test_http_error_quota_reason_parsing(self):
+        from googleapiclient.errors import HttpError
+
+        # 生产形态：error_details 由 googleapiclient 从响应 JSON 解析而来
+        class _Resp:
+            status = 403
+            reason = "dailyLimitExceeded"
+
+        e1 = HttpError(_Resp(), b'x', uri="http://x")
+        e1.error_details = [{"reason": "dailyLimitExceeded"}]
+        self.assertEqual(self.monitor._http_error_quota_reason(e1), "dailyLimitExceeded")
+
+        e2 = HttpError(_Resp(), b'x', uri="http://x")
+        e2.error_details = [{"reason": "quotaExceeded"}]
+        self.assertEqual(self.monitor._http_error_quota_reason(e2), "quotaExceeded")
+
+        # 退化路径：error_details 为空/缺失，从错误文本抓 reason
+        class _FakeErr(Exception):
+            def __init__(self, error_details, text):
+                self.error_details = error_details
+                self.args = (text,)
+
+            def __str__(self):
+                return self.args[0]
+
+        fe = _FakeErr(None, 'something reason: rateLimitExceeded happened')
+        self.assertEqual(self.monitor._http_error_quota_reason(fe), "rateLimitExceeded")
+
+        # error_details 无 reason 字段时也走文本退化
+        fe2 = _FakeErr([{"message": "quota exceeded"}], 'error reason: quotaExceeded')
+        self.assertEqual(self.monitor._http_error_quota_reason(fe2), "quotaExceeded")
+
+    def test_per_config_fair_share_caps_single_config(self):
+        # 每配置公平份额：N 个搜索配置时每个上限 = budget // N（最少 1）。
+        # 单一高频配置无法吃光全局桶，从而不会饿死其它配置。
+        budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
+        c1 = self.monitor.create_monitor_config(
+            {"name": "auto-1", "schedule_type": "auto", "enabled": True, "keywords": "a,b"})
+        c2 = self.monitor.create_monitor_config(
+            {"name": "auto-2", "schedule_type": "auto", "enabled": True, "keywords": "x,y"})
+        # 仅 2 个搜索配置 → 份额 = budget // 2
+        share = budget // 2
+        # c1 可消费到自己的份额
+        for _ in range(share):
+            self.assertTrue(self.monitor._try_consume_quota(1, c1))
+        # 超过 c1 份额后，c1 被拒（但全局桶仍有余量，让给 c2）
+        self.assertFalse(self.monitor._try_consume_quota(1, c1))
+        # c2 仍能消费自己的份额（未被 c1 饿死）
+        for _ in range(share):
+            self.assertTrue(self.monitor._try_consume_quota(1, c2))
+        # 两份份额用尽后，全局桶约剩 budget - 2*share（可能为 0 或少量），任何配置都拒
+        self.assertFalse(self.monitor._try_consume_quota(1, c1))
+        self.assertFalse(self.monitor._try_consume_quota(1, c2))
+        # 总消耗不超过 budget
+        self.assertLessEqual(budget - self.monitor._quota_budget_remaining(), budget)
+
+    def test_circuit_breaker_fail_closed_on_persist_failure(self):
+        # 持久化失败（如磁盘/进程异常）时绝不能静默放过：
+        # 先置内存标志（fail-closed），再对 DB 写入重试；本进程仍停止发请求。
+        self.monitor._quota_tables_ready = True  # 跳过 reset_tables，集中测试 INSERT 失败路径
+        real_connect = sqlite3.connect
+
+        def _boom(*a, **k):
+            raise sqlite3.OperationalError("disk full")
+
+        with patch("sqlite3.connect", side_effect=_boom):
+            self.monitor._mark_quota_depleted_today()
+        # 内存 fail-closed 标志已设置，且当日剩余为 0（不会提前释放额度）
+        self.assertEqual(self.monitor._quota_depleted_day, self.monitor._quota_day_str())
+        self.assertEqual(self.monitor._quota_budget_remaining(), 0)
+        # 退出 patch 后（connect 恢复），本进程基于内存标志仍然拒绝新请求
+        self.assertFalse(self.monitor._try_consume_quota(1, 1))
 
     def test_circuit_breaker_blocks_subsequent_searches(self):
         # 当日熔断后，任何 search 入口的 _try_consume_quota / 前置检查都应短路，

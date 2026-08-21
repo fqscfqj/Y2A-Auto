@@ -132,6 +132,10 @@ class YouTubeMonitor:
         self._last_fetch_had_errors = False
         self._api_proxy_enabled = False
         self._last_api_init_error: Optional[str] = None
+        # 配额相关运行态（惰性创建，这里显式初始化避免访问时 AttributeError）
+        self._last_fetch_quota_skipped = False
+        self._quota_depleted_day = None
+        self._quota_tables_ready = False
         self._init_database()
         self._init_youtube_api()
         
@@ -1081,6 +1085,20 @@ class YouTubeMonitor:
             # MONITOR_SEARCHES_PER_RUN 是「全局应用配置」，monitor DB 记录上并无此字段；
             # 必须从全局配置显式读取（带非整数校验），否则会恒为默认值 2 而失效。
             max_searches = self._resolve_monitor_searches_per_run()
+        else:
+            max_searches = 0
+
+        # 集中式当日熔断（单一控制点）：今日配额耗尽则直接跳过整轮搜索，
+        # 不再发出任何 search.list（多关键词与频道搜索后续入口共用同一持久化状态）。
+        # 必须在轮转游标推进之前——熔断期间每轮高频调度都不应空推进游标（P2 修复）。
+        if self._quota_budget_remaining() <= 0:
+            self._last_fetch_quota_skipped = True
+            logger.warning("今日 search 配额已耗尽（当日熔断），跳过本轮搜索（将于次日太平洋时间重置）")
+            return []
+
+        # 预算通过后才构造 search 批次；仅在「关键词数 > 每轮上限」时推进轮转游标，
+        # 保证高频调度下轮流覆盖全部关键词、且游标不会在熔断期空推进。
+        if keywords_list:
             if len(keywords_list) > max_searches:
                 # 持久化轮转游标：每轮推进（而非按 UTC 天选词），高频调度也能轮流
                 # 覆盖全部关键词，避免整天只重复同一组关键词、其余关键词一次也不搜。
@@ -1106,19 +1124,6 @@ class YouTubeMonitor:
             # 无关键词则按空查询搜索（返回热门视频），保持原有行为
             search_batches = [dict(search_params)]
 
-        # 多关键词 OR 搜索：逐个关键词请求，并在每个 batch 外层单独容错，
-        # 单个关键词失败不影响其他关键词与整轮监控。
-        # 跨配置共享的单一全局每日令牌桶：每个实际 search.list 请求（含重试的每次
-        # attempt）都原子扣减（SQLite 持久化，按 America/Los_Angeles 配额日重置）；
-        # 预算耗尽或远端 429 当日熔断时，剩余关键词整轮跳过，并记录为明确的
-        # 「预算跳过」状态而非正常「0 结果」。
-        # 集中式当日熔断：今日配额已耗尽（远端 429 触发或预算用尽）则直接跳过整轮搜索，
-        # 不再发出任何 search.list（多关键词与频道搜索后续入口共用同一持久化状态）。
-        if self._quota_budget_remaining() <= 0:
-            self._last_fetch_quota_skipped = True
-            logger.warning("今日 search 配额已耗尽（当日熔断），跳过本轮搜索（将于次日太平洋时间重置）")
-            return []
-
         batch_results = []  # 每个关键词的 videoId 列表
         failed_keywords = []
         for idx, sp in enumerate(search_batches, 1):
@@ -1128,7 +1133,8 @@ class YouTubeMonitor:
                 search_request = self.youtube.search().list(**sp)
                 search_response = self._execute_with_retry(
                     search_request, 'search.list',
-                    quota_consumer=lambda: self._try_consume_quota(1),
+                    quota_consumer=lambda: self._try_consume_quota(1, config['id']),
+                    operation_type='search',
                 )
             except QuotaBudgetExhausted:
                 # 今日全局配额已耗尽（预算用尽或远端 429 当日熔断）：
@@ -1317,7 +1323,8 @@ class YouTubeMonitor:
             try:
                 search_response = self._execute_with_retry(
                     search_request, f'search.list (channel {channel_id})',
-                    quota_consumer=lambda: self._try_consume_quota(1),
+                    quota_consumer=lambda: self._try_consume_quota(1, config['id']),
+                    operation_type='search',
                 )
             except QuotaBudgetExhausted:
                 # 今日全局配额已耗尽：停止该频道搜索（当日熔断，后续频道/轮次一并停）。
@@ -1490,14 +1497,49 @@ class YouTubeMonitor:
             # 向上抛出让上层决定是否继续以及是否更新last_run_time
             raise
 
-    def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3, backoff_seconds: float = 1.0, quota_consumer: Optional[Any] = None) -> Any:
+    def _http_error_quota_reason(self, e: HttpError) -> Optional[str]:
+        """从 Google API HttpError 中提取结构化错误 reason。
+
+        429 既可能是「当日配额耗尽」（quotaExceeded / dailyLimitExceeded），也可能是
+        「短时窗口速率限制」（rateLimitExceeded）。二者处理完全不同：前者要触发当日
+        熔断、后者只需重试。只有结构化 reason 能可靠区分，故优先解析
+        `e.error_details`（googleapiclient 由响应 JSON 的 error.errors[] 反序列化而来），
+        解析不到时再退化到错误文本匹配。
+        """
+        details = getattr(e, 'error_details', None)
+        if details:
+            for d in details:
+                r = (d or {}).get('reason')
+                if r:
+                    return r
+        # error_details 缺 reason 字段（如只有 message）或不存在时，退化到错误文本抓 reason。
+        # 容忍 JSON 引号包裹（"reason":"quotaExceeded"）与非引号纯文本（reason: rateLimitExceeded）。
+        m = re.search(r'\breason["\']?\s*:\s*["\']?([A-Za-z_]+)', str(e))
+        if m:
+            return m.group(1)
+        return None
+
+    def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3,
+                            backoff_seconds: float = 1.0, quota_consumer: Optional[Any] = None,
+                            operation_type: str = 'other') -> Any:
         """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题。
 
         quota_consumer: 可选可调用对象，在**每次实际 attempt 前**调用一次；
-        返回 False 表示当日配额预算 / 该配置公平份额已耗尽，立即以
-        QuotaBudgetExhausted 中止（不再发起请求、不再重试）。
-        重试的每次 attempt 都是一次真实 API 请求，因此每次 attempt 都扣减配额
-        （修复“重试绕过每日预算”的回归）。
+            返回 False 表示当日配额预算 / 该配置公平份额已耗尽，立即以
+            QuotaBudgetExhausted 中止（不再发起请求、不再重试）。
+            重试的每次 attempt 都是一次真实 API 请求，因此每次 attempt 都扣减配额。
+
+        operation_type: 'search' 表示 search.list 类操作（消耗每日 search 配额，且
+            需要在「当日配额耗尽」reason 时触发集中式熔断）；'other' 表示 videos.list /
+            channels.list / playlistItems.list 等（使用不同配额维度，即便触发配额错误
+            也**不**熔断 search 预算，仅向上抛出交由调用方处理）。
+
+        配额熔断的精确触发条件（仅对 search 操作）：
+            - HTTP 429 且 reason ∈ {quotaExceeded, dailyLimitExceeded} → 当日配额真的耗尽
+              → 持久化熔断 + 抛 QuotaBudgetExhausted（停止当前及后续所有 search）。
+            - reason == rateLimitExceeded（短时速率限制）→ 可重试，**不**熔断
+              （否则一次短时限流就会误杀当天所有 search）。
+            - 其它 429 / 5xx → 按原逻辑退避重试。
         """
         attempt = 0
         last_exception: Optional[Exception] = None
@@ -1510,16 +1552,29 @@ class YouTubeMonitor:
             except HttpError as e:
                 resp = getattr(e, 'resp', None)
                 status = getattr(resp, 'status', None) if resp is not None else None
-                msg = str(e).lower()
-                if status and 500 <= status < 600:
+                reason = self._http_error_quota_reason(e)
+                daily_quota_error = reason in ('quotaExceeded', 'dailyLimitExceeded')
+                if daily_quota_error:
+                    if operation_type == 'search':
+                        # 明确的当日配额耗尽：触发集中式当日熔断（持久化 + 内存标志），
+                        # 上层据此停止当前及后续所有 search 请求，不再重试、不再烧配额。
+                        logger.warning(
+                            f"调用 {description} 触发当日配额耗尽({reason})，"
+                            f"标记今日 search 配额耗尽并当日熔断: {e}"
+                        )
+                        self._mark_quota_depleted_today()
+                        raise QuotaBudgetExhausted(description)
+                    # 非 search 操作（videos.list 等）的配额错误：不熔断 search 预算，
+                    # 直接抛出交由上层处理（其配额维度与 search 无关）。
+                    logger.warning(
+                        f"调用 {description} 触发配额错误({reason})，非 search 操作不熔断 search 预算: {e}"
+                    )
+                    raise
+                elif status == 429 or reason == 'rateLimitExceeded':
+                    # 短时速率限制：可重试，不触发当日熔断（避免误杀全天 search）
                     last_exception = e
-                elif status == 429 or 'quotaexceeded' in msg:
-                    # 429 / quotaExceeded：远端当日配额真的受限。
-                    # 触发集中式当日熔断（持久化 + 内存标志），抛出 QuotaBudgetExhausted，
-                    # 上层据此停止当前及后续所有 search 请求，不再重试、不再烧配额。
-                    logger.warning(f"调用 {description} 触发 429/配额限制，标记今日配额耗尽并当日熔断: {e}")
-                    self._mark_quota_depleted_today()
-                    raise QuotaBudgetExhausted(description)
+                elif status and 500 <= status < 600:
+                    last_exception = e
                 else:
                     raise
             except ssl.SSLError as e:
@@ -1979,11 +2034,12 @@ class YouTubeMonitor:
             from zoneinfo import ZoneInfo
             return datetime.now(ZoneInfo(self._QUOTA_TZ_NAME)).strftime('%Y-%m-%d')
         except Exception:
-            # 无 IANA tzdata 的环境：安全回退到 UTC 日（datetime.utcnow()）。
-            # 这只会让配额日比 PT 日早 7/8h 重置（保守侧：边界可能多一次重置），
-            # 绝不会像固定 UTC-7 那样在冬令时（实际 UTC-8）算错日期导致提前释放。
-            # 生产环境应在 requirements 中安装 tzdata，使 ZoneInfo(America/Los_Angeles) 始终可用。
-            return datetime.utcnow().strftime('%Y-%m-%d')
+            # 无 IANA tzdata 的环境：保守回退到固定 UTC-8（太平洋标准时间，不含 DST）。
+            # PT 为 UTC-7（夏令时）或 UTC-8（冬令时）。固定 UTC-8 的边界与冬令时一致、
+            # 比夏令时晚 1 小时——因此配额日边界**绝不会早于**真实 PT 日，最坏只是比
+            # 真实 PT 日最多晚 1 小时重置（延迟而非提前，安全侧，不会提前放出第二批额度）。
+            # 生产环境仍应在 requirements 中安装 tzdata 使 ZoneInfo 始终可用。
+            return (datetime.utcnow() - timedelta(hours=8)).strftime('%Y-%m-%d')
 
     def _quota_reset_tables(self):
         """惰性创建配额/轮转相关表（幂等）。"""
@@ -1997,6 +2053,14 @@ class YouTubeMonitor:
                 ')'
             )
             conn.execute(
+                'CREATE TABLE IF NOT EXISTS monitor_quota_usage ('
+                '  config_id INTEGER NOT NULL,'
+                '  quota_date TEXT NOT NULL,'
+                '  used INTEGER NOT NULL,'
+                '  PRIMARY KEY (config_id, quota_date)'
+                ')'
+            )
+            conn.execute(
                 'CREATE TABLE IF NOT EXISTS monitor_keyword_cursor ('
                 '  config_id INTEGER PRIMARY KEY,'
                 '  cursor_index INTEGER NOT NULL,'
@@ -2007,7 +2071,15 @@ class YouTubeMonitor:
         self._quota_tables_ready = True
 
     def _quota_budget_remaining(self):
-        """返回今日跨配置共享的 search 预算剩余次数（SQLite 持久化，按 PT 配额日重置）。"""
+        """返回今日跨配置共享的 search 预算剩余次数（SQLite 持久化，按 PT 配额日重置）。
+
+        若当日已触发熔断（持久化或内存 fail-closed 标志），直接返回 0，确保即便
+        持久化写入失败，本进程也不会继续发请求（绝不提前释放额度）。
+        """
+        # 内存熔断标志（持久化失败时的 fail-closed 兜底）：与当日配额日绑定，
+        # 跨日自动失效（新一天 _quota_day_str 变化后标志不匹配，重新读 DB）。
+        if getattr(self, '_quota_depleted_day', None) == self._quota_day_str():
+            return 0
         self._quota_reset_tables()
         day = self._quota_day_str()
         with sqlite3.connect(self.db_path) as conn:
@@ -2018,51 +2090,93 @@ class YouTubeMonitor:
         return max(0, self._MONITOR_DAILY_SEARCH_BUDGET - used)
 
     def _mark_quota_depleted_today(self):
-        """标记今日配额已耗尽（持久化 + 内存标志）。
+        """标记今日配额已耗尽（持久化 + 内存 fail-closed 标志）。
 
-        一旦 YouTube 返回 429 / quotaExceeded，当天不应再发任何 search.list——
-        把全局预算置满，使后续一切 _try_consume_quota 直接失败，实现「当日熔断」。
+        一旦 YouTube 返回当日配额耗尽 reason（quotaExceeded / dailyLimitExceeded），
+        当天不应再发任何 search.list——把全局预算置满，使后续一切 _try_consume_quota
+        直接失败，实现「当日熔断」。
 
-        这是**单一控制点**：多关键词搜索、频道搜索、后续所有调度轮次共用同一份
-        持久化状态，不再依赖分散在各处的 try/except 去「猜」是否该停。旧实现把 429
-        往上抛、再被通用异常分支当成普通关键词失败并 continue，导致第一个关键词 429
-        后第二个仍会真实发请求——根因就是缺少这个集中式熔断。
+        持久化失败时**绝不静默吞掉**：先设置内存标志（本进程立即 fail-closed 停发），
+        再对 DB 写入重试 3 次；全部失败则记 CRITICAL 日志。这样即使进程/磁盘异常，
+        当前实例也不会在熔断状态下继续烧配额，下一轮/另一进程读到持久化状态后也同样停。
         """
         self._quota_reset_tables()
         day = self._quota_day_str()
-        try:
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
-                conn.execute(
-                    'INSERT INTO monitor_quota_budget (quota_date, used) '
-                    'VALUES (?, ?) ON CONFLICT(quota_date) DO UPDATE SET used = ?',
-                    (day, self._MONITOR_DAILY_SEARCH_BUDGET, self._MONITOR_DAILY_SEARCH_BUDGET),
-                )
-        except Exception:
-            pass
+        # 先置内存标志：即便随后 DB 写入失败，本进程也停止发请求（fail-closed）
+        self._quota_depleted_day = day
         self._last_fetch_quota_skipped = True
+        last_err = None
+        for attempt_i in range(3):
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                    conn.execute(
+                        'INSERT INTO monitor_quota_budget (quota_date, used) '
+                        'VALUES (?, ?) ON CONFLICT(quota_date) DO UPDATE SET used = ?',
+                        (day, self._MONITOR_DAILY_SEARCH_BUDGET, self._MONITOR_DAILY_SEARCH_BUDGET),
+                    )
+                return
+            except Exception as ex:
+                last_err = ex
+                time.sleep(0.05 * (attempt_i + 1))
+        logger.critical(
+            f"当日 search 配额熔断持久化失败（本进程已 fail-closed 停止发请求）：{last_err}"
+        )
 
-    def _try_consume_quota(self, n=1):
-        """原子扣减 n 次 search 配额（单一全局每日令牌桶，跨配置共享）。
+    def _monitor_search_config_count(self):
+        """返回启用且「真正消费 search.list」的 auto 配置数（公平份额分母）。
 
-        返回 True 表示扣减成功；False 表示今日全局预算已耗尽。
+        只有会发起 search.list 的配置才计入分母：有关键词（多关键词 OR 搜索）或
+        指定了频道（频道内搜索）的启用 auto 配置。playlist / latest / historical
+        等走 playlistItems.list / videos.list 的模式不消耗 search 配额，绝不能计入
+        （旧实现把它们算进分母，导致 search 配置被过度限流——根因之一）。
+        """
+        try:
+            configs = self.get_monitor_configs()
+        except Exception:
+            return 0
+        n = 0
+        for c in configs:
+            if not c.get('enabled'):
+                continue
+            if c.get('schedule_type') != 'auto':
+                continue
+            if (c.get('keywords') and str(c.get('keywords')).strip()) or \
+               (c.get('channel_id') and str(c.get('channel_id')).strip()):
+                n += 1
+        return n
 
-        设计取舍（根因修复，替代旧的「每配置公平份额」模型）：
-        - 旧模型把 playlist / latest / historical 等非 search 配置也算进分母、手动配置
-          可先吃光、auto 过多时靠后配置长期拿不到——三种情况都会饿死或过度限流。
-        - 改为**单一全局令牌桶**后，所有真正消费 search.list 的配置（auto 或 manual）
-          共享同一天 95 次额度，先到先得；轮转游标（_next_keyword_rotation_start）保证
-          高频调度下关键词也轮流覆盖，不会因「先到先得」而长期饿死某个配置。
-        - 单语句条件 UPDATE（used + n <= budget）跨线程 / 跨进程原子，不会超额。
-        - 当日熔断（_mark_quota_depleted_today 把 used 置满）后此处自然返回 False，
-          所有 search 入口（含频道搜索）统一短路。
+    def _try_consume_quota(self, n=1, config_id=None):
+        """原子扣减 n 次 search 配额。
+
+        双层限流，既防超额又防单配置饿死其它配置（根因修复）：
+        1. **全局硬上限**：所有 search 消费者（auto / manual）共享一天 95 次，
+           单语句条件 UPDATE（used + n <= budget）跨线程 / 跨进程原子，绝不超过日配额。
+        2. **每配置公平份额**：在全局桶之上，对指定 config_id 施加
+           `budget / 搜索配置数`（最少 1 次）的当日上限。任一配置当天最多用掉自己
+           的份额，无法先吃光全局桶——高频/手动配置因此不会饿死低频配置。
+           - 配置份额耗尽时回滚本次全局扣减，把额度让给其它配置（公平，不浪费）。
+           - 全局桶耗尽时直接返回 False（不回滚——额度已被其它配置合法占用）。
+           - 未传 config_id（历史兼容调用）仅受全局桶约束。
+
+        返回 True 表示扣减成功；False 表示今日配额（全局或本配置份额）已耗尽。
+        当日熔断（_mark_quota_depleted_today 把 used 置满）后此处自然返回 False。
         """
         self._quota_reset_tables()
         day = self._quota_day_str()
+        # 纵深防御：若当日已 fail-closed 熔断（持久化失败时的内存兜底），直接拒绝，
+        # 不依赖 DB 读取（DB 写入失败时读到的仍是旧余额，会误放行）。
+        if getattr(self, '_quota_depleted_day', None) == day:
+            return False
+        share = None
+        if config_id is not None:
+            search_cfg_count = max(1, self._monitor_search_config_count() or 1)
+            share = max(1, self._MONITOR_DAILY_SEARCH_BUDGET // search_cfg_count)
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
                 'INSERT INTO monitor_quota_budget (quota_date, used) VALUES (?, 0) '
                 'ON CONFLICT(quota_date) DO NOTHING', (day,)
             )
+            # 全局硬上限
             cur = conn.execute(
                 'UPDATE monitor_quota_budget SET used = used + ? '
                 'WHERE quota_date = ? AND used + ? <= ?',
@@ -2070,6 +2184,25 @@ class YouTubeMonitor:
             )
             if cur.rowcount != 1:
                 return False  # 今日全局预算已耗尽
+            if share is not None:
+                conn.execute(
+                    'INSERT INTO monitor_quota_usage (config_id, quota_date, used) '
+                    'VALUES (?, ?, 0) ON CONFLICT(config_id, quota_date) DO NOTHING',
+                    (config_id, day),
+                )
+                cur2 = conn.execute(
+                    'UPDATE monitor_quota_usage SET used = used + ? '
+                    'WHERE config_id = ? AND quota_date = ? AND used + ? <= ?',
+                    (n, config_id, day, n, share),
+                )
+                if cur2.rowcount != 1:
+                    # 本配置当日公平份额耗尽：回滚本次全局扣减，让出额度给其它配置
+                    conn.execute(
+                        'UPDATE monitor_quota_budget SET used = MAX(0, used - ?) '
+                        'WHERE quota_date = ?', (n, day)
+                    )
+                    conn.commit()
+                    return False
             conn.commit()
         return True
 
