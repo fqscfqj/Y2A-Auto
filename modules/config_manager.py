@@ -154,6 +154,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）
+    "SUBTITLE_QC_TIMEOUT_SECONDS": 120,  # 质检单次 AI 调用超时（秒），范围 10–600；未配置/非法回退 120
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数

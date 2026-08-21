@@ -203,11 +203,17 @@ def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     # 普通默认安装中该键永远为 600，is-explicit 判断恒为假、120s 分支永不生效
     # （reviewer 第三轮指出的行为回归）。独立键语义清晰、无回归：
     # 未配置 → 120s（QC 原默认）；配置 → 用之。
+    # 该键已纳入 DEFAULT_CONFIG + 设置页 + _perform_settings_save（数值字段 + 10–600 范围校验），
+    # 故可正常持久化、不再被 _prune_unknown_config_keys 删除。此处再做兜底净化，
+    # 防止手工改坏 config.json 或旧版本残留导致非数字 / 非有限 / 越界值透传给 httpx。
     _qc_timeout_raw = (load_config() or {}).get('SUBTITLE_QC_TIMEOUT_SECONDS')
-    if _qc_timeout_raw is None or str(_qc_timeout_raw).strip() == '':
-        _qc_timeout = 120
-    else:
-        _qc_timeout = _qc_timeout_raw
+    _qc_timeout = 120
+    try:
+        _qc_tv = float(str(_qc_timeout_raw).strip()) if _qc_timeout_raw is not None else None
+        if _qc_tv is not None and _qc_tv == _qc_tv and 10 <= _qc_tv <= 600:  # NaN 自检 + 范围
+            _qc_timeout = int(_qc_tv)
+    except (ValueError, TypeError):
+        pass
 
     cfg: Dict[str, Any] = {
         'OPENAI_API_KEY': api_key,
