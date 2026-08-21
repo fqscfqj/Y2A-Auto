@@ -688,6 +688,7 @@
                                                             <div class="form-group">
                                                                 <label for="openai-url" class="form-label">接口地址</label>
                                                                 <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control" placeholder="如 https://api.openai.com/v1">
+                                                                <p class="help-text mb-0 mt-2">填写 OpenAI 兼容 API 的根地址；若粘贴了完整 <code>/chat/completions</code> 地址，系统会自动规范化。请求参数和消息格式会按端点实际能力自动协商。</p>
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
@@ -705,7 +706,8 @@
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="openai-thinking-enabled">通用模型启用思考模式</label>
+                                                                <label class="form-check-label" for="openai-thinking-enabled">允许模型使用思考模式</label>
+                                                                <p class="help-text mb-0 mt-2">关闭时会按可识别的 DeepSeek、Qwen、MiMo 接口发送各自的禁用思考参数；其他模型不会收到私有参数。</p>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -740,7 +742,7 @@
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="subtitle-openai-thinking-enabled" name="SUBTITLE_OPENAI_THINKING_ENABLED" {% if config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">字幕模型启用思考模式</label>
+                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">允许字幕模型使用思考模式</label>
                                                             </div>
                                                         </div>
                                                     </div>

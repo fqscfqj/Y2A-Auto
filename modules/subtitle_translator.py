@@ -8,7 +8,7 @@ import time
 import logging
 import gc  # 添加垃圾回收模块以优化内存使用
 from pathlib import Path
-from typing import Dict, List, Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
@@ -18,7 +18,9 @@ from .utils import (
     get_app_subdir,
     openai_chat_create_with_thinking_control,
     extract_chat_message_json,
+    extract_json_from_text,
     get_chat_message_text,
+    normalize_openai_base_url,
 )
 
 logger = logging.getLogger('subtitle_translator')
@@ -87,7 +89,7 @@ def get_openai_client(openai_config):
     
     # 如果提供了base_url，添加到选项中
     if openai_config.get('OPENAI_BASE_URL'):
-        options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+        options['base_url'] = normalize_openai_base_url(openai_config.get('OPENAI_BASE_URL'))
     timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
     try:
         timeout_seconds = float(str(timeout_value).strip())
@@ -366,6 +368,8 @@ class LLMRequester:
         
         # 线程锁，用于线程安全的日志记录
         self._log_lock = Lock()
+        self._capability_lock = Lock()
+        self._json_mode_disabled = False
         self._batch_counter = 0
         self._batch_log_interval = 10
     
@@ -407,20 +411,12 @@ class LLMRequester:
                     f"开始翻译批次 {batch_id}，包含 {len(texts)} 条字幕"
                 )
             
-            # 使用与ai_enhancer.py相同的API调用方式，添加JSON输出格式
-            response = openai_chat_create_with_thinking_control(
-                client=self.client,
-                create_kwargs={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "max_tokens": 4096,
-                    "response_format": {"type": "json_object"},  # 强制JSON输出
-                },
-                thinking_enabled=self.openai_config.get('OPENAI_THINKING_ENABLED', False),
-                logger=self.logger,
+            translations = self._request_translation_result(
+                model_name=model_name,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                expected_count=len(texts),
+                batch_id=batch_id,
                 scene_name='subtitle_translate_batch',
             )
             
@@ -432,14 +428,7 @@ class LLMRequester:
                     f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒"
                 )
             
-            # 检查响应是否有效
-            if not response.choices or len(response.choices) == 0:
-                with self._log_lock:
-                    self.logger.warning(f"批次 {batch_id}: API返回空的choices列表")
-                return [""] * len(texts)
-            
-            message = response.choices[0].message
-            return self._parse_structured_translation_result(message, len(texts), batch_id)
+            return translations
             
         except Exception as e:
             with self._log_lock:
@@ -471,34 +460,109 @@ class LLMRequester:
             model_name = self.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
             with self._log_lock:
                 self.logger.info(f"开始严格模式翻译批次 {batch_id}，包含 {len(texts)} 条字幕")
-            response = openai_chat_create_with_thinking_control(
-                client=self.client,
-                create_kwargs={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "max_tokens": 4096,
-                    "response_format": {"type": "json_object"},
-                },
-                thinking_enabled=self.openai_config.get('OPENAI_THINKING_ENABLED', False),
-                logger=self.logger,
+            return self._request_translation_result(
+                model_name=model_name,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                expected_count=len(texts),
+                batch_id=batch_id,
                 scene_name='subtitle_translate_batch_strict',
             )
-            
-            # 检查响应是否有效
-            if not response.choices or len(response.choices) == 0:
-                with self._log_lock:
-                    self.logger.warning(f"严格模式批次 {batch_id}: API返回空的choices列表")
-                return [""] * len(texts)
-            
-            message = response.choices[0].message
-            return self._parse_structured_translation_result(message, len(texts), batch_id)
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"严格模式批次 {batch_id} 翻译失败: {e}")
             raise
+
+    def _create_translation_completion(
+        self,
+        *,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        scene_name: str,
+        json_mode: bool,
+    ):
+        create_kwargs = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 4096,
+        }
+        if json_mode:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        return openai_chat_create_with_thinking_control(
+            client=self.client,
+            create_kwargs=create_kwargs,
+            thinking_enabled=self.openai_config.get('OPENAI_THINKING_ENABLED', False),
+            logger=self.logger,
+            scene_name=scene_name,
+        )
+
+    def _request_translation_result(
+        self,
+        *,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        expected_count: int,
+        batch_id: str,
+        scene_name: str,
+    ) -> List[str]:
+        """请求并解析字幕；JSON 模式产出不可解析时自动改用纯文本 JSON 重试。"""
+        with self._capability_lock:
+            json_mode = not self._json_mode_disabled
+        response = self._create_translation_completion(
+            model_name=model_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            scene_name=scene_name,
+            json_mode=json_mode,
+        )
+        if not getattr(response, 'choices', None):
+            with self._log_lock:
+                self.logger.warning(f"批次 {batch_id}: API返回空的choices列表")
+            return [""] * expected_count
+
+        (
+            translations,
+            parsed_successfully,
+        ) = self._parse_structured_translation_result_with_status(
+            response.choices[0].message, expected_count, batch_id
+        )
+        if parsed_successfully or not json_mode:
+            return translations
+
+        with self._log_lock:
+            self.logger.warning(
+                f"批次 {batch_id}: JSON模式响应不可用，改用纯文本JSON模式重试"
+            )
+        retry_response = self._create_translation_completion(
+            model_name=model_name,
+            system_prompt=(
+                system_prompt
+                + "\n重要：只返回 JSON 对象，不要使用 Markdown 代码块或添加解释。"
+            ),
+            user_prompt=user_prompt,
+            scene_name=f'{scene_name}_plain_json_retry',
+            json_mode=False,
+        )
+        if not getattr(retry_response, 'choices', None):
+            return translations
+        (
+            retried,
+            retry_parsed_successfully,
+        ) = self._parse_structured_translation_result_with_status(
+            retry_response.choices[0].message,
+            expected_count,
+            f'{batch_id}_plain_retry',
+        )
+        if retry_parsed_successfully:
+            with self._capability_lock:
+                self._json_mode_disabled = True
+            return retried
+        return translations
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
         """构建结构化系统提示词（委托给统一 Prompt 中心）。"""
@@ -538,57 +602,121 @@ class LLMRequester:
 
     def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
+        translations, _ = self._parse_structured_translation_result_with_status(
+            message,
+            expected_count,
+            batch_id,
+        )
+        return translations
+
+    def _parse_structured_translation_result_with_status(
+        self,
+        message,
+        expected_count: int,
+        batch_id: str,
+    ) -> Tuple[List[str], bool]:
+        """解析结构化翻译结果，并区分解析失败与合法的空译文。"""
         try:
-            json_result = extract_chat_message_json(message, expected_type=dict)
+            json_result = extract_chat_message_json(message, expected_type=None)
             # 如果首次解析失败，尝试清洗 ASS 标签后重试
-            if not isinstance(json_result, dict):
-                import re as _re
+            if not isinstance(json_result, (dict, list)):
                 raw_text = get_chat_message_text(message)
-                cleaned_text = _re.sub(r'\\[hHnN]', ' ', raw_text)
-                cleaned_text = _re.sub(r'{\\[^}]*}', '', cleaned_text)
-                from .utils import extract_json_from_text
-                json_result = extract_json_from_text(cleaned_text, expected_type=dict)
-            if not isinstance(json_result, dict):
+                cleaned_text = re.sub(r'\\[hHnN]', ' ', raw_text)
+                cleaned_text = re.sub(r'{\\[^}]*}', '', cleaned_text)
+                json_result = extract_json_from_text(cleaned_text, expected_type=None)
+
+            translations = self._coerce_translation_list(json_result, expected_count)
+            if translations is None:
                 preview = get_chat_message_text(message)
+                translations = self._parse_plain_translation_lines(preview, expected_count)
+            if translations is None:
                 with self._log_lock:
                     self.logger.warning(
-                        f"批次 {batch_id}: 未解析到有效JSON，响应预览: {preview[:200]}"
+                        f"批次 {batch_id}: 未解析到有效翻译列表，响应预览: {preview[:200]}"
                     )
-                return [""] * expected_count
+                return [""] * expected_count, False
 
-            if "translations" not in json_result:
-                with self._log_lock:
-                    self.logger.warning(f"批次 {batch_id}: JSON响应缺少translations字段")
-                return [""] * expected_count
-            
-            translations = json_result["translations"]
-            
-            if not isinstance(translations, list):
-                with self._log_lock:
-                    self.logger.warning(f"批次 {batch_id}: translations不是数组格式")
-                return [""] * expected_count
-            
             # 确保返回的翻译数量正确
-            while len(translations) < expected_count:
-                translations.append("")  # 用空字符串填充
+            translations = list(translations[:expected_count])
+            translations.extend([""] * (expected_count - len(translations)))
             
             # 截断多余的翻译，并清洗 ASS 标签
-            import re as _re
-            _ass_tag_re = _re.compile(r'\\[hHnN]|{\\[^}]*}')
+            _ass_tag_re = re.compile(r'\\[hHnN]|{\\[^}]*}')
             final_translations = []
             for t in translations[:expected_count]:
                 cleaned = _ass_tag_re.sub('', str(t or '')).strip()
-                cleaned = _re.sub(r'\s+', ' ', cleaned).strip()
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
                 final_translations.append(cleaned)
             
             with self._log_lock:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")
             
-            return final_translations
+            return final_translations, True
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
-            return [""] * expected_count
+            return [""] * expected_count, False
+
+    @staticmethod
+    def _coerce_translation_list(json_result, expected_count: int):
+        """兼容常见网关/模型的 JSON 包装差异，并保持原始顺序。"""
+        value = json_result
+        if isinstance(value, dict):
+            for key in ('translations', 'translation', 'results', 'result', 'data', 'output'):
+                if key in value:
+                    value = value[key]
+                    break
+            else:
+                numeric_items = []
+                for key, item in value.items():
+                    try:
+                        numeric_items.append((int(str(key)), item))
+                    except Exception:
+                        numeric_items = []
+                        break
+                if numeric_items:
+                    value = [item for _, item in sorted(numeric_items)]
+                else:
+                    return None
+
+        if isinstance(value, str):
+            return [value] if expected_count == 1 else None
+        if not isinstance(value, list):
+            return None
+
+        translations = []
+        for item in value:
+            if isinstance(item, dict):
+                item_value = None
+                for key in ('translation', 'translated_text', 'text', 'output', 'content'):
+                    if key in item:
+                        item_value = item[key]
+                        break
+                if item_value is None:
+                    return None
+                translations.append(item_value)
+            else:
+                translations.append(item)
+        return translations
+
+    @staticmethod
+    def _parse_plain_translation_lines(text: str, expected_count: int):
+        """最后兜底：兼容只返回编号逐行译文、但不返回 JSON 的小模型。"""
+        raw = str(text or '').strip()
+        if not raw:
+            return None
+        if expected_count == 1 and '\n' not in raw:
+            return [raw]
+
+        numbered = []
+        pattern = re.compile(r'^\s*(?:\d+\s*[.)、:：-]|[-*•])\s*(.+?)\s*$')
+        for line in raw.splitlines():
+            match = pattern.match(line)
+            if match and match.group(1).strip():
+                numbered.append(match.group(1).strip())
+        if len(numbered) >= expected_count:
+            return numbered[:expected_count]
+        return None
 
 class SubtitleTranslator:
     """字幕翻译器主类"""

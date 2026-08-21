@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from .utils import extract_chat_message_json, get_chat_message_text
+from .utils import extract_chat_message_json, get_chat_message_text, normalize_openai_base_url
 
 logger = logging.getLogger('subtitle_qc')
 SHORT_LINE_NORMALIZED_LEN = 8
@@ -192,7 +192,7 @@ def _build_openai_client(api_key: str, base_url: str):
 
     options: Dict[str, Any] = {}
     if base_url:
-        options['base_url'] = base_url
+        options['base_url'] = normalize_openai_base_url(base_url)
     options['timeout'] = 120.0
     return openai.OpenAI(api_key=api_key, **options)
 

@@ -17,6 +17,7 @@ from .utils import (
     openai_chat_create_with_thinking_control,
     extract_chat_message_json,
     get_chat_message_text,
+    normalize_openai_base_url,
 )
 
 import openai
@@ -163,7 +164,7 @@ def get_openai_client(openai_config):
     api_key = openai_config.get('OPENAI_API_KEY', '')
     options = {}
     if openai_config.get('OPENAI_BASE_URL'):
-        options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+        options['base_url'] = normalize_openai_base_url(openai_config.get('OPENAI_BASE_URL'))
     timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
     try:
         timeout_seconds = float(str(timeout_value).strip())
@@ -691,8 +692,7 @@ def _request_raw_text(
     )
     if not getattr(response, "choices", None):
         return ''
-    content = response.choices[0].message.content or ''
-    return content.strip()
+    return get_chat_message_text(response.choices[0].message)
 
 
 def _sanitize_metadata_field(
