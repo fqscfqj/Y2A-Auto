@@ -707,7 +707,7 @@
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
                                                                 <label class="form-check-label" for="openai-thinking-enabled">允许模型使用思考模式</label>
-                                                                <p class="help-text mb-0 mt-2">关闭时仅对可识别的 DeepSeek 端点发送禁用思考参数，不会向其他 OpenAI 兼容模型注入私有参数。</p>
+                                                                <p class="help-text mb-0 mt-2">关闭时会按可识别的 DeepSeek、Qwen、MiMo 接口发送各自的禁用思考参数；其他模型不会收到私有参数。</p>
                                                             </div>
                                                         </div>
                                                     </div>

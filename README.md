@@ -226,7 +226,7 @@ python app.py
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
-- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时仅对可识别的 DeepSeek 接口发送私有禁用参数
+- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时按可识别的 DeepSeek、Qwen、MiMo 接口发送各自的私有禁用参数
 - `SUBTITLE_OPENAI_*`：字幕翻译专用覆盖配置，留空则回退全局
 - `SUBTITLE_QC_*`：字幕质检专用覆盖配置，留空则回退字幕翻译 / 全局配置
 - `TRANSLATE_TITLE` / `TRANSLATE_DESCRIPTION` / `GENERATE_TAGS`：自动生成标题、简介、标签

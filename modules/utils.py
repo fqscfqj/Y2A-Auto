@@ -374,10 +374,52 @@ def _client_compatibility_key(client, create_kwargs) -> str:
     return f'{endpoint}:{model}'
 
 
-def _looks_like_deepseek_endpoint(client, create_kwargs) -> bool:
+def _thinking_control_style(client, create_kwargs) -> str:
+    """按端点/模型识别常见的非标准思考开关协议。"""
     endpoint = safe_str(getattr(client, 'base_url', '')).lower()
     model = safe_str((create_kwargs or {}).get('model')).lower()
-    return 'deepseek' in endpoint or 'deepseek' in model
+    hint = f'{endpoint} {model}'
+    if 'qwen' in hint:
+        # DashScope/百炼直接接收 enable_thinking；Qwen 官方 vLLM 部署将其
+        # 放在 chat_template_kwargs 中。带组织前缀的模型名通常来自自部署。
+        if '/' in model and not any(
+            marker in endpoint for marker in ('dashscope', 'aliyuncs.com', 'aliyun.com')
+        ):
+            return 'qwen_chat_template'
+        return 'qwen'
+    if 'mimo' in hint or 'xiaomimimo' in hint:
+        return 'mimo'
+    if 'deepseek' in hint:
+        return 'thinking_object'
+    return ''
+
+
+def _inject_thinking_control(create_kwargs, style: str):
+    extra_body = create_kwargs.get('extra_body')
+    if not isinstance(extra_body, dict):
+        extra_body = {}
+    extra_body = copy.deepcopy(extra_body)
+    if style == 'qwen':
+        extra_body['enable_thinking'] = False
+    elif style == 'qwen_chat_template':
+        chat_template_kwargs = extra_body.get('chat_template_kwargs')
+        if not isinstance(chat_template_kwargs, dict):
+            chat_template_kwargs = {}
+        chat_template_kwargs = copy.deepcopy(chat_template_kwargs)
+        chat_template_kwargs['enable_thinking'] = False
+        extra_body['chat_template_kwargs'] = chat_template_kwargs
+    elif style in {'thinking_object', 'mimo'}:
+        thinking_body = extra_body.get('thinking')
+        if not isinstance(thinking_body, dict):
+            thinking_body = {}
+        thinking_body = copy.deepcopy(thinking_body)
+        thinking_body['type'] = 'disabled'
+        if style == 'thinking_object':
+            # 保留项目既有 DeepSeek 兼容字段；MiMo 使用更严格的 type 形态。
+            thinking_body['enabled'] = False
+        extra_body['thinking'] = thinking_body
+    if extra_body:
+        create_kwargs['extra_body'] = extra_body
 
 
 def _get_cached_compatibility_actions(cache_key: str):
@@ -413,6 +455,14 @@ def _drop_thinking_control(create_kwargs):
     extra_body = copy.deepcopy(extra_body)
     extra_body.pop('thinking', None)
     extra_body.pop('enable_thinking', None)
+    chat_template_kwargs = extra_body.get('chat_template_kwargs')
+    if isinstance(chat_template_kwargs, dict) and 'enable_thinking' in chat_template_kwargs:
+        chat_template_kwargs = copy.deepcopy(chat_template_kwargs)
+        chat_template_kwargs.pop('enable_thinking', None)
+        if chat_template_kwargs:
+            extra_body['chat_template_kwargs'] = chat_template_kwargs
+        else:
+            extra_body.pop('chat_template_kwargs', None)
     if extra_body:
         create_kwargs['extra_body'] = extra_body
     else:
@@ -472,7 +522,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str):
     if not logger or not is_new:
         return
     descriptions = {
-        'drop_thinking': '不支持 DeepSeek thinking 控制，已移除该扩展参数',
+        'drop_thinking': '不支持当前模型的思考控制参数，已移除该扩展参数',
         'drop_response_format': '不支持 JSON response_format，已改用提示词约束并解析文本 JSON',
         'use_max_completion_tokens': '不支持 max_tokens，已改用 max_completion_tokens',
         'use_max_tokens': '不支持 max_completion_tokens，已回退 max_tokens',
@@ -492,26 +542,17 @@ def openai_chat_create_with_thinking_control(
 ):
     """统一 Chat Completions 请求，并按端点实际能力自动降级可选参数。
 
-    默认只对可识别的 DeepSeek 端点/模型发送其私有 thinking 开关，避免污染
-    标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、temperature
+    默认只对可识别的 DeepSeek、Qwen、MiMo 端点/模型发送对应的私有思考开关，
+    避免污染其他标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、temperature
     或消息角色，会只移除/替换对应能力后重试，并缓存到同一端点+模型的后续请求。
     鉴权、限流、配额和服务端错误不会在这里被误判为兼容问题。
     """
     base_kwargs = copy.deepcopy(create_kwargs or {})
-    if (
-        not _coerce_bool(thinking_enabled, default=False)
-        and _looks_like_deepseek_endpoint(client, base_kwargs)
-    ):
-        extra_body = base_kwargs.get('extra_body')
-        if not isinstance(extra_body, dict):
-            extra_body = {}
-        extra_body = copy.deepcopy(extra_body)
-        thinking_body = extra_body.get('thinking')
-        if not isinstance(thinking_body, dict):
-            thinking_body = {}
-        thinking_body.update({'type': 'disabled', 'enabled': False})
-        extra_body['thinking'] = thinking_body
-        base_kwargs['extra_body'] = extra_body
+    if not _coerce_bool(thinking_enabled, default=False):
+        _inject_thinking_control(
+            base_kwargs,
+            _thinking_control_style(client, base_kwargs),
+        )
 
     cache_key = _client_compatibility_key(client, base_kwargs)
     actions = _get_cached_compatibility_actions(cache_key)
@@ -526,7 +567,11 @@ def openai_chat_create_with_thinking_control(
             extra_body = request_kwargs.get('extra_body')
             if (
                 isinstance(extra_body, dict)
-                and ('thinking' in extra_body or 'enable_thinking' in extra_body)
+                and (
+                    'thinking' in extra_body
+                    or 'enable_thinking' in extra_body
+                    or 'enable_thinking' in (extra_body.get('chat_template_kwargs') or {})
+                )
                 and _is_parameter_compatibility_error(exc, 'thinking')
             ):
                 action = 'drop_thinking'

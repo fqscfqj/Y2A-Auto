@@ -102,6 +102,60 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         self.assertIn('extra_body', client.completions.calls[0])
         self.assertNotIn('extra_body', client.completions.calls[1])
 
+    def test_qwen_dashscope_uses_enable_thinking_parameter(self):
+        client = _FakeClient(base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='qwen-plus'), thinking_enabled=False,
+        )
+
+        self.assertEqual(
+            client.completions.calls[0]['extra_body'],
+            {'enable_thinking': False},
+        )
+
+    def test_qwen_vllm_uses_chat_template_kwargs(self):
+        client = _FakeClient(base_url='http://model-server.example/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='Qwen/Qwen3-8B'), thinking_enabled=False,
+        )
+
+        self.assertEqual(
+            client.completions.calls[0]['extra_body'],
+            {'chat_template_kwargs': {'enable_thinking': False}},
+        )
+
+    def test_qwen_thinking_rejection_retries_without_private_parameter(self):
+        def responder(kwargs, _call_number):
+            if 'extra_body' in kwargs:
+                raise _CompatError("Unknown parameter: 'enable_thinking'")
+            return SimpleNamespace(choices=[])
+
+        client = _FakeClient(
+            base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+            responder=responder,
+        )
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='qwen-plus'), thinking_enabled=False,
+        )
+
+        self.assertEqual(len(client.completions.calls), 2)
+        self.assertNotIn('extra_body', client.completions.calls[1])
+
+    def test_mimo_uses_strict_disabled_thinking_object(self):
+        client = _FakeClient(base_url='https://api.xiaomimimo.com/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='mimo-v2.5'), thinking_enabled=False,
+        )
+
+        self.assertEqual(
+            client.completions.calls[0]['extra_body'],
+            {'thinking': {'type': 'disabled'}},
+        )
+
     def test_retries_without_unsupported_response_format_and_caches_capability(self):
         def responder(kwargs, _call_number):
             if 'response_format' in kwargs:
