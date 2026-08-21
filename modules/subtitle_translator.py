@@ -8,7 +8,7 @@ import time
 import logging
 import gc  # 添加垃圾回收模块以优化内存使用
 from pathlib import Path
-from typing import Dict, List, Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
@@ -525,12 +525,13 @@ class LLMRequester:
                 self.logger.warning(f"批次 {batch_id}: API返回空的choices列表")
             return [""] * expected_count
 
-        translations = self._parse_structured_translation_result(
-            response.choices[0].message,
-            expected_count,
-            batch_id,
+        (
+            translations,
+            parsed_successfully,
+        ) = self._parse_structured_translation_result_with_status(
+            response.choices[0].message, expected_count, batch_id
         )
-        if any(translations) or not json_mode:
+        if parsed_successfully or not json_mode:
             return translations
 
         with self._log_lock:
@@ -549,12 +550,15 @@ class LLMRequester:
         )
         if not getattr(retry_response, 'choices', None):
             return translations
-        retried = self._parse_structured_translation_result(
+        (
+            retried,
+            retry_parsed_successfully,
+        ) = self._parse_structured_translation_result_with_status(
             retry_response.choices[0].message,
             expected_count,
             f'{batch_id}_plain_retry',
         )
-        if any(retried):
+        if retry_parsed_successfully:
             with self._capability_lock:
                 self._json_mode_disabled = True
             return retried
@@ -598,6 +602,20 @@ class LLMRequester:
 
     def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
+        translations, _ = self._parse_structured_translation_result_with_status(
+            message,
+            expected_count,
+            batch_id,
+        )
+        return translations
+
+    def _parse_structured_translation_result_with_status(
+        self,
+        message,
+        expected_count: int,
+        batch_id: str,
+    ) -> Tuple[List[str], bool]:
+        """解析结构化翻译结果，并区分解析失败与合法的空译文。"""
         try:
             json_result = extract_chat_message_json(message, expected_type=None)
             # 如果首次解析失败，尝试清洗 ASS 标签后重试
@@ -616,7 +634,7 @@ class LLMRequester:
                     self.logger.warning(
                         f"批次 {batch_id}: 未解析到有效翻译列表，响应预览: {preview[:200]}"
                     )
-                return [""] * expected_count
+                return [""] * expected_count, False
 
             # 确保返回的翻译数量正确
             translations = list(translations[:expected_count])
@@ -633,11 +651,11 @@ class LLMRequester:
             with self._log_lock:
                 self.logger.info(f"批次 {batch_id}: 成功解析 {len(final_translations)} 条翻译")
             
-            return final_translations
+            return final_translations, True
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
-            return [""] * expected_count
+            return [""] * expected_count, False
 
     @staticmethod
     def _coerce_translation_list(json_result, expected_count: int):

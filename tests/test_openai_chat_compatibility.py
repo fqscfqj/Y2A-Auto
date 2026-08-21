@@ -1,7 +1,9 @@
 import logging
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from modules import utils
 from modules.subtitle_translator import LLMRequester
@@ -115,17 +117,41 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
             {'enable_thinking': False},
         )
 
-    def test_qwen_vllm_uses_chat_template_kwargs(self):
+    def test_qwen_on_unknown_vllm_endpoint_does_not_receive_private_parameter(self):
         client = _FakeClient(base_url='http://model-server.example/v1')
 
         utils.openai_chat_create_with_thinking_control(
             client, _base_kwargs(model='Qwen/Qwen3-8B'), thinking_enabled=False,
         )
 
-        self.assertEqual(
-            client.completions.calls[0]['extra_body'],
-            {'chat_template_kwargs': {'enable_thinking': False}},
+        self.assertNotIn('extra_body', client.completions.calls[0])
+
+    def test_qwen_proxy_hostname_does_not_trigger_private_parameter(self):
+        client = _FakeClient(base_url='https://qwen-proxy.example.com/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='unrelated-model'), thinking_enabled=False,
         )
+
+        self.assertNotIn('extra_body', client.completions.calls[0])
+
+    def test_openrouter_qwen_model_does_not_receive_dashscope_parameter(self):
+        client = _FakeClient(base_url='https://openrouter.ai/api/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='qwen/qwen3-235b-a22b'), thinking_enabled=False,
+        )
+
+        self.assertNotIn('extra_body', client.completions.calls[0])
+
+    def test_known_provider_requires_matching_model_family(self):
+        client = _FakeClient(base_url='https://api.xiaomimimo.com/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='unrelated-model'), thinking_enabled=False,
+        )
+
+        self.assertNotIn('extra_body', client.completions.calls[0])
 
     def test_qwen_thinking_rejection_retries_without_private_parameter(self):
         def responder(kwargs, _call_number):
@@ -254,6 +280,33 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         )
         self.assertIn('Return JSON only.', client.completions.calls[2]['messages'][0]['content'])
 
+    def test_bare_quoted_system_word_does_not_trigger_role_fallback(self):
+        def responder(_kwargs, _call_number):
+            raise _CompatError("Unsupported metadata value 'system'")
+
+        client = _FakeClient(responder=responder)
+
+        with self.assertRaises(_CompatError):
+            utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
+
+        self.assertEqual(len(client.completions.calls), 1)
+
+    def test_inline_instructions_creates_user_message_when_missing(self):
+        kwargs = {
+            'messages': [
+                {'role': 'system', 'content': 'Return JSON only.'},
+                {'role': 'assistant', 'content': 'Previous output'},
+            ]
+        }
+
+        utils._inline_instruction_messages(kwargs)
+
+        self.assertEqual(kwargs['messages'][0], {
+            'role': 'user',
+            'content': 'Return JSON only.',
+        })
+        self.assertEqual(kwargs['messages'][1]['role'], 'assistant')
+
     def test_multiple_explicit_parameter_errors_are_adapted_sequentially(self):
         def responder(kwargs, _call_number):
             if 'response_format' in kwargs:
@@ -289,6 +342,17 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
     def test_server_error_is_not_retried_as_parameter_compatibility(self):
         def responder(_kwargs, _call_number):
             raise _CompatError('Internal server error mentioning max_tokens', status_code=500)
+
+        client = _FakeClient(responder=responder)
+
+        with self.assertRaises(_CompatError):
+            utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
+
+        self.assertEqual(len(client.completions.calls), 1)
+
+    def test_not_found_is_not_retried_as_parameter_compatibility(self):
+        def responder(_kwargs, _call_number):
+            raise _CompatError("Unknown parameter: 'response_format'", status_code=404)
 
         client = _FakeClient(responder=responder)
 
@@ -356,6 +420,54 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(len(client.completions.calls), 1)
 
+    def test_fallback_warning_includes_scene_name(self):
+        def responder(kwargs, _call_number):
+            if 'response_format' in kwargs:
+                raise _CompatError("Unsupported parameter: 'response_format'")
+            return SimpleNamespace(choices=[])
+
+        client = _FakeClient(responder=responder)
+        logger = logging.getLogger('test_openai_compat_scene')
+
+        with self.assertLogs(logger, level='WARNING') as captured:
+            utils.openai_chat_create_with_thinking_control(
+                client,
+                _base_kwargs(),
+                logger=logger,
+                scene_name='subtitle_translation',
+            )
+
+        self.assertIn('[subtitle_translation]', captured.output[0])
+
+    def test_cached_capabilities_expire(self):
+        key = 'https://gateway.example/v1:test-model'
+        with patch('modules.utils.time.monotonic', return_value=100.0):
+            utils._cache_compatibility_actions(key, {'drop_response_format'})
+            self.assertEqual(
+                utils._get_cached_compatibility_actions(key),
+                {'drop_response_format'},
+            )
+
+        with patch(
+            'modules.utils.time.monotonic',
+            return_value=100.0 + utils._OPENAI_COMPATIBILITY_CACHE_TTL_SECONDS + 1,
+        ):
+            self.assertEqual(utils._get_cached_compatibility_actions(key), set())
+
+    def test_concurrent_cache_reads_and_writes_preserve_actions(self):
+        key = 'https://gateway.example/v1:concurrent-model'
+        actions = ('drop_response_format', 'drop_temperature')
+
+        def update_cache(index):
+            utils._cache_compatibility_actions(key, {actions[index % 2]})
+            return utils._get_cached_compatibility_actions(key)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(update_cache, range(64)))
+
+        self.assertTrue(all(isinstance(result, set) for result in results))
+        self.assertEqual(utils._get_cached_compatibility_actions(key), set(actions))
+
 
 class OpenAIResponseCompatibilityTests(unittest.TestCase):
     @staticmethod
@@ -396,6 +508,15 @@ class OpenAIResponseCompatibilityTests(unittest.TestCase):
             utils.normalize_openai_base_url('https://gateway.example/custom/v1/'),
             'https://gateway.example/custom/v1',
         )
+
+    def test_base_url_with_query_is_preserved_and_warned(self):
+        url = 'https://azure.example/openai/deployments/demo/chat/completions?api-version=2024-10-21'
+
+        with self.assertLogs(utils._OPENAI_URL_LOGGER, level='WARNING') as captured:
+            normalized = utils.normalize_openai_base_url(url)
+
+        self.assertEqual(normalized, url)
+        self.assertIn('含查询参数', captured.output[0])
 
     def test_translation_parser_accepts_top_level_array(self):
         requester = LLMRequester.__new__(LLMRequester)
@@ -475,6 +596,30 @@ class OpenAIResponseCompatibilityTests(unittest.TestCase):
         self.assertIn('response_format', client.completions.calls[0])
         self.assertNotIn('response_format', client.completions.calls[1])
         self.assertNotIn('response_format', client.completions.calls[2])
+
+    def test_valid_empty_translation_does_not_retry_plain_json(self):
+        def responder(_kwargs, _call_number):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message={'content': '{"translations":[""]}'},
+                )]
+            )
+
+        client = _FakeClient(responder=responder)
+        requester = self._make_requester(client)
+
+        result = requester._request_translation_result(
+            model_name='test-model',
+            system_prompt='Translate and return JSON.',
+            user_prompt='hello',
+            expected_count=1,
+            batch_id='empty',
+            scene_name='subtitle_test',
+        )
+
+        self.assertEqual(result, [''])
+        self.assertEqual(len(client.completions.calls), 1)
+        self.assertFalse(requester._json_mode_disabled)
 
 
 if __name__ == '__main__':

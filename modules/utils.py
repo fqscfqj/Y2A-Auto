@@ -38,7 +38,9 @@ def get_app_subdir(subdir_name):
 import re
 import copy
 import json
+import logging
 import threading
+import time
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -280,8 +282,10 @@ def extract_chat_message_json(message, expected_type=dict):
 
 _OPENAI_COMPATIBILITY_CACHE = {}
 _OPENAI_COMPATIBILITY_CACHE_MAX = 256
+_OPENAI_COMPATIBILITY_CACHE_TTL_SECONDS = 3600
 _OPENAI_COMPATIBILITY_WARNED = set()
 _OPENAI_COMPATIBILITY_LOCK = threading.Lock()
+_OPENAI_URL_LOGGER = logging.getLogger(__name__)
 
 
 def _coerce_bool(value, default=False):
@@ -292,26 +296,17 @@ def _coerce_bool(value, default=False):
     return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
 
-def _mask_base_url(base_url):
-    text = safe_str(base_url).strip()
-    if not text:
-        return 'unknown'
-    try:
-        parsed = urlparse(text)
-        if parsed.scheme and parsed.hostname:
-            if parsed.port:
-                return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-            return f"{parsed.scheme}://{parsed.hostname}"
-    except Exception:
-        pass
-    return 'configured-endpoint'
-
-
 def normalize_openai_base_url(base_url) -> str:
     """接受 API 根地址或完整 Chat Completions 地址，统一为 SDK 所需根地址。"""
-    value = safe_str(base_url).strip().rstrip('/')
+    value = safe_str(base_url).strip()
     if not value:
         return ''
+    if urlparse(value).query:
+        _OPENAI_URL_LOGGER.warning(
+            'OpenAI Base URL 含查询参数，无法安全规范化，已保持原样'
+        )
+        return value
+    value = value.rstrip('/')
     return re.sub(r'/chat/completions$', '', value, flags=re.IGNORECASE).rstrip('/')
 
 
@@ -337,7 +332,7 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
     status_code = getattr(exc, 'status_code', None)
     if status_code is not None:
         try:
-            if int(status_code) not in (400, 404, 422):
+            if int(status_code) not in (400, 422):
                 return False
         except Exception:
             pass
@@ -359,11 +354,11 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
         'temperature': ('temperature',),
         'system_role': (
             'system role', "role 'system'", 'role: system', 'messages[0].role',
-            "'system' with this model", "'system'", 'system message',
+            "'system' with this model", 'system message',
         ),
         'developer_role': (
             'developer role', "role 'developer'", 'role: developer',
-            'messages[0].role', "'developer' with this model", "'developer'", 'developer message',
+            'messages[0].role', "'developer' with this model", 'developer message',
         ),
     }
     return any(signal in text for signal in parameter_signals.get(parameter, (parameter,)))
@@ -410,21 +405,32 @@ def _client_compatibility_key(client, create_kwargs) -> str:
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
-    """按端点/模型识别常见的非标准思考开关协议。"""
-    endpoint = safe_str(getattr(client, 'base_url', '')).lower()
+    """仅对已知官方端点和匹配模型注入非标准思考开关。"""
+    endpoint = safe_str(getattr(client, 'base_url', '')).strip()
+    try:
+        hostname = (urlparse(endpoint).hostname or '').lower()
+    except Exception:
+        hostname = ''
     model = safe_str((create_kwargs or {}).get('model')).lower()
-    hint = f'{endpoint} {model}'
-    if 'qwen' in hint:
-        # DashScope/百炼直接接收 enable_thinking；Qwen 官方 vLLM 部署将其
-        # 放在 chat_template_kwargs 中。带组织前缀的模型名通常来自自部署。
-        if '/' in model and not any(
-            marker in endpoint for marker in ('dashscope', 'aliyuncs.com', 'aliyun.com')
-        ):
-            return 'qwen_chat_template'
+
+    def host_matches(*domains):
+        return any(
+            hostname == domain or hostname.endswith(f'.{domain}')
+            for domain in domains
+        )
+
+    def model_matches(family):
+        return any(
+            part == family or part.startswith(family)
+            for part in re.split(r'[/.:_-]+', model)
+            if part
+        )
+
+    if host_matches('aliyuncs.com') and model_matches('qwen'):
         return 'qwen'
-    if 'mimo' in hint or 'xiaomimimo' in hint:
+    if host_matches('api.xiaomimimo.com') and model_matches('mimo'):
         return 'mimo'
-    if 'deepseek' in hint:
+    if host_matches('api.deepseek.com') and model_matches('deepseek'):
         return 'thinking_object'
     return ''
 
@@ -436,13 +442,6 @@ def _inject_thinking_control(create_kwargs, style: str):
     extra_body = copy.deepcopy(extra_body)
     if style == 'qwen':
         extra_body['enable_thinking'] = False
-    elif style == 'qwen_chat_template':
-        chat_template_kwargs = extra_body.get('chat_template_kwargs')
-        if not isinstance(chat_template_kwargs, dict):
-            chat_template_kwargs = {}
-        chat_template_kwargs = copy.deepcopy(chat_template_kwargs)
-        chat_template_kwargs['enable_thinking'] = False
-        extra_body['chat_template_kwargs'] = chat_template_kwargs
     elif style in {'thinking_object', 'mimo'}:
         thinking_body = extra_body.get('thinking')
         if not isinstance(thinking_body, dict):
@@ -459,14 +458,28 @@ def _inject_thinking_control(create_kwargs, style: str):
 
 def _get_cached_compatibility_actions(cache_key: str):
     with _OPENAI_COMPATIBILITY_LOCK:
-        return set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
+        entry = _OPENAI_COMPATIBILITY_CACHE.get(cache_key)
+        if not entry:
+            return set()
+        actions, expires_at = entry
+        if expires_at <= time.monotonic():
+            _OPENAI_COMPATIBILITY_CACHE.pop(cache_key, None)
+            return set()
+        return set(actions)
 
 
 def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
     """仅在降级请求成功后记录端点/模型能力。"""
+    discovered_actions = set(discovered_actions or ())
     with _OPENAI_COMPATIBILITY_LOCK:
-        actions = set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
-        actions.update(discovered_actions or ())
+        now = time.monotonic()
+        entry = _OPENAI_COMPATIBILITY_CACHE.get(cache_key)
+        if entry and entry[1] > now:
+            actions = set(entry[0])
+        else:
+            actions = set()
+            _OPENAI_COMPATIBILITY_CACHE.pop(cache_key, None)
+        actions.update(discovered_actions)
         if 'use_max_completion_tokens' in discovered_actions:
             actions.discard('use_max_tokens')
         elif 'use_max_tokens' in discovered_actions:
@@ -478,7 +491,10 @@ def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
             and len(_OPENAI_COMPATIBILITY_CACHE) >= _OPENAI_COMPATIBILITY_CACHE_MAX
         ):
             _OPENAI_COMPATIBILITY_CACHE.clear()
-        _OPENAI_COMPATIBILITY_CACHE[cache_key] = actions
+        _OPENAI_COMPATIBILITY_CACHE[cache_key] = (
+            actions,
+            now + _OPENAI_COMPATIBILITY_CACHE_TTL_SECONDS,
+        )
 
 
 def _drop_thinking_control(create_kwargs):
@@ -557,8 +573,9 @@ def _apply_compatibility_actions(create_kwargs, actions):
     return adapted
 
 
-def _warn_compatibility_fallback(logger, cache_key: str, action: str):
-    warn_key = f'{cache_key}:{action}'
+def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name: str):
+    scene = safe_str(scene_name, default='unknown').strip() or 'unknown'
+    warn_key = f'{cache_key}:{scene}:{action}'
     with _OPENAI_COMPATIBILITY_LOCK:
         is_new = warn_key not in _OPENAI_COMPATIBILITY_WARNED
         if is_new:
@@ -577,7 +594,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str):
         'inline_instructions': '不支持独立指令角色，已将指令合并到 user 消息',
         'minimal_request': '网关仅返回通用 schema 错误，已降级为最小标准请求',
     }
-    logger.warning('模型兼容降级：%s', descriptions.get(action, action))
+    logger.warning('模型兼容降级[%s]：%s', scene, descriptions.get(action, action))
 
 
 def openai_chat_create_with_thinking_control(
@@ -684,4 +701,4 @@ def openai_chat_create_with_thinking_control(
             elif action == 'minimal_request':
                 actions.discard('use_developer_role')
                 discovered_actions.discard('use_developer_role')
-            _warn_compatibility_fallback(logger, cache_key, action)
+            _warn_compatibility_fallback(logger, cache_key, action, scene_name)
