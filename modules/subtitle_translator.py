@@ -20,6 +20,7 @@ from .utils import (
     extract_chat_message_json,
     extract_json_from_text,
     get_chat_message_text,
+    normalize_openai_base_url,
 )
 
 logger = logging.getLogger('subtitle_translator')
@@ -88,7 +89,7 @@ def get_openai_client(openai_config):
     
     # 如果提供了base_url，添加到选项中
     if openai_config.get('OPENAI_BASE_URL'):
-        options['base_url'] = openai_config.get('OPENAI_BASE_URL')
+        options['base_url'] = normalize_openai_base_url(openai_config.get('OPENAI_BASE_URL'))
     timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
     try:
         timeout_seconds = float(str(timeout_value).strip())

@@ -234,7 +234,7 @@ python app.py
 - `FIXED_PARTITION_ID` / `FIXED_PARTITION_ID_BILIBILI`：固定分区
 - `YOUTUBE_UPLOADER_AS_FIRST_TAG`：将上传者作为首标签
 
-AI 文本功能统一使用 OpenAI Chat Completions 兼容接口。`OPENAI_BASE_URL` 应填写 API 根地址（例如 `https://api.openai.com/v1`），不要包含 `/chat/completions`。当兼容服务不支持 `response_format`、`max_tokens`、自定义 `temperature` 或特定指令角色时，系统会根据明确的参数错误自动降级，并为同一端点和模型复用已探测到的能力。
+AI 文本功能统一使用 OpenAI Chat Completions 兼容接口。`OPENAI_BASE_URL` 可填写 API 根地址（例如 `https://api.openai.com/v1`）或完整的 `/chat/completions` 地址，后者会自动规范化。当兼容服务不支持 `response_format`、token 上限参数、自定义 `temperature` 或特定指令角色时，系统会根据端点实际错误逐级协商；若网关只返回笼统的请求 schema 错误，则降级为仅含 `model + user messages` 的最小标准请求。能力只在降级请求成功后按端点和模型缓存。
 
 ### 字幕处理
 

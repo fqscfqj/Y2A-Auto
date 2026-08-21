@@ -52,6 +52,7 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
     def setUp(self):
         with utils._OPENAI_COMPATIBILITY_LOCK:
             utils._OPENAI_COMPATIBILITY_CACHE.clear()
+            utils._OPENAI_COMPATIBILITY_WARNED.clear()
 
     def test_non_deepseek_request_does_not_receive_private_thinking_parameter(self):
         client = _FakeClient()
@@ -296,6 +297,65 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(len(client.completions.calls), 1)
 
+    def test_generic_schema_error_falls_back_to_minimal_request_and_caches_success(self):
+        def responder(kwargs, _call_number):
+            if set(kwargs) != {'model', 'messages'}:
+                raise _CompatError('Param Incorrect: request schema validation failed')
+            roles = [message['role'] for message in kwargs['messages']]
+            if roles != ['user']:
+                raise _CompatError('Param Incorrect: message schema validation failed')
+            return SimpleNamespace(choices=[])
+
+        client = _FakeClient(responder=responder)
+
+        utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
+        utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
+
+        self.assertEqual(len(client.completions.calls), 3)
+        minimal_call = client.completions.calls[1]
+        self.assertEqual(set(minimal_call), {'model', 'messages'})
+        self.assertEqual(
+            [message['role'] for message in minimal_call['messages']],
+            ['user'],
+        )
+        self.assertIn('Return JSON only.', minimal_call['messages'][0]['content'])
+        self.assertEqual(set(client.completions.calls[2]), {'model', 'messages'})
+
+    def test_failed_compatibility_attempt_is_not_cached(self):
+        def failing_responder(kwargs, _call_number):
+            if 'response_format' in kwargs:
+                raise _CompatError("Unsupported parameter: 'response_format'")
+            raise _CompatError('Incorrect API key provided', status_code=401)
+
+        failing_client = _FakeClient(responder=failing_responder)
+        with self.assertRaises(_CompatError):
+            utils.openai_chat_create_with_thinking_control(
+                failing_client,
+                _base_kwargs(),
+            )
+
+        succeeding_client = _FakeClient()
+        utils.openai_chat_create_with_thinking_control(
+            succeeding_client,
+            _base_kwargs(),
+        )
+
+        self.assertIn('response_format', succeeding_client.completions.calls[0])
+
+    def test_generic_5xx_schema_text_does_not_trigger_minimal_retry(self):
+        def responder(_kwargs, _call_number):
+            raise _CompatError(
+                'Internal server error: request schema unavailable',
+                status_code=500,
+            )
+
+        client = _FakeClient(responder=responder)
+
+        with self.assertRaises(_CompatError):
+            utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
+
+        self.assertEqual(len(client.completions.calls), 1)
+
 
 class OpenAIResponseCompatibilityTests(unittest.TestCase):
     @staticmethod
@@ -323,6 +383,18 @@ class OpenAIResponseCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             utils.extract_chat_message_json(message),
             {'translations': ['你好']},
+        )
+
+    def test_normalizes_full_chat_completions_url_for_openai_sdk(self):
+        self.assertEqual(
+            utils.normalize_openai_base_url(
+                'https://gateway.example/custom/v1/chat/completions/'
+            ),
+            'https://gateway.example/custom/v1',
+        )
+        self.assertEqual(
+            utils.normalize_openai_base_url('https://gateway.example/custom/v1/'),
+            'https://gateway.example/custom/v1',
         )
 
     def test_translation_parser_accepts_top_level_array(self):

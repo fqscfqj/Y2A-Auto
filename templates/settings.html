@@ -688,7 +688,7 @@
                                                             <div class="form-group">
                                                                 <label for="openai-url" class="form-label">接口地址</label>
                                                                 <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control" placeholder="如 https://api.openai.com/v1">
-                                                                <p class="help-text mb-0 mt-2">填写 OpenAI 兼容 API 的根地址，不要包含 <code>/chat/completions</code>。系统会自动适配常见模型的 JSON 模式、token 参数和消息角色差异。</p>
+                                                                <p class="help-text mb-0 mt-2">填写 OpenAI 兼容 API 的根地址；若粘贴了完整 <code>/chat/completions</code> 地址，系统会自动规范化。请求参数和消息格式会按端点实际能力自动协商。</p>
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">

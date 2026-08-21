@@ -280,6 +280,7 @@ def extract_chat_message_json(message, expected_type=dict):
 
 _OPENAI_COMPATIBILITY_CACHE = {}
 _OPENAI_COMPATIBILITY_CACHE_MAX = 256
+_OPENAI_COMPATIBILITY_WARNED = set()
 _OPENAI_COMPATIBILITY_LOCK = threading.Lock()
 
 
@@ -304,6 +305,14 @@ def _mask_base_url(base_url):
     except Exception:
         pass
     return 'configured-endpoint'
+
+
+def normalize_openai_base_url(base_url) -> str:
+    """接受 API 根地址或完整 Chat Completions 地址，统一为 SDK 所需根地址。"""
+    value = safe_str(base_url).strip().rstrip('/')
+    if not value:
+        return ''
+    return re.sub(r'/chat/completions$', '', value, flags=re.IGNORECASE).rstrip('/')
 
 
 def _compatibility_error_text(exc) -> str:
@@ -358,6 +367,32 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
         ),
     }
     return any(signal in text for signal in parameter_signals.get(parameter, (parameter,)))
+
+
+def _is_generic_schema_compatibility_error(exc) -> bool:
+    """识别未指出具体字段的请求 schema 错误，用于最后的最小请求兜底。"""
+    status_code = getattr(exc, 'status_code', None)
+    if status_code is not None:
+        try:
+            if int(status_code) not in (400, 422):
+                return False
+        except Exception:
+            pass
+    text = _compatibility_error_text(exc)
+    if any(signal in text for signal in (
+        'unauthorized', 'forbidden', 'api key', 'rate limit', 'quota',
+        'internal server error', 'service unavailable', 'bad gateway',
+    )):
+        return False
+    if re.search(r'(?:error code|status|http)\D{0,12}5\d{2}\b', text):
+        return False
+    return any(signal in text for signal in (
+        'param incorrect', 'parameter incorrect', 'invalid request',
+        'invalid_request', 'schema validation', 'validation error',
+        'request schema', 'malformed request', 'invalid payload',
+        'extra fields not permitted', 'extra inputs are not permitted',
+        'unprocessable entity',
+    ))
 
 
 def _client_compatibility_key(client, create_kwargs) -> str:
@@ -427,17 +462,16 @@ def _get_cached_compatibility_actions(cache_key: str):
         return set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
 
 
-def _cache_compatibility_action(cache_key: str, action: str) -> bool:
-    """记录端点/模型能力，返回该动作是否为首次发现。"""
+def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
+    """仅在降级请求成功后记录端点/模型能力。"""
     with _OPENAI_COMPATIBILITY_LOCK:
         actions = set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
-        is_new = action not in actions
-        actions.add(action)
-        if action == 'use_max_completion_tokens':
+        actions.update(discovered_actions or ())
+        if 'use_max_completion_tokens' in discovered_actions:
             actions.discard('use_max_tokens')
-        elif action == 'use_max_tokens':
+        elif 'use_max_tokens' in discovered_actions:
             actions.discard('use_max_completion_tokens')
-        elif action == 'inline_instructions':
+        if 'inline_instructions' in discovered_actions or 'minimal_request' in discovered_actions:
             actions.discard('use_developer_role')
         if (
             cache_key not in _OPENAI_COMPATIBILITY_CACHE
@@ -445,7 +479,6 @@ def _cache_compatibility_action(cache_key: str, action: str) -> bool:
         ):
             _OPENAI_COMPATIBILITY_CACHE.clear()
         _OPENAI_COMPATIBILITY_CACHE[cache_key] = actions
-        return is_new
 
 
 def _drop_thinking_control(create_kwargs):
@@ -500,6 +533,13 @@ def _inline_instruction_messages(create_kwargs):
 
 def _apply_compatibility_actions(create_kwargs, actions):
     adapted = copy.deepcopy(create_kwargs or {})
+    if 'minimal_request' in actions:
+        minimal = {
+            'model': adapted.get('model'),
+            'messages': adapted.get('messages') or [],
+        }
+        _inline_instruction_messages(minimal)
+        return minimal
     if 'drop_thinking' in actions:
         _drop_thinking_control(adapted)
     if 'drop_response_format' in actions:
@@ -518,7 +558,13 @@ def _apply_compatibility_actions(create_kwargs, actions):
 
 
 def _warn_compatibility_fallback(logger, cache_key: str, action: str):
-    is_new = _cache_compatibility_action(cache_key, action)
+    warn_key = f'{cache_key}:{action}'
+    with _OPENAI_COMPATIBILITY_LOCK:
+        is_new = warn_key not in _OPENAI_COMPATIBILITY_WARNED
+        if is_new:
+            if len(_OPENAI_COMPATIBILITY_WARNED) >= _OPENAI_COMPATIBILITY_CACHE_MAX * 4:
+                _OPENAI_COMPATIBILITY_WARNED.clear()
+            _OPENAI_COMPATIBILITY_WARNED.add(warn_key)
     if not logger or not is_new:
         return
     descriptions = {
@@ -529,6 +575,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str):
         'drop_temperature': '不支持自定义 temperature，已使用模型默认值',
         'use_developer_role': '不支持 system role，已改用 developer role',
         'inline_instructions': '不支持独立指令角色，已将指令合并到 user 消息',
+        'minimal_request': '网关仅返回通用 schema 错误，已降级为最小标准请求',
     }
     logger.warning('模型兼容降级：%s', descriptions.get(action, action))
 
@@ -543,8 +590,9 @@ def openai_chat_create_with_thinking_control(
     """统一 Chat Completions 请求，并按端点实际能力自动降级可选参数。
 
     默认只对可识别的 DeepSeek、Qwen、MiMo 端点/模型发送对应的私有思考开关，
-    避免污染其他标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、temperature
-    或消息角色，会只移除/替换对应能力后重试，并缓存到同一端点+模型的后续请求。
+    避免污染其他标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、
+    temperature 或消息角色，会只移除/替换对应能力后重试；未说明字段的 schema
+    错误则最终降为最小标准请求。只有真正成功的组合才会缓存到同一端点+模型。
     鉴权、限流、配额和服务端错误不会在这里被误判为兼容问题。
     """
     base_kwargs = copy.deepcopy(create_kwargs or {})
@@ -555,13 +603,18 @@ def openai_chat_create_with_thinking_control(
         )
 
     cache_key = _client_compatibility_key(client, base_kwargs)
-    actions = _get_cached_compatibility_actions(cache_key)
+    cached_actions = _get_cached_compatibility_actions(cache_key)
+    actions = set(cached_actions)
+    discovered_actions = set()
     attempted_actions = set()
 
     while True:
         request_kwargs = _apply_compatibility_actions(base_kwargs, actions)
         try:
-            return client.chat.completions.create(**request_kwargs)
+            response = client.chat.completions.create(**request_kwargs)
+            if discovered_actions:
+                _cache_compatibility_actions(cache_key, discovered_actions)
+            return response
         except Exception as exc:
             action = None
             extra_body = request_kwargs.get('extra_body')
@@ -610,16 +663,25 @@ def openai_chat_create_with_thinking_control(
                     and _is_parameter_compatibility_error(exc, 'developer_role')
                 ):
                     action = 'inline_instructions'
+                elif _is_generic_schema_compatibility_error(exc):
+                    action = 'minimal_request'
 
             if action is None or action in attempted_actions or action in actions:
                 raise
 
             attempted_actions.add(action)
             actions.add(action)
+            discovered_actions.add(action)
             if action == 'use_max_completion_tokens':
                 actions.discard('use_max_tokens')
+                discovered_actions.discard('use_max_tokens')
             elif action == 'use_max_tokens':
                 actions.discard('use_max_completion_tokens')
+                discovered_actions.discard('use_max_completion_tokens')
             if action == 'inline_instructions':
                 actions.discard('use_developer_role')
+                discovered_actions.discard('use_developer_role')
+            elif action == 'minimal_request':
+                actions.discard('use_developer_role')
+                discovered_actions.discard('use_developer_role')
             _warn_compatibility_fallback(logger, cache_key, action)
