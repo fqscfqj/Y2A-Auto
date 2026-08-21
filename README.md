@@ -226,13 +226,15 @@ python app.py
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
-- `OPENAI_THINKING_ENABLED`：全局思考模式开关
+- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时仅对可识别的 DeepSeek 接口发送私有禁用参数
 - `SUBTITLE_OPENAI_*`：字幕翻译专用覆盖配置，留空则回退全局
 - `SUBTITLE_QC_*`：字幕质检专用覆盖配置，留空则回退字幕翻译 / 全局配置
 - `TRANSLATE_TITLE` / `TRANSLATE_DESCRIPTION` / `GENERATE_TAGS`：自动生成标题、简介、标签
 - `RECOMMEND_PARTITION`：自动推荐分区
 - `FIXED_PARTITION_ID` / `FIXED_PARTITION_ID_BILIBILI`：固定分区
 - `YOUTUBE_UPLOADER_AS_FIRST_TAG`：将上传者作为首标签
+
+AI 文本功能统一使用 OpenAI Chat Completions 兼容接口。`OPENAI_BASE_URL` 应填写 API 根地址（例如 `https://api.openai.com/v1`），不要包含 `/chat/completions`。当兼容服务不支持 `response_format`、`max_tokens`、自定义 `temperature` 或特定指令角色时，系统会根据明确的参数错误自动降级，并为同一端点和模型复用已探测到的能力。
 
 ### 字幕处理
 

@@ -38,6 +38,7 @@ def get_app_subdir(subdir_name):
 import re
 import copy
 import json
+import threading
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -234,24 +235,37 @@ def get_chat_message_text(message) -> str:
     if message is None:
         return ''
 
-    content = getattr(message, 'content', None)
+    if isinstance(message, dict):
+        content = message.get('content')
+        reasoning_content = message.get('reasoning_content')
+    else:
+        content = getattr(message, 'content', None)
+        reasoning_content = getattr(message, 'reasoning_content', None)
     if isinstance(content, list):
         parts = []
         for segment in content:
             if isinstance(segment, dict):
-                parts.append(safe_str(segment.get('text')))
+                segment_text = segment.get('text', '')
+                if isinstance(segment_text, dict):
+                    segment_text = segment_text.get('value', '')
+                parts.append(safe_str(segment_text))
             else:
                 parts.append(safe_str(getattr(segment, 'text', '')))
         text = ''.join(parts)
+    elif isinstance(content, (dict, tuple)):
+        try:
+            text = json.dumps(content, ensure_ascii=False)
+        except Exception:
+            text = safe_str(content)
     else:
-        text = safe_str(content) or safe_str(getattr(message, 'reasoning_content', ''))
+        text = safe_str(content) or safe_str(reasoning_content)
 
     return strip_code_fences(strip_reasoning_thoughts(text)).strip()
 
 
 def extract_chat_message_json(message, expected_type=dict):
     """优先读取 message.parsed，失败时从文本中提取 JSON。"""
-    parsed = getattr(message, 'parsed', None)
+    parsed = message.get('parsed') if isinstance(message, dict) else getattr(message, 'parsed', None)
     if expected_type is None:
         if isinstance(parsed, (dict, list)):
             return parsed
@@ -264,8 +278,9 @@ def extract_chat_message_json(message, expected_type=dict):
     )
 
 
-_THINKING_FALLBACK_WARNED_SCENES = set()
-_THINKING_FALLBACK_WARNED_SCENES_MAX = 128
+_OPENAI_COMPATIBILITY_CACHE = {}
+_OPENAI_COMPATIBILITY_CACHE_MAX = 256
+_OPENAI_COMPATIBILITY_LOCK = threading.Lock()
 
 
 def _coerce_bool(value, default=False):
@@ -291,19 +306,181 @@ def _mask_base_url(base_url):
     return 'configured-endpoint'
 
 
-def _is_thinking_param_unsupported_error(exc):
-    text = safe_str(exc).lower()
-    signals = (
-        'unknown parameter',
-        'unrecognized',
-        'unsupported',
-        'invalid parameter',
-        'extra_body',
-        'thinking',
-        'reasoning_effort',
-        'not permitted',
+def _compatibility_error_text(exc) -> str:
+    """汇总 OpenAI SDK/兼容网关异常中的可诊断文本。"""
+    parts = [safe_str(exc)]
+    for attr in ('body', 'message', 'code', 'param', 'type'):
+        value = getattr(exc, attr, None)
+        if value in (None, ''):
+            continue
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                parts.append(json.dumps(value, ensure_ascii=False))
+            except Exception:
+                parts.append(safe_str(value))
+        else:
+            parts.append(safe_str(value))
+    return ' '.join(parts).lower()
+
+
+def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
+    """仅识别明确指向某参数/消息角色的 4xx 兼容性错误。"""
+    status_code = getattr(exc, 'status_code', None)
+    if status_code is not None:
+        try:
+            if int(status_code) not in (400, 404, 422):
+                return False
+        except Exception:
+            pass
+
+    text = _compatibility_error_text(exc)
+    rejection_signals = (
+        'unsupported', 'not supported', 'unknown parameter', 'unknown field',
+        'unrecognized', 'invalid parameter', 'invalid_request', 'not permitted',
+        'extra inputs are not permitted', 'does not support', 'not allowed',
     )
-    return any(sig in text for sig in signals)
+    if not any(signal in text for signal in rejection_signals):
+        return False
+
+    parameter_signals = {
+        'thinking': ('thinking', 'enable_thinking'),
+        'response_format': ('response_format', 'response format', 'json_object', 'json mode'),
+        'max_tokens': ('max_tokens', 'max tokens'),
+        'max_completion_tokens': ('max_completion_tokens', 'max completion tokens'),
+        'temperature': ('temperature',),
+        'system_role': (
+            'system role', "role 'system'", 'role: system', 'messages[0].role',
+            "'system' with this model", "'system'", 'system message',
+        ),
+        'developer_role': (
+            'developer role', "role 'developer'", 'role: developer',
+            'messages[0].role', "'developer' with this model", "'developer'", 'developer message',
+        ),
+    }
+    return any(signal in text for signal in parameter_signals.get(parameter, (parameter,)))
+
+
+def _client_compatibility_key(client, create_kwargs) -> str:
+    endpoint_value = safe_str(getattr(client, 'base_url', '')).strip()
+    try:
+        parsed = urlparse(endpoint_value)
+        if parsed.scheme and parsed.netloc:
+            endpoint = f'{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip("/")}'
+        else:
+            endpoint = endpoint_value or 'unknown'
+    except Exception:
+        endpoint = endpoint_value or 'unknown'
+    model = safe_str((create_kwargs or {}).get('model'), default='unknown').strip().lower()
+    return f'{endpoint}:{model}'
+
+
+def _looks_like_deepseek_endpoint(client, create_kwargs) -> bool:
+    endpoint = safe_str(getattr(client, 'base_url', '')).lower()
+    model = safe_str((create_kwargs or {}).get('model')).lower()
+    return 'deepseek' in endpoint or 'deepseek' in model
+
+
+def _get_cached_compatibility_actions(cache_key: str):
+    with _OPENAI_COMPATIBILITY_LOCK:
+        return set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
+
+
+def _cache_compatibility_action(cache_key: str, action: str) -> bool:
+    """记录端点/模型能力，返回该动作是否为首次发现。"""
+    with _OPENAI_COMPATIBILITY_LOCK:
+        actions = set(_OPENAI_COMPATIBILITY_CACHE.get(cache_key, ()))
+        is_new = action not in actions
+        actions.add(action)
+        if action == 'use_max_completion_tokens':
+            actions.discard('use_max_tokens')
+        elif action == 'use_max_tokens':
+            actions.discard('use_max_completion_tokens')
+        elif action == 'inline_instructions':
+            actions.discard('use_developer_role')
+        if (
+            cache_key not in _OPENAI_COMPATIBILITY_CACHE
+            and len(_OPENAI_COMPATIBILITY_CACHE) >= _OPENAI_COMPATIBILITY_CACHE_MAX
+        ):
+            _OPENAI_COMPATIBILITY_CACHE.clear()
+        _OPENAI_COMPATIBILITY_CACHE[cache_key] = actions
+        return is_new
+
+
+def _drop_thinking_control(create_kwargs):
+    extra_body = create_kwargs.get('extra_body')
+    if not isinstance(extra_body, dict):
+        return
+    extra_body = copy.deepcopy(extra_body)
+    extra_body.pop('thinking', None)
+    extra_body.pop('enable_thinking', None)
+    if extra_body:
+        create_kwargs['extra_body'] = extra_body
+    else:
+        create_kwargs.pop('extra_body', None)
+
+
+def _replace_instruction_role(create_kwargs, source_role: str, target_role: str):
+    messages = copy.deepcopy(create_kwargs.get('messages') or [])
+    for message in messages:
+        if isinstance(message, dict) and message.get('role') == source_role:
+            message['role'] = target_role
+    create_kwargs['messages'] = messages
+
+
+def _inline_instruction_messages(create_kwargs):
+    """为不支持 system/developer role 的旧网关把指令合并到首条 user 消息。"""
+    messages = copy.deepcopy(create_kwargs.get('messages') or [])
+    instructions = []
+    remaining = []
+    for message in messages:
+        if isinstance(message, dict) and message.get('role') in {'system', 'developer'}:
+            instructions.append(safe_str(message.get('content')).strip())
+        else:
+            remaining.append(message)
+    prefix = '\n\n'.join(item for item in instructions if item)
+    if prefix:
+        for message in remaining:
+            if isinstance(message, dict) and message.get('role') == 'user':
+                message['content'] = f"{prefix}\n\n{safe_str(message.get('content'))}"
+                break
+        else:
+            remaining.insert(0, {'role': 'user', 'content': prefix})
+    create_kwargs['messages'] = remaining
+
+
+def _apply_compatibility_actions(create_kwargs, actions):
+    adapted = copy.deepcopy(create_kwargs or {})
+    if 'drop_thinking' in actions:
+        _drop_thinking_control(adapted)
+    if 'drop_response_format' in actions:
+        adapted.pop('response_format', None)
+    if 'use_max_completion_tokens' in actions and 'max_tokens' in adapted:
+        adapted['max_completion_tokens'] = adapted.pop('max_tokens')
+    if 'use_max_tokens' in actions and 'max_completion_tokens' in adapted:
+        adapted['max_tokens'] = adapted.pop('max_completion_tokens')
+    if 'drop_temperature' in actions:
+        adapted.pop('temperature', None)
+    if 'inline_instructions' in actions:
+        _inline_instruction_messages(adapted)
+    elif 'use_developer_role' in actions:
+        _replace_instruction_role(adapted, 'system', 'developer')
+    return adapted
+
+
+def _warn_compatibility_fallback(logger, cache_key: str, action: str):
+    is_new = _cache_compatibility_action(cache_key, action)
+    if not logger or not is_new:
+        return
+    descriptions = {
+        'drop_thinking': '不支持 DeepSeek thinking 控制，已移除该扩展参数',
+        'drop_response_format': '不支持 JSON response_format，已改用提示词约束并解析文本 JSON',
+        'use_max_completion_tokens': '不支持 max_tokens，已改用 max_completion_tokens',
+        'use_max_tokens': '不支持 max_completion_tokens，已回退 max_tokens',
+        'drop_temperature': '不支持自定义 temperature，已使用模型默认值',
+        'use_developer_role': '不支持 system role，已改用 developer role',
+        'inline_instructions': '不支持独立指令角色，已将指令合并到 user 消息',
+    }
+    logger.warning('模型兼容降级：%s', descriptions.get(action, action))
 
 
 def openai_chat_create_with_thinking_control(
@@ -313,43 +490,91 @@ def openai_chat_create_with_thinking_control(
     logger=None,
     scene_name='unknown',
 ):
-    """统一 chat.completions 请求，支持“尝试关闭思考 + 自动降级”策略。"""
-    if _coerce_bool(thinking_enabled, default=False):
-        return client.chat.completions.create(**create_kwargs)
+    """统一 Chat Completions 请求，并按端点实际能力自动降级可选参数。
 
-    disabled_kwargs = copy.deepcopy(create_kwargs or {})
-    extra_body = disabled_kwargs.get('extra_body')
-    if not isinstance(extra_body, dict):
-        extra_body = {}
-    extra_body = copy.deepcopy(extra_body)
-    thinking_body = extra_body.get('thinking')
-    if not isinstance(thinking_body, dict):
-        thinking_body = {}
-    thinking_body.update({'type': 'disabled', 'enabled': False})
-    extra_body['thinking'] = thinking_body
-    disabled_kwargs['extra_body'] = extra_body
+    默认只对可识别的 DeepSeek 端点/模型发送其私有 thinking 开关，避免污染
+    标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、temperature
+    或消息角色，会只移除/替换对应能力后重试，并缓存到同一端点+模型的后续请求。
+    鉴权、限流、配额和服务端错误不会在这里被误判为兼容问题。
+    """
+    base_kwargs = copy.deepcopy(create_kwargs or {})
+    if (
+        not _coerce_bool(thinking_enabled, default=False)
+        and _looks_like_deepseek_endpoint(client, base_kwargs)
+    ):
+        extra_body = base_kwargs.get('extra_body')
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        extra_body = copy.deepcopy(extra_body)
+        thinking_body = extra_body.get('thinking')
+        if not isinstance(thinking_body, dict):
+            thinking_body = {}
+        thinking_body.update({'type': 'disabled', 'enabled': False})
+        extra_body['thinking'] = thinking_body
+        base_kwargs['extra_body'] = extra_body
 
-    try:
-        return client.chat.completions.create(**disabled_kwargs)
-    except Exception as exc:
-        if not _is_thinking_param_unsupported_error(exc):
-            raise
+    cache_key = _client_compatibility_key(client, base_kwargs)
+    actions = _get_cached_compatibility_actions(cache_key)
+    attempted_actions = set()
 
-        model_name = safe_str((create_kwargs or {}).get('model'), default='unknown')
-        endpoint_label = _mask_base_url(getattr(client, 'base_url', None))
-        scene = safe_str(scene_name, default='unknown')
-        warn_key = f"{scene}:{model_name}:{endpoint_label}"
-        if logger:
-            if warn_key not in _THINKING_FALLBACK_WARNED_SCENES:
-                logger.warning(
-                    "模型不支持 thinking 控制参数，已降级为普通请求"
-                )
-                _THINKING_FALLBACK_WARNED_SCENES.add(warn_key)
-                # 防止集合无限增长
-                if len(_THINKING_FALLBACK_WARNED_SCENES) > _THINKING_FALLBACK_WARNED_SCENES_MAX:
-                    _THINKING_FALLBACK_WARNED_SCENES.clear()
+    while True:
+        request_kwargs = _apply_compatibility_actions(base_kwargs, actions)
+        try:
+            return client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            action = None
+            extra_body = request_kwargs.get('extra_body')
+            if (
+                isinstance(extra_body, dict)
+                and ('thinking' in extra_body or 'enable_thinking' in extra_body)
+                and _is_parameter_compatibility_error(exc, 'thinking')
+            ):
+                action = 'drop_thinking'
+            elif (
+                'response_format' in request_kwargs
+                and _is_parameter_compatibility_error(exc, 'response_format')
+            ):
+                action = 'drop_response_format'
+            elif (
+                'max_tokens' in request_kwargs
+                and _is_parameter_compatibility_error(exc, 'max_tokens')
+            ):
+                action = 'use_max_completion_tokens'
+            elif (
+                'max_completion_tokens' in request_kwargs
+                and _is_parameter_compatibility_error(exc, 'max_completion_tokens')
+            ):
+                action = 'use_max_tokens'
+            elif (
+                'temperature' in request_kwargs
+                and _is_parameter_compatibility_error(exc, 'temperature')
+            ):
+                action = 'drop_temperature'
             else:
-                logger.debug(
-                    "thinking 控制参数不受支持，继续普通请求"
-                )
-        return client.chat.completions.create(**create_kwargs)
+                roles = {
+                    message.get('role') for message in request_kwargs.get('messages', [])
+                    if isinstance(message, dict)
+                }
+                if (
+                    'system' in roles
+                    and _is_parameter_compatibility_error(exc, 'system_role')
+                ):
+                    action = 'use_developer_role'
+                elif (
+                    'developer' in roles
+                    and _is_parameter_compatibility_error(exc, 'developer_role')
+                ):
+                    action = 'inline_instructions'
+
+            if action is None or action in attempted_actions or action in actions:
+                raise
+
+            attempted_actions.add(action)
+            actions.add(action)
+            if action == 'use_max_completion_tokens':
+                actions.discard('use_max_tokens')
+            elif action == 'use_max_tokens':
+                actions.discard('use_max_completion_tokens')
+            if action == 'inline_instructions':
+                actions.discard('use_developer_role')
+            _warn_compatibility_fallback(logger, cache_key, action)
