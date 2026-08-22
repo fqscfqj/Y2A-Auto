@@ -1838,6 +1838,23 @@ def manual_review():
     
     return render_template('manual_review.html', tasks=review_tasks)
 
+def _resolve_edit_task_action(form):
+    """从多值同名 action 表单中解析实际要执行的动作。
+
+    优先级：force_upload > 其它显式提交的 action > default_action（save_metadata）。
+    升级前已打开/被缓存的旧页面会同时提交 action=save_metadata 与 action=force_upload，
+    二者按 DOM 顺序提交后 Werkzeug 仍保留两个值；这里显式优先识别 force_upload，
+    避免点击「上传到 Bilibili」却只走保存。
+    """
+    _submitted = [a.strip().lower() for a in form.getlist('action') if a and a.strip()]
+    if 'force_upload' in _submitted:
+        return 'force_upload'
+    if _submitted:
+        return _submitted[0]
+    _default = form.get('default_action') or 'save_metadata'
+    return (_default or 'save_metadata').strip().lower()
+
+
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_task(task_id):
@@ -1849,7 +1866,9 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
-        action = request.form.get('action', 'save_metadata').strip().lower()
+        # 主表单的隐藏字段已改名 default_action（避免与上传按钮的同名 action 冲突）。
+        # 多值同名 action 时显式优先匹配 force_upload（而非取 DOM 顺序第一个）。
+        action = _resolve_edit_task_action(request.form)
         redirect_target = url_for('edit_task', task_id=task_id)
 
         if action == 'replace_cover':
