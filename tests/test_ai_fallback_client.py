@@ -333,6 +333,22 @@ class TimeoutPreservationTests(unittest.TestCase):
 
 
 class FallbackInheritsPrimaryTests(unittest.TestCase):
+    def test_endpoint_urls_use_shared_openai_normalization(self):
+        cfg = {
+            "OPENAI_API_KEY": "k1",
+            "OPENAI_BASE_URL": "https://primary.example/custom/v1/chat/completions/",
+            "OPENAI_MODEL_NAME": "primary-model",
+            "FALLBACK_OPENAI_API_KEY": "k2",
+            "FALLBACK_OPENAI_BASE_URL": "https://fallback.example/v1/chat/completions",
+            "FALLBACK_OPENAI_MODEL_NAME": "fallback-model",
+        }
+        with patch.object(afc, "_load_global_config", return_value={}), \
+             patch.object(afc, "_make_raw_client", side_effect=lambda ep, **kw: dict(ep)):
+            client = afc.get_ai_client(cfg)
+        self.assertEqual(client._endpoints[0]["base_url"], "https://primary.example/custom/v1")
+        self.assertEqual(client._endpoints[1]["base_url"], "https://fallback.example/v1")
+        self.assertEqual(client.base_url, "https://primary.example/custom/v1")
+
     def test_empty_fallback_url_model_inherits_primary(self):
         # P1：设置页声明“兜底 URL / 模型留空则沿用主端点”，空字段应继承主端点，
         # 而非回退到硬编码的 api.openai.com/v1 + gpt-3.5-turbo。

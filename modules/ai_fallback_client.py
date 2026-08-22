@@ -20,6 +20,8 @@ import re
 import httpx
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 
+from modules.utils import normalize_openai_base_url
+
 logger = logging.getLogger(__name__)
 
 # 兜底端点字段；统一客户端需要在所有调用路径上可靠拿到它们。
@@ -60,8 +62,12 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
     api_key = (cfg.get(prefix + "API_KEY") or "").strip()
     if not api_key:
         return None
-    base_url = (cfg.get(prefix + "BASE_URL") or default_base).strip()
-    model = (cfg.get(prefix + "MODEL_NAME") or default_model).strip()
+    # 兼容设置 API 根地址或完整的 /chat/completions 地址。规范化集中在统一
+    # 客户端入口，确保单端点、主端点和兜底端点采用完全一致的 URL 语义。
+    base_url = normalize_openai_base_url(cfg.get(prefix + "BASE_URL"))
+    if not base_url:
+        base_url = normalize_openai_base_url(default_base)
+    model = str(cfg.get(prefix + "MODEL_NAME") or "").strip() or str(default_model).strip()
     timeout = cfg.get("OPENAI_TIMEOUT_SECONDS", 600)
     try:
         timeout = float(str(timeout).strip())
@@ -215,6 +221,9 @@ class FallbackChatClient:
         self._endpoints = endpoints
         # 仅故障转移（多端点）模式下关闭 SDK 重试、使用 failover 连接短超时
         self._raw = [_make_raw_client(ep, multi_endpoint=True) for ep in endpoints]
+        # 兼容统一请求层基于 client.base_url 识别服务商、隔离能力缓存的约定。
+        # 故障转移请求总是先访问主端点，因此这里暴露主端点的规范化地址。
+        self.base_url = getattr(self._raw[0], "base_url", None) or endpoints[0].get("base_url", "")
         # 兼容 client.chat.completions.create(...) 调用链
         self.chat = _ChatProxy(self)
 

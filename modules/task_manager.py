@@ -8053,6 +8053,18 @@ class TaskProcessor:
                     status=TASK_STATES['COMPLETED'],
                     acfun_upload_response=json.dumps(result, ensure_ascii=False)
                 )
+                # 单平台(AcFun)上传成功后立即删除本地文件，腾出磁盘空间，
+                # 避免大视频长期占用磁盘导致后续任务因 No space left on device 失败。
+                # 双平台(both)场景由 B 站上传分支（最后平台）统一删除，这里不重复删。
+                try:
+                    if (
+                        self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
+                        and _get_task_upload_target(task) == UPLOAD_TARGET_ACFUN
+                    ):
+                        delete_task_files(task_id)
+                        task_logger.info(f"AcFun 上传完成，已删除本地文件释放空间: {task_id}")
+                except Exception as _e:
+                    task_logger.warning(f"上传后删除本地文件失败（不影响已完成的 AcFun 上传）: {_e}")
             else:
                 task_logger.error(f"视频上传失败: {result}")
                 update_task(
@@ -8305,6 +8317,21 @@ class TaskProcessor:
                     bilibili_upload_response=json.dumps(result, ensure_ascii=False),
                     upload_progress=None
                 )
+                # 上传到 B 站成功后立即删除本地文件，腾出磁盘空间，
+                # 避免大视频（如 CS2 比赛直播流，单条可达十余 GB）长期占用磁盘，
+                # 导致后续任务因「No space left on device」而失败。
+                # - bilibili 单平台：此处即为最后平台，直接删除；
+                # - both 双平台：AcFun 已先上传完成，B 站为最后平台，同样删除；
+                # - acfun 单平台：不会进入本分支，由 AcFun 分支处理。
+                try:
+                    if (
+                        self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
+                        and _get_task_upload_target(task) != UPLOAD_TARGET_ACFUN
+                    ):
+                        delete_task_files(task_id)
+                        task_logger.info(f"bilibili 上传完成，已删除本地文件释放空间: {task_id}")
+                except Exception as _e:
+                    task_logger.warning(f"上传后删除本地文件失败（不影响已完成的 B 站上传）: {_e}")
             else:
                 task_logger.error(f"bilibili上传失败: {result}")
                 update_task(

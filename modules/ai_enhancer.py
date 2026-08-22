@@ -684,8 +684,7 @@ def _request_raw_text(
     )
     if not getattr(response, "choices", None):
         return ''
-    content = response.choices[0].message.content or ''
-    return content.strip()
+    return get_chat_message_text(response.choices[0].message)
 
 
 def _sanitize_metadata_field(

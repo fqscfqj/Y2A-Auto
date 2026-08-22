@@ -162,6 +162,18 @@ docker compose up -d
 docker compose -f docker-compose-build.yml up -d --build
 ```
 
+如果启动日志出现写入 `config/`、`db/` 或 `logs/` 等挂载目录的
+`PermissionError`，请在项目目录中创建这些目录，并将其属主改为容器内应用使用的
+UID/GID（默认 `1000:1000`）：
+
+```bash
+mkdir -p config db downloads logs cookies temp
+sudo chown -R 1000:1000 config db downloads logs cookies temp
+```
+
+启用了 rootless Docker 或 `userns-remap` 时，请使用容器 UID 1000 实际映射到宿主机的
+UID/GID；映射方式参见 [Docker 官方文档](https://docs.docker.com/engine/security/rootless/uid-gid-mapping/)。
+
 ### 方案 B：本地运行
 
 前置要求：
@@ -214,13 +226,15 @@ python app.py
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
-- `OPENAI_THINKING_ENABLED`：全局思考模式开关
+- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时按可识别的 DeepSeek、Qwen、MiMo 接口发送各自的私有禁用参数
 - `SUBTITLE_OPENAI_*`：字幕翻译专用覆盖配置，留空则回退全局
 - `SUBTITLE_QC_*`：字幕质检专用覆盖配置，留空则回退字幕翻译 / 全局配置
 - `TRANSLATE_TITLE` / `TRANSLATE_DESCRIPTION` / `GENERATE_TAGS`：自动生成标题、简介、标签
 - `RECOMMEND_PARTITION`：自动推荐分区
 - `FIXED_PARTITION_ID` / `FIXED_PARTITION_ID_BILIBILI`：固定分区
 - `YOUTUBE_UPLOADER_AS_FIRST_TAG`：将上传者作为首标签
+
+AI 文本功能统一使用 OpenAI Chat Completions 兼容接口。`OPENAI_BASE_URL` 可填写 API 根地址（例如 `https://api.openai.com/v1`）或完整的 `/chat/completions` 地址，后者会自动规范化。当兼容服务不支持 `response_format`、token 上限参数、自定义 `temperature` 或特定指令角色时，系统会根据端点实际错误逐级协商；若网关只返回笼统的请求 schema 错误，则降级为仅含 `model + user messages` 的最小标准请求。能力只在降级请求成功后按端点和模型缓存。
 
 ### 字幕处理
 
@@ -256,6 +270,7 @@ python app.py
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
 - `LOG_CLEANUP_ENABLED` / `LOG_CLEANUP_HOURS` / `LOG_CLEANUP_INTERVAL`
 - `DOWNLOAD_CLEANUP_ENABLED` / `DOWNLOAD_CLEANUP_HOURS` / `DOWNLOAD_CLEANUP_INTERVAL`
+- `DELETE_DOWNLOAD_FILES_AFTER_UPLOAD`：所有目标平台上传成功后立即删除该任务的下载文件（默认关闭）
 
 ### 通知推送
 

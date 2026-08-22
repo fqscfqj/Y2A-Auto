@@ -756,7 +756,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
 
         checkboxes = [
             'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
-            'UPLOAD_APPEND_REPOST_NOTICE',
+            'UPLOAD_APPEND_REPOST_NOTICE', 'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD',
             'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION',
             'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
             'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
@@ -826,7 +826,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'MAX_CONCURRENT_TASKS': 2,
                         'MAX_CONCURRENT_UPLOADS': 1,
                         'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 24,
+                        'LOG_CLEANUP_INTERVAL': 12,
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
@@ -985,6 +985,23 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         else:
             youtube_monitor.stop_all_schedules()
             logger.info("YouTube API密钥未配置，已跳过监控系统初始化")
+
+        # Issue 101: 非阻断提示——CookieCloud 已启用时，逐项检查服务地址/UUID/密码是否缺失
+        if str(updated_config.get('COOKIECLOUD_ENABLED', False)).lower() in ('true', '1', 'on'):
+            _cookiecloud_missing = []
+            if not str(updated_config.get('COOKIECLOUD_SERVER_URL', '') or '').strip():
+                _cookiecloud_missing.append('服务地址')
+            if not str(updated_config.get('COOKIECLOUD_UUID', '') or '').strip():
+                _cookiecloud_missing.append('UUID')
+            if not str(updated_config.get('COOKIECLOUD_PASSWORD', '') or '').strip():
+                _cookiecloud_missing.append('密码')
+            if _cookiecloud_missing:
+                _append_settings_message(
+                    messages, 'warning',
+                    f'CookieCloud 已启用，但以下必填项为空：{"、".join(_cookiecloud_missing)}。'
+                    'CookieCloud 需要服务地址、UUID、密码三者均非空才能正常同步，'
+                    '请补全后保存，或暂时关闭 CookieCloud。'
+                )
 
         _append_settings_message(messages, 'success', '配置已成功保存')
         final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'
@@ -1854,6 +1871,23 @@ def manual_review():
     
     return render_template('manual_review.html', tasks=review_tasks)
 
+def _resolve_edit_task_action(form):
+    """从多值同名 action 表单中解析实际要执行的动作。
+
+    优先级：force_upload > 其它显式提交的 action > default_action（save_metadata）。
+    升级前已打开/被缓存的旧页面会同时提交 action=save_metadata 与 action=force_upload，
+    二者按 DOM 顺序提交后 Werkzeug 仍保留两个值；这里显式优先识别 force_upload，
+    避免点击「上传到 Bilibili」却只走保存。
+    """
+    _submitted = [a.strip().lower() for a in form.getlist('action') if a and a.strip()]
+    if 'force_upload' in _submitted:
+        return 'force_upload'
+    if _submitted:
+        return _submitted[0]
+    _default = form.get('default_action') or 'save_metadata'
+    return (_default or 'save_metadata').strip().lower()
+
+
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_task(task_id):
@@ -1865,7 +1899,9 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
-        action = request.form.get('action', 'save_metadata').strip().lower()
+        # 主表单的隐藏字段已改名 default_action（避免与上传按钮的同名 action 冲突）。
+        # 多值同名 action 时显式优先匹配 force_upload（而非取 DOM 顺序第一个）。
+        action = _resolve_edit_task_action(request.form)
         redirect_target = url_for('edit_task', task_id=task_id)
 
         if action == 'replace_cover':
@@ -3423,7 +3459,7 @@ def schedule_log_cleanup():
     """为日志清理创建并启动一个BackgroundScheduler, 返回调度器对象"""
     try:
         config = load_config()
-        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
+        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 12))
         if not config.get('LOG_CLEANUP_ENABLED', False):
             return None
 
