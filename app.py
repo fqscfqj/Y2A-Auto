@@ -800,10 +800,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
             'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
             'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
+            'AI_FAILOVER_TIMEOUT_SECONDS',
             'VAD_SILERO_MIN_SPEECH_MS',
             'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
             'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
             'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
+            'SUBTITLE_QC_TIMEOUT_SECONDS',
             'SUBTITLE_MIN_TEXT_LENGTH',
             'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
         ]
@@ -840,11 +842,42 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'VAD_SILERO_SPEECH_PAD_MS': 120,
                         'VAD_MAX_SEGMENT_S': 15,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000
+                        'SUBTITLE_QC_MAX_CHARS': 9000,
+                        'SUBTITLE_QC_TIMEOUT_SECONDS': 120,
+                        # 转换失败的 AI_FAILOVER_TIMEOUT_SECONDS 必须先落到 8，
+                        # 否则 defaults.get(field, 1) 会把它变成 1 秒（合法区间内，
+                        # 后续 1–60 范围校验不再回退），正常稍慢的连接会被 1s 误判宕机。
+                        'AI_FAILOVER_TIMEOUT_SECONDS': 8
                     }
                     defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
+
+        # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
+        # 越界或非法（手工配置 / 直接 POST 负值）回退默认 8 秒，
+        # 避免 httpx 在创建客户端 / 请求时抛 timeout range error。
+        _fkey = 'AI_FAILOVER_TIMEOUT_SECONDS'
+        if _fkey in form_data:
+            try:
+                _fv = int(str(form_data[_fkey]).strip())
+            except (ValueError, TypeError):
+                _fv = None
+            if _fv is None or _fv < 1 or _fv > 60:
+                logger.debug(f"{_fkey} 越界或非法，回退默认 8: {form_data.get(_fkey)}")
+                form_data[_fkey] = '8'
+
+        # SUBTITLE_QC_TIMEOUT_SECONDS 范围校验：设置页声明 10–600 秒。
+        # 越界或非法（手工配置 / 直接 POST 负值 / 非数字）回退默认 120 秒，
+        # 避免负值或超限值被透传给 httpx 客户端时抛 timeout range error。
+        _qc_timeout_key = 'SUBTITLE_QC_TIMEOUT_SECONDS'
+        if _qc_timeout_key in form_data:
+            try:
+                _qc_tv = int(str(form_data[_qc_timeout_key]).strip())
+            except (ValueError, TypeError):
+                _qc_tv = None
+            if _qc_tv is None or _qc_tv < 10 or _qc_tv > 600:
+                logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 120: {form_data.get(_qc_timeout_key)}")
+                form_data[_qc_timeout_key] = '120'
 
         float_fields = [
             'VAD_SILERO_THRESHOLD',

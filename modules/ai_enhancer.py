@@ -17,7 +17,6 @@ from .utils import (
     openai_chat_create_with_thinking_control,
     extract_chat_message_json,
     get_chat_message_text,
-    normalize_openai_base_url,
 )
 
 import openai
@@ -160,19 +159,12 @@ def setup_task_logger(task_id):
 def get_openai_client(openai_config):
     """
     创建OpenAI客户端。
+
+    统一走 modules.ai_fallback_client.get_ai_client，主端点（OPENAI_*）不可用时
+    自动切换到 FALLBACK_OPENAI_* 兜底端点；未配置兜底则退化为单端点，行为不变。
     """
-    api_key = openai_config.get('OPENAI_API_KEY', '')
-    options = {}
-    if openai_config.get('OPENAI_BASE_URL'):
-        options['base_url'] = normalize_openai_base_url(openai_config.get('OPENAI_BASE_URL'))
-    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
-    try:
-        timeout_seconds = float(str(timeout_value).strip())
-    except Exception:
-        timeout_seconds = 600.0
-    if timeout_seconds > 0:
-        options['timeout'] = timeout_seconds
-    return openai.OpenAI(api_key=api_key, **options)
+    from modules.ai_fallback_client import get_ai_client
+    return get_ai_client(openai_config)
 
 
 def _is_timeout_like_error(exc: Exception) -> bool:

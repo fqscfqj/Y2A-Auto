@@ -20,7 +20,6 @@ from .utils import (
     extract_chat_message_json,
     extract_json_from_text,
     get_chat_message_text,
-    normalize_openai_base_url,
 )
 
 logger = logging.getLogger('subtitle_translator')
@@ -74,32 +73,18 @@ def setup_task_logger(task_id):
 def get_openai_client(openai_config):
     """
     创建OpenAI客户端 (与ai_enhancer.py保持一致)
-    
+
+    统一走 modules.ai_fallback_client.get_ai_client，主端点（OPENAI_*）不可用时
+    自动切换到 FALLBACK_OPENAI_* 兜底端点；未配置兜底则退化为单端点，行为不变。
+
     Args:
         openai_config (dict): OpenAI配置信息，包含api_key, base_url等
-        
+
     Returns:
         OpenAI客户端实例
     """
-    import openai
-    
-    # 配置选项
-    api_key = openai_config.get('OPENAI_API_KEY', '')
-    options = {}
-    
-    # 如果提供了base_url，添加到选项中
-    if openai_config.get('OPENAI_BASE_URL'):
-        options['base_url'] = normalize_openai_base_url(openai_config.get('OPENAI_BASE_URL'))
-    timeout_value = openai_config.get('OPENAI_TIMEOUT_SECONDS', 600)
-    try:
-        timeout_seconds = float(str(timeout_value).strip())
-    except Exception:
-        timeout_seconds = 600.0
-    if timeout_seconds > 0:
-        options['timeout'] = timeout_seconds
-    
-    # 创建并返回新版客户端实例
-    return openai.OpenAI(api_key=api_key, **options)
+    from modules.ai_fallback_client import get_ai_client
+    return get_ai_client(openai_config)
 
 @dataclass
 class SubtitleItem:
@@ -742,6 +727,13 @@ class SubtitleTranslator:
             'PROMPT_STRICT_MODE': getattr(config, 'prompt_strict_mode', 'builtin'),
             'PROMPT_STRICT_TEXT': getattr(config, 'prompt_strict_text', ''),
         }
+        # 兜底端点（FALLBACK_OPENAI_*）来自全局配置；统一客户端 get_ai_client 也会兜底补齐，
+        # 这里显式透传以保证字幕翻译路径必然拿到兜底端点。
+        try:
+            from modules.ai_fallback_client import _global_fallback_fields
+            self.openai_config.update(_global_fallback_fields())
+        except Exception:
+            pass
         
         self.llm_requester = LLMRequester(self.openai_config, task_id)
         self.reader = SubtitleReader()
