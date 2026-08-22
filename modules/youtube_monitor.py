@@ -1096,6 +1096,17 @@ class YouTubeMonitor:
             logger.warning("今日 search 配额已耗尽（当日熔断），跳过本轮搜索（将于次日太平洋时间重置）")
             return []
 
+        # 双重闸门：全局桶有余额时，仍可能因「本配置当日公平份额」已耗尽而无法发起请求。
+        # 此时同样跳过整轮、不推进游标（否则会出现「无搜索却推进游标」的空转，
+        # 即全局剩余 48、本配置份额为 0 时游标仍 +1 的经典竞态）。
+        if not self._config_share_remaining(config['id']):
+            self._last_fetch_quota_skipped = True
+            logger.warning(
+                f"配置 {config.get('name', config['id'])} 当日 search 配额份额已耗尽，"
+                "跳过本轮（不推进关键词游标，将于次日太平洋时间重置）"
+            )
+            return []
+
         # 预算通过后才构造 search 批次；仅在「关键词数 > 每轮上限」时推进轮转游标，
         # 保证高频调度下轮流覆盖全部关键词、且游标不会在熔断期空推进。
         if keywords_list:
@@ -1498,22 +1509,53 @@ class YouTubeMonitor:
             raise
 
     def _http_error_quota_reason(self, e: HttpError) -> Optional[str]:
-        """从 Google API HttpError 中提取结构化错误 reason。
+        """从 Google API HttpError 中提取结构化错误 reason（类型安全）。
 
         429 既可能是「当日配额耗尽」（quotaExceeded / dailyLimitExceeded），也可能是
         「短时窗口速率限制」（rateLimitExceeded）。二者处理完全不同：前者要触发当日
-        熔断、后者只需重试。只有结构化 reason 能可靠区分，故优先解析
-        `e.error_details`（googleapiclient 由响应 JSON 的 error.errors[] 反序列化而来），
-        解析不到时再退化到错误文本匹配。
+        熔断、后者只需重试。只有结构化 reason 能可靠区分，故优先解析错误中的 reason。
+
+        googleapiclient 在不同响应形态下，`error_details` 可能是：
+          - list[dict]（含 error.errors[]，最常见，字段缺 reason 时退文本）；
+          - str（仅 error.message 时，googleapiclient 把 error_details 设为字符串，
+            此时 `for d in details` 会遍历字符、用 `.get` 会 AttributeError —— 必须类型判定）；
+          - dict（整段 error 对象）。
+        为避免对字符串形态崩溃，先归一化成一个「错误对象列表」再逐个取 reason；
+        仍取不到时退化到 `e.content` 原始 JSON 与错误文本匹配。
         """
-        details = getattr(e, 'error_details', None)
-        if details:
-            for d in details:
-                r = (d or {}).get('reason')
+        raw = getattr(e, 'error_details', None)
+        err_objs: list = []
+        if isinstance(raw, list):
+            err_objs = raw
+        elif isinstance(raw, dict):
+            err_objs = raw.get('errors') or [raw]
+        elif isinstance(raw, str):
+            # 某些版本/场景会把 error_details 反序列化为字符串形式的 JSON
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    err_objs = parsed
+                elif isinstance(parsed, dict):
+                    err_objs = parsed.get('errors') or [parsed]
+            except (ValueError, TypeError):
+                err_objs = []
+        for d in err_objs:
+            if isinstance(d, dict):
+                r = d.get('reason')
                 if r:
                     return r
-        # error_details 缺 reason 字段（如只有 message）或不存在时，退化到错误文本抓 reason。
-        # 容忍 JSON 引号包裹（"reason":"quotaExceeded"）与非引号纯文本（reason: rateLimitExceeded）。
+        # error_details 无 reason 或形态异常时，尝试从原始响应体 e.content 解析
+        content = getattr(e, 'content', None)
+        if isinstance(content, (bytes, bytearray)):
+            try:
+                parsed = json.loads(content.decode('utf-8', 'replace'))
+                if isinstance(parsed, dict):
+                    for d in (parsed.get('error', {}).get('errors') or []):
+                        if isinstance(d, dict) and d.get('reason'):
+                            return d['reason']
+            except (ValueError, TypeError):
+                pass
+        # 最后退化到错误文本抓 reason（容忍 JSON 引号包裹与非引号纯文本）
         m = re.search(r'\breason["\']?\s*:\s*["\']?([A-Za-z_]+)', str(e))
         if m:
             return m.group(1)
@@ -2122,28 +2164,43 @@ class YouTubeMonitor:
             f"当日 search 配额熔断持久化失败（本进程已 fail-closed 停止发请求）：{last_err}"
         )
 
-    def _monitor_search_config_count(self):
-        """返回启用且「真正消费 search.list」的 auto 配置数（公平份额分母）。
+    def _is_search_consumer(self, c: Dict[str, Any]) -> bool:
+        """判断一个监控配置是否「实际消费 search.list」配额。
 
-        只有会发起 search.list 的配置才计入分母：有关键词（多关键词 OR 搜索）或
-        指定了频道（频道内搜索）的启用 auto 配置。playlist / latest / historical
-        等走 playlistItems.list / videos.list 的模式不消耗 search 配额，绝不能计入
-        （旧实现把它们算进分母，导致 search 配置被过度限流——根因之一）。
+        与 `_fetch_trending_videos` 的分流逻辑保持一致（权威谓词，单一来源）：
+        - 未启用 → 不消费；
+        - 有 `channel_ids` 且 `channel_mode == 'search'` → 走 `_fetch_channel_search_videos`（search.list）；
+        - 有 `channel_ids` 但 `channel_mode` 非 search（latest/historical）→ 走 playlist 模式，不消费 search；
+        - 无 `channel_ids`（普通关键词/全局检索）→ 走 `_fetch_search_videos`（search.list）。
+
+        因此「真正消费 search」的配置 = 启用 且 （无 channel_ids 或 channel_mode=='search'）。
+        注意：manual 配置同样会经由 `_fetch_trending_videos` 消费 search，故**不排除 manual**——
+        否则手动运行可先吃满全局桶、饿死自动配置（reviewer 指出的真实抢占场景）。
+        """
+        if not c.get('enabled'):
+            return False
+        channel_ids = (c.get('channel_ids') or '')
+        if isinstance(channel_ids, str) and channel_ids.strip():
+            return c.get('channel_mode') == 'search'
+        return True
+
+    def _per_config_share(self) -> int:
+        """返回单个 search 消费者当天的公平份额上限（budget // 消费者数，最少 1）。"""
+        count = max(1, self._monitor_search_config_count() or 1)
+        return max(1, self._MONITOR_DAILY_SEARCH_BUDGET // count)
+
+    def _monitor_search_config_count(self):
+        """返回「真正消费 search.list」的启用配置数（任意 schedule_type）。
+
+        这是公平份额分母。谓词来自 `_is_search_consumer`（与分流逻辑同源），
+        因此频道搜索配置（channel_ids + channel_mode=='search'）、普通关键词配置、手动运行
+        的搜索配置都会被正确计入；playlist/latest/historical 频道配置不计入。
         """
         try:
             configs = self.get_monitor_configs()
         except Exception:
             return 0
-        n = 0
-        for c in configs:
-            if not c.get('enabled'):
-                continue
-            if c.get('schedule_type') != 'auto':
-                continue
-            if (c.get('keywords') and str(c.get('keywords')).strip()) or \
-               (c.get('channel_id') and str(c.get('channel_id')).strip()):
-                n += 1
-        return n
+        return sum(1 for c in configs if self._is_search_consumer(c))
 
     def _try_consume_quota(self, n=1, config_id=None):
         """原子扣减 n 次 search 配额。
@@ -2169,8 +2226,7 @@ class YouTubeMonitor:
             return False
         share = None
         if config_id is not None:
-            search_cfg_count = max(1, self._monitor_search_config_count() or 1)
-            share = max(1, self._MONITOR_DAILY_SEARCH_BUDGET // search_cfg_count)
+            share = self._per_config_share()
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute(
                 'INSERT INTO monitor_quota_budget (quota_date, used) VALUES (?, 0) '
@@ -2205,6 +2261,28 @@ class YouTubeMonitor:
                     return False
             conn.commit()
         return True
+
+    def _config_share_remaining(self, config_id) -> bool:
+        """判断某配置当日是否仍有「公平份额」余额（不扣减）。
+
+        用于在发起真实请求前预检：当全局桶尚有余额、但本配置当日份额已耗尽时，
+        不应推进关键词轮转游标也不发起请求（避免「空推进游标」——见 _fetch_search_videos）。
+        """
+        if getattr(self, '_quota_depleted_day', None) == self._quota_day_str():
+            return False
+        share = self._per_config_share()
+        day = self._quota_day_str()
+        self._quota_reset_tables()
+        try:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                row = conn.execute(
+                    'SELECT used FROM monitor_quota_usage WHERE config_id = ? AND quota_date = ?',
+                    (config_id, day),
+                ).fetchone()
+            used = row[0] if row else 0
+        except Exception:
+            return True  # 读不到时保守放行，由 _try_consume_quota 兜底拦截
+        return used < share
 
     def _next_keyword_rotation_start(self, config_id, keyword_count, max_searches):
         """返回本轮关键词轮转起始下标，并原子推进游标（每轮推进，跨重启保持）。

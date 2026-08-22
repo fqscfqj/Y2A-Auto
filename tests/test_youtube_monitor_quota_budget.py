@@ -548,5 +548,224 @@ class DisableCancelsImmediateTests(unittest.TestCase):
         self.assertIn("已禁用", msg)
 
 
+class SearchConsumerPredicateTests(unittest.TestCase):
+    """PR #127 第五轮：搜索消费者谓词修复（分母覆盖真实 search 消费者）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_is_search_consumer_matches_dispatch(self):
+        # 分流谓词：无 channel_ids -> 走 search.list（是消费者）
+        self.assertTrue(self.monitor._is_search_consumer(
+            {"enabled": True, "keywords": "a", "channel_mode": "latest"}))
+        # 有 channel_ids + channel_mode=='search' -> 走频道内 search.list（是消费者）
+        self.assertTrue(self.monitor._is_search_consumer(
+            {"enabled": True, "channel_ids": "UC123", "channel_mode": "search"}))
+        # 有 channel_ids + channel_mode='latest' -> 走 playlist（非 search 消费者）
+        self.assertFalse(self.monitor._is_search_consumer(
+            {"enabled": True, "channel_ids": "UC123", "channel_mode": "latest"}))
+        # 有 channel_ids + channel_mode='historical' -> 走 playlist（非 search 消费者）
+        self.assertFalse(self.monitor._is_search_consumer(
+            {"enabled": True, "channel_ids": "UC123", "channel_mode": "historical"}))
+        # 未启用 -> 不是消费者（无论何种模式）
+        self.assertFalse(self.monitor._is_search_consumer(
+            {"enabled": False, "keywords": "a"}))
+
+    def test_search_config_count_uses_correct_denominator(self):
+        # 建 2 个「频道搜索」配置（channel_ids + channel_mode='search'）：
+        # 旧实现用错误字段 channel_id（单数）会漏掉它们，导致 count=0、份额=95、互相饿死。
+        c1 = self.monitor.create_monitor_config(
+            {"name": "ch1", "schedule_type": "auto", "enabled": True,
+             "channel_ids": "UC123", "channel_mode": "search"})
+        c2 = self.monitor.create_monitor_config(
+            {"name": "ch2", "schedule_type": "auto", "enabled": True,
+             "channel_ids": "UC456", "channel_mode": "search"})
+        # 另加一个 playlist 频道配置（latest），不应计入分母
+        self.monitor.create_monitor_config(
+            {"name": "pl", "schedule_type": "auto", "enabled": True,
+             "channel_ids": "UC789", "channel_mode": "latest"})
+        # 另加停用配置，不应计入
+        self.monitor.create_monitor_config(
+            {"name": "off", "schedule_type": "auto", "enabled": False,
+             "keywords": "z"})
+        count = self.monitor._monitor_search_config_count()
+        self.assertEqual(count, 2, "2 个频道搜索配置应被计入，其余不计入")
+        # 份额 = budget // 2，而非 95（旧实现会算成 95）
+        share = self.monitor._per_config_share()
+        self.assertEqual(share, self.monitor._MONITOR_DAILY_SEARCH_BUDGET // 2)
+
+    def test_manual_search_config_counted_to_avoid_starvation(self):
+        # manual 关键词配置同样消费 search，若不计入分母会被手动运行抢满 95 次。
+        c_auto = self.monitor.create_monitor_config(
+            {"name": "auto", "schedule_type": "auto", "enabled": True, "keywords": "a"})
+        c_manual = self.monitor.create_monitor_config(
+            {"name": "manual", "schedule_type": "manual", "enabled": True, "keywords": "b"})
+        count = self.monitor._monitor_search_config_count()
+        self.assertEqual(count, 2)
+        share = self.monitor._per_config_share()
+        # manual 与 auto 各获 budget//2，auto 不会被 manual 抢空
+        for _ in range(share):
+            self.assertTrue(self.monitor._try_consume_quota(1, c_manual))
+        self.assertFalse(self.monitor._try_consume_quota(1, c_manual))
+        # auto 仍有自己的份额
+        for _ in range(share):
+            self.assertTrue(self.monitor._try_consume_quota(1, c_auto))
+
+
+class HttpErrorReasonTypeSafeTests(unittest.TestCase):
+    """PR #127 第五轮：_http_error_quota_reason 对 error_details 形态健壮。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_reason_from_list_of_dicts(self):
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 403
+            reason = "Forbidden"
+
+        e = HttpError(_Resp(), b'x', uri="http://x")
+        e.error_details = [{"reason": "quotaExceeded"}]
+        self.assertEqual(self.monitor._http_error_quota_reason(e), "quotaExceeded")
+
+    def test_reason_from_string_error_details_does_not_crash(self):
+        # 仅 error.message 时 googleapiclient 会把 error_details 设为字符串：
+        # 旧实现 `for d in details: (d or {}).get(...)` 会遍历字符并 AttributeError。
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 500
+            reason = "Server Error"
+
+        e = HttpError(_Resp(), b'{"error":{"code":500,"message":"backend unavailable"}}', uri="http://x")
+        # error_details 是字符串（仅 message），不应崩溃，且没有 quota reason -> None
+        self.assertIsNone(self.monitor._http_error_quota_reason(e))
+
+    def test_reason_from_string_json_with_reason(self):
+        # error_details 是字符串形式的 JSON，含 errors[] -> 应能取出 reason
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 403
+            reason = "Forbidden"
+
+        e = HttpError(_Resp(), b'x', uri="http://x")
+        e.error_details = '{"errors":[{"reason":"dailyLimitExceeded"}]}'
+        self.assertEqual(self.monitor._http_error_quota_reason(e), "dailyLimitExceeded")
+
+    def test_reason_from_dict_error_details(self):
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 403
+            reason = "Forbidden"
+
+        e = HttpError(_Resp(), b'x', uri="http://x")
+        e.error_details = {"errors": [{"reason": "rateLimitExceeded"}]}
+        self.assertEqual(self.monitor._http_error_quota_reason(e), "rateLimitExceeded")
+
+
+class CursorShareGateTests(unittest.TestCase):
+    """PR #127 第五轮：本配置份额耗尽时不应空推进游标。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.get_app_subdir_patcher = patch(
+            "modules.youtube_monitor.get_app_subdir",
+            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
+                                     or os.path.join(self.tmpdir, sub)),
+        )
+        self.init_api_patcher = patch.object(
+            YouTubeMonitor, "_init_youtube_api",
+            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
+        )
+        self.get_app_subdir_patcher.start()
+        self.init_api_patcher.start()
+        self.monitor = YouTubeMonitor()
+
+    def tearDown(self):
+        try:
+            scheduler = getattr(self.monitor, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+        finally:
+            self.get_app_subdir_patcher.stop()
+            self.init_api_patcher.stop()
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_config_share_remaining_false_blocks_cursor_advance(self):
+        # 全局桶仍有余额，但本配置份额已耗尽：不能空推进游标。
+        # 需要 ≥2 个 search 消费者，这样耗尽单个配置份额后全局桶仍有余额（share < budget）。
+        c1 = self.monitor.create_monitor_config(
+            {"name": "kw1", "schedule_type": "auto", "enabled": True, "keywords": "a,b,c,d"})
+        self.monitor.create_monitor_config(
+            {"name": "kw2", "schedule_type": "auto", "enabled": True, "keywords": "x,y"})
+        share = self.monitor._per_config_share()  # budget // 2
+        # 先耗尽 c1 的份额
+        for _ in range(share):
+            self.assertTrue(self.monitor._try_consume_quota(1, c1))
+        self.assertFalse(self.monitor._try_consume_quota(1, c1))
+        # 此时全局仍有余额（2*share <= budget，通常 < budget），但 c1 份额为 0
+        self.assertGreater(self.monitor._quota_budget_remaining(), 0)
+        self.assertFalse(self.monitor._config_share_remaining(c1))
+        # 关键断言：即便高频调度再次进入 _fetch_search_videos，也应在「发起请求前」
+        # 的份额闸门处短路返回，不调用搜索、不推进游标。
+        self.monitor.youtube = object()  # 绕过 init 检查，走到份额闸门
+        result = self.monitor._fetch_search_videos(
+            {"id": c1, "name": "kw1", "enabled": True, "keywords": "a,b,c,d", "max_results": 10,
+             "region_code": "US", "order_by": "viewCount", "time_period": 7, "video_types": "video",
+             "category_id": ""},
+            "2026-08-22T00:00")
+        self.assertEqual(result, [])
+        # 游标未被推进：仍停留在初始 0（未被推进到 2）——证明份额耗尽时不空转游标
+        self.assertEqual(self.monitor._next_keyword_rotation_start(c1, 4, 2), 0)
+        self.assertTrue(self.monitor._last_fetch_quota_skipped)
+
+
 if __name__ == "__main__":
     unittest.main()
