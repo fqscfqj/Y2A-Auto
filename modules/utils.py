@@ -359,6 +359,7 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
         ),
         'max_tokens': ('max_tokens', 'max tokens'),
         'max_completion_tokens': ('max_completion_tokens', 'max completion tokens'),
+        'max_output_tokens': ('max_output_tokens', 'max output tokens'),
         'temperature': ('temperature',),
         'system_role': (
             'system role', "role 'system'", 'role: system', 'messages[0].role',
@@ -492,7 +493,10 @@ def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
             actions = set()
             _OPENAI_COMPATIBILITY_CACHE.pop(cache_key, None)
         actions.update(discovered_actions)
-        if 'use_max_completion_tokens' in discovered_actions:
+        if 'drop_max_output_tokens' in discovered_actions:
+            actions.discard('use_max_tokens')
+            actions.discard('use_max_completion_tokens')
+        elif 'use_max_completion_tokens' in discovered_actions:
             actions.discard('use_max_tokens')
         elif 'use_max_tokens' in discovered_actions:
             actions.discard('use_max_completion_tokens')
@@ -572,9 +576,12 @@ def _apply_compatibility_actions(create_kwargs, actions):
         _drop_thinking_control(adapted)
     if 'drop_response_format' in actions:
         adapted.pop('response_format', None)
-    if 'use_max_completion_tokens' in actions and 'max_tokens' in adapted:
+    if 'drop_max_output_tokens' in actions:
+        adapted.pop('max_tokens', None)
+        adapted.pop('max_completion_tokens', None)
+    elif 'use_max_completion_tokens' in actions and 'max_tokens' in adapted:
         adapted['max_completion_tokens'] = adapted.pop('max_tokens')
-    if 'use_max_tokens' in actions and 'max_completion_tokens' in adapted:
+    elif 'use_max_tokens' in actions and 'max_completion_tokens' in adapted:
         adapted['max_tokens'] = adapted.pop('max_completion_tokens')
     if 'drop_temperature' in actions:
         adapted.pop('temperature', None)
@@ -601,6 +608,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name
         'drop_response_format': '不支持 JSON response_format，已改用提示词约束并解析文本 JSON',
         'use_max_completion_tokens': '不支持 max_tokens，已改用 max_completion_tokens',
         'use_max_tokens': '不支持 max_completion_tokens，已回退 max_tokens',
+        'drop_max_output_tokens': '不支持 Responses max_output_tokens，已使用模型默认输出上限',
         'drop_temperature': '不支持自定义 temperature，已使用模型默认值',
         'use_developer_role': '不支持 system role，已改用 developer role',
         'inline_instructions': '不支持独立指令角色，已将指令合并到 user 消息',
@@ -663,6 +671,11 @@ def openai_chat_create_with_thinking_control(
             ):
                 action = 'drop_response_format'
             elif (
+                ('max_tokens' in request_kwargs or 'max_completion_tokens' in request_kwargs)
+                and _is_parameter_compatibility_error(exc, 'max_output_tokens')
+            ):
+                action = 'drop_max_output_tokens'
+            elif (
                 'max_tokens' in request_kwargs
                 and _is_parameter_compatibility_error(exc, 'max_tokens')
             ):
@@ -706,6 +719,11 @@ def openai_chat_create_with_thinking_control(
                 discovered_actions.discard('use_max_tokens')
             elif action == 'use_max_tokens':
                 actions.discard('use_max_completion_tokens')
+                discovered_actions.discard('use_max_completion_tokens')
+            elif action == 'drop_max_output_tokens':
+                actions.discard('use_max_tokens')
+                actions.discard('use_max_completion_tokens')
+                discovered_actions.discard('use_max_tokens')
                 discovered_actions.discard('use_max_completion_tokens')
             if action == 'inline_instructions':
                 actions.discard('use_developer_role')

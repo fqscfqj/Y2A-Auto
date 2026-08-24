@@ -1,6 +1,9 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import httpx
+from openai import OpenAI as SDKOpenAI
 
 from modules import ai_fallback_client as afc
 from modules import utils
@@ -57,8 +60,83 @@ class ResponsesUrlTests(unittest.TestCase):
 
         self.assertEqual(endpoint['api_mode'], 'chat_completions')
 
+    def test_full_responses_url_preserves_query_as_sdk_default_query(self):
+        endpoint = afc._build_endpoint('OPENAI_', {
+            'OPENAI_API_KEY': 'test-key',
+            'OPENAI_BASE_URL': (
+                'https://azure.example/openai/responses'
+                '?api-version=2025-04-01-preview'
+            ),
+        })
+
+        self.assertEqual(endpoint['api_mode'], 'responses')
+        self.assertEqual(endpoint['base_url'], 'https://azure.example/openai')
+        self.assertEqual(
+            endpoint['default_query'],
+            {'api-version': '2025-04-01-preview'},
+        )
+
+    def test_sdk_sends_query_after_responses_path(self):
+        seen_urls = []
+
+        def handler(request):
+            seen_urls.append(str(request.url))
+            return httpx.Response(200, request=request, json={
+                'id': 'resp_url',
+                'created_at': 0,
+                'error': None,
+                'incomplete_details': None,
+                'instructions': None,
+                'metadata': None,
+                'model': 'response-model',
+                'object': 'response',
+                'output': [],
+                'parallel_tool_calls': True,
+                'status': 'completed',
+                'temperature': 1,
+                'tool_choice': 'auto',
+                'tools': [],
+                'top_p': 1,
+            })
+
+        def make_sdk_client(**kwargs):
+            return SDKOpenAI(
+                http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+                **kwargs,
+            )
+
+        config = {
+            'OPENAI_API_KEY': 'test-key',
+            'OPENAI_BASE_URL': (
+                'https://azure.example/openai/responses'
+                '?api-version=2025-04-01-preview'
+            ),
+            'OPENAI_MODEL_NAME': 'response-model',
+        }
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, 'OpenAI', side_effect=make_sdk_client):
+            client = afc.get_ai_client(config)
+
+        client.chat.completions.create(
+            model='response-model',
+            messages=[{'role': 'user', 'content': 'hello'}],
+        )
+
+        self.assertEqual(
+            seen_urls,
+            [
+                'https://azure.example/openai/responses'
+                '?api-version=2025-04-01-preview'
+            ],
+        )
+
 
 class ResponsesRequestTests(unittest.TestCase):
+    def setUp(self):
+        with utils._OPENAI_COMPATIBILITY_LOCK:
+            utils._OPENAI_COMPATIBILITY_CACHE.clear()
+            utils._OPENAI_COMPATIBILITY_WARNED.clear()
+
     def _config(self, **overrides):
         config = {
             'OPENAI_API_KEY': 'test-key',
@@ -176,6 +254,40 @@ class ResponsesRequestTests(unittest.TestCase):
 
         self.assertIs(request['store'], True)
 
+    def test_unsupported_max_output_tokens_is_dropped_and_cached(self):
+        raw_response = {
+            'id': 'resp_token_fallback',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+        raw_client = _FakeRawClient(responses_result=raw_response)
+        raw_client.responses.create = MagicMock(side_effect=[
+            _StatusError('Unsupported parameter: max_output_tokens', 400),
+            raw_response,
+            raw_response,
+        ])
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(self._config())
+        kwargs = {
+            'model': 'response-model',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'max_tokens': 256,
+        }
+
+        utils.openai_chat_create_with_thinking_control(client, kwargs)
+        utils.openai_chat_create_with_thinking_control(client, kwargs)
+
+        calls = [call.kwargs for call in raw_client.responses.create.call_args_list]
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0]['max_output_tokens'], 256)
+        self.assertNotIn('max_output_tokens', calls[1])
+        self.assertNotIn('max_output_tokens', calls[2])
+
     def test_fallback_can_switch_from_responses_to_chat_completions(self):
         primary = _FakeRawClient(error=_StatusError('service unavailable', 503))
         chat_response = SimpleNamespace(
@@ -277,6 +389,23 @@ class ResponsesRequestTests(unittest.TestCase):
 
         self.assertEqual(client._endpoints[1]['api_mode'], 'responses')
         self.assertEqual(client._endpoints[1]['base_url'], 'https://gateway.example/v1')
+
+    def test_empty_fallback_url_inherits_primary_default_query(self):
+        config = self._config(
+            OPENAI_BASE_URL=(
+                'https://gateway.example/v1/responses?api-version=preview'
+            ),
+            FALLBACK_OPENAI_API_KEY='fallback-key',
+            FALLBACK_OPENAI_BASE_URL='',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', side_effect=lambda ep, **_kw: ep):
+            client = afc.get_ai_client(config)
+
+        self.assertEqual(
+            client._endpoints[1]['default_query'],
+            {'api-version': 'preview'},
+        )
 
 
 if __name__ == '__main__':

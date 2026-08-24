@@ -19,7 +19,7 @@ AI 客户端协议与兜底层：兼容 Chat Completions / Responses API，并�
 import logging
 import re
 from types import SimpleNamespace
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 import httpx
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
@@ -72,9 +72,20 @@ def _api_mode_from_url(base_url):
     return 'responses' if path.endswith('/responses') else 'chat_completions'
 
 
+def _base_url_and_default_query(base_url):
+    """拆分完整端点查询参数，避免 SDK 把资源路径追加到查询字符串之后。"""
+    value = str(base_url or '').strip()
+    if not value:
+        return '', {}
+    parsed = urlparse(value)
+    default_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    normalized_value = urlunparse(parsed._replace(query='', fragment=''))
+    return normalize_openai_base_url(normalized_value), default_query
+
+
 def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
                     default_base="https://api.openai.com/v1",
-                    default_api_mode='chat_completions'):
+                    default_api_mode='chat_completions', default_query=None):
     """从配置字典中按前缀读取一个端点配置。无 API key 时返回 None。"""
     api_key = (cfg.get(prefix + "API_KEY") or "").strip()
     if not api_key:
@@ -84,10 +95,11 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
     configured_base = str(cfg.get(prefix + "BASE_URL") or '').strip()
     if configured_base:
         api_mode = _api_mode_from_url(configured_base)
-        base_url = normalize_openai_base_url(configured_base)
+        base_url, endpoint_query = _base_url_and_default_query(configured_base)
     else:
         api_mode = default_api_mode
         base_url = normalize_openai_base_url(default_base)
+        endpoint_query = dict(default_query or {})
     model = str(cfg.get(prefix + "MODEL_NAME") or "").strip() or str(default_model).strip()
     timeout = cfg.get("OPENAI_TIMEOUT_SECONDS", 600)
     try:
@@ -103,6 +115,7 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
         "base_url": base_url,
         "model": model,
         "api_mode": api_mode,
+        "default_query": endpoint_query,
         "timeout": timeout,
         "label": f"{prefix.rstrip('_').lower()}:{base_url}",
     }
@@ -157,6 +170,8 @@ def _make_raw_client(ep, multi_endpoint=False):
     opts = {}
     if ep.get("base_url"):
         opts["base_url"] = ep["base_url"]
+    if ep.get("default_query"):
+        opts["default_query"] = dict(ep["default_query"])
     raw_to = ep.get("timeout")
     try:
         to = float(raw_to) if raw_to is not None else 600.0
@@ -546,10 +561,11 @@ def get_ai_client(openai_config):
     fb_default_base = (primary or {}).get("base_url") or "https://api.openai.com/v1"
     fb_default_model = (primary or {}).get("model") or "gpt-3.5-turbo"
     fb_default_api_mode = (primary or {}).get('api_mode') or 'chat_completions'
+    fb_default_query = (primary or {}).get('default_query') or {}
     fb = _build_endpoint(
         "FALLBACK_OPENAI_", openai_config,
         default_base=fb_default_base, default_model=fb_default_model,
-        default_api_mode=fb_default_api_mode,
+        default_api_mode=fb_default_api_mode, default_query=fb_default_query,
     )
     if fb:
         endpoints.append(fb)
