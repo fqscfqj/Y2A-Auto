@@ -107,6 +107,7 @@ class ResponsesRequestTests(unittest.TestCase):
         self.assertEqual(request['max_output_tokens'], 256)
         self.assertEqual(request['text'], {'format': {'type': 'json_object'}})
         self.assertEqual(request['temperature'], 0.2)
+        self.assertIs(request['store'], False)
         self.assertNotIn('messages', request)
         self.assertNotIn('max_tokens', request)
         self.assertNotIn('response_format', request)
@@ -166,6 +167,15 @@ class ResponsesRequestTests(unittest.TestCase):
             'strict': True,
         })
 
+    def test_explicit_store_setting_is_preserved(self):
+        request = afc._responses_create_kwargs({
+            'model': 'response-model',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'store': True,
+        })
+
+        self.assertIs(request['store'], True)
+
     def test_fallback_can_switch_from_responses_to_chat_completions(self):
         primary = _FakeRawClient(error=_StatusError('service unavailable', 503))
         chat_response = SimpleNamespace(
@@ -193,6 +203,67 @@ class ResponsesRequestTests(unittest.TestCase):
         self.assertEqual(response.choices[0].message.content, 'fallback')
         self.assertEqual(primary.responses.calls[0]['model'], 'response-model')
         self.assertEqual(fallback.chat.completions.calls[0]['model'], 'fallback-model')
+
+    def test_failed_responses_server_error_switches_to_fallback(self):
+        primary = _FakeRawClient(responses_result={
+            'id': 'resp_failed',
+            'status': 'failed',
+            'error': {'code': 'server_error', 'message': 'provider unavailable'},
+            'output': [],
+        })
+        chat_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='fallback'))],
+        )
+        fallback = _FakeRawClient(chat_result=chat_response)
+
+        def make_client(endpoint, **_kwargs):
+            return primary if endpoint['api_mode'] == 'responses' else fallback
+
+        config = self._config(
+            FALLBACK_OPENAI_API_KEY='fallback-key',
+            FALLBACK_OPENAI_BASE_URL='https://fallback.example/v1/chat/completions',
+            FALLBACK_OPENAI_MODEL_NAME='fallback-model',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', side_effect=make_client):
+            client = afc.get_ai_client(config)
+
+        response = client.chat.completions.create(
+            model='ignored',
+            messages=[{'role': 'user', 'content': 'hello'}],
+        )
+
+        self.assertEqual(response.choices[0].message.content, 'fallback')
+        self.assertEqual(len(fallback.chat.completions.calls), 1)
+
+    def test_failed_responses_request_error_does_not_switch_to_fallback(self):
+        primary = _FakeRawClient(responses_result={
+            'id': 'resp_failed',
+            'status': 'failed',
+            'error': {'code': 'invalid_prompt', 'message': 'invalid input'},
+            'output': [],
+        })
+        fallback = _FakeRawClient(chat_result=SimpleNamespace(choices=[]))
+
+        def make_client(endpoint, **_kwargs):
+            return primary if endpoint['api_mode'] == 'responses' else fallback
+
+        config = self._config(
+            FALLBACK_OPENAI_API_KEY='fallback-key',
+            FALLBACK_OPENAI_BASE_URL='https://fallback.example/v1/chat/completions',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', side_effect=make_client):
+            client = afc.get_ai_client(config)
+
+        with self.assertRaises(afc.ResponsesResultError) as raised:
+            client.chat.completions.create(
+                model='ignored',
+                messages=[{'role': 'user', 'content': 'hello'}],
+            )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(fallback.chat.completions.calls, [])
 
     def test_empty_fallback_url_inherits_primary_responses_protocol(self):
         config = self._config(

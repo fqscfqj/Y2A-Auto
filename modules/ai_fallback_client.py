@@ -303,6 +303,10 @@ def _responses_text_format(response_format):
 def _responses_create_kwargs(chat_kwargs):
     """将项目使用的 Chat Completions 参数转换为 Responses API 参数。"""
     result = dict(chat_kwargs or {})
+    # Chat Completions 调用默认不创建可检索的服务端状态，而 Responses API
+    # 默认会保存响应。透明协议转换应保持原有数据留存语义；调用方显式传入
+    # store 时仍尊重其选择。
+    result.setdefault('store', False)
     messages = result.pop('messages', []) or []
     instructions = []
     response_input = []
@@ -373,9 +377,48 @@ def _as_chat_completion(response):
     )
 
 
+class ResponsesResultError(RuntimeError):
+    """Responses API 在成功 HTTP 响应体中报告的生成失败。"""
+
+    def __init__(self, response):
+        self.response_result = response
+        self.response_status = str(_value(response, 'status', '') or '').strip().lower()
+        error = _value(response, 'error')
+        self.code = str(_value(error, 'code', '') or '').strip().lower()
+        message = str(_value(error, 'message', '') or '').strip()
+        self.status_code = self._status_code_for_error(self.code)
+        detail = message or self.code or self.response_status or 'unknown error'
+        super().__init__(f'Responses API generation failed: {detail}')
+
+    @staticmethod
+    def _status_code_for_error(code):
+        """映射为现有 failover 判定可识别的近似 HTTP 状态码。"""
+        if not code:
+            return None
+        if 'timeout' in code:
+            return 504
+        if any(signal in code for signal in (
+            'server_error', 'internal_error', 'service_unavailable', 'overloaded',
+        )):
+            return 500
+        if 'rate_limit' in code:
+            return 429
+        # Responses 的其余已知错误（invalid_prompt / invalid_image 等）属于请求问题，
+        # 不应绕过当前端点切换到兜底端点重复发送相同请求。
+        return 400
+
+
+def _raise_for_responses_failure(response):
+    """Responses 可用 2xx 返回 failed + error；在归一化前将其恢复为异常语义。"""
+    status = str(_value(response, 'status', '') or '').strip().lower()
+    if status == 'failed' or _value(response, 'error') is not None:
+        raise ResponsesResultError(response)
+
+
 def _create_on_endpoint(raw_client, endpoint, chat_kwargs):
     if endpoint.get('api_mode') == 'responses':
         response = raw_client.responses.create(**_responses_create_kwargs(chat_kwargs))
+        _raise_for_responses_failure(response)
         return _as_chat_completion(response)
     return raw_client.chat.completions.create(**chat_kwargs)
 
