@@ -297,7 +297,7 @@ def _coerce_bool(value, default=False):
 
 
 def normalize_openai_base_url(base_url) -> str:
-    """接受 API 根地址或完整 Chat Completions 地址，统一为 SDK 所需根地址。"""
+    """接受 API 根地址或完整生成端点地址，统一为 OpenAI SDK 所需根地址。"""
     value = safe_str(base_url).strip()
     if not value:
         return ''
@@ -307,7 +307,12 @@ def normalize_openai_base_url(base_url) -> str:
         )
         return value
     value = value.rstrip('/')
-    return re.sub(r'/chat/completions$', '', value, flags=re.IGNORECASE).rstrip('/')
+    return re.sub(
+        r'/(?:chat/completions|responses)$',
+        '',
+        value,
+        flags=re.IGNORECASE,
+    ).rstrip('/')
 
 
 def _compatibility_error_text(exc) -> str:
@@ -348,9 +353,13 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
 
     parameter_signals = {
         'thinking': ('thinking', 'enable_thinking'),
-        'response_format': ('response_format', 'response format', 'json_object', 'json mode'),
+        'response_format': (
+            'response_format', 'response format', 'text.format',
+            'text.format.type', 'json_object', 'json mode',
+        ),
         'max_tokens': ('max_tokens', 'max tokens'),
         'max_completion_tokens': ('max_completion_tokens', 'max completion tokens'),
+        'max_output_tokens': ('max_output_tokens', 'max output tokens'),
         'temperature': ('temperature',),
         'system_role': (
             'system role', "role 'system'", 'role: system', 'messages[0].role',
@@ -401,7 +410,11 @@ def _client_compatibility_key(client, create_kwargs) -> str:
     except Exception:
         endpoint = endpoint_value or 'unknown'
     model = safe_str((create_kwargs or {}).get('model'), default='unknown').strip().lower()
-    return f'{endpoint}:{model}'
+    api_mode = safe_str(
+        getattr(client, 'api_mode', 'chat_completions'),
+        default='chat_completions',
+    ).strip().lower()
+    return f'{endpoint}:{api_mode}:{model}'
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
@@ -480,7 +493,10 @@ def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
             actions = set()
             _OPENAI_COMPATIBILITY_CACHE.pop(cache_key, None)
         actions.update(discovered_actions)
-        if 'use_max_completion_tokens' in discovered_actions:
+        if 'drop_max_output_tokens' in discovered_actions:
+            actions.discard('use_max_tokens')
+            actions.discard('use_max_completion_tokens')
+        elif 'use_max_completion_tokens' in discovered_actions:
             actions.discard('use_max_tokens')
         elif 'use_max_tokens' in discovered_actions:
             actions.discard('use_max_completion_tokens')
@@ -560,9 +576,12 @@ def _apply_compatibility_actions(create_kwargs, actions):
         _drop_thinking_control(adapted)
     if 'drop_response_format' in actions:
         adapted.pop('response_format', None)
-    if 'use_max_completion_tokens' in actions and 'max_tokens' in adapted:
+    if 'drop_max_output_tokens' in actions:
+        adapted.pop('max_tokens', None)
+        adapted.pop('max_completion_tokens', None)
+    elif 'use_max_completion_tokens' in actions and 'max_tokens' in adapted:
         adapted['max_completion_tokens'] = adapted.pop('max_tokens')
-    if 'use_max_tokens' in actions and 'max_completion_tokens' in adapted:
+    elif 'use_max_tokens' in actions and 'max_completion_tokens' in adapted:
         adapted['max_tokens'] = adapted.pop('max_completion_tokens')
     if 'drop_temperature' in actions:
         adapted.pop('temperature', None)
@@ -589,6 +608,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name
         'drop_response_format': '不支持 JSON response_format，已改用提示词约束并解析文本 JSON',
         'use_max_completion_tokens': '不支持 max_tokens，已改用 max_completion_tokens',
         'use_max_tokens': '不支持 max_completion_tokens，已回退 max_tokens',
+        'drop_max_output_tokens': '不支持 Responses max_output_tokens，已使用模型默认输出上限',
         'drop_temperature': '不支持自定义 temperature，已使用模型默认值',
         'use_developer_role': '不支持 system role，已改用 developer role',
         'inline_instructions': '不支持独立指令角色，已将指令合并到 user 消息',
@@ -651,6 +671,11 @@ def openai_chat_create_with_thinking_control(
             ):
                 action = 'drop_response_format'
             elif (
+                ('max_tokens' in request_kwargs or 'max_completion_tokens' in request_kwargs)
+                and _is_parameter_compatibility_error(exc, 'max_output_tokens')
+            ):
+                action = 'drop_max_output_tokens'
+            elif (
                 'max_tokens' in request_kwargs
                 and _is_parameter_compatibility_error(exc, 'max_tokens')
             ):
@@ -694,6 +719,11 @@ def openai_chat_create_with_thinking_control(
                 discovered_actions.discard('use_max_tokens')
             elif action == 'use_max_tokens':
                 actions.discard('use_max_completion_tokens')
+                discovered_actions.discard('use_max_completion_tokens')
+            elif action == 'drop_max_output_tokens':
+                actions.discard('use_max_tokens')
+                actions.discard('use_max_completion_tokens')
+                discovered_actions.discard('use_max_tokens')
                 discovered_actions.discard('use_max_completion_tokens')
             if action == 'inline_instructions':
                 actions.discard('use_developer_role')
