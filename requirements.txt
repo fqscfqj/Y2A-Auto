@@ -8,7 +8,7 @@ requests>=2.31,<3.0
 urllib3>=2.6.3,<3.0
 
 # AI and transcription stack: keep OpenAI/httpx within supported major lines.
-openai>=1.0,<3.0
+openai>=1.66.0,<3.0
 httpx>=0.27,<0.28
 numpy>=1.24,<3.0
 # silero-vad depends on torch/torchaudio; Dockerfile still installs CPU wheels explicitly.

@@ -297,7 +297,7 @@ def _coerce_bool(value, default=False):
 
 
 def normalize_openai_base_url(base_url) -> str:
-    """接受 API 根地址或完整 Chat Completions 地址，统一为 SDK 所需根地址。"""
+    """接受 API 根地址或完整生成端点地址，统一为 OpenAI SDK 所需根地址。"""
     value = safe_str(base_url).strip()
     if not value:
         return ''
@@ -307,7 +307,12 @@ def normalize_openai_base_url(base_url) -> str:
         )
         return value
     value = value.rstrip('/')
-    return re.sub(r'/chat/completions$', '', value, flags=re.IGNORECASE).rstrip('/')
+    return re.sub(
+        r'/(?:chat/completions|responses)$',
+        '',
+        value,
+        flags=re.IGNORECASE,
+    ).rstrip('/')
 
 
 def _compatibility_error_text(exc) -> str:
@@ -348,7 +353,10 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
 
     parameter_signals = {
         'thinking': ('thinking', 'enable_thinking'),
-        'response_format': ('response_format', 'response format', 'json_object', 'json mode'),
+        'response_format': (
+            'response_format', 'response format', 'text.format',
+            'text.format.type', 'json_object', 'json mode',
+        ),
         'max_tokens': ('max_tokens', 'max tokens'),
         'max_completion_tokens': ('max_completion_tokens', 'max completion tokens'),
         'temperature': ('temperature',),
@@ -401,7 +409,11 @@ def _client_compatibility_key(client, create_kwargs) -> str:
     except Exception:
         endpoint = endpoint_value or 'unknown'
     model = safe_str((create_kwargs or {}).get('model'), default='unknown').strip().lower()
-    return f'{endpoint}:{model}'
+    api_mode = safe_str(
+        getattr(client, 'api_mode', 'chat_completions'),
+        default='chat_completions',
+    ).strip().lower()
+    return f'{endpoint}:{api_mode}:{model}'
 
 
 def _thinking_control_style(client, create_kwargs) -> str:

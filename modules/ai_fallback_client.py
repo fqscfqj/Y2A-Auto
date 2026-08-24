@@ -1,12 +1,14 @@
 """
-AI 客户端兜底层：当主 OpenAI 兼容端点不可用时，自动切换到用户配置的备用端点。
+AI 客户端协议与兜底层：兼容 Chat Completions / Responses API，并在主端点
+不可用时自动切换到用户配置的备用端点。
 
 设计要点（与具体 provider 无关，仅依赖 OpenAI 兼容协议）：
 - 主端点来自传入配置中的 OPENAI_*。
 - 备用端点来自配置中的 FALLBACK_OPENAI_*（可选；未配置则退化为单端点，行为与原先一致）。
 - 仅当主端点出现「连接错误 / 超时 / 5xx」这类“可用性”错误时才切换兜底；
   4xx（请求本身的问题，例如 JSON 模式不被某些网关支持）不切换，交由上层既有逻辑处理。
-- 调用方式与 openai.OpenAI 完全兼容：client.chat.completions.create(...)。
+- 上层继续使用 client.chat.completions.create(...)；当配置地址以 /responses 结尾时，
+  本层自动转换请求并调用 client.responses.create(...)，再把输出归一化为 chat 结构。
 - 每个端点的 model 以自身配置为准（主端点用 OPENAI_MODEL_NAME，兜底端点用
   FALLBACK_OPENAI_MODEL_NAME）；兜底端点的 base_url / model 若留空则**继承主端点**，
   与设置页「留空则沿用主端点」语义一致，而不是回退到硬编码的官方默认值。
@@ -16,6 +18,8 @@ AI 客户端兜底层：当主 OpenAI 兼容端点不可用时，自动切换到
 """
 import logging
 import re
+from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import httpx
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
@@ -56,16 +60,33 @@ _CONNECTION_TEXT_SIGNALS = (
 )
 
 
+def _api_mode_from_url(base_url):
+    """完整 /responses 地址选择 Responses API；根地址保持原 Chat 默认。"""
+    value = str(base_url or '').strip()
+    if not value:
+        return 'chat_completions'
+    try:
+        path = urlparse(value).path.rstrip('/').lower()
+    except Exception:
+        path = value.rstrip('/').lower()
+    return 'responses' if path.endswith('/responses') else 'chat_completions'
+
+
 def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
-                    default_base="https://api.openai.com/v1"):
+                    default_base="https://api.openai.com/v1",
+                    default_api_mode='chat_completions'):
     """从配置字典中按前缀读取一个端点配置。无 API key 时返回 None。"""
     api_key = (cfg.get(prefix + "API_KEY") or "").strip()
     if not api_key:
         return None
-    # 兼容设置 API 根地址或完整的 /chat/completions 地址。规范化集中在统一
+    # 兼容设置 API 根地址或完整的 /chat/completions、/responses 地址。规范化集中在统一
     # 客户端入口，确保单端点、主端点和兜底端点采用完全一致的 URL 语义。
-    base_url = normalize_openai_base_url(cfg.get(prefix + "BASE_URL"))
-    if not base_url:
+    configured_base = str(cfg.get(prefix + "BASE_URL") or '').strip()
+    if configured_base:
+        api_mode = _api_mode_from_url(configured_base)
+        base_url = normalize_openai_base_url(configured_base)
+    else:
+        api_mode = default_api_mode
         base_url = normalize_openai_base_url(default_base)
     model = str(cfg.get(prefix + "MODEL_NAME") or "").strip() or str(default_model).strip()
     timeout = cfg.get("OPENAI_TIMEOUT_SECONDS", 600)
@@ -81,6 +102,7 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
         "api_key": api_key,
         "base_url": base_url,
         "model": model,
+        "api_mode": api_mode,
         "timeout": timeout,
         "label": f"{prefix.rstrip('_').lower()}:{base_url}",
     }
@@ -214,6 +236,167 @@ class _ChatProxy:
         self.completions = _CompletionsProxy(parent)
 
 
+def _value(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _content_text(content):
+    """把 Chat 消息内容转换成适合 Responses instructions 的纯文本。"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or '')
+    parts = []
+    for part in content:
+        part_type = _value(part, 'type', '')
+        if part_type in {'text', 'input_text', 'output_text'}:
+            text = _value(part, 'text', '')
+            if isinstance(text, dict):
+                text = text.get('value', '')
+            parts.append(str(text or ''))
+    return ''.join(parts)
+
+
+def _responses_message_content(content):
+    """将 Chat 多模态 content parts 转成 Responses 输入 content parts。"""
+    if not isinstance(content, list):
+        return content
+    converted = []
+    for part in content:
+        if not isinstance(part, dict):
+            converted.append(part)
+            continue
+        part_type = part.get('type')
+        if part_type == 'text':
+            converted.append({'type': 'input_text', 'text': part.get('text', '')})
+        elif part_type == 'image_url':
+            image = part.get('image_url')
+            if isinstance(image, dict):
+                converted_part = {
+                    'type': 'input_image',
+                    'image_url': image.get('url'),
+                }
+                if image.get('detail'):
+                    converted_part['detail'] = image['detail']
+            else:
+                converted_part = {'type': 'input_image', 'image_url': image}
+            converted.append(converted_part)
+        else:
+            converted.append(dict(part))
+    return converted
+
+
+def _responses_text_format(response_format):
+    """Responses 的 json_schema 格式比 Chat 少一层 json_schema 包装。"""
+    if not isinstance(response_format, dict):
+        return response_format
+    if response_format.get('type') != 'json_schema':
+        return dict(response_format)
+    schema_config = response_format.get('json_schema')
+    if not isinstance(schema_config, dict):
+        return dict(response_format)
+    return {'type': 'json_schema', **schema_config}
+
+
+def _responses_create_kwargs(chat_kwargs):
+    """将项目使用的 Chat Completions 参数转换为 Responses API 参数。"""
+    result = dict(chat_kwargs or {})
+    messages = result.pop('messages', []) or []
+    instructions = []
+    response_input = []
+    for message in messages:
+        role = _value(message, 'role', 'user')
+        content = _value(message, 'content', '')
+        if role in {'system', 'developer'}:
+            text = _content_text(content).strip()
+            if text:
+                instructions.append(text)
+            continue
+        response_input.append({
+            'role': role,
+            'content': _responses_message_content(content),
+        })
+    if instructions:
+        result['instructions'] = '\n\n'.join(instructions)
+    result['input'] = response_input
+
+    token_limit = result.pop('max_completion_tokens', None)
+    if token_limit is None:
+        token_limit = result.pop('max_tokens', None)
+    else:
+        result.pop('max_tokens', None)
+    if token_limit is not None:
+        result['max_output_tokens'] = token_limit
+
+    response_format = result.pop('response_format', None)
+    if response_format is not None:
+        text_config = result.get('text')
+        if not isinstance(text_config, dict):
+            text_config = {}
+        else:
+            text_config = dict(text_config)
+        text_config['format'] = _responses_text_format(response_format)
+        result['text'] = text_config
+    return result
+
+
+def _responses_output_text(response):
+    """兼容 SDK 对象和普通字典，提取 Responses API 的所有文本输出。"""
+    output_text = _value(response, 'output_text')
+    if isinstance(output_text, str) and output_text:
+        return output_text
+
+    parts = []
+    for item in _value(response, 'output', []) or []:
+        if _value(item, 'type') != 'message':
+            continue
+        for content in _value(item, 'content', []) or []:
+            content_type = _value(content, 'type')
+            if content_type == 'output_text':
+                parts.append(str(_value(content, 'text', '') or ''))
+            elif content_type == 'refusal':
+                parts.append(str(_value(content, 'refusal', '') or ''))
+    return ''.join(parts)
+
+
+def _as_chat_completion(response):
+    """把 Responses API 结果适配为项目既有的 choices[0].message 结构。"""
+    message = SimpleNamespace(role='assistant', content=_responses_output_text(response))
+    return SimpleNamespace(
+        id=_value(response, 'id'),
+        model=_value(response, 'model'),
+        usage=_value(response, 'usage'),
+        choices=[SimpleNamespace(index=0, message=message, finish_reason=None)],
+        raw_response=response,
+    )
+
+
+def _create_on_endpoint(raw_client, endpoint, chat_kwargs):
+    if endpoint.get('api_mode') == 'responses':
+        response = raw_client.responses.create(**_responses_create_kwargs(chat_kwargs))
+        return _as_chat_completion(response)
+    return raw_client.chat.completions.create(**chat_kwargs)
+
+
+class ResponsesChatClient:
+    """为单一 Responses 端点提供项目既有的 chat.completions 调用外观。"""
+
+    api_mode = 'responses'
+
+    def __init__(self, raw_client, endpoint):
+        self._raw = raw_client
+        self._endpoint = endpoint
+        self.base_url = getattr(raw_client, 'base_url', None) or endpoint.get('base_url', '')
+        self.chat = _ChatProxy(self)
+
+    def _create(self, kwargs):
+        call_kwargs = dict(kwargs)
+        call_kwargs['model'] = self._endpoint['model']
+        return _create_on_endpoint(self._raw, self._endpoint, call_kwargs)
+
+
 class FallbackChatClient:
     """按顺序尝试多个 OpenAI 兼容端点；前一个“不可用”时自动切到下一个。"""
 
@@ -224,6 +407,7 @@ class FallbackChatClient:
         # 兼容统一请求层基于 client.base_url 识别服务商、隔离能力缓存的约定。
         # 故障转移请求总是先访问主端点，因此这里暴露主端点的规范化地址。
         self.base_url = getattr(self._raw[0], "base_url", None) or endpoints[0].get("base_url", "")
+        self.api_mode = endpoints[0].get('api_mode', 'chat_completions')
         # 兼容 client.chat.completions.create(...) 调用链
         self.chat = _ChatProxy(self)
 
@@ -253,7 +437,7 @@ class FallbackChatClient:
             if merged_extra:
                 call_kwargs["extra_body"] = merged_extra
             try:
-                return self._raw[idx].chat.completions.create(**call_kwargs)
+                return _create_on_endpoint(self._raw[idx], ep, call_kwargs)
             except Exception as exc:  # noqa: BLE001
                 if _is_unavailable_error(exc):
                     logger.warning(
@@ -302,7 +486,8 @@ def get_ai_client(openai_config):
 
     - 若解析后存在 FALLBACK_OPENAI_API_KEY（可来自传入配置或全局配置），
       则返回带兜底能力的 FallbackChatClient；
-    - 否则返回与原来一致的裸 OpenAI 客户端（行为完全不变）。
+    - 单一 Chat 端点返回与原来一致的裸 OpenAI 客户端；单一 Responses 端点
+      返回保留 chat.completions 调用外观的 ResponsesChatClient。
     - 仅当主端点出现「连接 / 超时 / 5xx」时才切换兜底；4xx 类请求错误不切换。
 
     Args:
@@ -317,9 +502,11 @@ def get_ai_client(openai_config):
     # 因此空字段继承主端点的 base_url / model，而不是回退到硬编码的官方默认值。
     fb_default_base = (primary or {}).get("base_url") or "https://api.openai.com/v1"
     fb_default_model = (primary or {}).get("model") or "gpt-3.5-turbo"
+    fb_default_api_mode = (primary or {}).get('api_mode') or 'chat_completions'
     fb = _build_endpoint(
         "FALLBACK_OPENAI_", openai_config,
         default_base=fb_default_base, default_model=fb_default_model,
+        default_api_mode=fb_default_api_mode,
     )
     if fb:
         endpoints.append(fb)
@@ -328,5 +515,8 @@ def get_ai_client(openai_config):
         raise RuntimeError("未配置任何可用 AI 端点（OPENAI_API_KEY 为空）")
     if len(endpoints) == 1:
         # 单端点（无兜底）：保留 SDK 默认重试与用户配置超时，行为与原先一致
-        return _make_raw_client(endpoints[0], multi_endpoint=False)
+        raw_client = _make_raw_client(endpoints[0], multi_endpoint=False)
+        if endpoints[0].get('api_mode') == 'responses':
+            return ResponsesChatClient(raw_client, endpoints[0])
+        return raw_client
     return FallbackChatClient(endpoints)
