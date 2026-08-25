@@ -26,12 +26,12 @@ class VadConfig:
     min_silence_ms: int = 320
     max_speech_s: int = 120
     speech_pad_ms: int = 120
-    chunk_window_s: float = 30.0
+    chunk_window_s: float = 15.0
     chunk_overlap_s: float = 0.4
     merge_gap_s: float = 0.35
     min_segment_s: float = 0.8
-    max_segment_s: float = 30.0
-    max_segment_s_for_split: float = 30.0
+    max_segment_s: float = 15.0
+    max_segment_s_for_split: float = 15.0
     refinement_enabled: bool = True
     min_speech_coverage_ratio: float = 0.015
 
@@ -256,6 +256,7 @@ class VadProcessor:
                     max_speech_duration_s=self._effective_vad_max_speech_s(config),
                     sampling_rate=sample_rate,
                     return_seconds=True,
+                    time_resolution=2,
                 )
             if not speech_timestamps:
                 self._set_run_state(False)
@@ -521,8 +522,14 @@ class VadProcessor:
             last = merged[-1]
             boundary_gap = start - last[1]
             combined_duration = max(last[1], end) - last[0]
-            can_merge = boundary_gap < merge_gap if allow_gap_merge else (
-                boundary_gap <= chunk_stitch_gap and combined_duration <= max_dur
+            merge_limit = merge_gap if allow_gap_merge else chunk_stitch_gap
+            within_merge_gap = (
+                boundary_gap < merge_limit
+                if allow_gap_merge
+                else boundary_gap <= merge_limit
+            )
+            can_merge = boundary_gap <= 0.0 or (
+                within_merge_gap and combined_duration <= max_dur
             )
             if can_merge:
                 last[1] = max(last[1], end)
@@ -536,11 +543,30 @@ class VadProcessor:
             seg = merged[idx]
             duration = seg[1] - seg[0]
             if duration < min_dur:
-                if filtered:
+                merge_limit = merge_gap if allow_gap_merge else chunk_stitch_gap
+                previous_gap = seg[0] - filtered[-1][1] if filtered else float('inf')
+                next_seg = merged[idx + 1] if idx < len(merged) - 1 else None
+                next_gap = next_seg[0] - seg[1] if next_seg else float('inf')
+
+                can_merge_previous = (
+                    bool(filtered)
+                    and previous_gap <= merge_limit
+                    and seg[1] - filtered[-1][0] <= max_dur
+                )
+                can_merge_next = (
+                    next_seg is not None
+                    and next_gap <= merge_limit
+                    and next_seg[1] - seg[0] <= max_dur
+                )
+
+                if can_merge_previous and (not can_merge_next or previous_gap <= next_gap):
                     filtered[-1][1] = seg[1]
-                elif idx < len(merged) - 1:
-                    merged[idx + 1][0] = seg[0]
+                elif can_merge_next:
+                    next_seg[0] = seg[0]
                 else:
+                    # Silero has already filtered sub-min_speech noise. Keep an
+                    # isolated short utterance instead of spanning arbitrary
+                    # silence to force it into a neighbouring ASR window.
                     filtered.append(seg)
             else:
                 filtered.append(seg)
@@ -626,7 +652,7 @@ class VadProcessor:
     def _build_relaxed_retry_config(self) -> VadConfig:
         return replace(
             self.config,
-            threshold=max(0.35, float(self.config.threshold or 0.55) - 0.12),
+            threshold=max(0.35, float(self.config.threshold) - 0.12),
             min_speech_ms=max(120, int(self.config.min_speech_ms * 0.6)),
             min_silence_ms=max(160, int(self.config.min_silence_ms * 0.6)),
             speech_pad_ms=min(320, int(self.config.speech_pad_ms + 60)),
@@ -635,7 +661,7 @@ class VadProcessor:
     def _build_refinement_config(self, config: VadConfig) -> VadConfig:
         return replace(
             config,
-            threshold=min(0.80, float(config.threshold or 0.55) + 0.08),
+            threshold=min(0.80, float(config.threshold) + 0.08),
             min_speech_ms=max(80, int(config.min_speech_ms * 0.6)),
             min_silence_ms=max(120, int(config.min_silence_ms * 0.75)),
             speech_pad_ms=max(40, int(config.speech_pad_ms * 0.5)),
