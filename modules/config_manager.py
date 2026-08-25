@@ -170,9 +170,10 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
-    # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
+    # Whisper/OpenAI 兼容配置。ASR 与 LLM 端点独立，避免全局 LLM 使用
+    # /responses 时被错误地用于 /audio/transcriptions。
     "WHISPER_API_KEY": "",
-    "WHISPER_BASE_URL": "",
+    "WHISPER_BASE_URL": "https://api.openai.com/v1",
     "WHISPER_MODEL_NAME": "whisper-1",
     "WHISPER_TIMESTAMP_GRANULARITIES": "segment,word",
     # Voxtral（Mistral /v1/audio/transcriptions）配置

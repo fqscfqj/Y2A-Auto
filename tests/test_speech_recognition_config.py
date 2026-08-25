@@ -16,6 +16,32 @@ class SpeechRecognitionConfigTests(unittest.TestCase):
         self.assertEqual(recognizer.config.api_provider, 'whisper')
         self.assertEqual(recognizer.config.whisper_timestamp_granularities, 'word')
 
+    def test_whisper_does_not_inherit_global_responses_endpoint_or_key(self):
+        recognizer = create_speech_recognizer_from_config({
+            'SPEECH_RECOGNITION_ENABLED': True,
+            'SPEECH_RECOGNITION_PROVIDER': 'whisper',
+            'OPENAI_API_KEY': 'global-llm-key',
+            'OPENAI_BASE_URL': 'https://llm.example/v1/responses',
+        }, task_id='unit-test-whisper-isolated')
+
+        self.assertIsNotNone(recognizer)
+        self.assertEqual(recognizer.config.api_key, '')
+        self.assertEqual(recognizer.config.base_url, 'https://api.openai.com/v1')
+
+    def test_whisper_uses_its_own_endpoint_and_key(self):
+        recognizer = create_speech_recognizer_from_config({
+            'SPEECH_RECOGNITION_ENABLED': True,
+            'SPEECH_RECOGNITION_PROVIDER': 'whisper',
+            'WHISPER_API_KEY': 'asr-key',
+            'WHISPER_BASE_URL': 'https://asr.example/v1',
+            'OPENAI_API_KEY': 'global-llm-key',
+            'OPENAI_BASE_URL': 'https://llm.example/v1/responses',
+        }, task_id='unit-test-whisper-own-config')
+
+        self.assertIsNotNone(recognizer)
+        self.assertEqual(recognizer.config.api_key, 'asr-key')
+        self.assertEqual(recognizer.config.base_url, 'https://asr.example/v1')
+
     def test_voxtral_config_keeps_voxtral_timestamp_granularities(self):
         recognizer = create_speech_recognizer_from_config({
             'SPEECH_RECOGNITION_ENABLED': True,

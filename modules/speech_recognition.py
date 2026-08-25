@@ -524,8 +524,10 @@ def create_speech_recognizer_from_config(
             timeout_s = float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600.0)
         else:
             api_provider = 'whisper'
-            api_key = app_config.get('WHISPER_API_KEY') or app_config.get('OPENAI_API_KEY', '')
-            base_url = app_config.get('WHISPER_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+            # ASR 与 LLM 配置必须保持隔离。全局 OPENAI_BASE_URL 可能是完整
+            # /responses 地址，该协议不能用于 audio/transcriptions。
+            api_key = app_config.get('WHISPER_API_KEY') or ''
+            base_url = app_config.get('WHISPER_BASE_URL') or 'https://api.openai.com/v1'
             model_name = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
             language = app_config.get('WHISPER_LANGUAGE') or ''
             prompt = app_config.get('WHISPER_PROMPT') or ''
