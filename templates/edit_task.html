@@ -473,7 +473,7 @@
             toggleCoverModeBtn.addEventListener('click', function() {
                 const newMode = coverModeSwitch.checked ? 'crop' : 'pad';
                 
-                fetch('/settings/update_cover_mode', {
+                fetch('{{ url_for("update_cover_mode") }}', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

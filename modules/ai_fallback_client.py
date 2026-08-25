@@ -251,6 +251,51 @@ class _ChatProxy:
         self.completions = _CompletionsProxy(parent)
 
 
+class _FallbackEndpointClient:
+    """Expose one concrete failover endpoint to the request adaptation layer.
+
+    ``modules.utils`` needs the endpoint identity before it builds a request
+    (thinking controls and compatibility actions are endpoint-specific).  The
+    public ``FallbackChatClient`` cannot provide that identity because the
+    endpoint is selected only after the request starts.  This small proxy
+    makes one endpoint look like the existing chat client while keeping the
+    actual failover loop in ``FallbackChatClient``.
+    """
+
+    def __init__(self, raw_client, endpoint):
+        self._raw = raw_client
+        self._endpoint = endpoint
+        self.base_url = getattr(raw_client, "base_url", None) or endpoint.get("base_url", "")
+        self.api_mode = endpoint.get("api_mode", "chat_completions")
+        self._endpoint_model = endpoint.get("model", "")
+        self.chat = _ChatProxy(self)
+
+    def _create(self, kwargs):
+        call_kwargs = dict(kwargs)
+        # Each endpoint owns its model; callers may pass the primary model.
+        call_kwargs["model"] = self._endpoint["model"]
+
+        # Merge endpoint-level extra_body with request-level values while
+        # preserving the request's values on conflicts.
+        merged_extra = dict(self._endpoint.get("extra_body") or {})
+        caller_extra = call_kwargs.pop("extra_body", None)
+        if isinstance(caller_extra, dict):
+            merged_extra.update(caller_extra)
+
+        # DeepSeek's native Chat Completions field differs from the generic
+        # thinking object used by the utility layer.  This conversion must be
+        # performed here, after the actual endpoint has been selected.
+        if "deepseek" in (self._endpoint.get("base_url") or "").lower():
+            thinking_cfg = merged_extra.get("thinking")
+            if isinstance(thinking_cfg, dict) and thinking_cfg.get("enabled") is False:
+                merged_extra.pop("thinking", None)
+                merged_extra["enable_thinking"] = False
+        if merged_extra:
+            call_kwargs["extra_body"] = merged_extra
+
+        return _create_on_endpoint(self._raw, self._endpoint, call_kwargs)
+
+
 def _value(obj, key, default=None):
     if isinstance(obj, dict):
         return obj.get(key, default)
@@ -447,6 +492,8 @@ class ResponsesChatClient:
         self._raw = raw_client
         self._endpoint = endpoint
         self.base_url = getattr(raw_client, 'base_url', None) or endpoint.get('base_url', '')
+        self._endpoint_model = endpoint.get('model', '')
+        self.api_mode = endpoint.get('api_mode', 'responses')
         self.chat = _ChatProxy(self)
 
     def _create(self, kwargs):
@@ -462,40 +509,27 @@ class FallbackChatClient:
         self._endpoints = endpoints
         # 仅故障转移（多端点）模式下关闭 SDK 重试、使用 failover 连接短超时
         self._raw = [_make_raw_client(ep, multi_endpoint=True) for ep in endpoints]
-        # 兼容统一请求层基于 client.base_url 识别服务商、隔离能力缓存的约定。
-        # 故障转移请求总是先访问主端点，因此这里暴露主端点的规范化地址。
+        # 保留主端点身份供旧的直接调用方/诊断代码使用。统一请求层通过
+        # _create_with_endpoint_fallback() 获取实际处理请求的端点代理，避免
+        # thinking 控制和兼容性缓存把备用端点的能力写入主端点。
         self.base_url = getattr(self._raw[0], "base_url", None) or endpoints[0].get("base_url", "")
         self.api_mode = endpoints[0].get('api_mode', 'chat_completions')
         # 兼容 client.chat.completions.create(...) 调用链
         self.chat = _ChatProxy(self)
 
-    def _create(self, kwargs):
-        requested_model = kwargs.pop("model", None)
+    def _create_with_endpoint_fallback(self, request_callback):
+        """Run an endpoint-aware request callback with normal failover rules.
+
+        The callback is responsible for retries that change request shape
+        (for example dropping ``response_format``).  Such retries must stay on
+        the same endpoint; this method only switches endpoints for genuine
+        availability errors raised by the callback.
+        """
         last_exc = None
         for idx, ep in enumerate(self._endpoints):
-            call_kwargs = dict(kwargs)
-            # 以端点自身配置的 model 为准
-            call_kwargs["model"] = ep["model"]
-            # 合并端点级 extra_body 与调用方 extra_body（调用方优先）
-            merged_extra = dict(ep.get("extra_body") or {})
-            caller_extra = call_kwargs.pop("extra_body", None)
-            if isinstance(caller_extra, dict):
-                merged_extra.update(caller_extra)
-            # 部分推理模型（如 DeepSeek 的推理系列）默认把结果放在 reasoning_content、
-            # content 为空；翻译 / 质检等场景需要 content 有值。但仅在调用方**显式要求
-            # 关闭思考**（extra_body.thinking = {type:disabled, enabled:False}，由
-            # utils.openai_chat_create_with_thinking_control 在 thinking_enabled=False
-            # 时注入）时才改写为 DeepSeek 原生禁用参数；调用方启用思考（无 thinking 键）
-            # 时不得覆盖，否则用户显式开启的思考模式会被静默关掉。
-            if "deepseek" in (ep.get("base_url") or "").lower():
-                thinking_cfg = merged_extra.get("thinking")
-                if isinstance(thinking_cfg, dict) and thinking_cfg.get("enabled") is False:
-                    merged_extra.pop("thinking", None)
-                    merged_extra["enable_thinking"] = False
-            if merged_extra:
-                call_kwargs["extra_body"] = merged_extra
+            endpoint_client = _FallbackEndpointClient(self._raw[idx], ep)
             try:
-                return _create_on_endpoint(self._raw[idx], ep, call_kwargs)
+                return request_callback(endpoint_client)
             except Exception as exc:  # noqa: BLE001
                 if _is_unavailable_error(exc):
                     logger.warning(
@@ -509,6 +543,11 @@ class FallbackChatClient:
                 raise
         logger.error("[AI兜底] 所有 AI 端点均不可用")
         raise last_exc if last_exc else RuntimeError("all AI endpoints failed")
+
+    def _create(self, kwargs):
+        return self._create_with_endpoint_fallback(
+            lambda endpoint_client: endpoint_client.chat.completions.create(**dict(kwargs))
+        )
 
 
 def _global_fallback_fields():

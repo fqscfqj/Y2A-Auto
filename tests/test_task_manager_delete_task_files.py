@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _safe_join(base, *paths):
@@ -79,6 +79,17 @@ class DeleteTaskFilesTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertFalse(os.path.exists(task_dir))
+
+    def test_delete_task_files_reports_rmtree_failure(self):
+        task_dir = os.path.join(self.downloads_dir, self.TASK_ID)
+        os.makedirs(task_dir, exist_ok=True)
+
+        with patch.object(shutil, 'rmtree', side_effect=PermissionError('in use')):
+            result = self.delete_task_files(self.TASK_ID)
+
+        self.assertFalse(result)
+        self.assertTrue(os.path.exists(task_dir))
+        self.mock_logger.error.assert_called()
 
 
 if __name__ == '__main__':

@@ -8,12 +8,14 @@
 - 各调用路径（元数据翻译 / 标签 / 分区 / 字幕）都能实际拿到兜底配置
 """
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import openai
 from openai import APIConnectionError, APITimeoutError, APIStatusError
 
 from modules import ai_fallback_client as afc
+from modules import utils
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +448,130 @@ class DeepSeekThinkingControlTests(unittest.TestCase):
         extra = self._create_with_extra({"thinking": {"enabled": True}})
         self.assertIsNotNone(extra)
         self.assertIsNone(extra.get("enable_thinking"))
+
+
+class EndpointScopedCompatibilityTests(unittest.TestCase):
+    """回归：兼容能力和 thinking 控制必须绑定实际处理请求的端点。"""
+
+    class _SequencedClient:
+        def __init__(self, *effects):
+            self.effects = list(effects)
+            self.calls = []
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            effect = self.effects[min(len(self.calls) - 1, len(self.effects) - 1)]
+            if isinstance(effect, BaseException):
+                raise effect
+            return effect
+
+    def setUp(self):
+        with utils._OPENAI_COMPATIBILITY_LOCK:
+            utils._OPENAI_COMPATIBILITY_CACHE.clear()
+            utils._OPENAI_COMPATIBILITY_WARNED.clear()
+
+    def tearDown(self):
+        with utils._OPENAI_COMPATIBILITY_LOCK:
+            utils._OPENAI_COMPATIBILITY_CACHE.clear()
+            utils._OPENAI_COMPATIBILITY_WARNED.clear()
+
+    def test_fallback_capability_cache_does_not_pollute_recovered_primary(self):
+        primary = self._SequencedClient(
+            _StubStatusError("primary down", 503),
+            {"choices": []},
+        )
+        fallback = self._SequencedClient(
+            _StubStatusError("Unsupported parameter: response_format", 400),
+            {"choices": []},
+        )
+
+        def maker(endpoint, **_kwargs):
+            return fallback if "fallback" in endpoint["label"] else primary
+
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(_full_config())
+
+        kwargs = {
+            "model": "caller-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"},
+        }
+        utils.openai_chat_create_with_thinking_control(client, kwargs)
+
+        # The fallback learns its own incompatibility, but the primary has no
+        # reason to drop JSON once it recovers on the next request.
+        self.assertIn("response_format", primary.calls[0])
+        self.assertIn("response_format", fallback.calls[0])
+        self.assertNotIn("response_format", fallback.calls[1])
+        utils.openai_chat_create_with_thinking_control(client, kwargs)
+        self.assertIn("response_format", primary.calls[1])
+        self.assertEqual(primary.calls[1]["model"], "m1")
+        self.assertEqual(fallback.calls[1]["model"], "m2")
+
+    def _assert_fallback_thinking(self, base_url, model_name, expected_extra):
+        primary = self._SequencedClient(_StubStatusError("primary down", 503))
+        fallback = self._SequencedClient({"choices": []})
+
+        def maker(endpoint, **_kwargs):
+            return fallback if "fallback" in endpoint["label"] else primary
+
+        cfg = _full_config(
+            FALLBACK_OPENAI_BASE_URL=base_url,
+            FALLBACK_OPENAI_MODEL_NAME=model_name,
+        )
+        with patch.object(afc, "_make_raw_client", side_effect=maker):
+            client = afc.get_ai_client(cfg)
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {"model": "primary-model", "messages": []},
+            thinking_enabled=False,
+        )
+        self.assertEqual(fallback.calls[-1].get("extra_body"), expected_extra)
+        self.assertEqual(fallback.calls[-1]["model"], model_name)
+
+    def test_fallback_deepseek_thinking_control_uses_backup_identity(self):
+        self._assert_fallback_thinking(
+            "https://api.deepseek.com/v1",
+            "deepseek-reasoner",
+            {"enable_thinking": False},
+        )
+
+    def test_fallback_qwen_thinking_control_uses_backup_identity(self):
+        self._assert_fallback_thinking(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "qwen-plus",
+            {"enable_thinking": False},
+        )
+
+    def test_compatibility_key_separates_model_and_api_mode(self):
+        chat_client = SimpleNamespace(
+            base_url="https://same.example/v1",
+            api_mode="chat_completions",
+            _endpoint_model="model-a",
+        )
+        responses_client = SimpleNamespace(
+            base_url="https://same.example/v1",
+            api_mode="responses",
+            _endpoint_model="model-a",
+        )
+        other_model_client = SimpleNamespace(
+            base_url="https://same.example/v1",
+            api_mode="chat_completions",
+            _endpoint_model="model-b",
+        )
+
+        chat_key = utils._client_compatibility_key(chat_client, {})
+        self.assertNotEqual(
+            chat_key,
+            utils._client_compatibility_key(responses_client, {}),
+        )
+        self.assertNotEqual(
+            chat_key,
+            utils._client_compatibility_key(other_model_client, {}),
+        )
 
 
 class TimeoutNonPositiveNormalizationTests(unittest.TestCase):

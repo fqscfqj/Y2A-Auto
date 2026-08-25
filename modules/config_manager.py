@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+from copy import deepcopy
 from .utils import get_app_subdir
 from .speech_pipeline_settings import (
     inject_speech_pipeline_defaults,
@@ -398,8 +399,11 @@ def load_config():
     
     # 如果配置文件不存在或读取失败，创建默认配置
     logger.info("使用默认配置并创建配置文件")
-    save_config(DEFAULT_CONFIG, config_path)
-    return DEFAULT_CONFIG
+    # 调用方会原地更新 load_config() 的返回值。这里必须返回独立副本，
+    # 否则首次启动或配置损坏后的更新会污染模块级默认值，后续“重置”也会失效。
+    default_config = deepcopy(DEFAULT_CONFIG)
+    save_config(default_config, config_path)
+    return default_config
 
 def save_config(config, config_path=None):
     """
