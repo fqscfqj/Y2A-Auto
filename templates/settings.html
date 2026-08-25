@@ -898,6 +898,7 @@
                                                         <div class="form-group">
                                                             <label for="whisper-base-url" class="form-label">Whisper 接口地址</label>
                                                             <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI 接口地址">
+                                                            <p class="help-text mb-0 mt-2">建议填写支持 <code>/audio/transcriptions</code> 的 API 根地址。留空时继续沿用全局 OpenAI 地址和密钥；系统会自动移除末尾的 <code>/responses</code> 或 <code>/chat/completions</code>，兼容旧配置。若 LLM 与 ASR 使用不同服务，请在此显式填写 ASR 地址和密钥。</p>
                                                         </div>
                                                     </div>
                                                 </div>

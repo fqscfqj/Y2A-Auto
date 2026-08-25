@@ -525,7 +525,15 @@ def create_speech_recognizer_from_config(
         else:
             api_provider = 'whisper'
             api_key = app_config.get('WHISPER_API_KEY') or app_config.get('OPENAI_API_KEY', '')
-            base_url = app_config.get('WHISPER_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+            configured_base_url = (
+                app_config.get('WHISPER_BASE_URL')
+                or app_config.get('OPENAI_BASE_URL')
+                or 'https://api.openai.com/v1'
+            )
+            # 兼容旧配置继续继承全局端点，但不能把完整的 /responses 或
+            # /chat/completions 生成地址直接拼接为 /audio/transcriptions。
+            from .utils import normalize_openai_base_url
+            base_url = normalize_openai_base_url(configured_base_url)
             model_name = app_config.get('WHISPER_MODEL_NAME') or 'whisper-1'
             language = app_config.get('WHISPER_LANGUAGE') or ''
             prompt = app_config.get('WHISPER_PROMPT') or ''

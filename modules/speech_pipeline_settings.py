@@ -35,6 +35,7 @@ SPEECH_PIPELINE_DEFAULTS: Dict[str, Any] = {
     "SPEECH_RECOGNITION_ENABLED": False,
     "SPEECH_RECOGNITION_PROVIDER": "whisper",
     "WHISPER_API_KEY": "",
+    # 留空时继承全局 OpenAI 地址；创建 ASR 客户端前会移除生成端点后缀。
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
     "WHISPER_TIMESTAMP_GRANULARITIES": "segment,word",

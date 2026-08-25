@@ -170,7 +170,7 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
-    # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
+    # Whisper/OpenAI 兼容配置（留空时继承 OPENAI_*，继承地址会先规范化为 API 根地址）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
     "WHISPER_MODEL_NAME": "whisper-1",
