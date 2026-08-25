@@ -547,19 +547,19 @@
 {% block extra_js %}
 <!-- 配置数据存储 -->
 <script type="application/json" id="config-data">
-{% if config %}
-{
-    "channel_ids": "{{ config.channel_ids or '' }}",
-    "channel_keywords": "{{ config.channel_keywords or '' }}",
-    "channel_mode": "{{ config.channel_mode or 'latest' }}",
-    "start_date": "{{ config.start_date or '' }}",
-    "end_date": "{{ config.end_date or '' }}",
-    "order_by": "{{ config.order_by or 'viewCount' }}",
-    "schedule_type": "{{ config.schedule_type or 'manual' }}",
-    "schedule_interval": {{ config.schedule_interval or 120 }},
-    "auto_add_to_tasks": {{ 'true' if config.auto_add_to_tasks else 'false' }},
-    "video_types": "{{ (config.video_types or 'video,short,live') if config else 'video,short,live' }}"
-}
+{% if is_edit and config %}
+{{ {
+    'channel_ids': config.channel_ids or '',
+    'channel_keywords': config.channel_keywords or '',
+    'channel_mode': config.channel_mode or 'latest',
+    'start_date': config.start_date or '',
+    'end_date': config.end_date or '',
+    'order_by': config.order_by or 'viewCount',
+    'schedule_type': config.schedule_type or 'manual',
+    'schedule_interval': config.schedule_interval or 120,
+    'auto_add_to_tasks': config.auto_add_to_tasks,
+    'video_types': config.video_types or 'video,short,live'
+}|tojson }}
 {% else %}
 null
 {% endif %}
@@ -981,4 +981,4 @@ function toggleLatestDateRange() {
     }
 }
 </script>
-{% endblock %} 
+{% endblock %}
