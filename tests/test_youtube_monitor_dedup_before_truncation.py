@@ -144,6 +144,8 @@ class SearchKeywordQueryTests(unittest.TestCase):
         monitor = YouTubeMonitor.__new__(YouTubeMonitor)
         monitor.youtube = _FakeYouTube()
         monitor._last_fetch_had_errors = False
+        monitor._last_fetch_quota_skipped = False
+        monitor._quota_budget_remaining = lambda: 95
         return monitor
 
     @staticmethod
@@ -159,8 +161,14 @@ class SearchKeywordQueryTests(unittest.TestCase):
 
     def test_multiple_keywords_use_one_native_or_search_request(self):
         monitor = self._new_monitor()
+        quota_attempts = []
+        monitor._try_consume_quota = lambda amount, config_id=None: (
+            quota_attempts.append((amount, config_id)) or True
+        )
 
-        def execute(request, _operation):
+        def execute(request, _operation, quota_consumer=None, **_kwargs):
+            if quota_consumer is not None:
+                self.assertTrue(quota_consumer())
             if request == 'search.list':
                 return {'items': [
                     {'id': {'videoId': 'v1'}},
@@ -178,13 +186,14 @@ class SearchKeywordQueryTests(unittest.TestCase):
         search_calls = [params for kind, params in monitor.youtube.calls if kind == 'search.list']
         self.assertEqual(len(search_calls), 1)
         self.assertEqual(search_calls[0]['q'], 'alpha|beta|gamma')
+        self.assertEqual(quota_attempts, [(1, None)])
         self.assertEqual([video['id'] for video in videos], ['v1', 'v2'])
         self.assertFalse(monitor._last_fetch_had_errors)
 
     def test_failed_search_marks_run_incomplete(self):
         monitor = self._new_monitor()
 
-        def execute(_request, _operation):
+        def execute(_request, _operation, **_kwargs):
             raise RuntimeError('quota unavailable')
 
         monitor._execute_with_retry = execute
@@ -202,7 +211,7 @@ class SearchKeywordQueryTests(unittest.TestCase):
     def test_invalid_video_details_response_marks_run_incomplete(self):
         monitor = self._new_monitor()
 
-        def execute(request, _operation):
+        def execute(request, _operation, **_kwargs):
             if request == 'search.list':
                 return {'items': [{'id': {'videoId': 'v1'}}]}
             return {}
