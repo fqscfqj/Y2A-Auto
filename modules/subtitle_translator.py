@@ -473,7 +473,6 @@ class LLMRequester:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "max_tokens": 4096,
         }
         if json_mode:
             create_kwargs["response_format"] = {"type": "json_object"}

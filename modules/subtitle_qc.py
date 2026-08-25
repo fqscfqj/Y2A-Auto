@@ -772,7 +772,6 @@ def _call_ai_judge(
                     {'role': 'user', 'content': json.dumps(user, ensure_ascii=False)}
                 ],
                 'temperature': 0.0,
-                'max_tokens': 120,
                 'response_format': {'type': 'json_object'},
             },
             thinking_enabled=config.get('SUBTITLE_QC_THINKING_ENABLED', False),

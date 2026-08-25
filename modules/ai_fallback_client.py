@@ -386,13 +386,10 @@ def _responses_create_kwargs(chat_kwargs):
         result['instructions'] = '\n\n'.join(instructions)
     result['input'] = response_input
 
-    token_limit = result.pop('max_completion_tokens', None)
-    if token_limit is None:
-        token_limit = result.pop('max_tokens', None)
-    else:
-        result.pop('max_tokens', None)
-    if token_limit is not None:
-        result['max_output_tokens'] = token_limit
+    # 思考与最终正文共享输出额度；项目统一不向上游发送输出 token 上限。
+    result.pop('max_completion_tokens', None)
+    result.pop('max_tokens', None)
+    result.pop('max_output_tokens', None)
 
     response_format = result.pop('response_format', None)
     if response_format is not None:
@@ -476,6 +473,10 @@ def _raise_for_responses_failure(response):
 
 
 def _create_on_endpoint(raw_client, endpoint, chat_kwargs):
+    chat_kwargs = dict(chat_kwargs or {})
+    chat_kwargs.pop('max_tokens', None)
+    chat_kwargs.pop('max_completion_tokens', None)
+    chat_kwargs.pop('max_output_tokens', None)
     if endpoint.get('api_mode') == 'responses':
         response = raw_client.responses.create(**_responses_create_kwargs(chat_kwargs))
         _raise_for_responses_failure(response)

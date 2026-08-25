@@ -140,7 +140,7 @@ class RequestJsonObjectTests(unittest.TestCase):
                    side_effect=client.chat.completions.create.side_effect):
             result = _request_json_object(
                 client, "test-model", "system prompt", {},
-                max_tokens=220, temperature=0.0, thinking_enabled=False,
+                temperature=0.0, thinking_enabled=False,
                 logger_obj=logging.getLogger("test"),
                 scene_name="test_scene",
             )
@@ -155,7 +155,7 @@ class RequestJsonObjectTests(unittest.TestCase):
                    side_effect=client.chat.completions.create.side_effect):
             result = _request_json_object(
                 client, "test-model", "system prompt", {},
-                max_tokens=220, temperature=0.0, thinking_enabled=False,
+                temperature=0.0, thinking_enabled=False,
                 logger_obj=logging.getLogger("test"),
                 scene_name="test_scene",
             )
@@ -171,7 +171,7 @@ class RequestJsonObjectTests(unittest.TestCase):
                    side_effect=client.chat.completions.create.side_effect):
             result = _request_json_object(
                 client, "test-model", "system prompt", {},
-                max_tokens=220, temperature=0.0, thinking_enabled=False,
+                temperature=0.0, thinking_enabled=False,
                 logger_obj=logging.getLogger("test"),
                 scene_name="test_scene",
             )

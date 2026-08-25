@@ -86,6 +86,25 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
 
         self.assertNotIn('extra_body', client.completions.calls[0])
 
+    def test_all_output_token_limits_are_removed_before_request(self):
+        client = _FakeClient()
+        kwargs = _base_kwargs(
+            max_tokens=160,
+            max_completion_tokens=320,
+            max_output_tokens=640,
+        )
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            kwargs,
+            thinking_enabled=True,
+        )
+
+        request = client.completions.calls[0]
+        self.assertNotIn('max_tokens', request)
+        self.assertNotIn('max_completion_tokens', request)
+        self.assertNotIn('max_output_tokens', request)
+
     def test_deepseek_thinking_rejection_retries_without_private_parameter(self):
         def responder(kwargs, _call_number):
             if 'extra_body' in kwargs:
@@ -204,42 +223,6 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         self.assertNotIn('response_format', client.completions.calls[1])
         self.assertNotIn('response_format', client.completions.calls[2])
 
-    def test_switches_from_max_tokens_to_max_completion_tokens(self):
-        def responder(kwargs, _call_number):
-            if 'max_tokens' in kwargs:
-                raise _CompatError(
-                    "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."
-                )
-            return SimpleNamespace(choices=[])
-
-        client = _FakeClient(responder=responder)
-
-        utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
-
-        self.assertEqual(len(client.completions.calls), 2)
-        self.assertEqual(client.completions.calls[1]['max_completion_tokens'], 100)
-        self.assertNotIn('max_tokens', client.completions.calls[1])
-
-    def test_switches_from_max_completion_tokens_to_legacy_max_tokens(self):
-        def responder(kwargs, _call_number):
-            if 'max_completion_tokens' in kwargs:
-                raise _CompatError("Unknown parameter: 'max_completion_tokens'")
-            return SimpleNamespace(choices=[])
-
-        client = _FakeClient(responder=responder)
-        kwargs = _base_kwargs()
-        kwargs.pop('max_tokens')
-        kwargs['max_completion_tokens'] = 100
-
-        utils.openai_chat_create_with_thinking_control(
-            client,
-            kwargs,
-        )
-
-        first_call = client.completions.calls[0]
-        self.assertIn('max_completion_tokens', first_call)
-        self.assertEqual(client.completions.calls[1]['max_tokens'], 100)
-
     def test_removes_unsupported_temperature(self):
         def responder(kwargs, _call_number):
             if 'temperature' in kwargs:
@@ -311,8 +294,6 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         def responder(kwargs, _call_number):
             if 'response_format' in kwargs:
                 raise _CompatError("Unknown parameter: 'response_format'")
-            if 'max_tokens' in kwargs:
-                raise _CompatError("Unsupported parameter: 'max_tokens'")
             if 'temperature' in kwargs:
                 raise _CompatError("Unsupported parameter: 'temperature'")
             return SimpleNamespace(choices=[])
@@ -321,11 +302,11 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
 
         utils.openai_chat_create_with_thinking_control(client, _base_kwargs())
 
-        self.assertEqual(len(client.completions.calls), 4)
+        self.assertEqual(len(client.completions.calls), 3)
         final_call = client.completions.calls[-1]
         self.assertNotIn('response_format', final_call)
         self.assertNotIn('max_tokens', final_call)
-        self.assertEqual(final_call['max_completion_tokens'], 100)
+        self.assertNotIn('max_completion_tokens', final_call)
         self.assertNotIn('temperature', final_call)
 
     def test_authentication_error_is_not_retried(self):
