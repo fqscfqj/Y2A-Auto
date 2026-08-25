@@ -800,10 +800,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
             'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
             'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
+            'AI_FAILOVER_TIMEOUT_SECONDS',
             'VAD_SILERO_MIN_SPEECH_MS',
             'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
             'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
             'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
+            'SUBTITLE_QC_TIMEOUT_SECONDS',
             'SUBTITLE_MIN_TEXT_LENGTH',
             'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
         ]
@@ -824,7 +826,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'MAX_CONCURRENT_TASKS': 2,
                         'MAX_CONCURRENT_UPLOADS': 1,
                         'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 24,
+                        'LOG_CLEANUP_INTERVAL': 12,
                         'SUBTITLE_BATCH_SIZE': 5,
                         'SUBTITLE_MAX_RETRIES': 3,
                         'SUBTITLE_RETRY_DELAY': 5,
@@ -840,11 +842,42 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                         'VAD_SILERO_SPEECH_PAD_MS': 120,
                         'VAD_MAX_SEGMENT_S': 15,
                         'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000
+                        'SUBTITLE_QC_MAX_CHARS': 9000,
+                        'SUBTITLE_QC_TIMEOUT_SECONDS': 120,
+                        # 转换失败的 AI_FAILOVER_TIMEOUT_SECONDS 必须先落到 8，
+                        # 否则 defaults.get(field, 1) 会把它变成 1 秒（合法区间内，
+                        # 后续 1–60 范围校验不再回退），正常稍慢的连接会被 1s 误判宕机。
+                        'AI_FAILOVER_TIMEOUT_SECONDS': 8
                     }
                     defaults.update(SPEECH_PIPELINE_INT_FIELDS)
                     form_data[field] = str(defaults.get(field, 1))
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
+
+        # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
+        # 越界或非法（手工配置 / 直接 POST 负值）回退默认 8 秒，
+        # 避免 httpx 在创建客户端 / 请求时抛 timeout range error。
+        _fkey = 'AI_FAILOVER_TIMEOUT_SECONDS'
+        if _fkey in form_data:
+            try:
+                _fv = int(str(form_data[_fkey]).strip())
+            except (ValueError, TypeError):
+                _fv = None
+            if _fv is None or _fv < 1 or _fv > 60:
+                logger.debug(f"{_fkey} 越界或非法，回退默认 8: {form_data.get(_fkey)}")
+                form_data[_fkey] = '8'
+
+        # SUBTITLE_QC_TIMEOUT_SECONDS 范围校验：设置页声明 10–600 秒。
+        # 越界或非法（手工配置 / 直接 POST 负值 / 非数字）回退默认 120 秒，
+        # 避免负值或超限值被透传给 httpx 客户端时抛 timeout range error。
+        _qc_timeout_key = 'SUBTITLE_QC_TIMEOUT_SECONDS'
+        if _qc_timeout_key in form_data:
+            try:
+                _qc_tv = int(str(form_data[_qc_timeout_key]).strip())
+            except (ValueError, TypeError):
+                _qc_tv = None
+            if _qc_tv is None or _qc_tv < 10 or _qc_tv > 600:
+                logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 120: {form_data.get(_qc_timeout_key)}")
+                form_data[_qc_timeout_key] = '120'
 
         float_fields = [
             'VAD_SILERO_THRESHOLD',
@@ -952,6 +985,23 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         else:
             youtube_monitor.stop_all_schedules()
             logger.info("YouTube API密钥未配置，已跳过监控系统初始化")
+
+        # Issue 101: 非阻断提示——CookieCloud 已启用时，逐项检查服务地址/UUID/密码是否缺失
+        if str(updated_config.get('COOKIECLOUD_ENABLED', False)).lower() in ('true', '1', 'on'):
+            _cookiecloud_missing = []
+            if not str(updated_config.get('COOKIECLOUD_SERVER_URL', '') or '').strip():
+                _cookiecloud_missing.append('服务地址')
+            if not str(updated_config.get('COOKIECLOUD_UUID', '') or '').strip():
+                _cookiecloud_missing.append('UUID')
+            if not str(updated_config.get('COOKIECLOUD_PASSWORD', '') or '').strip():
+                _cookiecloud_missing.append('密码')
+            if _cookiecloud_missing:
+                _append_settings_message(
+                    messages, 'warning',
+                    f'CookieCloud 已启用，但以下必填项为空：{"、".join(_cookiecloud_missing)}。'
+                    'CookieCloud 需要服务地址、UUID、密码三者均非空才能正常同步，'
+                    '请补全后保存，或暂时关闭 CookieCloud。'
+                )
 
         _append_settings_message(messages, 'success', '配置已成功保存')
         final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'
@@ -1821,6 +1871,23 @@ def manual_review():
     
     return render_template('manual_review.html', tasks=review_tasks)
 
+def _resolve_edit_task_action(form):
+    """从多值同名 action 表单中解析实际要执行的动作。
+
+    优先级：force_upload > 其它显式提交的 action > default_action（save_metadata）。
+    升级前已打开/被缓存的旧页面会同时提交 action=save_metadata 与 action=force_upload，
+    二者按 DOM 顺序提交后 Werkzeug 仍保留两个值；这里显式优先识别 force_upload，
+    避免点击「上传到 Bilibili」却只走保存。
+    """
+    _submitted = [a.strip().lower() for a in form.getlist('action') if a and a.strip()]
+    if 'force_upload' in _submitted:
+        return 'force_upload'
+    if _submitted:
+        return _submitted[0]
+    _default = form.get('default_action') or 'save_metadata'
+    return (_default or 'save_metadata').strip().lower()
+
+
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_task(task_id):
@@ -1832,7 +1899,9 @@ def edit_task(task_id):
         return redirect(url_for('tasks'))
     
     if request.method == 'POST':
-        action = request.form.get('action', 'save_metadata').strip().lower()
+        # 主表单的隐藏字段已改名 default_action（避免与上传按钮的同名 action 冲突）。
+        # 多值同名 action 时显式优先匹配 force_upload（而非取 DOM 顺序第一个）。
+        action = _resolve_edit_task_action(request.form)
         redirect_target = url_for('edit_task', task_id=task_id)
 
         if action == 'replace_cover':
@@ -2794,6 +2863,53 @@ def settings():
     )
 
 
+@app.route('/settings/update_cover_mode', methods=['POST'])
+@login_required
+def update_cover_mode():
+    """Persist the cover processing mode used by subsequent uploads."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            'success': False,
+            'message': '请求体必须是 JSON 对象。',
+        }), 400
+
+    mode = payload.get('mode')
+    if not isinstance(mode, str) or mode not in ('crop', 'pad'):
+        return jsonify({
+            'success': False,
+            'message': '封面处理模式必须是 crop 或 pad。',
+        }), 400
+
+    try:
+        updated_config = update_config({'COVER_PROCESSING_MODE': mode})
+    except Exception as exc:
+        logger.error('保存封面处理模式失败: %s', exc)
+        return jsonify({
+            'success': False,
+            'message': '保存封面处理模式失败，请稍后重试。',
+        }), 500
+
+    # Keep the running application and task processor in sync with the
+    # persisted value; a restart should not be required for the next upload.
+    try:
+        configure_app(app, updated_config)
+        from modules.task_manager import get_global_task_processor
+        get_global_task_processor(updated_config)
+    except Exception as exc:
+        # Persistence already succeeded.  Log a runtime-refresh failure but
+        # still report success so the caller does not incorrectly retry a
+        # setting that is already stored on disk.
+        logger.warning('封面处理模式已保存，但刷新运行时配置失败: %s', exc)
+
+    return jsonify({
+        'success': True,
+        'mode': mode,
+        'cover_processing_mode': mode,
+        'message': '封面处理模式已更新。',
+    })
+
+
 @app.route('/settings/tgbot-token', methods=['POST'])
 @login_required
 def settings_tgbot_token():
@@ -3390,7 +3506,7 @@ def schedule_log_cleanup():
     """为日志清理创建并启动一个BackgroundScheduler, 返回调度器对象"""
     try:
         config = load_config()
-        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 24))
+        interval_hours = int(config.get('LOG_CLEANUP_INTERVAL', 12))
         if not config.get('LOG_CLEANUP_ENABLED', False):
             return None
 

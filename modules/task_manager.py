@@ -1995,7 +1995,7 @@ def delete_task_files(task_id):
             logger.info(f"任务 {task_id} 的下载目录已删除: {task_dir_real}")
         except Exception as e:
             logger.error(f"删除任务 {task_id} 的下载目录失败: {str(e)}")
-            # 不直接返回False，尝试继续删除其他文件
+            return False
 
     # 封面图片现在保存在downloads目录中，无需单独删除
 
@@ -3057,6 +3057,10 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
+            'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),
+            'FALLBACK_OPENAI_BASE_URL': self.config.get('FALLBACK_OPENAI_BASE_URL', ''),
+            'FALLBACK_OPENAI_MODEL_NAME': self.config.get('FALLBACK_OPENAI_MODEL_NAME', ''),
             # 可选：允许用户配置固定分区ID，确保一次命中
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
@@ -7073,6 +7077,10 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
+            'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),
+            'FALLBACK_OPENAI_BASE_URL': self.config.get('FALLBACK_OPENAI_BASE_URL', ''),
+            'FALLBACK_OPENAI_MODEL_NAME': self.config.get('FALLBACK_OPENAI_MODEL_NAME', ''),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
@@ -7130,6 +7138,10 @@ class TaskProcessor:
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
             'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
+            # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
+            'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),
+            'FALLBACK_OPENAI_BASE_URL': self.config.get('FALLBACK_OPENAI_BASE_URL', ''),
+            'FALLBACK_OPENAI_MODEL_NAME': self.config.get('FALLBACK_OPENAI_MODEL_NAME', ''),
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
             'FIXED_PARTITION_ID_BILIBILI': self.config.get('FIXED_PARTITION_ID_BILIBILI', ''),
             'RECOMMEND_PARTITION_WITH_COVER': self.config.get('RECOMMEND_PARTITION_WITH_COVER', False),
@@ -8049,8 +8061,10 @@ class TaskProcessor:
                         self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
                         and _get_task_upload_target(task) == UPLOAD_TARGET_ACFUN
                     ):
-                        delete_task_files(task_id)
-                        task_logger.info(f"AcFun 上传完成，已删除本地文件释放空间: {task_id}")
+                        if delete_task_files(task_id):
+                            task_logger.info(f"AcFun 上传完成，已删除本地文件释放空间: {task_id}")
+                        else:
+                            task_logger.warning(f"AcFun 上传完成，但本地文件删除失败，请手动清理: {task_id}")
                 except Exception as _e:
                     task_logger.warning(f"上传后删除本地文件失败（不影响已完成的 AcFun 上传）: {_e}")
             else:
@@ -8316,8 +8330,10 @@ class TaskProcessor:
                         self.config.get('DELETE_DOWNLOAD_FILES_AFTER_UPLOAD', False)
                         and _get_task_upload_target(task) != UPLOAD_TARGET_ACFUN
                     ):
-                        delete_task_files(task_id)
-                        task_logger.info(f"bilibili 上传完成，已删除本地文件释放空间: {task_id}")
+                        if delete_task_files(task_id):
+                            task_logger.info(f"bilibili 上传完成，已删除本地文件释放空间: {task_id}")
+                        else:
+                            task_logger.warning(f"bilibili 上传完成，但本地文件删除失败，请手动清理: {task_id}")
                 except Exception as _e:
                     task_logger.warning(f"上传后删除本地文件失败（不影响已完成的 B 站上传）: {_e}")
             else:

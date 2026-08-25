@@ -688,6 +688,7 @@
                                                             <div class="form-group">
                                                                 <label for="openai-url" class="form-label">接口地址</label>
                                                                 <input type="text" id="openai-url" name="OPENAI_BASE_URL" value="{{ config.OPENAI_BASE_URL }}" class="form-control" placeholder="如 https://api.openai.com/v1">
+                                                                <p class="help-text mb-0 mt-2">填写 OpenAI 兼容 API 的根地址；也可粘贴完整 <code>/chat/completions</code> 或 <code>/responses</code> 地址，系统会自动选择并规范化协议。请求参数和消息格式会按端点实际能力自动协商。</p>
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
@@ -705,7 +706,8 @@
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="openai-thinking-enabled">通用模型启用思考模式</label>
+                                                                <label class="form-check-label" for="openai-thinking-enabled">允许模型使用思考模式</label>
+                                                                <p class="help-text mb-0 mt-2">关闭时会按可识别的 DeepSeek、Qwen、MiMo 接口发送各自的禁用思考参数；其他模型不会收到私有参数。</p>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -740,7 +742,47 @@
                                                         <div class="col-12">
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="subtitle-openai-thinking-enabled" name="SUBTITLE_OPENAI_THINKING_ENABLED" {% if config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
-                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">字幕模型启用思考模式</label>
+                                                                <label class="form-check-label" for="subtitle-openai-thinking-enabled">允许字幕模型使用思考模式</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="settings-subcard">
+                                                    <div class="settings-subcard-header">
+                                                        <h5>兜底端点（故障转移）</h5>
+                                                        <span class="settings-status-badge {{ 'is-success' if config.get('FALLBACK_OPENAI_API_KEY') else 'is-neutral' }}">
+                                                            {{ '已配置' if config.get('FALLBACK_OPENAI_API_KEY') else '未配置（单端点）' }}
+                                                        </span>
+                                                    </div>
+                                                    <div class="settings-hint mb-2">
+                                                        主端点（上方「全局模型」）出现连接失败 / 超时 / 5xx 时，自动切换到此兜底端点继续调用；
+                                                        留空则维持原有单端点行为，不影响任何其它功能。
+                                                    </div>
+                                                    <div class="row g-3">
+                                                        <div class="col-12">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-url" class="form-label">兜底端接口地址</label>
+                                                                <input type="text" id="fallback-openai-url" name="FALLBACK_OPENAI_BASE_URL" value="{{ config.get('FALLBACK_OPENAI_BASE_URL', '') }}" class="form-control" placeholder="如 https://api.openai.com/v1（留空则沿用主端点地址）">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-key" class="form-label">兜底端 API 密钥</label>
+                                                                <input type="password" id="fallback-openai-key" name="FALLBACK_OPENAI_API_KEY" value="{{ config.get('FALLBACK_OPENAI_API_KEY', '') }}" class="form-control" placeholder="留空则不启用故障转移">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="fallback-openai-model" class="form-label">兜底端模型名</label>
+                                                                <input type="text" id="fallback-openai-model" name="FALLBACK_OPENAI_MODEL_NAME" value="{{ config.get('FALLBACK_OPENAI_MODEL_NAME', '') }}" class="form-control" placeholder="留空则沿用主端点模型">
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="failover-timeout" class="form-label">故障转移连接超时（秒）</label>
+                                                                <input type="number" min="1" max="60" step="1" id="failover-timeout" name="AI_FAILOVER_TIMEOUT_SECONDS" value="{{ config.get('AI_FAILOVER_TIMEOUT_SECONDS', 8) }}" class="form-control" placeholder="默认 8">
+                                                                <div class="form-text">仅用于探测兜底端点的连接阶段；读取/写入超时仍沿用全局 OPENAI_TIMEOUT_SECONDS（默认 600s），不会被此值截断。</div>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1309,12 +1351,21 @@
                                                     <div class="col-md-6">
                                                         <label class="checkbox-label">
                                                             <input type="checkbox" name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED" {% if config.get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False) %}checked{% endif %}>
-                                                            下载 YouTube 自动生成字幕
-                                                        </label>
+                                                        下载 YouTube 自动生成字幕
+                                                    </label>
+                                                </div>
+                                                <div class="col-12" id="subtitle-source-hint" style="display:none;">
+                                                    <div class="alert alert-warning mb-2" role="alert">
+                                                        <strong>提示：</strong> 已开启「字幕翻译」，但当前未开启任何字幕来源（「下载 YouTube 自动生成字幕」或「语音识别 ASR」）。
+                                                        中文字幕由 ffmpeg 烧录生成，必须至少有一种来源才能产出字幕；否则发布视频将 <strong>没有字幕</strong> 且不会有报错。
                                                     </div>
-                                                    <div class="col-md-6">
-                                                        <div class="form-group">
-                                                            <label for="subtitle-source-lang" class="form-label">源语言</label>
+                                                    <button type="button" class="btn btn-sm btn-outline-primary" id="subtitle-enable-source-btn">
+                                                        一键开启字幕翻译 + 默认来源（YouTube 自动字幕）
+                                                    </button>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="form-group">
+                                                        <label for="subtitle-source-lang" class="form-label">源语言</label>
                                                             <select name="SUBTITLE_SOURCE_LANGUAGE" id="subtitle-source-lang" class="form-select">
                                                                 <option value="auto" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'auto' %}selected{% endif %}>自动检测</option>
                                                                 <option value="en" {% if config.SUBTITLE_SOURCE_LANGUAGE == 'en' %}selected{% endif %}>英语</option>
@@ -1359,7 +1410,7 @@
                                                         </div>
                                                     </div>
                                                     <div class="col-12">
-                                                        <p class="help-text mb-0">自动化流程在开启字幕翻译时会下载字幕；勾选后还会额外尝试下载 YouTube 自动生成字幕，适用于原视频没有人工字幕的情况。</p>
+                                                        <p class="help-text mb-0">中文字幕由 ffmpeg 烧录进画面（B 站为现成视频文件，无软字幕通道），需要「字幕来源 + 字幕翻译」两步同时开启才会出字幕。来源二选一：① 下载 YouTube 自动生成字幕（适用于原视频无人工字幕）；② 语音识别 ASR 转写。上方「启用字幕翻译」开启后若未选任何来源，页面会提示且发布视频将没有字幕。</p>
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">
@@ -1404,22 +1455,29 @@
                                                     </button>
                                                     <div class="collapse mt-3" id="advancedSubtitleQc">
                                                         <div class="row g-3">
-                                                            <div class="col-md-4">
+                                                            <div class="col-md-3">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-threshold" class="form-label">通过阈值</label>
                                                                     <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.35) }}" class="form-control">
                                                                 </div>
                                                             </div>
-                                                            <div class="col-md-4">
+                                                            <div class="col-md-3">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-sample" class="form-label">AI 抽样上限</label>
                                                                     <input type="number" min="10" max="300" step="1" id="subtitle-qc-sample" name="SUBTITLE_QC_SAMPLE_MAX_ITEMS" value="{{ config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80) }}" class="form-control">
                                                                 </div>
                                                             </div>
-                                                            <div class="col-md-4">
+                                                            <div class="col-md-3">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-maxchars" class="form-label">送检字符上限</label>
                                                                     <input type="number" min="1000" max="30000" step="500" id="subtitle-qc-maxchars" name="SUBTITLE_QC_MAX_CHARS" value="{{ config.get('SUBTITLE_QC_MAX_CHARS', 9000) }}" class="form-control">
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-3">
+                                                                <div class="form-group">
+                                                                    <label for="subtitle-qc-timeout" class="form-label">质检超时(秒)</label>
+                                                                    <input type="number" min="10" max="600" step="1" id="subtitle-qc-timeout" name="SUBTITLE_QC_TIMEOUT_SECONDS" value="{{ config.get('SUBTITLE_QC_TIMEOUT_SECONDS', 120) }}" class="form-control">
+                                                                    <div class="form-text">AI 质检单次调用超时，范围 10–600 秒，默认 120。</div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -1854,7 +1912,7 @@
                                                     <div class="col-md-6">
                                                         <div class="form-group">
                                                             <label for="log-cleanup-interval" class="form-label">清理间隔（小时）</label>
-                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.LOG_CLEANUP_INTERVAL }}" min="1" max="168" class="form-control">
+                                                            <input type="number" id="log-cleanup-interval" name="LOG_CLEANUP_INTERVAL" value="{{ config.get('LOG_CLEANUP_INTERVAL', 12) }}" min="1" max="168" class="form-control">
                                                         </div>
                                                     </div>
                                                 </div>
@@ -2971,6 +3029,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
+            // 字幕来源校验（非阻断）：开启「字幕翻译」但无来源时给出明确提示，避免静默无字幕
+            var subTransChk = document.querySelector('input[name="SUBTITLE_TRANSLATION_ENABLED"]');
+            var subYtChk = document.querySelector('input[name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED"]');
+            var subAsrChk = document.querySelector('input[name="SPEECH_RECOGNITION_ENABLED"]');
+            if (subTransChk && subTransChk.checked
+                && !((subYtChk && subYtChk.checked) || (subAsrChk && subAsrChk.checked))) {
+                if (typeof showSettingsToast === 'function') {
+                    showSettingsToast('warning', '已开启「字幕翻译」但未开启任何字幕来源，发布视频将没有字幕。请至少开启「下载 YouTube 自动生成字幕」或「语音识别 ASR」。');
+                }
+            }
+
             event.preventDefault();
             if (saveSettingsBtn && saveSettingsBtn.disabled) {
                 return;
@@ -3325,6 +3394,38 @@ document.addEventListener('DOMContentLoaded', function () {
                 searchInput.value = '';
                 runSearch('');
                 searchInput.focus();
+            });
+        }
+    });
+
+    // 字幕来源联动提示：开启「字幕翻译」但未开启任何来源时显示提示与一键开启入口
+    document.addEventListener('DOMContentLoaded', function () {
+        var subTransChk = document.querySelector('input[name="SUBTITLE_TRANSLATION_ENABLED"]');
+        var subYtChk = document.querySelector('input[name="YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED"]');
+        var subAsrChk = document.querySelector('input[name="SPEECH_RECOGNITION_ENABLED"]');
+        var hint = document.getElementById('subtitle-source-hint');
+
+        function updateSubtitleSourceHint() {
+            if (!subTransChk || !hint) return;
+            var translationOn = subTransChk.checked;
+            var hasSource = (subYtChk && subYtChk.checked) || (subAsrChk && subAsrChk.checked);
+            hint.style.display = (translationOn && !hasSource) ? '' : 'none';
+        }
+
+        [subTransChk, subYtChk, subAsrChk].forEach(function (c) {
+            if (c) c.addEventListener('change', updateSubtitleSourceHint);
+        });
+        updateSubtitleSourceHint();
+
+        var enableBtn = document.getElementById('subtitle-enable-source-btn');
+        if (enableBtn) {
+            enableBtn.addEventListener('click', function () {
+                if (subTransChk) subTransChk.checked = true;
+                if (subYtChk) subYtChk.checked = true;
+                updateSubtitleSourceHint();
+                if (typeof showSettingsToast === 'function') {
+                    showSettingsToast('info', '已勾选字幕翻译与默认来源（YouTube 自动字幕），保存后生效。');
+                }
             });
         }
     });

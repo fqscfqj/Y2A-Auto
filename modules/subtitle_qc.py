@@ -187,14 +187,42 @@ def _classify_suspicious_text(text: str, normalized: str) -> Optional[str]:
     return None
 
 
-def _build_openai_client(api_key: str, base_url: str):
-    import openai
+def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
+    """构建 AI 客户端（统一走 ai_fallback_client，主端点不可用时自动切换兜底端点）。
 
-    options: Dict[str, Any] = {}
-    if base_url:
-        options['base_url'] = base_url
-    options['timeout'] = 120.0
-    return openai.OpenAI(api_key=api_key, **options)
+    兜底端点（FALLBACK_OPENAI_*）由 get_ai_client 从传入配置或全局配置统一解析；
+    同时显式透传全局配置的 OPENAI_TIMEOUT_SECONDS，避免统一客户端回退到 600s
+    而忽略用户配置、并改掉 QC 原先的超时语义。
+    """
+    from modules.ai_fallback_client import get_ai_client
+    from modules.config_manager import load_config
+
+    # QC 使用**独立配置键** SUBTITLE_QC_TIMEOUT_SECONDS（默认 120s），
+    # 不再依赖「全局 OPENAI_TIMEOUT_SECONDS 是否显式配置」来判断——
+    # 因为 load_config() 会把 DEFAULT_CONFIG 的 600 合并进返回值，
+    # 普通默认安装中该键永远为 600，is-explicit 判断恒为假、120s 分支永不生效
+    # （reviewer 第三轮指出的行为回归）。独立键语义清晰、无回归：
+    # 未配置 → 120s（QC 原默认）；配置 → 用之。
+    # 该键已纳入 DEFAULT_CONFIG + 设置页 + _perform_settings_save（数值字段 + 10–600 范围校验），
+    # 故可正常持久化、不再被 _prune_unknown_config_keys 删除。此处再做兜底净化，
+    # 防止手工改坏 config.json 或旧版本残留导致非数字 / 非有限 / 越界值透传给 httpx。
+    _qc_timeout_raw = (load_config() or {}).get('SUBTITLE_QC_TIMEOUT_SECONDS')
+    _qc_timeout = 120
+    try:
+        _qc_tv = float(str(_qc_timeout_raw).strip()) if _qc_timeout_raw is not None else None
+        if _qc_tv is not None and _qc_tv == _qc_tv and 10 <= _qc_tv <= 600:  # NaN 自检 + 范围
+            _qc_timeout = int(_qc_tv)
+    except (ValueError, TypeError):
+        pass
+
+    cfg: Dict[str, Any] = {
+        'OPENAI_API_KEY': api_key,
+        'OPENAI_BASE_URL': base_url,
+        'OPENAI_TIMEOUT_SECONDS': _qc_timeout,
+    }
+    if model_name:
+        cfg['OPENAI_MODEL_NAME'] = model_name
+    return get_ai_client(cfg)
 
 
 def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -713,7 +741,7 @@ def _call_ai_judge(
     if not api_key:
         return None, None, None, 'missing_openai_api_key'
 
-    client = _build_openai_client(api_key=api_key, base_url=base_url)
+    client = _build_openai_client(api_key=api_key, base_url=base_url, model_name=model_name)
     from .utils import openai_chat_create_with_thinking_control
 
     system = (

@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+from copy import deepcopy
 from .utils import get_app_subdir
 from .speech_pipeline_settings import (
     inject_speech_pipeline_defaults,
@@ -91,6 +92,14 @@ DEFAULT_CONFIG = {
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     "OPENAI_THINKING_ENABLED": False,
     "OPENAI_TIMEOUT_SECONDS": 600,  # OpenAI API 请求超时秒数；思考模型输出可达64k token，建议不低于300
+    # 兜底 AI 端点（可选）：当主端点 OPENAI_* 不可用（连接错误 / 超时 / 5xx）时自动切换。
+    # 未配置 FALLBACK_OPENAI_API_KEY 时退化为单端点，行为与原来完全一致。
+    "FALLBACK_OPENAI_API_KEY": "",
+    "FALLBACK_OPENAI_BASE_URL": "",
+    "FALLBACK_OPENAI_MODEL_NAME": "",
+    # 故障转移连接探测超时（秒）：仅用于快速判断主端点是否可达，
+    # 不影响正常响应的读取超时（读取超时始终保留 OPENAI_TIMEOUT_SECONDS，默认 600s）。
+    "AI_FAILOVER_TIMEOUT_SECONDS": 8,
     # 固定分区ID（可选）：如设置则推荐分区将直接使用该ID
     "FIXED_PARTITION_ID": "",
     # bilibili固定分区ID（可选）：如设置则bilibili推荐分区将直接使用该ID
@@ -147,11 +156,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）
-
-    # 监控配速：每轮 search 次数上限（每次 search 消耗 YouTube Data API 100 配额单位，
-    # 免费额度 10000/天）。多关键词 OR 搜索时按天轮流挑选，结合每天仅跑一次，可避免
-    # 高频调度在一天内把配额打满（429 quotaExceeded）。
-    "MONITOR_SEARCHES_PER_RUN": 2,
+    "SUBTITLE_QC_TIMEOUT_SECONDS": 120,  # 质检单次 AI 调用超时（秒），范围 10–600；未配置/非法回退 120
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
@@ -394,8 +399,11 @@ def load_config():
     
     # 如果配置文件不存在或读取失败，创建默认配置
     logger.info("使用默认配置并创建配置文件")
-    save_config(DEFAULT_CONFIG, config_path)
-    return DEFAULT_CONFIG
+    # 调用方会原地更新 load_config() 的返回值。这里必须返回独立副本，
+    # 否则首次启动或配置损坏后的更新会污染模块级默认值，后续“重置”也会失效。
+    default_config = deepcopy(DEFAULT_CONFIG)
+    save_config(default_config, config_path)
+    return default_config
 
 def save_config(config, config_path=None):
     """

@@ -773,3 +773,45 @@ class EnforceRhythmBoundaryGuardTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CreateClientModelPropagationTests(unittest.TestCase):
+    """P1 回归：_create_client 必须把 resolved model 透传进 client config。
+
+    启用兜底后 FallbackChatClient 以端点配置的 model 覆盖调用方 model；
+    若这里缺 OPENAI_MODEL_NAME，分段请求会被替换成默认 gpt-3.5-turbo，
+    在仅支持其它模型的端点上直接失败。
+    """
+
+    def _segmenter(self, **kw):
+        cfg = AISegmentationConfig.from_app_config(_base_app_config(**kw))
+        return AISegmenter(cfg, logger=MagicMock())
+
+    def test_client_config_includes_resolved_model(self):
+        seg = self._segmenter(AI_SEGMENTATION_MODEL_NAME='seg-model',
+                              AI_SEGMENTATION_API_KEY='sk-seg',
+                              AI_SEGMENTATION_BASE_URL='https://seg.example/v1')
+        captured = {}
+
+        def _fake_get_openai_client(cfg):
+            captured['cfg'] = dict(cfg)
+            return MagicMock()
+
+        with patch('modules.ai_segmentation.get_openai_client', side_effect=_fake_get_openai_client):
+            seg._create_client()
+
+        self.assertEqual(captured['cfg']['OPENAI_MODEL_NAME'], 'seg-model')
+
+    def test_client_config_inherits_global_model_when_seg_model_empty(self):
+        # AI_SEGMENTATION_MODEL_NAME 留空时 resolved_model_name 继承全局 OPENAI_MODEL_NAME
+        seg = self._segmenter(AI_SEGMENTATION_API_KEY='sk-seg')
+        captured = {}
+
+        def _fake_get_openai_client(cfg):
+            captured['cfg'] = dict(cfg)
+            return MagicMock()
+
+        with patch('modules.ai_segmentation.get_openai_client', side_effect=_fake_get_openai_client):
+            seg._create_client()
+
+        self.assertEqual(captured['cfg']['OPENAI_MODEL_NAME'], 'gpt-4o')

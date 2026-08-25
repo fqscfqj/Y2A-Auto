@@ -1561,6 +1561,10 @@ class AISegmenter:
         client_config = {
             'OPENAI_API_KEY': self.config.resolved_api_key,
             'OPENAI_BASE_URL': self.config.resolved_base_url,
+            # 必须透传 resolved model：统一客户端（含启用兜底时的 FallbackChatClient）
+            # 会以端点配置的 model 为准覆盖调用方传入的 model，缺了这里分段请求
+            # 会被替换成默认 gpt-3.5-turbo，在仅支持其它模型的端点上直接失败。
+            'OPENAI_MODEL_NAME': self.config.resolved_model_name,
             'OPENAI_TIMEOUT_SECONDS': self.config.request_timeout_s,
         }
         return get_openai_client(client_config)

@@ -8,7 +8,7 @@ requests>=2.31,<3.0
 urllib3>=2.6.3,<3.0
 
 # AI and transcription stack: keep OpenAI/httpx within supported major lines.
-openai>=1.0,<3.0
+openai>=1.66.0,<3.0
 httpx>=0.27,<0.28
 numpy>=1.24,<3.0
 # silero-vad depends on torch/torchaudio; Dockerfile still installs CPU wheels explicitly.
@@ -21,7 +21,7 @@ lxml>=6.1.0,<7.0
 # Platform SDKs: stay on the verified release line unless tested otherwise.
 # tzdata：在缺少系统 IANA 时区库的环境（如部分精简镜像 / Windows）提供
 # America/Los_Angeles 等时区数据，确保 YouTube 配额日对齐太平洋时间（DST-aware）。
-# 缺失时 _quota_day_str 会回退 UTC 日（仅边界多一次重置，不会冬令时算错日期）。
+# 缺失时 _quota_day_str 会保守回退固定 UTC-8，最多延后一小时重置而不会提前放量。
 tzdata>=2024.1
 alibabacloud_green20220302==2.20.4
 alibabacloud_tea_openapi==0.3.15

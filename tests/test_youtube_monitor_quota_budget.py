@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
 
 class YoutubeMonitorQuotaBudgetTests(unittest.TestCase):
-    """PR #127 跟进：调度间隔尊重用户配置 + 跨配置共享每日配额预算 + 立即检查不绕过预算。"""
+    """PR #127 跟进：调度间隔、每日 Search Queries 预算与立即检查。"""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -75,27 +75,7 @@ class YoutubeMonitorQuotaBudgetTests(unittest.TestCase):
         self.assertEqual(self.monitor._resolve_schedule_interval_minutes({"schedule_interval": "abc"}), 120)
         self.assertEqual(self.monitor._resolve_schedule_interval_minutes({}), 120)
 
-    # ---- MONITOR_SEARCHES_PER_RUN 严格校验 ----
-
-    def test_searches_per_run_default_and_strict(self):
-        with patch("modules.youtube_monitor.load_config", return_value={}):
-            self.assertEqual(self.monitor._resolve_monitor_searches_per_run(), 2)
-
-        # 正整数保持不变（但受上限 10 约束）
-        with patch("modules.youtube_monitor.load_config", return_value={"MONITOR_SEARCHES_PER_RUN": 5}):
-            self.assertEqual(self.monitor._resolve_monitor_searches_per_run(), 5)
-
-        # 超过上限 10 -> 截断为 10
-        with patch("modules.youtube_monitor.load_config", return_value={"MONITOR_SEARCHES_PER_RUN": 999}):
-            self.assertEqual(self.monitor._resolve_monitor_searches_per_run(), 10)
-
-        # 非正整数 -> 回退 2
-        with patch("modules.youtube_monitor.load_config", return_value={"MONITOR_SEARCHES_PER_RUN": 0}):
-            self.assertEqual(self.monitor._resolve_monitor_searches_per_run(), 1)  # max(0,1)=1
-        with patch("modules.youtube_monitor.load_config", return_value={"MONITOR_SEARCHES_PER_RUN": "oops"}):
-            self.assertEqual(self.monitor._resolve_monitor_searches_per_run(), 2)
-
-    # ---- 跨配置共享的每日配额预算 ----
+    # ---- 跨配置共享的每日 Search Queries 预算 ----
 
     def test_quota_budget_caps_daily_searches(self):
         budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
@@ -212,9 +192,7 @@ class QuotaPersistenceAndAtomicTests(unittest.TestCase):
         self.assertEqual(self.monitor._quota_budget_remaining(), 0)
 
     def test_try_consume_quota_shared_budget_cap(self):
-        # 单一全局令牌桶：搜索型配置共享同一天额度，不受配置数量/类型影响
-        # （不再按「每配置份额」分配，故 10 个 playlist + 1 个搜索时，搜索配置
-        #  仍能用满 95 次，而非旧模型被分母虚大压到 8 次而过度限流）。
+        # 未传 config_id 的兼容调用仅受全局桶约束，但仍不能超过 95 次安全预算。
         budget = self.monitor._MONITOR_DAILY_SEARCH_BUDGET
         for _ in range(budget):
             self.assertTrue(self.monitor._try_consume_quota(1))
@@ -442,55 +420,12 @@ class ExecuteWithRetryQuotaTests(unittest.TestCase):
 
     def test_circuit_breaker_blocks_subsequent_searches(self):
         # 当日熔断后，任何 search 入口的 _try_consume_quota / 前置检查都应短路，
-        # 解决旧实现「第一个关键词 429 后第二个仍真实发请求」的缺陷。
+        # 避免定时任务或其它配置在明知配额耗尽后继续发请求。
         self.monitor._mark_quota_depleted_today()
         self.assertEqual(self.monitor._quota_budget_remaining(), 0)
         self.assertFalse(self.monitor._try_consume_quota(1))
         # _fetch_search_videos / _fetch_channel_search_videos 的前置检查也会跳过
         # （依赖 _quota_budget_remaining() <= 0），无需再发请求。
-
-
-class KeywordRotationCursorTests(unittest.TestCase):
-    """PR #127 第三轮：关键词轮转游标持久化、每轮推进。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.get_app_subdir_patcher = patch(
-            "modules.youtube_monitor.get_app_subdir",
-            side_effect=lambda sub: (os.makedirs(os.path.join(self.tmpdir, sub), exist_ok=True)
-                                     or os.path.join(self.tmpdir, sub)),
-        )
-        self.init_api_patcher = patch.object(
-            YouTubeMonitor, "_init_youtube_api",
-            return_value=(False, API_INIT_STATUS_MISSING_API_KEY),
-        )
-        self.get_app_subdir_patcher.start()
-        self.init_api_patcher.start()
-        self.monitor = YouTubeMonitor()
-
-    def tearDown(self):
-        try:
-            scheduler = getattr(self.monitor, "scheduler", None)
-            if scheduler and getattr(scheduler, "running", False):
-                scheduler.shutdown(wait=False)
-        finally:
-            self.get_app_subdir_patcher.stop()
-            self.init_api_patcher.stop()
-            shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_cursor_advances_each_round_and_persists(self):
-        # 10 个关键词、每轮 2 个：0 → 2 → 4 → ...（每轮推进，而非按天固定）
-        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 0)
-        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 2)
-        self.assertEqual(self.monitor._next_keyword_rotation_start(1, 10, 2), 4)
-        # 新实例（模拟重启）读到同一游标，继续推进
-        m2 = YouTubeMonitor()
-        self.assertEqual(m2._next_keyword_rotation_start(1, 10, 2), 6)
-
-    def test_cursor_wraps_around(self):
-        # 2 个关键词、每轮 2 个：0 → 0（覆盖全部后回到开头）
-        self.assertEqual(self.monitor._next_keyword_rotation_start(9, 2, 2), 0)
-        self.assertEqual(self.monitor._next_keyword_rotation_start(9, 2, 2), 0)
 
 
 class DisableCancelsImmediateTests(unittest.TestCase):
@@ -546,6 +481,24 @@ class DisableCancelsImmediateTests(unittest.TestCase):
             ok, msg = self.monitor.run_monitor(cid)
         self.assertFalse(ok)
         self.assertIn("已禁用", msg)
+
+    def test_run_monitor_keeps_time_cursor_when_quota_skips_fetch(self):
+        self.monitor.youtube = object()
+        cid = self.monitor.create_monitor_config(
+            {"name": "quota-skip", "schedule_type": "manual", "enabled": True})
+
+        def fetch_with_quota_skip(_config):
+            self.monitor._last_fetch_quota_skipped = True
+            return []
+
+        with patch.object(self.monitor, "_fetch_trending_videos", side_effect=fetch_with_quota_skip), \
+                patch.object(self.monitor, "_filter_videos", return_value=[]), \
+                patch.object(self.monitor, "_update_last_run_time") as update_last_run:
+            ok, msg = self.monitor.run_monitor(cid)
+
+        self.assertTrue(ok)
+        self.assertIn("配额", msg)
+        update_last_run.assert_not_called()
 
 
 class SearchConsumerPredicateTests(unittest.TestCase):
@@ -616,20 +569,27 @@ class SearchConsumerPredicateTests(unittest.TestCase):
         share = self.monitor._per_config_share()
         self.assertEqual(share, self.monitor._MONITOR_DAILY_SEARCH_BUDGET // 2)
 
-    def test_manual_search_config_counted_to_avoid_starvation(self):
-        # manual 关键词配置同样消费 search，若不计入分母会被手动运行抢满 95 次。
+    def test_dormant_manual_configs_do_not_reserve_quota(self):
+        # 休眠的 manual 配置不应计入分母；否则大量从未运行的配置会浪费额度。
         c_auto = self.monitor.create_monitor_config(
             {"name": "auto", "schedule_type": "auto", "enabled": True, "keywords": "a"})
-        c_manual = self.monitor.create_monitor_config(
-            {"name": "manual", "schedule_type": "manual", "enabled": True, "keywords": "b"})
-        count = self.monitor._monitor_search_config_count()
-        self.assertEqual(count, 2)
-        share = self.monitor._per_config_share()
-        # manual 与 auto 各获 budget//2，auto 不会被 manual 抢空
-        for _ in range(share):
-            self.assertTrue(self.monitor._try_consume_quota(1, c_manual))
-        self.assertFalse(self.monitor._try_consume_quota(1, c_manual))
-        # auto 仍有自己的份额
+        manuals = [
+            self.monitor.create_monitor_config(
+                {"name": f"manual-{i}", "schedule_type": "manual", "enabled": True, "keywords": "b"})
+            for i in range(9)
+        ]
+        self.assertEqual(self.monitor._monitor_search_config_count(), 1)
+        self.assertEqual(self.monitor._per_config_share(), self.monitor._MONITOR_DAILY_SEARCH_BUDGET)
+
+        # 首个 manual 真正运行后才激活「手动共享槽」，9 个 manual 共享一份。
+        self.assertTrue(self.monitor._try_consume_quota(1, manuals[0]))
+        self.assertEqual(self.monitor._monitor_search_config_count(), 2)
+        share = self.monitor._MONITOR_DAILY_SEARCH_BUDGET // 2
+        for _ in range(share - 1):
+            self.assertTrue(self.monitor._try_consume_quota(1, manuals[1]))
+        self.assertFalse(self.monitor._try_consume_quota(1, manuals[2]))
+
+        # 手动共享槽耗尽后，auto 仍可使用自己的完整份额。
         for _ in range(share):
             self.assertTrue(self.monitor._try_consume_quota(1, c_auto))
 
@@ -709,9 +669,21 @@ class HttpErrorReasonTypeSafeTests(unittest.TestCase):
         e.error_details = {"errors": [{"reason": "rateLimitExceeded"}]}
         self.assertEqual(self.monitor._http_error_quota_reason(e), "rateLimitExceeded")
 
+    def test_non_object_error_payloads_do_not_crash(self):
+        from googleapiclient.errors import HttpError
 
-class CursorShareGateTests(unittest.TestCase):
-    """PR #127 第五轮：本配置份额耗尽时不应空推进游标。"""
+        class _Resp:
+            status = 502
+            reason = "Bad Gateway"
+
+        for payload in ('{"error":"gateway unavailable"}', '{"error":[]}', '{"error":null}'):
+            with self.subTest(payload=payload):
+                e = HttpError(_Resp(), payload.encode("utf-8"), uri="http://x")
+                self.assertIsNone(self.monitor._http_error_quota_reason(e))
+
+
+class SearchQuotaGateTests(unittest.TestCase):
+    """PR #127 跟进：本配置份额耗尽时不应执行搜索请求。"""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -738,8 +710,8 @@ class CursorShareGateTests(unittest.TestCase):
             self.init_api_patcher.stop()
             shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_config_share_remaining_false_blocks_cursor_advance(self):
-        # 全局桶仍有余额，但本配置份额已耗尽：不能空推进游标。
+    def test_config_share_exhaustion_blocks_request_execution(self):
+        # 全局桶仍有余额，但本配置份额已耗尽：不能真正执行请求。
         # 需要 ≥2 个 search 消费者，这样耗尽单个配置份额后全局桶仍有余额（share < budget）。
         c1 = self.monitor.create_monitor_config(
             {"name": "kw1", "schedule_type": "auto", "enabled": True, "keywords": "a,b,c,d"})
@@ -750,20 +722,34 @@ class CursorShareGateTests(unittest.TestCase):
         for _ in range(share):
             self.assertTrue(self.monitor._try_consume_quota(1, c1))
         self.assertFalse(self.monitor._try_consume_quota(1, c1))
-        # 此时全局仍有余额（2*share <= budget，通常 < budget），但 c1 份额为 0
+        # 此时全局仍有余额，但 c1 份额为 0。
         self.assertGreater(self.monitor._quota_budget_remaining(), 0)
-        self.assertFalse(self.monitor._config_share_remaining(c1))
-        # 关键断言：即便高频调度再次进入 _fetch_search_videos，也应在「发起请求前」
-        # 的份额闸门处短路返回，不调用搜索、不推进游标。
-        self.monitor.youtube = object()  # 绕过 init 检查，走到份额闸门
+
+        class FakeRequest:
+            execute_calls = 0
+
+            def execute(self):
+                self.execute_calls += 1
+                return {"items": []}
+
+        request = FakeRequest()
+
+        class FakeSearch:
+            def list(self, **_params):
+                return request
+
+        class FakeYouTube:
+            def search(self):
+                return FakeSearch()
+
+        self.monitor.youtube = FakeYouTube()
         result = self.monitor._fetch_search_videos(
             {"id": c1, "name": "kw1", "enabled": True, "keywords": "a,b,c,d", "max_results": 10,
              "region_code": "US", "order_by": "viewCount", "time_period": 7, "video_types": "video",
              "category_id": ""},
             "2026-08-22T00:00")
         self.assertEqual(result, [])
-        # 游标未被推进：仍停留在初始 0（未被推进到 2）——证明份额耗尽时不空转游标
-        self.assertEqual(self.monitor._next_keyword_rotation_start(c1, 4, 2), 0)
+        self.assertEqual(request.execute_calls, 0)
         self.assertTrue(self.monitor._last_fetch_quota_skipped)
 
 
