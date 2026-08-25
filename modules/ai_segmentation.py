@@ -1415,7 +1415,7 @@ class AISegmenter:
             has_context=bool(context_cues),
         )
         payload = _build_word_payload_with_context(batch.words, context_cues or [])
-        raw_text = self._call_with_retry_raw(system_prompt, payload, batch.char_count)
+        raw_text = self._call_with_retry_raw(system_prompt, payload)
         # 索引制解析：AI 返回 [{start_index, end_index}]
         ranges = _parse_index_ranges(raw_text, len(batch.words))
         cues = _cues_from_index_ranges(ranges, batch.words, provider, logger=self.logger)
@@ -1439,7 +1439,7 @@ class AISegmenter:
             has_context=bool(context_cues),
         )
         payload = _build_segment_payload_with_context(batch.segments, context_cues or [])
-        parsed = self._call_with_retry(system_prompt, payload, batch.char_count)
+        parsed = self._call_with_retry(system_prompt, payload)
         cues_data = _parse_cues_response(
             parsed, batch.time_start_s, batch.time_end_s, len(batch.segments),
         )
@@ -1468,7 +1468,6 @@ class AISegmenter:
         self,
         system_prompt: str,
         payload: Dict[str, Any],
-        _char_count: int,
     ) -> Optional[Dict[str, Any]]:
         client = self._create_client()
         last_exc: Optional[Exception] = None
@@ -1509,7 +1508,6 @@ class AISegmenter:
         self,
         system_prompt: str,
         payload: Dict[str, Any],
-        _char_count: int,
     ) -> str:
         """调用 LLM 并返回原始文本（不做 JSON 解析），用于索引制分段。"""
         client = self._create_client()
@@ -1608,7 +1606,7 @@ class AISegmenter:
                     max_duration_s=self.config.max_cue_duration_s,
                     max_cps=self.config.max_cps,
                 )
-                parsed = self._call_with_retry(system_prompt, payload, sum(len(w.text or '') for w in boundary_words))
+                parsed = self._call_with_retry(system_prompt, payload)
                 refined_cues_data = _parse_cues_response(
                     parsed,
                     boundary_prev[0].start_s,
