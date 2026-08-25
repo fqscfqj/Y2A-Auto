@@ -540,7 +540,6 @@ def _request_chat_completion(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -560,8 +559,6 @@ def _request_chat_completion(
         ],
         "temperature": temperature,
     }
-    if max_tokens is not None:
-        create_kwargs["max_tokens"] = max_tokens
     if response_format is not None:
         create_kwargs["response_format"] = response_format
     request_start = time.time()
@@ -588,7 +585,6 @@ def _request_json_object(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -598,7 +594,7 @@ def _request_json_object(
     try:
         response = _request_chat_completion(
             client, model_name, system_prompt, payload,
-            max_tokens=max_tokens, temperature=temperature,
+            temperature=temperature,
             thinking_enabled=thinking_enabled, logger_obj=logger_obj,
             scene_name=scene_name, user_content=user_content,
             response_format={"type": "json_object"},
@@ -611,7 +607,7 @@ def _request_json_object(
                 )
             response = _request_chat_completion(
                 client, model_name, system_prompt, payload,
-                max_tokens=max_tokens, temperature=temperature,
+                temperature=temperature,
                 thinking_enabled=thinking_enabled, logger_obj=logger_obj,
                 scene_name=f"{scene_name}_fallback_plain_json",
                 user_content=user_content,
@@ -638,7 +634,7 @@ def _request_json_object(
     try:
         response = _request_chat_completion(
             client, model_name, retry_system, payload,
-            max_tokens=max_tokens, temperature=temperature,
+            temperature=temperature,
             thinking_enabled=thinking_enabled, logger_obj=logger_obj,
             scene_name=f"{scene_name}_retry_json",
             user_content=user_content,
@@ -668,7 +664,6 @@ def _request_raw_text(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: Optional[int] = None,
     temperature: float,
     thinking_enabled: bool,
     logger_obj,
@@ -678,7 +673,7 @@ def _request_raw_text(
     """请求 LLM 返回原始文本（不做 JSON 解析），用于索引制分段等场景。"""
     response = _request_chat_completion(
         client, model_name, system_prompt, payload,
-        max_tokens=max_tokens, temperature=temperature,
+        temperature=temperature,
         thinking_enabled=thinking_enabled, logger_obj=logger_obj,
         scene_name=scene_name, user_content=user_content,
     )
@@ -704,16 +699,6 @@ def _sanitize_metadata_field(
         title_limit=title_limit,
         description_limit=description_limit,
     )
-
-
-def _estimate_metadata_max_tokens(field_names: Sequence[str]) -> int:
-    total = 0
-    field_set = set(field_names)
-    if "title" in field_set:
-        total += 160
-    if "description" in field_set:
-        total += 900
-    return max(total, 160)
 
 
 def _collect_invalid_metadata_fields(
@@ -833,7 +818,6 @@ def _request_translated_metadata_fields(
     system_prompt: str,
     payload: Dict[str, Any],
     *,
-    max_tokens: int,
     thinking_enabled: bool,
     logger,
     scene_name: str,
@@ -847,7 +831,6 @@ def _request_translated_metadata_fields(
         model_name=model_name,
         system_prompt=system_prompt,
         payload=payload,
-        max_tokens=max_tokens,
         temperature=0.2,
         thinking_enabled=thinking_enabled,
         logger_obj=logger,
@@ -937,7 +920,6 @@ def _translate_video_metadata_once(
         model_name=model_name,
         system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False, openai_config=openai_config),
         payload=payload,
-        max_tokens=_estimate_metadata_max_tokens(requestable_fields),
         thinking_enabled=thinking_enabled,
         scene_name="ai_enhancer_metadata_translate",
         logger=logger,
@@ -968,7 +950,6 @@ def _translate_video_metadata_once(
                 model_name=model_name,
                 system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True, openai_config=openai_config),
                 payload=retry_payload,
-                max_tokens=_estimate_metadata_max_tokens(["title"]),
                 thinking_enabled=thinking_enabled,
                 scene_name="ai_enhancer_metadata_translate_title_retry",
                 logger=logger,
@@ -1000,7 +981,6 @@ def _translate_video_metadata_once(
                 model_name=model_name,
                 system_prompt=description_retry_prompt,
                 payload=description_retry_payload,
-                max_tokens=_estimate_metadata_max_tokens(["description"]),
                 thinking_enabled=thinking_enabled,
                 scene_name=description_retry_scene,
                 logger=logger,
@@ -1235,7 +1215,6 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
                 "title": title,
                 "description": description[:200],
             },
-            max_tokens=160,
             temperature=0.2,
             thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
             logger_obj=logger,
@@ -1900,7 +1879,6 @@ def _request_partition_selection(
         model_name=model_name,
         system_prompt=system_prompt,
         payload=payload,
-        max_tokens=320,
         temperature=0.0,
         thinking_enabled=openai_config.get('OPENAI_THINKING_ENABLED', False),
         logger_obj=logger,

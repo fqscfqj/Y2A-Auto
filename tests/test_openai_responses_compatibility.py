@@ -182,7 +182,7 @@ class ResponsesRequestTests(unittest.TestCase):
         self.assertEqual(request['model'], 'response-model')
         self.assertEqual(request['instructions'], 'Return JSON only.')
         self.assertEqual(request['input'], [{'role': 'user', 'content': 'hello'}])
-        self.assertEqual(request['max_output_tokens'], 256)
+        self.assertNotIn('max_output_tokens', request)
         self.assertEqual(request['text'], {'format': {'type': 'json_object'}})
         self.assertEqual(request['temperature'], 0.2)
         self.assertIs(request['store'], False)
@@ -254,7 +254,7 @@ class ResponsesRequestTests(unittest.TestCase):
 
         self.assertIs(request['store'], True)
 
-    def test_unsupported_max_output_tokens_is_dropped_and_cached(self):
+    def test_output_token_limits_are_removed_before_responses_request(self):
         raw_response = {
             'id': 'resp_token_fallback',
             'status': 'completed',
@@ -265,11 +265,7 @@ class ResponsesRequestTests(unittest.TestCase):
             }],
         }
         raw_client = _FakeRawClient(responses_result=raw_response)
-        raw_client.responses.create = MagicMock(side_effect=[
-            _StatusError('Unsupported parameter: max_output_tokens', 400),
-            raw_response,
-            raw_response,
-        ])
+        raw_client.responses.create = MagicMock(return_value=raw_response)
         with patch.object(afc, '_load_global_config', return_value={}), \
              patch.object(afc, '_make_raw_client', return_value=raw_client):
             client = afc.get_ai_client(self._config())
@@ -277,16 +273,19 @@ class ResponsesRequestTests(unittest.TestCase):
             'model': 'response-model',
             'messages': [{'role': 'user', 'content': 'hello'}],
             'max_tokens': 256,
+            'max_completion_tokens': 512,
+            'max_output_tokens': 1024,
         }
 
         utils.openai_chat_create_with_thinking_control(client, kwargs)
         utils.openai_chat_create_with_thinking_control(client, kwargs)
 
         calls = [call.kwargs for call in raw_client.responses.create.call_args_list]
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(calls[0]['max_output_tokens'], 256)
-        self.assertNotIn('max_output_tokens', calls[1])
-        self.assertNotIn('max_output_tokens', calls[2])
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertNotIn('max_tokens', call)
+            self.assertNotIn('max_completion_tokens', call)
+            self.assertNotIn('max_output_tokens', call)
 
     def test_fallback_can_switch_from_responses_to_chat_completions(self):
         primary = _FakeRawClient(error=_StatusError('service unavailable', 503))

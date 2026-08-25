@@ -452,13 +452,6 @@ def build_batches(
 # AI 调用与解析
 # ---------------------------------------------------------------------------
 
-def _estimate_max_tokens(char_count: int) -> int:
-    """根据输入字符数估算输出 max_tokens。"""
-    # 输出文本≈输入文本，CJK 约 1 字/token，ASCII 约 0.5 token/字；加结构开销
-    estimated = max(1024, int(char_count * 1.5) + 256)
-    return min(8192, estimated)
-
-
 def _build_word_payload(words: List[AsrWordTiming]) -> Dict[str, Any]:
     return {
         'words': [
@@ -1475,10 +1468,9 @@ class AISegmenter:
         self,
         system_prompt: str,
         payload: Dict[str, Any],
-        char_count: int,
+        _char_count: int,
     ) -> Optional[Dict[str, Any]]:
         client = self._create_client()
-        max_tokens = _estimate_max_tokens(char_count)
         last_exc: Optional[Exception] = None
         for attempt in range(self.config.max_retries + 1):
             if attempt > 0:
@@ -1491,7 +1483,6 @@ class AISegmenter:
                     model_name=self.config.resolved_model_name,
                     system_prompt=system_prompt,
                     payload=payload,
-                    max_tokens=max_tokens,
                     temperature=self.config.temperature,
                     thinking_enabled=self.config.thinking_enabled,
                     logger_obj=self.logger,
@@ -1518,11 +1509,10 @@ class AISegmenter:
         self,
         system_prompt: str,
         payload: Dict[str, Any],
-        char_count: int,
+        _char_count: int,
     ) -> str:
         """调用 LLM 并返回原始文本（不做 JSON 解析），用于索引制分段。"""
         client = self._create_client()
-        max_tokens = _estimate_max_tokens(char_count)
         last_exc: Optional[Exception] = None
         for attempt in range(self.config.max_retries + 1):
             if attempt > 0:
@@ -1535,7 +1525,6 @@ class AISegmenter:
                     model_name=self.config.resolved_model_name,
                     system_prompt=system_prompt,
                     payload=payload,
-                    max_tokens=max_tokens,
                     temperature=self.config.temperature,
                     thinking_enabled=self.config.thinking_enabled,
                     logger_obj=self.logger,
