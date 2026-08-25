@@ -83,6 +83,13 @@ class SubtitleQcTimeoutPersistenceChainTests(unittest.TestCase):
             _build_openai_client("k", "https://x/v1", "m")
         return saved, reloaded, captured['cfg']
 
+    def test_first_update_does_not_mutate_module_defaults(self):
+        self.assertFalse(os.path.exists(os.path.join(self._tmp, 'config', 'config.json')))
+
+        update_config({'SUBTITLE_QC_TIMEOUT_SECONDS': '200'})
+
+        self.assertEqual(cm.DEFAULT_CONFIG['SUBTITLE_QC_TIMEOUT_SECONDS'], 120)
+
     def test_valid_value_persists_and_is_used(self):
         saved, reloaded, used = self._save_and_trace('200')
         self.assertEqual(saved.get('SUBTITLE_QC_TIMEOUT_SECONDS'), '200')

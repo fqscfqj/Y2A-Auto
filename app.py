@@ -2863,6 +2863,53 @@ def settings():
     )
 
 
+@app.route('/settings/update_cover_mode', methods=['POST'])
+@login_required
+def update_cover_mode():
+    """Persist the cover processing mode used by subsequent uploads."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            'success': False,
+            'message': '请求体必须是 JSON 对象。',
+        }), 400
+
+    mode = payload.get('mode')
+    if not isinstance(mode, str) or mode not in ('crop', 'pad'):
+        return jsonify({
+            'success': False,
+            'message': '封面处理模式必须是 crop 或 pad。',
+        }), 400
+
+    try:
+        updated_config = update_config({'COVER_PROCESSING_MODE': mode})
+    except Exception as exc:
+        logger.error('保存封面处理模式失败: %s', exc)
+        return jsonify({
+            'success': False,
+            'message': '保存封面处理模式失败，请稍后重试。',
+        }), 500
+
+    # Keep the running application and task processor in sync with the
+    # persisted value; a restart should not be required for the next upload.
+    try:
+        configure_app(app, updated_config)
+        from modules.task_manager import get_global_task_processor
+        get_global_task_processor(updated_config)
+    except Exception as exc:
+        # Persistence already succeeded.  Log a runtime-refresh failure but
+        # still report success so the caller does not incorrectly retry a
+        # setting that is already stored on disk.
+        logger.warning('封面处理模式已保存，但刷新运行时配置失败: %s', exc)
+
+    return jsonify({
+        'success': True,
+        'mode': mode,
+        'cover_processing_mode': mode,
+        'message': '封面处理模式已更新。',
+    })
+
+
 @app.route('/settings/tgbot-token', methods=['POST'])
 @login_required
 def settings_tgbot_token():

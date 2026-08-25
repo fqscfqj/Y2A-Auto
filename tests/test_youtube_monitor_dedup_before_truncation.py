@@ -118,6 +118,106 @@ def _make_raw_video(vid):
     }
 
 
+class _FakeResource:
+    def __init__(self, request_kind, calls):
+        self.request_kind = request_kind
+        self.calls = calls
+
+    def list(self, **params):
+        self.calls.append((self.request_kind, params))
+        return self.request_kind
+
+
+class _FakeYouTube:
+    def __init__(self):
+        self.calls = []
+
+    def search(self):
+        return _FakeResource('search.list', self.calls)
+
+    def videos(self):
+        return _FakeResource('videos.list', self.calls)
+
+
+class SearchKeywordQueryTests(unittest.TestCase):
+    def _new_monitor(self):
+        monitor = YouTubeMonitor.__new__(YouTubeMonitor)
+        monitor.youtube = _FakeYouTube()
+        monitor._last_fetch_had_errors = False
+        return monitor
+
+    @staticmethod
+    def _config(keywords):
+        return {
+            'keywords': keywords,
+            'max_results': 5,
+            'region_code': 'US',
+            'order_by': 'date',
+            'video_types': 'video,short,live',
+            'category_id': '0',
+        }
+
+    def test_multiple_keywords_use_one_native_or_search_request(self):
+        monitor = self._new_monitor()
+
+        def execute(request, _operation):
+            if request == 'search.list':
+                return {'items': [
+                    {'id': {'videoId': 'v1'}},
+                    {'id': {'videoId': 'v2'}},
+                ]}
+            return {'items': [_make_raw_video('v1'), _make_raw_video('v2')]}
+
+        monitor._execute_with_retry = execute
+
+        videos = monitor._fetch_search_videos(
+            self._config('alpha beta,gamma'),
+            '2024-01-01T00:00:00Z',
+        )
+
+        search_calls = [params for kind, params in monitor.youtube.calls if kind == 'search.list']
+        self.assertEqual(len(search_calls), 1)
+        self.assertEqual(search_calls[0]['q'], 'alpha|beta|gamma')
+        self.assertEqual([video['id'] for video in videos], ['v1', 'v2'])
+        self.assertFalse(monitor._last_fetch_had_errors)
+
+    def test_failed_search_marks_run_incomplete(self):
+        monitor = self._new_monitor()
+
+        def execute(_request, _operation):
+            raise RuntimeError('quota unavailable')
+
+        monitor._execute_with_retry = execute
+
+        videos = monitor._fetch_search_videos(
+            self._config('alpha beta'),
+            '2024-01-01T00:00:00Z',
+        )
+
+        self.assertEqual(videos, [])
+        self.assertTrue(monitor._last_fetch_had_errors)
+        search_calls = [params for kind, params in monitor.youtube.calls if kind == 'search.list']
+        self.assertEqual(len(search_calls), 1)
+
+    def test_invalid_video_details_response_marks_run_incomplete(self):
+        monitor = self._new_monitor()
+
+        def execute(request, _operation):
+            if request == 'search.list':
+                return {'items': [{'id': {'videoId': 'v1'}}]}
+            return {}
+
+        monitor._execute_with_retry = execute
+
+        videos = monitor._fetch_search_videos(
+            self._config('alpha'),
+            '2024-01-01T00:00:00Z',
+        )
+
+        self.assertEqual(videos, [])
+        self.assertTrue(monitor._last_fetch_had_errors)
+
+
 class DedupBeforeTruncationTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()

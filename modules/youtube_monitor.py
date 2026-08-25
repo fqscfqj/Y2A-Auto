@@ -1058,83 +1058,37 @@ class YouTubeMonitor:
         if config['category_id'] and config['category_id'] != '0':
             search_params['videoCategoryId'] = config['category_id']
 
-        # 添加关键词搜索：支持多关键词 OR 搜索。
-        # 多个关键词可用逗号/分号/空格/换行分隔，每个关键词单独发起一次搜索请求，
-        # 最后合并并去重，实现“任一关键词匹配即搬运”的语义（原先是整串 AND 搜索）。
+        # 添加关键词搜索：YouTube q 参数原生支持使用“|”进行 OR 搜索。
+        # 把多个关键词合并到一次 search.list，避免关键词数量线性消耗搜索配额。
         raw_kw = (config.get('keywords') or '').strip()
         keywords_list = [k for k in re.split(r'[\s,;，；\n]+', raw_kw) if k] if raw_kw else []
         if keywords_list:
-            search_batches = []
-            for kw in keywords_list:
-                sp = dict(search_params)
-                sp['q'] = kw
-                search_batches.append(sp)
+            search_params['q'] = '|'.join(keywords_list)
             logger.info(f"多关键词 OR 搜索，共 {len(keywords_list)} 个: {keywords_list}")
-        else:
-            # 无关键词则按空查询搜索（返回热门视频），保持原有行为
-            search_batches = [dict(search_params)]
 
-        # 多关键词 OR 搜索：逐个关键词请求，并在每个 batch 外层单独容错，
-        # 单个关键词失败不影响其他关键词与整轮监控。
-        batch_results = []  # 每个关键词的 videoId 列表
-        failed_keywords = []
-        for idx, sp in enumerate(search_batches, 1):
-            kw_label = sp.get('q') or f'batch{idx}'
-            try:
-                logger.debug(f"准备执行搜索请求({idx}/{len(search_batches)})，参数: {sp}")
-                search_request = self.youtube.search().list(**sp)
-                search_response = self._execute_with_retry(search_request, 'search.list')
-            except Exception as e:
-                # 单批失败只跳过该关键词，继续处理其余关键词
-                logger.error(f"关键词搜索失败，跳过该关键词继续其他：q={kw_label}, 错误: {e}")
-                failed_keywords.append(kw_label)
-                continue
-            if not search_response or 'items' not in search_response:
-                logger.error(f"搜索响应异常（关键词: {kw_label}）：{search_response}")
-                failed_keywords.append(kw_label)
-                continue
-            ids = [item['id']['videoId'] for item in search_response['items'] if 'id' in item and 'videoId' in item['id']]
-            batch_results.append(ids)
+        try:
+            logger.debug(f"准备执行搜索请求，参数: {search_params}")
+            search_request = self.youtube.search().list(**search_params)
+            search_response = self._execute_with_retry(search_request, 'search.list')
+        except Exception as e:
+            logger.error(f"关键词搜索失败: q={search_params.get('q') or '无'}, 错误: {e}")
+            self._last_fetch_had_errors = True
+            return []
 
-        if failed_keywords:
-            logger.warning(f"多关键词搜索中有 {len(failed_keywords)} 个关键词失败（已跳过并继续其余）：{failed_keywords}")
-        # 多关键词会线性增加 search.list 配额消耗（每关键词 1 次请求），无论是否失败都提示
-        if len(batch_results) > 1:
-            logger.warning(f"多关键词 OR 搜索共 {len(batch_results)} 个关键词，将线性增加 search.list 配额消耗（每关键词 1 次请求）。")
+        if not search_response or 'items' not in search_response:
+            logger.error(f"搜索响应异常: {search_response}")
+            self._last_fetch_had_errors = True
+            return []
 
-        # 公平合并：round-robin 交错各关键词候选，去重后截断，
-        # 确保每个关键词至少有机会进入最终候选集，避免前面的热门关键词占满名额。
-        # 每次成功 append 后立即检查预算并跳出，避免单轮内越过 total_budget（≤50），
-        # 否则会向 videos.list 传入超过 50 个 ID 而触发 400。
-        # 候选数量下限保护：max_results 过小时（如 1）会让 total_budget 仅 2，
-        # 在 monitor_history 已饱和时去重后恒为 0 新视频。设下限 10，确保每轮
-        # 仍能采样到足够候选以命中真正的新视频（历史去重仍是正确设计，仅防止候选过小）。
+        # 候选数量下限保护：max_results 过小时（如 1）会让候选过少，
+        # 在 monitor_history 已饱和时去重后恒为 0 新视频。
         total_budget = max(min(config['max_results'] * 2, 50), 10)
-        video_ids = []
-        seen = set()
-        if batch_results:
-            iterators = [iter(ids) for ids in batch_results]
-            active = list(iterators)
-            while active and len(video_ids) < total_budget:
-                still_active = []
-                budget_reached = False
-                for it in active:
-                    try:
-                        vid = next(it)
-                    except StopIteration:
-                        continue
-                    if vid not in seen:
-                        seen.add(vid)
-                        video_ids.append(vid)
-                        if len(video_ids) >= total_budget:
-                            budget_reached = True
-                            break  # 立即跳出内层，停止本轮其余关键词
-                    # 该批仍有剩余则保留，继续顺序轮转（即便本批本轮贡献为重复项）
-                    still_active.append(it)
-                active = still_active
-                if budget_reached:
-                    break  # 跳出外层 while
-        logger.info(f"多关键词合并后候选 {len(video_ids)} 个（预算 {total_budget}，来源批次 {len(batch_results)}）")
+        video_ids = list(dict.fromkeys(
+            item['id']['videoId']
+            for item in search_response['items']
+            if 'id' in item and 'videoId' in item['id']
+        ))[:total_budget]
+        logger.info(f"搜索得到候选 {len(video_ids)} 个（预算 {total_budget}）")
         
         if not video_ids:
             return []
@@ -1152,10 +1106,12 @@ class YouTubeMonitor:
         logger.debug(f"视频响应类型: {type(videos_response)}, 值: {videos_response}")
         if videos_response is None:
             logger.error("视频响应为 None")
+            self._last_fetch_had_errors = True
             return []
         
         if 'items' not in videos_response:
             logger.error(f"视频响应中缺少 'items' 字段，响应内容: {videos_response}")
+            self._last_fetch_had_errors = True
             return []
         
         return videos_response['items']

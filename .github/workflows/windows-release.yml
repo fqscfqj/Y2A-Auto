@@ -21,8 +21,27 @@ jobs:
       contents: write
 
     steps:
+      - name: Resolve and validate release tag
+        id: release-ref
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) {
+            throw 'A release tag is required for both release and workflow_dispatch runs.'
+          }
+          if ($env:RELEASE_TAG -notmatch '^v?\d+\.\d+\.\d+$') {
+            throw "Release tag '$env:RELEASE_TAG' must use three-part semver (for example, 4.10.0); two-part tags such as 4.10 are not supported."
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "release_tag=$($env:RELEASE_TAG)"
+
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release-ref.outputs.release_tag }}
 
       - name: Prepare bundled FFmpeg (latest)
         shell: pwsh
@@ -84,7 +103,11 @@ jobs:
       - name: Install pip dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install pytest
           pip install -r requirements.txt
+
+      - name: Run full test suite
+        run: python -m pytest tests/
 
       - name: Build Windows EXE
         run: |
@@ -122,7 +145,7 @@ jobs:
       - name: Validate target GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+          RELEASE_TAG: ${{ steps.release-ref.outputs.release_tag }}
         run: |
           gh release view "$env:RELEASE_TAG" --json tagName
 
@@ -130,6 +153,6 @@ jobs:
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+          RELEASE_TAG: ${{ steps.release-ref.outputs.release_tag }}
         run: |
           gh release upload "$env:RELEASE_TAG" Y2A-Auto-win64.zip --clobber

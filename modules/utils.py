@@ -399,6 +399,20 @@ def _is_generic_schema_compatibility_error(exc) -> bool:
     ))
 
 
+def _effective_client_model(client, create_kwargs):
+    """Return the model that the concrete client will actually send.
+
+    A failover endpoint proxy supplies ``_endpoint_model`` because the caller's
+    model is the primary endpoint's model and is intentionally overwritten by
+    the fallback client.  Plain OpenAI-compatible clients keep using the
+    caller-provided model.
+    """
+    endpoint_model = safe_str(getattr(client, '_endpoint_model', '')).strip()
+    if endpoint_model:
+        return endpoint_model
+    return safe_str((create_kwargs or {}).get('model'), default='unknown').strip()
+
+
 def _client_compatibility_key(client, create_kwargs) -> str:
     endpoint_value = safe_str(getattr(client, 'base_url', '')).strip()
     try:
@@ -409,7 +423,7 @@ def _client_compatibility_key(client, create_kwargs) -> str:
             endpoint = endpoint_value or 'unknown'
     except Exception:
         endpoint = endpoint_value or 'unknown'
-    model = safe_str((create_kwargs or {}).get('model'), default='unknown').strip().lower()
+    model = _effective_client_model(client, create_kwargs).lower() or 'unknown'
     api_mode = safe_str(
         getattr(client, 'api_mode', 'chat_completions'),
         default='chat_completions',
@@ -424,7 +438,7 @@ def _thinking_control_style(client, create_kwargs) -> str:
         hostname = (urlparse(endpoint).hostname or '').lower()
     except Exception:
         hostname = ''
-    model = safe_str((create_kwargs or {}).get('model')).lower()
+    model = _effective_client_model(client, create_kwargs).lower()
 
     def host_matches(*domains):
         return any(
@@ -617,7 +631,7 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name
     logger.warning('模型兼容降级[%s]：%s', scene, descriptions.get(action, action))
 
 
-def openai_chat_create_with_thinking_control(
+def _openai_chat_create_with_thinking_control_single(
     client,
     create_kwargs,
     thinking_enabled=False,
@@ -633,6 +647,12 @@ def openai_chat_create_with_thinking_control(
     鉴权、限流、配额和服务端错误不会在这里被误判为兼容问题。
     """
     base_kwargs = copy.deepcopy(create_kwargs or {})
+    effective_model = _effective_client_model(client, base_kwargs)
+    if effective_model and effective_model != 'unknown':
+        # Compatibility retries (especially minimal_request) must carry the
+        # model selected by the concrete endpoint, not the primary caller's
+        # model passed into a failover wrapper.
+        base_kwargs['model'] = effective_model
     if not _coerce_bool(thinking_enabled, default=False):
         _inject_thinking_control(
             base_kwargs,
@@ -732,3 +752,37 @@ def openai_chat_create_with_thinking_control(
                 actions.discard('use_developer_role')
                 discovered_actions.discard('use_developer_role')
             _warn_compatibility_fallback(logger, cache_key, action, scene_name)
+
+
+def openai_chat_create_with_thinking_control(
+    client,
+    create_kwargs,
+    thinking_enabled=False,
+    logger=None,
+    scene_name='unknown',
+):
+    """Create a Chat/Responses request with endpoint-scoped compatibility.
+
+    For a failover client, the endpoint is selected before this function
+    derives thinking controls or reads/writes the compatibility cache.  This
+    keeps a fallback provider's capabilities from changing the primary
+    provider's future requests.  Plain clients retain the original path.
+    """
+    endpoint_runner = getattr(client, '_create_with_endpoint_fallback', None)
+    if callable(endpoint_runner):
+        return endpoint_runner(
+            lambda endpoint_client: _openai_chat_create_with_thinking_control_single(
+                endpoint_client,
+                create_kwargs,
+                thinking_enabled=thinking_enabled,
+                logger=logger,
+                scene_name=scene_name,
+            )
+        )
+    return _openai_chat_create_with_thinking_control_single(
+        client,
+        create_kwargs,
+        thinking_enabled=thinking_enabled,
+        logger=logger,
+        scene_name=scene_name,
+    )
