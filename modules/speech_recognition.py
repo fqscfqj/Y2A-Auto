@@ -40,6 +40,11 @@ def _config_float(config: Dict[str, Any], key: str, default: float) -> float:
         return default
 
 
+def _config_positive_float(config: Dict[str, Any], key: str, default: float) -> float:
+    value = _config_float(config, key, default)
+    return value if value > 0.0 else default
+
+
 def _config_int(config: Dict[str, Any], key: str, default: int) -> int:
     value = config.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -577,7 +582,7 @@ def create_speech_recognizer_from_config(
             chunk_overlap_s=_config_float(app_config, 'AUDIO_CHUNK_OVERLAP_S', 0.4),
             vad_merge_gap_s=_config_float(app_config, 'VAD_MERGE_GAP_S', 0.35),
             vad_min_segment_s=_config_float(app_config, 'VAD_MIN_SEGMENT_S', 0.8),
-            vad_max_segment_s=_config_float(app_config, 'VAD_MAX_SEGMENT_S', 15.0),
+            vad_max_segment_s=_config_positive_float(app_config, 'VAD_MAX_SEGMENT_S', 15.0),
             vad_max_segment_s_for_split=_config_float(app_config, 'VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0),
             vad_refinement_enabled=coerce_bool(app_config.get('VAD_REFINEMENT_ENABLED', True)),
             vad_min_speech_coverage_ratio=_config_float(app_config, 'VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015),

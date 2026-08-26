@@ -90,6 +90,17 @@ class SpeechRecognitionConfigTests(unittest.TestCase):
         self.assertEqual(recognizer.config.vad_min_segment_s, 0.0)
         self.assertEqual(recognizer.config.vad_min_speech_coverage_ratio, 0.0)
 
+    def test_non_positive_vad_segment_cap_uses_default(self):
+        for value in (0, -1, '0', '-1.5'):
+            with self.subTest(value=value):
+                recognizer = create_speech_recognizer_from_config({
+                    'SPEECH_RECOGNITION_ENABLED': True,
+                    'VAD_MAX_SEGMENT_S': value,
+                }, task_id=f'unit-test-vad-segment-cap-{value}')
+
+                self.assertIsNotNone(recognizer)
+                self.assertEqual(recognizer.config.vad_max_segment_s, 15.0)
+
     def test_invalid_vad_numeric_config_uses_defaults(self):
         recognizer = create_speech_recognizer_from_config({
             'SPEECH_RECOGNITION_ENABLED': True,
