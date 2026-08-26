@@ -67,6 +67,51 @@ class SpeechRecognitionConfigTests(unittest.TestCase):
         self.assertEqual(recognizer.config.api_provider, 'voxtral')
         self.assertEqual(recognizer.config.voxtral_timestamp_granularities, 'segment,word')
 
+    def test_vad_numeric_config_preserves_explicit_zero_values(self):
+        recognizer = create_speech_recognizer_from_config({
+            'SPEECH_RECOGNITION_ENABLED': True,
+            'VAD_SILERO_THRESHOLD': 0,
+            'VAD_SILERO_MIN_SPEECH_MS': 0,
+            'VAD_SILERO_MIN_SILENCE_MS': 0,
+            'VAD_SILERO_SPEECH_PAD_MS': 0,
+            'AUDIO_CHUNK_OVERLAP_S': 0,
+            'VAD_MERGE_GAP_S': 0,
+            'VAD_MIN_SEGMENT_S': 0,
+            'VAD_MIN_SPEECH_COVERAGE_RATIO': 0,
+        }, task_id='unit-test-vad-zero-values')
+
+        self.assertIsNotNone(recognizer)
+        self.assertEqual(recognizer.config.vad_threshold, 0.0)
+        self.assertEqual(recognizer.config.vad_min_speech_ms, 0)
+        self.assertEqual(recognizer.config.vad_min_silence_ms, 0)
+        self.assertEqual(recognizer.config.vad_speech_pad_ms, 0)
+        self.assertEqual(recognizer.config.chunk_overlap_s, 0.0)
+        self.assertEqual(recognizer.config.vad_merge_gap_s, 0.0)
+        self.assertEqual(recognizer.config.vad_min_segment_s, 0.0)
+        self.assertEqual(recognizer.config.vad_min_speech_coverage_ratio, 0.0)
+
+    def test_non_positive_vad_segment_cap_uses_default(self):
+        for value in (0, -1, '0', '-1.5'):
+            with self.subTest(value=value):
+                recognizer = create_speech_recognizer_from_config({
+                    'SPEECH_RECOGNITION_ENABLED': True,
+                    'VAD_MAX_SEGMENT_S': value,
+                }, task_id=f'unit-test-vad-segment-cap-{value}')
+
+                self.assertIsNotNone(recognizer)
+                self.assertEqual(recognizer.config.vad_max_segment_s, 15.0)
+
+    def test_invalid_vad_numeric_config_uses_defaults(self):
+        recognizer = create_speech_recognizer_from_config({
+            'SPEECH_RECOGNITION_ENABLED': True,
+            'VAD_SILERO_THRESHOLD': 'invalid',
+            'VAD_SILERO_MIN_SPEECH_MS': '',
+        }, task_id='unit-test-vad-invalid-values')
+
+        self.assertIsNotNone(recognizer)
+        self.assertEqual(recognizer.config.vad_threshold, 0.55)
+        self.assertEqual(recognizer.config.vad_min_speech_ms, 300)
+
 
 if __name__ == '__main__':
     unittest.main()

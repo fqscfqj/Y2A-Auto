@@ -30,6 +30,31 @@ except Exception:  # pragma: no cover - 防御性兜底
     AISegmentationError = Exception  # type: ignore[assignment]
 
 
+def _config_float(config: Dict[str, Any], key: str, default: float) -> float:
+    value = config.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _config_positive_float(config: Dict[str, Any], key: str, default: float) -> float:
+    value = _config_float(config, key, default)
+    return value if value > 0.0 else default
+
+
+def _config_int(config: Dict[str, Any], key: str, default: int) -> int:
+    value = config.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _setup_task_logger(task_id: str) -> logging.Logger:
     from .utils import get_app_subdir
     from logging.handlers import RotatingFileHandler
@@ -548,19 +573,19 @@ def create_speech_recognizer_from_config(
             model_name=model_name,
             vad_enabled=coerce_bool(app_config.get('VAD_ENABLED', True)),
             vad_provider=app_config.get('VAD_PROVIDER') or 'silero-vad',
-            vad_threshold=float(app_config.get('VAD_SILERO_THRESHOLD', 0.55) or 0.55),
-            vad_min_speech_ms=int(app_config.get('VAD_SILERO_MIN_SPEECH_MS', 300) or 300),
-            vad_min_silence_ms=int(app_config.get('VAD_SILERO_MIN_SILENCE_MS', 320) or 320),
-            vad_max_speech_s=int(app_config.get('VAD_SILERO_MAX_SPEECH_S', 120) or 120),
-            vad_speech_pad_ms=int(app_config.get('VAD_SILERO_SPEECH_PAD_MS', 120) or 120),
-            chunk_window_s=float(app_config.get('AUDIO_CHUNK_WINDOW_S', 15.0) or 15.0),
-            chunk_overlap_s=float(app_config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) or 0.4),
-            vad_merge_gap_s=float(app_config.get('VAD_MERGE_GAP_S', 0.35) or 0.35),
-            vad_min_segment_s=float(app_config.get('VAD_MIN_SEGMENT_S', 0.8) or 0.8),
-            vad_max_segment_s=float(app_config.get('VAD_MAX_SEGMENT_S', 15.0) or 15.0),
-            vad_max_segment_s_for_split=float(app_config.get('VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0) or 15.0),
+            vad_threshold=_config_float(app_config, 'VAD_SILERO_THRESHOLD', 0.55),
+            vad_min_speech_ms=_config_int(app_config, 'VAD_SILERO_MIN_SPEECH_MS', 300),
+            vad_min_silence_ms=_config_int(app_config, 'VAD_SILERO_MIN_SILENCE_MS', 320),
+            vad_max_speech_s=_config_int(app_config, 'VAD_SILERO_MAX_SPEECH_S', 120),
+            vad_speech_pad_ms=_config_int(app_config, 'VAD_SILERO_SPEECH_PAD_MS', 120),
+            chunk_window_s=_config_float(app_config, 'AUDIO_CHUNK_WINDOW_S', 15.0),
+            chunk_overlap_s=_config_float(app_config, 'AUDIO_CHUNK_OVERLAP_S', 0.4),
+            vad_merge_gap_s=_config_float(app_config, 'VAD_MERGE_GAP_S', 0.35),
+            vad_min_segment_s=_config_float(app_config, 'VAD_MIN_SEGMENT_S', 0.8),
+            vad_max_segment_s=_config_positive_float(app_config, 'VAD_MAX_SEGMENT_S', 15.0),
+            vad_max_segment_s_for_split=_config_float(app_config, 'VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0),
             vad_refinement_enabled=coerce_bool(app_config.get('VAD_REFINEMENT_ENABLED', True)),
-            vad_min_speech_coverage_ratio=float(app_config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) or 0.015),
+            vad_min_speech_coverage_ratio=_config_float(app_config, 'VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015),
             language=language,
             prompt=prompt,
             translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral else False,
