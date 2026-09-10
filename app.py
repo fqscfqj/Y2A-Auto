@@ -22,7 +22,7 @@ from PIL import Image, UnidentifiedImageError
 from werkzeug.security import safe_join
 from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
-from modules.config_manager import load_config, update_config, reset_specific_config
+from modules.config_manager import load_config, update_config, reset_specific_config, DEFAULT_CONFIG
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
@@ -720,6 +720,80 @@ def _build_settings_progress_reporter(operation_id: str | None):
     return _report
 
 
+# 设置页表单字段白名单。
+# 必须与 templates/settings.html 中的控件保持一致：
+#   - 复选框若不在表单数据里就会被当作未勾选，所以"UI 有开关但漏登记"会让该开关永远无法关闭；
+#     反之"登记了但 UI 没有控件"会让该键在每次保存时被强制写成 off。
+#   - 数值字段用于类型归一化，非法值回退到 DEFAULT_CONFIG 中的默认值。
+# tests/test_settings_template_layout.py 会断言模板控件与这些集合一致。
+SETTINGS_CHECKBOX_FIELDS = list(dict.fromkeys([
+    'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
+    'UPLOAD_APPEND_REPOST_NOTICE', 'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD',
+    'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION',
+    'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
+    'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
+    'LOG_CLEANUP_ENABLED', 'DOWNLOAD_CLEANUP_ENABLED',
+    'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
+    'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED',
+    'YOUTUBE_PROXY_ENABLED', 'YOUTUBE_API_PROXY_ENABLED', 'password_protection_enabled',
+    'SPEECH_RECOGNITION_ENABLED',
+    'VAD_ENABLED',
+    'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
+    'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
+    'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
+    'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
+    'SUBTITLE_QC_ENABLED',
+    'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
+    'VIDEO_CUSTOM_PARAMS_ENABLED',
+    'VOXTRAL_DIARIZE', 'VOXTRAL_ENFORCE_MAX_DURATION',
+    'NOTIFY_ENABLED',
+    'NOTIFY_EVENT_TASK_ADDED',
+    'NOTIFY_EVENT_TASK_COMPLETED',
+    'NOTIFY_EVENT_TASK_FAILED',
+    'NOTIFY_EVENT_LOGIN_SUCCESS',
+    'NOTIFY_EVENT_LOGIN_LOCKED',
+    'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
+    'NOTIFY_EVENT_QR_LOGIN_FAILED',
+    'NOTIFY_WECOM_ENABLED',
+    'NOTIFY_SERVERCHAN_ENABLED',
+    'NOTIFY_MESSAGE_PUSHER_ENABLED',
+    'COOKIECLOUD_ENABLED',
+    'COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT',
+] + SPEECH_PIPELINE_CHECKBOXES))
+
+SETTINGS_INT_FIELDS = list(dict.fromkeys([
+    'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS',
+    'LOG_CLEANUP_HOURS', 'LOG_CLEANUP_INTERVAL',
+    'DOWNLOAD_CLEANUP_HOURS', 'DOWNLOAD_CLEANUP_INTERVAL',
+    'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
+    'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
+    'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
+    'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
+    'AI_FAILOVER_TIMEOUT_SECONDS',
+    'VAD_SILERO_MIN_SPEECH_MS', 'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
+    'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
+    'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
+    'SUBTITLE_QC_TIMEOUT_SECONDS',
+    'SUBTITLE_MIN_TEXT_LENGTH',
+    'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES',
+] + list(SPEECH_PIPELINE_INT_FIELDS)))
+
+SETTINGS_FLOAT_FIELDS = list(dict.fromkeys([
+    'VAD_SILERO_THRESHOLD',
+    'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
+    'SUBTITLE_QC_THRESHOLD',
+    'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
+    'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT',
+] + list(SPEECH_PIPELINE_FLOAT_FIELDS)))
+
+
+def _settings_fallback_default(field, fallback=1):
+    """非法数值的回退值统一取 DEFAULT_CONFIG，避免与页面展示的默认值不一致。"""
+    if field in DEFAULT_CONFIG:
+        return DEFAULT_CONFIG[field]
+    return fallback
+
+
 def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | None = None) -> dict:
     form_data = dict(form_data or {})
     uploads = uploads or {}
@@ -754,64 +828,11 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         form_data.pop('new_password', None)
         form_data.pop('confirm_password', None)
 
-        checkboxes = [
-            'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
-            'UPLOAD_APPEND_REPOST_NOTICE', 'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD',
-            'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION',
-            'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
-            'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
-            'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL', 'YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED',
-            'YOUTUBE_PROXY_ENABLED', 'YOUTUBE_API_PROXY_ENABLED', 'password_protection_enabled',
-            'SPEECH_RECOGNITION_ENABLED',
-            'VAD_ENABLED',
-            'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
-            'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
-            'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
-            'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
-            'SUBTITLE_QC_ENABLED',
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
-            'VIDEO_CUSTOM_PARAMS_ENABLED',
-            'VOXTRAL_DIARIZE',
-            'NOTIFY_ENABLED',
-            'NOTIFY_EVENT_TASK_ADDED',
-            'NOTIFY_EVENT_TASK_COMPLETED',
-            'NOTIFY_EVENT_TASK_FAILED',
-            'NOTIFY_EVENT_LOGIN_SUCCESS',
-            'NOTIFY_EVENT_LOGIN_LOCKED',
-            'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
-            'NOTIFY_EVENT_QR_LOGIN_FAILED',
-            'NOTIFY_WECOM_ENABLED',
-            'NOTIFY_SERVERCHAN_ENABLED',
-            'NOTIFY_MESSAGE_PUSHER_ENABLED',
-            'COOKIECLOUD_ENABLED',
-            'COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT',
-        ]
-        for checkbox in SPEECH_PIPELINE_CHECKBOXES:
-            if checkbox not in checkboxes:
-                checkboxes.append(checkbox)
-        for checkbox in checkboxes:
+        for checkbox in SETTINGS_CHECKBOX_FIELDS:
             if checkbox not in form_data:
                 form_data[checkbox] = 'off'
 
-        numeric_fields = [
-            'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
-            'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
-            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
-            'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
-            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
-            'AI_FAILOVER_TIMEOUT_SECONDS',
-            'VAD_SILERO_MIN_SPEECH_MS',
-            'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
-            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
-            'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
-            'SUBTITLE_QC_TIMEOUT_SECONDS',
-            'SUBTITLE_MIN_TEXT_LENGTH',
-            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
-        ]
-        for field in SPEECH_PIPELINE_INT_FIELDS:
-            if field not in numeric_fields:
-                numeric_fields.append(field)
+        numeric_fields = SETTINGS_INT_FIELDS
         for field in numeric_fields:
             if field in form_data:
                 try:
@@ -822,35 +843,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(normalized_value)
                 except (ValueError, TypeError) as e:
                     logger.debug(f"整数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    defaults = {
-                        'MAX_CONCURRENT_TASKS': 2,
-                        'MAX_CONCURRENT_UPLOADS': 1,
-                        'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 12,
-                        'SUBTITLE_BATCH_SIZE': 5,
-                        'SUBTITLE_MAX_RETRIES': 3,
-                        'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 2,
-                        'YOUTUBE_DOWNLOAD_THREADS': 4,
-                        'YOUTUBE_DOWNLOAD_MAX_HEIGHT': 1080,
-                        'LOGIN_MAX_FAILED_ATTEMPTS': 5,
-                        'LOGIN_LOCKOUT_MINUTES': 15,
-                        'LOGIN_SESSION_TIMEOUT_MINUTES': 30,
-                        'VAD_SILERO_MIN_SPEECH_MS': 300,
-                        'VAD_SILERO_MIN_SILENCE_MS': 320,
-                        'VAD_SILERO_MAX_SPEECH_S': 120,
-                        'VAD_SILERO_SPEECH_PAD_MS': 120,
-                        'VAD_MAX_SEGMENT_S': 15,
-                        'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000,
-                        'SUBTITLE_QC_TIMEOUT_SECONDS': 120,
-                        # 转换失败的 AI_FAILOVER_TIMEOUT_SECONDS 必须先落到 8，
-                        # 否则 defaults.get(field, 1) 会把它变成 1 秒（合法区间内，
-                        # 后续 1–60 范围校验不再回退），正常稍慢的连接会被 1s 误判宕机。
-                        'AI_FAILOVER_TIMEOUT_SECONDS': 8
-                    }
-                    defaults.update(SPEECH_PIPELINE_INT_FIELDS)
-                    form_data[field] = str(defaults.get(field, 1))
+                    # AI_FAILOVER_TIMEOUT_SECONDS 必须回退到 8：若落到 1，它会处于合法的
+                    # 1–60 区间内，后续范围校验不会再纠正，稍慢的连接会被 1s 误判为宕机。
+                    form_data[field] = str(_settings_fallback_default(field))
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
 
         # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
@@ -879,17 +874,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                 logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 120: {form_data.get(_qc_timeout_key)}")
                 form_data[_qc_timeout_key] = '120'
 
-        float_fields = [
-            'VAD_SILERO_THRESHOLD',
-            'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
-            'SUBTITLE_QC_THRESHOLD',
-            'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
-            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
-        ]
-        for field in SPEECH_PIPELINE_FLOAT_FIELDS:
-            if field not in float_fields:
-                float_fields.append(field)
-        for field in float_fields:
+        for field in SETTINGS_FLOAT_FIELDS:
             if field in form_data:
                 try:
                     original_value = form_data[field]
@@ -898,21 +883,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(float(original_value))
                 except (ValueError, TypeError) as e:
                     logger.debug(f"浮点数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.55,
-                        'SUBTITLE_TIME_OFFSET_S': 0.0,
-                        'SUBTITLE_MIN_CUE_DURATION_S': 0.6,
-                        'SUBTITLE_MERGE_GAP_S': 0.3,
-                        'SUBTITLE_QC_THRESHOLD': 0.35,
-                        'WHISPER_RETRY_DELAY_S': 2.0,
-                        'AUDIO_CHUNK_WINDOW_S': 15.0,
-                        'AUDIO_CHUNK_OVERLAP_S': 0.4,
-                        'VAD_MERGE_GAP_S': 0.35,
-                        'VAD_MIN_SEGMENT_S': 0.8,
-                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
-                    }
-                    float_defaults.update(SPEECH_PIPELINE_FLOAT_FIELDS)
-                    form_data[field] = str(float_defaults.get(field, 0.0))
+                    form_data[field] = str(float(_settings_fallback_default(field, 0.0)))
                     logger.debug(f"浮点字段使用默认值 - field: {field}, value: {form_data[field]}")
 
         if 'SUBTITLE_FONT_NAME' in form_data:
@@ -3264,7 +3235,7 @@ def reset_settings():
 def cleanup_logs_route():
     """手动触发日志清理"""
     config = load_config()
-    hours = int(request.form.get('hours', config.get('LOG_CLEANUP_HOURS', 168)))
+    hours = int(request.form.get('hours', config.get('LOG_CLEANUP_HOURS', DEFAULT_CONFIG['LOG_CLEANUP_HOURS'])))
     
     result = cleanup_logs(hours)
     
@@ -3512,7 +3483,7 @@ def schedule_log_cleanup():
 
         scheduler = BackgroundScheduler()
         def _job():
-            cleanup_logs(int(config.get('LOG_CLEANUP_HOURS', 168)))
+            cleanup_logs(int(config.get('LOG_CLEANUP_HOURS', DEFAULT_CONFIG['LOG_CLEANUP_HOURS'])))
         scheduler.add_job(_job, 'interval', hours=interval_hours, id='log_cleanup', replace_existing=True)
         scheduler.start()
         return scheduler
