@@ -1558,7 +1558,8 @@
                                                             <div class="form-group">
                                                                 <label for="subtitleMaxWorkers" class="form-label">字幕翻译最大并发线程数</label>
                                                                 <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 2) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
-                                                                <div class="form-text">填 <code>0</code> 表示按本批字幕的实际批次数自动决定并发；内存紧张时系统还会自动下调。</div>                                                            </div>
+                                                                <div class="form-text">填 <code>0</code> 表示按本批字幕的实际批次数自动决定并发；内存紧张时系统还会自动下调。</div>
+                                                            </div>
                                                         </div>
                                                 </div>
                                             </div>
@@ -3745,9 +3746,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 closeResults();
                 return;
             }
-            var limit = 20;
             currentMatches = matches;
-            matches.slice(0, limit).forEach(function (entry, index) {
+            matches.slice(0, SEARCH_RESULT_LIMIT).forEach(function (entry, index) {
                 var item = document.createElement('button');
                 item.type = 'button';
                 item.className = 'settings-search-result';
@@ -3763,10 +3763,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 resultsPanel.appendChild(item);
             });
-            if (matches.length > limit) {
+            if (matches.length > SEARCH_RESULT_LIMIT) {
                 var more = document.createElement('div');
                 more.className = 'settings-search-result-path px-3 py-2';
-                more.textContent = '另有 ' + (matches.length - limit) + ' 项匹配，请继续输入以缩小范围';
+                more.textContent = '另有 ' + (matches.length - SEARCH_RESULT_LIMIT) + ' 项匹配，请继续输入以缩小范围';
                 resultsPanel.appendChild(more);
             }
             resultsPanel.classList.remove('d-none');
@@ -3775,12 +3775,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var debounceTimer = null;
         var currentMatches = [];
+        var lastQuery = '';
         var activeIndex = -1;
+        var SEARCH_RESULT_LIMIT = 20;
 
         // jump=false 时只列出结果与高亮卡片，不切换分组、不滚动页面，
         // 避免用户还在输入时页面就跳走（连续输入会跳多次）。
         function runSearch(q, jump) {
             clearHighlights();
+            if (q !== lastQuery) {
+                // 查询变了，针对旧结果集的方向键选中态对新结果集不再有意义。
+                // Enter 复用同一次查询（q === lastQuery）时才会保留选中态。
+                activeIndex = -1;
+                lastQuery = q;
+            }
             if (!q) {
                 searchHint.classList.add('d-none');
                 searchHint.textContent = '';
@@ -3815,11 +3823,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 searchHint.textContent = '找到 ' + cardMatches.length + ' 张相关卡片';
             }
 
+            // activeIndex 必须在 renderResults() 之前取出：renderResults() 开头会把
+            // activeIndex 重置为 -1，之后读取的话方向键选中的项会被忽略，Enter 恒跳第一条。
+            var chosen = activeIndex;
             renderResults(fieldMatches, terms);
 
             if (!jump) { return; }
 
-            var target = fieldMatches[activeIndex >= 0 ? activeIndex : 0];
+            var rendered = Math.min(SEARCH_RESULT_LIMIT, fieldMatches.length);
+            var target = fieldMatches[(chosen >= 0 && chosen < rendered) ? chosen : 0];
             if (target) {
                 jumpTo(target);
                 closeResults();
@@ -3841,7 +3853,11 @@ document.addEventListener('DOMContentLoaded', function () {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 if (!currentMatches.length) { return; }
                 e.preventDefault();
-                setActiveIndex(activeIndex + (e.key === 'ArrowDown' ? 1 : -1));
+                var step = e.key === 'ArrowDown' ? 1 : -1;
+                // 尚未有选中项(activeIndex=-1)时：↓ 落到第一项，↑ 落到最后一项。
+                // 直接算 activeIndex+step 会让 ↑ 从 -1 变成 -2，回绕到倒数第二项。
+                var base = activeIndex < 0 ? (step > 0 ? -1 : 0) : activeIndex;
+                setActiveIndex(base + step);
             } else if (e.key === 'Enter') {
                 e.preventDefault();
                 clearTimeout(debounceTimer);

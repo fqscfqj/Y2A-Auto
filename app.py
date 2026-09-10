@@ -788,10 +788,12 @@ SETTINGS_FLOAT_FIELDS = list(dict.fromkeys([
 
 # 同一个键不得同时出现在整数与浮点白名单里：整数分支先执行，会把 "15.5"
 # 判为非法并回退成默认值，随后浮点分支再处理，导致小数精度被静默丢弃。
-assert not (set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOAT_FIELDS)), (
-    '数值白名单存在交叉：'
-    f'{sorted(set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOAT_FIELDS))}'
-)
+# 用显式 raise 而非 assert：assert 在 python -O 下会被整体剥离，这条不变量
+# 就会悄悄失效。此处也不另写守卫测试——一旦交叉，import 期即抛错，
+# 测试文件根本收集不到，那种测试永远不可能失败。错误信息里带冲突键名。
+_NUMERIC_WHITELIST_OVERLAP = sorted(set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOAT_FIELDS))
+if _NUMERIC_WHITELIST_OVERLAP:
+    raise RuntimeError(f'数值白名单存在交叉：{_NUMERIC_WHITELIST_OVERLAP}')
 
 # 模板中被刻意钉死为固定值的键（templates/settings.html 用 hidden 输入固定写入）。
 # 这些值是"不变量"而非"可配置默认值"，因此不取 DEFAULT_CONFIG：

@@ -582,6 +582,11 @@ class SettingsTemplateLayoutTests(unittest.TestCase):
             if key not in DEFAULT_CONFIG)
         self.assertEqual(missing, [], f'白名单键不在 DEFAULT_CONFIG 中: {missing}')
 
+    # 注:「整数与浮点白名单不相交」这条不变量没有对应的测试,而是在 app.py 顶层用
+    # 显式 raise 拦截(_NUMERIC_WHITELIST_OVERLAP)。之所以不在这里再写一条:
+    # 一旦交叉,app.py 在 import 期就会抛错,本文件根本收集不到,那条测试永远
+    # 不可能失败,属于「死测试」。raise 的错误信息里已带上冲突的键名。
+
     def test_钉死字段的回退值不被DEFAULT_CONFIG带偏(self):
         # 模板用 hidden 输入把这两个键钉死为固定值(hidden value 见模板),
         # 它们是「不变量」而非「默认值」,回退时必须维持钉死值。
