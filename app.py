@@ -771,7 +771,7 @@ SETTINGS_INT_FIELDS = list(dict.fromkeys([
     'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
     'AI_FAILOVER_TIMEOUT_SECONDS',
     'VAD_SILERO_MIN_SPEECH_MS', 'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
-    'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
+    'VAD_SILERO_SPEECH_PAD_MS',
     'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
     'SUBTITLE_QC_TIMEOUT_SECONDS',
     'SUBTITLE_MIN_TEXT_LENGTH',
@@ -786,9 +786,31 @@ SETTINGS_FLOAT_FIELDS = list(dict.fromkeys([
     'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT',
 ] + list(SPEECH_PIPELINE_FLOAT_FIELDS)))
 
+# 同一个键不得同时出现在整数与浮点白名单里：整数分支先执行，会把 "15.5"
+# 判为非法并回退成默认值，随后浮点分支再处理，导致小数精度被静默丢弃。
+assert not (set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOAT_FIELDS)), (
+    '数值白名单存在交叉：'
+    f'{sorted(set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOAT_FIELDS))}'
+)
+
+# 模板中被刻意钉死为固定值的键（templates/settings.html 用 hidden 输入固定写入）。
+# 这些值是"不变量"而非"可配置默认值"，因此不取 DEFAULT_CONFIG：
+#   SUBTITLE_MAX_LINE_LENGTH / SUBTITLE_MAX_LINES 钉死为 999 / 1，
+#   目的是让 SRT 格式化器永不强制换行（单行字幕）。
+_PINNED_SETTINGS_DEFAULTS = {
+    'SUBTITLE_MAX_LINE_LENGTH': 999,
+    'SUBTITLE_MAX_LINES': 1,
+}
+
 
 def _settings_fallback_default(field, fallback=1):
-    """非法数值的回退值统一取 DEFAULT_CONFIG，避免与页面展示的默认值不一致。"""
+    """非法数值的回退值统一取 DEFAULT_CONFIG，避免与页面展示的默认值不一致。
+
+    例外见 _PINNED_SETTINGS_DEFAULTS：少数键在模板中被刻意钉死为固定值，
+    其语义是"不变量"而非"默认值"，不能跟随 DEFAULT_CONFIG 变化。
+    """
+    if field in _PINNED_SETTINGS_DEFAULTS:
+        return _PINNED_SETTINGS_DEFAULTS[field]
     if field in DEFAULT_CONFIG:
         return DEFAULT_CONFIG[field]
     return fallback
@@ -849,7 +871,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
 
         # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
-        # 越界或非法（手工配置 / 直接 POST 负值）回退默认 8 秒，
+        # 越界或非法（手工配置 / 直接 POST 负值）回退默认值，
         # 避免 httpx 在创建客户端 / 请求时抛 timeout range error。
         _fkey = 'AI_FAILOVER_TIMEOUT_SECONDS'
         if _fkey in form_data:
@@ -858,11 +880,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             except (ValueError, TypeError):
                 _fv = None
             if _fv is None or _fv < 1 or _fv > 60:
-                logger.debug(f"{_fkey} 越界或非法，回退默认 8: {form_data.get(_fkey)}")
-                form_data[_fkey] = '8'
+                _fkey_default = _settings_fallback_default(_fkey)
+                logger.debug(f"{_fkey} 越界或非法，回退默认 {_fkey_default}: {form_data.get(_fkey)}")
+                form_data[_fkey] = str(_fkey_default)
 
         # SUBTITLE_QC_TIMEOUT_SECONDS 范围校验：设置页声明 10–600 秒。
-        # 越界或非法（手工配置 / 直接 POST 负值 / 非数字）回退默认 120 秒，
+        # 越界或非法（手工配置 / 直接 POST 负值 / 非数字）回退默认值，
         # 避免负值或超限值被透传给 httpx 客户端时抛 timeout range error。
         _qc_timeout_key = 'SUBTITLE_QC_TIMEOUT_SECONDS'
         if _qc_timeout_key in form_data:
@@ -871,8 +894,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             except (ValueError, TypeError):
                 _qc_tv = None
             if _qc_tv is None or _qc_tv < 10 or _qc_tv > 600:
-                logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 120: {form_data.get(_qc_timeout_key)}")
-                form_data[_qc_timeout_key] = '120'
+                _qc_default = _settings_fallback_default(_qc_timeout_key)
+                logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 {_qc_default}: {form_data.get(_qc_timeout_key)}")
+                form_data[_qc_timeout_key] = str(_qc_default)
 
         for field in SETTINGS_FLOAT_FIELDS:
             if field in form_data:

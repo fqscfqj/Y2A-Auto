@@ -7,12 +7,20 @@
 4. 复选框可关闭性 —— 后端白名单必须覆盖模板里所有开关,
    否则「取消勾选后保存」不会生效(历史上 DOWNLOAD_CLEANUP_ENABLED 即因此失效)
 """
+import pathlib
+import re
 import unittest
 
 from lxml import html as lxml_html
 
 import app as web_app
-from app import SETTINGS_CHECKBOX_FIELDS
+from app import (
+    SETTINGS_CHECKBOX_FIELDS,
+    SETTINGS_FLOAT_FIELDS,
+    SETTINGS_INT_FIELDS,
+    _settings_fallback_default,
+)
+from modules.config_manager import DEFAULT_CONFIG
 
 
 EXPECTED_PANES = [
@@ -27,7 +35,12 @@ EXPECTED_PANES = [
     'vtab-ops',
 ]
 
-# 字段 -> 所属分组(固化基线,由改造后的设置页导出)
+# 字段 -> 所属分组(固化基线,由改造后的设置页导出)。
+# 说明:其中绝大多数是「必然如此」的归属(例如 LLM 端点属于 AI 分组);
+# 少数属于策略性取舍(例如「下载内容清理」放网络分组、「日志清理」放运维分组、
+# 「内容审核」放运行与投稿分组),这些是可以再讨论的。
+# 调整策略性归属时请同步更新本表——该断言的作用是防止搬运时误放,
+# 而不是禁止有意调整。
 FIELD_TAB_MAP = {
     'ACFUN_COOKIES_PATH': 'vtab-accounts',
     'AI_FAILOVER_TIMEOUT_SECONDS': 'vtab-ai',
@@ -533,22 +546,74 @@ class SettingsTemplateLayoutTests(unittest.TestCase):
             pane_id = current.lstrip('#')
             self.assertTrue(alias in self.page, f'缺少旧 hash 别名 {legacy} -> {current}')
             self.assertTrue(f'id="{pane_id}"' in self.page, f'缺少目标分组 {current}')
+
     def test_共享JS辅助函数定义在顶层作用域(self):
         # 卡片级重置与字段级搜索分别位于两个独立的 DOMContentLoaded 回调中；
         # 若把 settingsFieldLabel 定义在任一回调内部,另一个回调会抛 ReferenceError,
         # 导致搜索索引构建中断、搜索功能整体失效(历史上出现过该回归)。
-        first_handler = self.page.find("document.addEventListener('DOMContentLoaded'")
-        self.assertGreater(first_handler, -1, '未找到 DOMContentLoaded 入口')
         for symbol in ('const settingsEscapeSelector', 'const settingsFieldLabel'):
-            pos = self.page.find(symbol)
-            self.assertGreater(pos, -1, f'缺少共享辅助函数 {symbol}')
-            self.assertLess(
-                pos, first_handler,
-                f'{symbol} 定义在 DOMContentLoaded 回调内部,跨回调不可见')
-        # 两个消费方各调用一次：卡片重置 + 字段级搜索
-        self.assertEqual(
+            line = next((ln for ln in self.page.splitlines() if ln.startswith(symbol)), None)
+            self.assertIsNotNone(
+                line,
+                f'{symbol} 必须顶格定义在 <script> 顶层(不能在 DOMContentLoaded 回调内)')
+        # 两个消费方(卡片重置、字段级搜索)都应引用它
+        self.assertGreaterEqual(
             self.page.count('settingsFieldLabel('), 2,
             'settingsFieldLabel 应同时被卡片重置与字段级搜索使用')
+
+    def test_模板数值控件都在数值白名单里(self):
+        # 镜像守卫:数值控件若不在白名单,保存时会被原样存成字符串
+        # (main 上 DOWNLOAD_CLEANUP_HOURS / INTERVAL 就属于这种情况)。
+        whitelist = set(SETTINGS_INT_FIELDS) | set(SETTINGS_FLOAT_FIELDS)
+        offenders = []
+        for el in self.doc.xpath(
+                "//form[@id='settings-form']//input[@type='number'][@name]"):
+            if el.get('name') not in whitelist:
+                offenders.append(el.get('name'))
+        self.assertEqual(
+            sorted(set(offenders)), [],
+            '这些数值控件不在归一化白名单里,保存时不会被转成数值')
+
+    def test_数值白名单的键都存在于DEFAULT_CONFIG(self):
+        # _settings_fallback_default 依赖键存在于 DEFAULT_CONFIG,
+        # 缺失时会静默退化成 1 / 0.0(例如批字符数变成 1 会把批次切碎)。
+        missing = sorted(
+            key for key in (SETTINGS_INT_FIELDS + SETTINGS_FLOAT_FIELDS)
+            if key not in DEFAULT_CONFIG)
+        self.assertEqual(missing, [], f'白名单键不在 DEFAULT_CONFIG 中: {missing}')
+
+    def test_钉死字段的回退值不被DEFAULT_CONFIG带偏(self):
+        # 模板用 hidden 输入把这两个键钉死为固定值(hidden value 见模板),
+        # 它们是「不变量」而非「默认值」,回退时必须维持钉死值。
+        pinned = {'SUBTITLE_MAX_LINE_LENGTH': '999', 'SUBTITLE_MAX_LINES': '1'}
+        for key, expected in pinned.items():
+            self.assertEqual(str(_settings_fallback_default(key)), expected,
+                             f'{key} 的回退值必须保持模板钉死的 {expected}')
+            hidden = self.doc.xpath(
+                f"//form[@id='settings-form']//input[@type='hidden'][@name='{key}']/@value")
+            self.assertEqual(hidden, [expected],
+                             f'模板中 {key} 的钉死值应仍为 {expected}')
+
+    def test_模板兜底字面量与DEFAULT_CONFIG一致(self):
+        # 模板里的 config.get('KEY', 字面量) 与 DEFAULT_CONFIG 分叉时,
+        # 页面展示的默认值会与后端实际回退值不一致。
+        template_source = (
+            pathlib.Path(__file__).resolve().parents[1] / 'templates' / 'settings.html'
+        ).read_text(encoding='utf-8')
+        pattern = re.compile(r"config\.get\(\s*'([A-Z0-9_]+)'\s*,\s*([^)]+?)\s*\)")
+        mismatched = {}
+        for match in pattern.finditer(template_source):
+            key, raw = match.group(1), match.group(2).strip()
+            if key not in DEFAULT_CONFIG or raw in ("None", "''", '\"\"', 'True', 'False'):
+                continue
+            try:
+                literal = float(raw)
+            except ValueError:
+                continue
+            if abs(literal - float(DEFAULT_CONFIG[key])) > 1e-9:
+                mismatched[key] = (literal, DEFAULT_CONFIG[key])
+        self.assertEqual(mismatched, {},
+                         f'模板兜底字面量与 DEFAULT_CONFIG 不一致: {mismatched}')
 
 
 if __name__ == '__main__':

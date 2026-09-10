@@ -446,8 +446,13 @@ body {
 }
 
 .settings-search-result:hover,
-.settings-search-result:focus-visible {
+.settings-search-result:focus-visible,
+.settings-search-result.is-active {
     background: rgba(13, 110, 253, 0.06);
+}
+
+.settings-search-result.is-active {
+    box-shadow: inset 3px 0 0 #0d6efd;
 }
 
 .settings-search-result-label {

@@ -31,7 +31,7 @@
     <div class="settings-search-bar mb-3">
         <div class="input-group">
             <span class="input-group-text"><i class="bi bi-search"></i></span>
-            <input type="text" id="settings-search-input" class="form-control" placeholder="搜索设置项，如：代理、模型、密码、Whisper；空格分隔可缩小范围" aria-describedby="settings-search-hint">
+            <input type="text" id="settings-search-input" class="form-control" placeholder="搜索设置项，如：代理、模型、密码、Whisper；空格分隔可缩小范围" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="settings-search-results" aria-describedby="settings-search-hint">
             <button type="button" id="settings-search-clear" class="btn btn-outline-secondary d-none" title="清除搜索" aria-label="清除搜索"><i class="bi bi-x-lg"></i></button>
         </div>
         <div id="settings-search-hint" class="form-text d-none"></div>
@@ -1093,6 +1093,12 @@
                                                                     翻译为英文
                                                                 </label>
                                                             </div>
+                                                            <div class="col-md-4">
+                                                                <div class="form-group">
+                                                                    <label for="whisper-max-retries" class="form-label">Whisper 最大重试次数</label>
+                                                                    <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1214,14 +1220,8 @@
                                                         <div class="row g-3">
                                                             <div class="col-lg-6">
                                                                 <div class="settings-option-card">
-                                                                    <h5>质量与容错</h5>
+                                                                    <h5>VAD 质量与容错</h5>
                                                                     <div class="row g-3">
-                                                                        <div class="col-md-6">
-                                                                            <div class="form-group mb-0">
-                                                                                <label for="whisper-max-retries" class="form-label">最大重试次数</label>
-                                                                                <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
-                                                                            </div>
-                                                                        </div>
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-min-coverage" class="form-label">最低语音覆盖率</label>
@@ -1307,6 +1307,7 @@
                                                             启用 AI 智能分段
                                                         </label>
                                                         <div class="form-text">基于 ASR 返回的字级时间戳，由 AI 按语义重新切分字幕，获得更自然的断句与节奏。需 ASR 支持字级时间戳（如 Whisper 时间戳粒度包含 <code>word</code>，模型如 <code>parakeet-crispasr</code>）；不支持时自动降级到段级 AI 分段，再失败则回退规则分段。</div>
+                                                        <div class="form-text">分段所用模型端点（专用覆盖，留空则继承全局）在 <a href="#vtab-ai">AI 服务与端点</a> 分组配置。</div>
                                                     </div>
                                                 </div>
 
@@ -1322,19 +1323,19 @@
                                                         <div class="col-md-3">
                                                             <div class="form-group">
                                                                 <label for="ai-seg-min-dur" class="form-label">最短显示时长（秒）</label>
-                                                                <input type="number" step="0.1" min="0.2" id="ai-seg-min-dur" name="AI_SEGMENTATION_MIN_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MIN_CUE_DURATION_S', 0.8) }}" class="form-control">
+                                                                <input type="number" step="0.1" min="0.2" id="ai-seg-min-dur" name="AI_SEGMENTATION_MIN_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MIN_CUE_DURATION_S', 1.5) }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-3">
                                                             <div class="form-group">
                                                                 <label for="ai-seg-max-dur" class="form-label">最长段长（秒）</label>
-                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-dur" name="AI_SEGMENTATION_MAX_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MAX_CUE_DURATION_S', 7.0) }}" class="form-control">
+                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-dur" name="AI_SEGMENTATION_MAX_CUE_DURATION_S" value="{{ config.get('AI_SEGMENTATION_MAX_CUE_DURATION_S', 5.0) }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-3">
                                                             <div class="form-group">
                                                                 <label for="ai-seg-max-cps" class="form-label">最大字符速率（字/秒）</label>
-                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-cps" name="AI_SEGMENTATION_MAX_CPS" value="{{ config.get('AI_SEGMENTATION_MAX_CPS', 18.0) }}" class="form-control">
+                                                                <input type="number" step="0.1" min="1" id="ai-seg-max-cps" name="AI_SEGMENTATION_MAX_CPS" value="{{ config.get('AI_SEGMENTATION_MAX_CPS', 15.0) }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-3">
@@ -1346,13 +1347,13 @@
                                                         <div class="col-md-4">
                                                             <div class="form-group">
                                                                 <label for="ai-seg-max-chars" class="form-label">单批次最大字符数</label>
-                                                                <input type="number" step="100" min="500" id="ai-seg-max-chars" name="AI_SEGMENTATION_MAX_CHARS_PER_BATCH" value="{{ config.get('AI_SEGMENTATION_MAX_CHARS_PER_BATCH', 8000) }}" class="form-control">
+                                                                <input type="number" step="100" min="500" id="ai-seg-max-chars" name="AI_SEGMENTATION_MAX_CHARS_PER_BATCH" value="{{ config.get('AI_SEGMENTATION_MAX_CHARS_PER_BATCH', 4000) }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-4">
                                                             <div class="form-group">
                                                                 <label for="ai-seg-temp" class="form-label">采样温度</label>
-                                                                <input type="number" step="0.1" min="0" max="2" id="ai-seg-temp" name="AI_SEGMENTATION_TEMPERATURE" value="{{ config.get('AI_SEGMENTATION_TEMPERATURE', 0.2) }}" class="form-control">
+                                                                <input type="number" step="0.1" min="0" max="2" id="ai-seg-temp" name="AI_SEGMENTATION_TEMPERATURE" value="{{ config.get('AI_SEGMENTATION_TEMPERATURE', 0.1) }}" class="form-control">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-4">
@@ -1413,12 +1414,6 @@
                                                                 <label class="checkbox-label">
                                                                     <input type="checkbox" name="SUBTITLE_TRANSLATION_ENABLED" {% if config.SUBTITLE_TRANSLATION_ENABLED %}checked{% endif %}>
                                                                     启用字幕翻译
-                                                                </label>
-                                                            </div>
-                                                            <div class="col-md-6">
-                                                                <label class="checkbox-label">
-                                                                    <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
-                                                                    启用 ASR 源字幕质检
                                                                 </label>
                                                             </div>
                                                             <div class="col-md-6">
@@ -1562,8 +1557,8 @@
                                                         <div class="col-md-6">
                                                             <div class="form-group">
                                                                 <label for="subtitleMaxWorkers" class="form-label">字幕翻译最大并发线程数</label>
-                                                                <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 0) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
-                                                            </div>
+                                                                <input type="number" class="form-control" id="subtitleMaxWorkers" name="SUBTITLE_MAX_WORKERS" value="{{ config.get('SUBTITLE_MAX_WORKERS', 2) }}" min="0" step="1" inputmode="numeric" pattern="[0-9]*">
+                                                                <div class="form-text">填 <code>0</code> 表示按本批字幕的实际批次数自动决定并发；内存紧张时系统还会自动下调。</div>                                                            </div>
                                                         </div>
                                                 </div>
                                             </div>
@@ -1579,6 +1574,15 @@
                                                 </div>
                                             </div>
                                             <div class="settings-card-body">
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
+                                                            启用 ASR 源字幕质检
+                                                        </label>
+                                                        <p class="help-text mb-0">质量优先：质检不通过时不烧录字幕，但保留字幕文件并继续上传原视频（任务仍记为完成）。开关与其调优参数同在本卡片；质检所用模型端点在 <a href="#vtab-ai">AI 服务与端点</a> 分组配置。</p>
+                                                    </div>
+                                                </div>
                                                 <div class="mt-3">
                                                     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedSubtitleQc" aria-expanded="false" aria-controls="advancedSubtitleQc">
                                                         <i class="bi bi-chevron-down"></i> 质检高级参数
@@ -1588,7 +1592,7 @@
                                                             <div class="col-md-3">
                                                                 <div class="form-group">
                                                                     <label for="subtitle-qc-threshold" class="form-label">通过阈值</label>
-                                                                    <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.35) }}" class="form-control">
+                                                                    <input type="number" step="0.05" min="0" max="1" id="subtitle-qc-threshold" name="SUBTITLE_QC_THRESHOLD" value="{{ config.get('SUBTITLE_QC_THRESHOLD', 0.60) }}" class="form-control">
                                                                 </div>
                                                             </div>
                                                             <div class="col-md-3">
@@ -3595,6 +3599,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var resultsPanel = document.createElement('div');
         resultsPanel.className = 'settings-search-results d-none';
+        resultsPanel.id = 'settings-search-results';
         resultsPanel.setAttribute('role', 'listbox');
         resultsPanel.setAttribute('aria-label', '设置项搜索结果');
         if (searchHint && searchHint.parentNode) {
@@ -3681,13 +3686,24 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         }
 
+        // 在"原始"标签文本上匹配，并按片段分别转义后再拼装 HTML。
+        // 不能先整段 escapeHtml 再 replace：那样会在已经生成的实体/标签内部再插入 <mark>，
+        // 例如搜索词命中 "amp" 时会把 &amp; 拆坏成 <mark>&</mark>amp;。
         function highlightTerm(label, terms) {
-            var html = escapeHtml(label);
-            terms.forEach(function (term) {
-                if (!term) { return; }
-                var safe = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                html = html.replace(new RegExp(safe, 'gi'), function (m) { return '<mark>' + m + '</mark>'; });
-            });
+            var raw = String(label == null ? '' : label);
+            var cleaned = terms.filter(function (t) { return t; });
+            if (!cleaned.length) { return escapeHtml(raw); }
+            var pattern = new RegExp('(' + cleaned.map(function (t) {
+                return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }).join('|') + ')', 'gi');
+            var parts = raw.split(pattern);
+            var html = '';
+            for (var i = 0; i < parts.length; i += 1) {
+                // split 带捕获组时，奇数下标即命中片段
+                html += (i % 2 === 1)
+                    ? '<mark>' + escapeHtml(parts[i]) + '</mark>'
+                    : escapeHtml(parts[i]);
+            }
             return html;
         }
 
@@ -3699,27 +3715,52 @@ document.addEventListener('DOMContentLoaded', function () {
             }, 220);
         }
 
+        function closeResults() {
+            resultsPanel.classList.add('d-none');
+            resultsPanel.innerHTML = '';
+            activeIndex = -1;
+            searchInput.setAttribute('aria-expanded', 'false');
+            searchInput.removeAttribute('aria-activedescendant');
+        }
+
+        function setActiveIndex(next) {
+            var items = resultsPanel.querySelectorAll('.settings-search-result');
+            if (!items.length) { return; }
+            activeIndex = (next + items.length) % items.length;
+            for (var i = 0; i < items.length; i += 1) {
+                var isActive = i === activeIndex;
+                items[i].classList.toggle('is-active', isActive);
+                items[i].setAttribute('aria-selected', isActive ? 'true' : 'false');
+                if (isActive && items[i].id) {
+                    searchInput.setAttribute('aria-activedescendant', items[i].id);
+                    items[i].scrollIntoView({ block: 'nearest' });
+                }
+            }
+        }
+
         function renderResults(matches, terms) {
             resultsPanel.innerHTML = '';
+            activeIndex = -1;
             if (!matches.length) {
-                resultsPanel.classList.add('d-none');
+                closeResults();
                 return;
             }
             var limit = 20;
+            currentMatches = matches;
             matches.slice(0, limit).forEach(function (entry, index) {
                 var item = document.createElement('button');
                 item.type = 'button';
                 item.className = 'settings-search-result';
+                item.id = 'settings-search-result-' + index;
                 item.setAttribute('role', 'option');
+                item.setAttribute('aria-selected', 'false');
                 item.innerHTML = '<span class="settings-search-result-label">' + highlightTerm(entry.label, terms) + '</span>'
                     + '<span class="settings-search-result-path">' + escapeHtml(entry.cardTitle) + ' · ' + escapeHtml(entry.paneTitle) + '</span>';
                 item.addEventListener('click', function () {
                     jumpTo(entry);
-                    item.blur();
+                    closeResults();
+                    searchInput.focus();
                 });
-                if (index === 0) {
-                    item.setAttribute('aria-selected', 'true');
-                }
                 resultsPanel.appendChild(item);
             });
             if (matches.length > limit) {
@@ -3729,17 +3770,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 resultsPanel.appendChild(more);
             }
             resultsPanel.classList.remove('d-none');
+            searchInput.setAttribute('aria-expanded', 'true');
         }
 
         var debounceTimer = null;
-        function runSearch(q) {
+        var currentMatches = [];
+        var activeIndex = -1;
+
+        // jump=false 时只列出结果与高亮卡片，不切换分组、不滚动页面，
+        // 避免用户还在输入时页面就跳走（连续输入会跳多次）。
+        function runSearch(q, jump) {
             clearHighlights();
             if (!q) {
                 searchHint.classList.add('d-none');
                 searchHint.textContent = '';
-                resultsPanel.classList.add('d-none');
-                resultsPanel.innerHTML = '';
                 searchClear.classList.add('d-none');
+                closeResults();
                 return;
             }
             searchClear.classList.remove('d-none');
@@ -3760,19 +3806,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
             searchHint.classList.remove('d-none');
             searchHint.className = 'form-text text-success';
+            var actionableHint = fieldMatches.length ? '，按 Enter 跳转' : '';
             if (fieldMatches.length) {
                 searchHint.textContent = '匹配 ' + fieldMatches.length + ' 个设置项'
                     + (cardMatches.length > fieldMatches.length ? '（分布在 ' + cardMatches.length + ' 张卡片）' : '')
-                    + '，已定位到第一个';
+                    + actionableHint;
             } else {
                 searchHint.textContent = '找到 ' + cardMatches.length + ' 张相关卡片';
             }
 
             renderResults(fieldMatches, terms);
 
-            var target = fieldMatches[0];
+            if (!jump) { return; }
+
+            var target = fieldMatches[activeIndex >= 0 ? activeIndex : 0];
             if (target) {
                 jumpTo(target);
+                closeResults();
             } else {
                 activatePane(cardMatches[0].paneId);
                 setTimeout(function () {
@@ -3784,17 +3834,21 @@ document.addEventListener('DOMContentLoaded', function () {
         searchInput.addEventListener('input', function () {
             var v = searchInput.value.trim();
             clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(function () { runSearch(v); }, 180);
+            debounceTimer = setTimeout(function () { runSearch(v, false); }, 180);
         });
 
         searchInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                if (!currentMatches.length) { return; }
+                e.preventDefault();
+                setActiveIndex(activeIndex + (e.key === 'ArrowDown' ? 1 : -1));
+            } else if (e.key === 'Enter') {
                 e.preventDefault();
                 clearTimeout(debounceTimer);
-                runSearch(searchInput.value.trim());
+                runSearch(searchInput.value.trim(), true);
             } else if (e.key === 'Escape') {
                 searchInput.value = '';
-                runSearch('');
+                runSearch('', false);
                 searchInput.blur();
             }
         });
@@ -3802,7 +3856,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (searchClear) {
             searchClear.addEventListener('click', function () {
                 searchInput.value = '';
-                runSearch('');
+                runSearch('', false);
                 searchInput.focus();
             });
         }
