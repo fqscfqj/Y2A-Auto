@@ -293,6 +293,108 @@ class EncoderWiringTests(unittest.TestCase):
         custom = ['-c:v', 'libx264', '-x264-params', 'aq-mode=3']
         self.assertEqual(build_color_vui_params('cpu', color_map, custom), [])
 
+
+class EmbedCommandPrivateParamsTests(unittest.TestCase):
+    """集成层契约：烧录命令里每个私有参数选项**只能出现一次**。
+
+    这是本项目吃过一次亏的地方。实测（FFmpeg N-123313）x265 对同一个
+    `-x265-params` 给两次时，后者**完全覆盖**前者而不是合并：
+
+        -x265-params colorprim=bt709 -x265-params transfer=bt709
+        → color_primaries 丢失，color_transfer=bt709
+
+    返回码仍然是 0，字段静默消失。而 x265 的质量增强项与色彩 VUI 偏偏都要走这个
+    选项（x265 没有 -aq-mode 之类的独立选项），因此「两处各追加一条」的历史写法
+    会稳定地丢掉一半参数且没有任何报错。
+
+    这里断言的是 task_manager 真实产出的命令，而不是 build_encoder_params 的
+    返回值：VUI 合并发生在后者内部，前者若再追加一次就前功尽弃。单测层面看不到
+    这种回归，只有盯住最终命令才发现得了。
+    """
+
+    _COLOR_MAP = {
+        'colorspace': 'bt709',
+        'color_primaries': 'bt709',
+        'color_trc': 'bt709',
+        'color_range': 'tv',
+    }
+
+    def _command_for(self, cpu_codec, custom_params=None, hw_quality_boost=True):
+        from modules.video_encoder_params import (
+            build_encoder_params,
+            resolve_color_metadata,
+        )
+
+        vparams = build_encoder_params('cpu', {
+            'height': 1080, 'gop': 48, 'gop_hevc': 96,
+            'quality_mode': 'auto', 'cpu_preset': 'medium',
+            'duration_s': 300, 'hw_quality_boost': hw_quality_boost,
+            'hw_quality_level': 'quality', 'cpu_codec': cpu_codec,
+            'software_tune': '', 'color_map': self._COLOR_MAP,
+            'custom_params': custom_params,
+        })
+        color_params = resolve_color_metadata('bt709', {})
+        return TaskProcessor._build_embed_ffmpeg_cmd(
+            ffmpeg_bin='ffmpeg', input_video='in.mp4',
+            vf_filter='subtitles=sub.srt', vparams=vparams,
+            aparams=['-c:a', 'copy'], output_video='out.mp4',
+            color_params=color_params,
+        )
+
+    def test_each_private_option_appears_at_most_once(self):
+        for cpu_codec in ('x264', 'x265'):
+            for boosted in (True, False):
+                cmd = self._command_for(cpu_codec, hw_quality_boost=boosted)
+                for option in ('-x264-params', '-x265-params', '-x264opts'):
+                    self.assertLessEqual(
+                        cmd.count(option), 1,
+                        f'{cpu_codec}(boost={boosted}) 的命令里 {option} 出现 '
+                        f'{cmd.count(option)} 次，后者会覆盖前者：{cmd}',
+                    )
+
+    def test_boost_toggle_does_not_duplicate_the_option(self):
+        """关闭增强时 VUI 仍要写入，且仍只占同一条 -x265-params。"""
+        cmd = self._command_for('x265', hw_quality_boost=False)
+        self.assertEqual(cmd.count('-x265-params'), 1)
+        value = cmd[cmd.index('-x265-params') + 1]
+        self.assertIn('colorprim=bt709', value)
+        self.assertNotIn('aq-mode', value)
+
+    def test_x265_command_carries_boost_and_vui_in_one_option(self):
+        cmd = self._command_for('x265')
+        self.assertEqual(cmd.count('-x265-params'), 1)
+        value = cmd[cmd.index('-x265-params') + 1]
+        for expected in ('colorprim=bt709', 'transfer=bt709', 'colormatrix=bt709'):
+            self.assertIn(expected, value)
+        self.assertIn('aq-mode=3', value)
+
+    def test_command_with_custom_params_keeps_a_single_option(self):
+        cmd = self._command_for('x265', custom_params='-c:v libx265 -preset slow')
+        self.assertLessEqual(cmd.count('-x265-params'), 1)
+        self.assertIn('-x265-params', cmd)
+
+    def test_command_declining_private_params_adds_none(self):
+        # 用户自己写了 -x265-params 时不得再追加第二条
+        cmd = self._command_for('x265', custom_params='-c:v libx265 -x265-params aq-mode=3')
+        self.assertEqual(cmd.count('-x265-params'), 1)
+
+    def test_hardware_command_has_no_software_private_params(self):
+        from modules.video_encoder_params import build_encoder_params
+
+        for key in ('nvidia', 'intel', 'amd'):
+            vparams = build_encoder_params(key, {
+                'height': 1080, 'gop': 48, 'gop_hevc': 96, 'duration_s': 300,
+                'cpu_codec': 'x264', 'color_map': self._COLOR_MAP,
+            })
+            cmd = TaskProcessor._build_embed_ffmpeg_cmd(
+                ffmpeg_bin='ffmpeg', input_video='in.mp4',
+                vf_filter='subtitles=sub.srt', vparams=vparams,
+                aparams=['-c:a', 'copy'], output_video='out.mp4',
+                color_params=[],
+            )
+            for option in ('-x264-params', '-x265-params', '-x264opts'):
+                self.assertNotIn(option, cmd, key)
+
     def test_color_vui_empty_maps(self):
         self.assertEqual(build_color_vui_params('cpu', {}, None), [])
         self.assertEqual(build_color_vui_params('cpu', None, None), [])
