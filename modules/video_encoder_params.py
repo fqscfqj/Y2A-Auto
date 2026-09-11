@@ -28,6 +28,14 @@ libvpl / amf / vaapi）实测确认：
     stillimage、psnr、ssim、fastdecode、zerolatency（实测 'none' 会被 x264 拒绝）。
   -vsync 已被 FFmpeg 标记弃用（输出 "-vsync is deprecated. Use -fps_mode"），
     本模块统一使用 -fps_mode cfr。
+
+`-fps_mode` 是 FFmpeg 5.1 才引入的选项（5.0 及更早只认 `-vsync`）。仓库自带的
+与自动下载的 ffmpeg（BtbN latest）都远高于该版本；但用户通过 `FFMPEG_LOCATION`
+指向自备的旧 ffmpeg 时，`-fps_mode` 会触发 "Unrecognized option" 而直接失败 ——
+该错误既不属于 `_KNOWN_HW_ENCODER_ERROR_PATTERNS`，CPU 路径的降级列表又为空
+（见 task_manager._resolve_embed_retry_stages：非硬件编码器一律返回 []），
+因此整任务失败且无任何重试。本模块只在文件内记录该前提，不做版本探测：
+探测需要调用 subprocess，会破坏「纯函数、无副作用」的模块契约。
 """
 
 import math
@@ -94,6 +102,8 @@ _AMF_BOOST_PARAMS = ['-vbaq', '1', '-preanalysis', '1', '-pa_caq_strength', 'hig
 _VAAPI_BOOST_PARAMS = ['-blbrc', '1']
 
 # x264 高质量调参（独立一等选项，非 -x264-params）。
+# 这四项与硬件编码器的增强项一样属于「质量增强」，统一受 hw_quality_boost
+# 总开关控制：关闭时回到与基线逐字一致的基础参数（见 _build_cpu）。
 _X264_QUALITY_PARAMS = [
     '-aq-mode', '3',
     '-aq-strength', '0.8',
@@ -103,18 +113,88 @@ _X264_QUALITY_PARAMS = [
 
 _VAAPI_DEVICE = '/dev/dri/renderD128'
 
-# 色彩元数据映射
-_YUV_SPACE_VALUES = frozenset((
-    'bt709', 'bt470bg', 'bt470m', 'smpte170m', 'smpte240m', 'bt2020nc',
-    'bt2020c', 'bt2020', 'smpte2085', 'film', 'ictcp', 'ycgco',
+# 色彩元数据映射。
+#
+# 三张表**必须分开**：ffmpeg 里 colorspace / color_primaries / color_trc 是三个
+# 语义不同的字段，合法取值集合并不相同（例如 `bt2020nc` 是合法的 colorspace
+# 却不是合法的 primaries）。此前三者共用一张表，会把 ffmpeg 直接拒绝的值写进
+# 命令，而且该失败不在 `_KNOWN_HW_ENCODER_ERROR_PATTERNS` 内、CPU 路径的降级
+# 列表又为空 —— 源素材 color_space 为对应取值时整任务失败且无任何重试。
+#
+# 取值域由仓库自带 ffmpeg（N-123313）在「libx264 + yuv420p」输出组合下逐个实测
+# 得到（tests/test_video_encoder_params.py 的冒烟断言锁定同一集合）。实测中
+# 不合法取值有两类失败：`Invalid argument`（常量名不认识）与 `Conversion failed!`
+# （取值在 AVCOL 枚举里有定义，但与 yuv420p 转换不兼容）—— 两类都会让转码失败，
+# 因此都不得进表。
+_COLORSPACE_VALUES = frozenset((
+    'bt709', 'bt470bg', 'smpte170m', 'smpte240m', 'bt2020nc', 'rgb',
+))
+_PRIMARIES_VALUES = frozenset((
+    'bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film',
+    'bt2020', 'smpte428', 'smpte428_1', 'smpte431', 'smpte432',
+    'jedec-p22', 'ebu3213',
 ))
 _TRC_VALUES = frozenset((
     'bt709', 'gamma22', 'gamma28', 'smpte170m', 'smpte240m', 'linear',
-    'log100', 'log316', 'iec61966-2-4', 'bt1361e', 'iec61966-2-1',
-    'bt2020-10', 'bt2020-12', 'smpte2084', 'smpte428', 'arib-std-b67',
+    'log', 'log_sqrt', 'iec61966_2_4', 'bt1361', 'iec61966_2_1',
+    'smpte2084', 'smpte428', 'smpte428_1', 'arib-std-b67',
 ))
 _COLOR_RANGE_ALIASES = {'tv': 'tv', 'limited': 'tv', 'pc': 'pc', 'full': 'pc'}
 _SKIPPED_COLOR_TOKENS = frozenset(('', 'unknown', 'unspecified', 'reserved', 'n/a'))
+
+# 字段 -> 合法取值表。resolve_color_metadata / build_color_vui_params 共用，
+# 保证「校验用的集合」与「实际写入的值」永远来自同一处。
+_COLOR_FIELD_WHITELISTS = {
+    'colorspace': _COLORSPACE_VALUES,
+    'color_primaries': _PRIMARIES_VALUES,
+    'color_trc': _TRC_VALUES,
+}
+
+# 三张表里被 ffmpeg 通用选项（-colorspace/-color_primaries/-color_trc）接受的值，
+# 名字却不一定被 x264 私有参数（-x264-params colorprim/transfer/colormatrix）接受：
+# x264 用的是自己的枚举名。实测（N-123313 + libx264）下列取值会被 x264 以
+# `Error parsing option '...'` 拒绝，但**进程返回码仍为 0**，VUI 里该字段留空 ——
+# 也就是静默丢失，比直接报错更难发现（只能靠 ffprobe 回读 VUI 才能判定）。
+#
+#   colorprim  : smpte428_1 / jedec-p22 / ebu3213 被拒（jedec_p22 等变体同样被拒）
+#   colormatrix: rgb 被拒，x264 里叫 gbr
+#   transfer   : gamma22 / gamma28 / log / log_sqrt / iec61966_2_4 /
+#                iec61966_2_1 / bt1361 / smpte428_1 被拒
+#
+# 下表给出等价改名（左边是 ffmpeg 规范名，右边是 x264 枚举名），实测改名后
+# VUI 回读与目标语义一致。
+_X264_PARAMS_ALIASES = {
+    'colorspace': {
+        'rgb': 'gbr',
+    },
+    'color_primaries': {
+        'smpte428_1': 'smpte428',
+    },
+    'color_trc': {
+        # ffmpeg 的 log / log_sqrt 即 AVC 的 log100 / log316。
+        'log': 'log100',
+        'log_sqrt': 'log316',
+        # x264 的 transfer 枚举用连字符形式。
+        'iec61966_2_4': 'iec61966-2-4',
+        'iec61966_2_1': 'iec61966-2-1',
+        # ffmpeg 的 bt1361 对应 x264 的 bt1361e。
+        'bt1361': 'bt1361e',
+        'smpte428_1': 'smpte428',
+    },
+}
+
+# 在 x264 里没有任何等价名字的取值：跳过该键，绝不回退到错误语义的值。
+# gamma22/gamma28 在 H.264 VUI 里没有独立编码，x264 未暴露对应枚举名；
+# jedec-p22/ebu3213 只存在于 ffmpeg 的 AVColorPrimaries 枚举，x264 colorprim 无对应项。
+_X264_PARAMS_UNSUPPORTED = {
+    'color_primaries': frozenset(('jedec-p22', 'ebu3213')),
+    'color_trc': frozenset(('gamma22', 'gamma28')),
+}
+
+# libx264 接受 x264 私有参数的两种选项名（`-x264opts` 是 `-x264-params` 的历史别名）。
+# build_color_vui_params 用它判断用户是否已经自己指定了 x264 参数；只匹配
+# `-x264-params` 会漏掉 `-x264opts`，导致两处同时给 x264 参数、后写的覆盖先写的。
+_X264_PARAMS_OPTS = ('-x264-params', '-x264opts')
 
 _TRUE_TOKENS = frozenset(('true', '1', 'yes', 'on'))
 _FALSE_TOKENS = frozenset(('false', '0', 'no', 'off'))
@@ -143,12 +223,44 @@ def _coerce_number(value):
 
 
 def _coerce_int(value):
-    """与 task_manager._coerce_int 语义一致的严格整数转换。"""
+    """把任意值转换为整数；无法可靠转换返回 None。
+
+    与 task_manager._coerce_int 存在两处**有意**的语义差异（更严格，避免静默错值）：
+
+    - bool 直接判失败。bool 是 int 的子类，原实现里 `_coerce_int(True)` 会得到 1，
+      使 `channels=True` 悄悄变成单声道、`gop=True` 变成 1 帧 GOP。
+    - 浮点改为 `round()` 取最接近的整数，而非 `int()` 截断。截断对「2.0 声道输入」
+      这类合法浮点是向下偏的（1.9 -> 1，把立体声写成单声道），round 语义更贴近
+      「这个数最接近哪个整数」。
+
+    调用点与受影响范围（实测）：
+
+    - `channels`（build_audio_params）：1.9 由 `-ac 1` 变为 `-ac 2` —— 修复方向，
+      双声道输入不再被降为单声道；2.4 两版都是 `-ac 2`。
+    - `gop` / `gop_hevc`（_resolve_context）：47.9 由 47 变为 48；task_manager 传入的
+      本就是整数，无实际影响。`gop=True` 由 1 变为回退默认 48。
+    - `bit_rate`（_select_audio_target_bitrate）：191999.6 由 191999（160k 档）
+      变为 192000（192k 档），会跨越码率阶梯边界；ffprobe 的 bit_rate 恒为整数字符串，
+      现实中不触发。
+    - `sample_rate`（build_audio_params）：48000.7 由 48000 变为 48001。同上，
+      ffprobe 恒为整数；该差异只在人为构造的浮点输入下可见。
+
+    异常边界：本模块声明「公开函数对任意输入都不抛异常」，而 `value == ''` 这类
+    比较本身就可能被恶意对象触发任意异常（`__eq__` 抛 RuntimeError 是既有测试
+    tests/test_video_encoder_params.py::ParseEncoderConfigTests 里就在用的手法）。
+    原实现只捕获 (TypeError, ValueError, OverflowError)，`build_encoder_params` /
+    `build_audio_params` 会因此把 RuntimeError 泄露给调用方 —— 这里放宽到
+    Exception（不拦 BaseException，Ctrl-C 等仍正常传播）。
+    """
     try:
+        if isinstance(value, bool):
+            return None
         if value is None or value == '':
             return None
+        if isinstance(value, float):
+            return int(round(value)) if math.isfinite(value) else None
         return int(value)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         return None
 
 
@@ -216,10 +328,19 @@ def _parse_quality_value(value):
 
 
 def _normalize_custom_params(value):
-    """把自定义参数规范成 list[str]；无效或为空返回 None。"""
+    """把自定义参数规范成 list[str]；无效或为空返回 None。
+
+    列表分支按 `str(item).strip()` 过滤空项（含纯空白项），与字符串分支
+    （经 shlex.split 天然不产生空串）保持一致 —— 否则 `['  ']` 会被整份当作
+    视频参数返回，把 `-c:v ...` 全部顶掉且不产生任何可读的错误。
+    非空白项保持原样，不改写用户配置的字符。
+    """
     if isinstance(value, (list, tuple)):
         try:
-            items = [str(item) for item in value if item is not None and str(item) != '']
+            items = [
+                str(item) for item in value
+                if item is not None and str(item).strip()
+            ]
         except Exception:
             return None
         return items or None
@@ -236,23 +357,40 @@ def _normalize_custom_params(value):
 
 
 def format_quality_value(q):
-    """把质量值格式化为字符串。
+    """把质量值格式化为字符串；非数值输入返回空字符串。
 
     整数值不带小数（23.0 -> '23'），否则最多保留 2 位小数并去掉尾随 0
-    （23.5 -> '23.5'，23.456 -> '23.46'）。非数值输入退化为其字符串形式。
+    （23.5 -> '23.5'，23.456 -> '23.46'）。
+
+    非数值（None / 布尔 / 无法解析的字符串 / 容器 / NaN / Inf）**一律返回 ''**，
+    绝不把原文回显进 `-crf` / `-cq:v` 的参数位 —— 原实现返回 `str(q)`，会让
+    `-crf abc` 这种命令被 ffmpeg 以 "Invalid argument" 拒绝，且该错误不在
+    `_KNOWN_HW_ENCODER_ERROR_PATTERNS` 内，硬件路径的降级重试救不回来。
+
+    布尔单独拦掉：True/False 是 int 子类，`_coerce_number` 已排除它们，但若只依赖
+    该排除，`str(True)` 仍会落到字符串回显分支。
+
+    模块内两个调用点（_build_cpu 的 `-crf`、_build_nvidia 的 `-cq:v`）传入的都是
+    _resolve_context 归一化后的有限 float，必然非空；两处仍各留一层回退，
+    保证任何未来改动都不会写出空参数值。
     """
+    if isinstance(q, bool):
+        return ''
     number = _coerce_number(q)
     if number is None:
-        if q is None:
-            return ''
-        try:
-            return str(q).strip()
-        except Exception:
-            return ''
+        return ''
     if float(number).is_integer():
         return str(int(number))
     text = f'{number:.2f}'.rstrip('0').rstrip('.')
     return text or '0'
+
+
+def _format_quality_or_recommended(quality, height):
+    """格式化质量值，万一为空则回退到按高度推荐值，永不返回空串。"""
+    text = format_quality_value(quality)
+    if text:
+        return text
+    return format_quality_value(recommend_quality(height)) or str(FALLBACK_QUALITY)
 
 
 def recommend_quality(height):
@@ -345,11 +483,11 @@ def normalize_color_metadata(mode, source_color_info):
     resolved = {}
 
     space = _normalize_color_token(info.get('color_space'))
-    if space in _YUV_SPACE_VALUES:
+    if space in _COLORSPACE_VALUES:
         resolved['colorspace'] = space
 
     primaries = _normalize_color_token(info.get('color_primaries'))
-    if primaries in _YUV_SPACE_VALUES:
+    if primaries in _PRIMARIES_VALUES:
         resolved['color_primaries'] = primaries
 
     trc = _normalize_color_token(info.get('color_transfer'))
@@ -400,11 +538,17 @@ def build_color_vui_params(encoder_key, color_map, custom_params=None):
 
         -x264-params colorprim=bt709:transfer=bt709:colormatrix=bt709
 
+    写进 -x264-params 的值必须是 **x264 自己的枚举名**，与三张白名单里的 ffmpeg
+    规范名不完全一致；_X264_PARAMS_ALIASES 负责改名，_X264_PARAMS_UNSUPPORTED
+    里的取值在 x264 无等价名，直接跳过该键（x264 对未知名只打印
+    "Error parsing option" 并**继续返回 0**，静默丢字段，比报错更隐蔽）。
+
     同时 range 无法通过 x264-params 生效（实测 range=pc 被忽略），故色彩范围
     仍由 resolve_color_metadata 的通用 `-color_range` 负责，这里不重复输出。
 
-    硬件编码器由通用选项负责，返回 []。custom_params 中已出现 x264-params 时
-    同样返回 []，避免与用户的显式配置互相覆盖。
+    硬件编码器由通用选项负责，返回 []。custom_params 中已出现 x264 私有参数
+    选项（`-x264-params` / `-x264opts`，含 `=` 连写形式）时同样返回 []，
+    避免与用户的显式配置互相覆盖。
     """
     resolved = color_map if isinstance(color_map, dict) else {}
     key = encoder_key.strip().lower() if isinstance(encoder_key, str) else ''
@@ -415,18 +559,26 @@ def build_color_vui_params(encoder_key, color_map, custom_params=None):
     custom_tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
     for token in custom_tokens:
         try:
-            if 'x264-params' in str(token):
-                return []
+            text = str(token).strip().lower()
         except Exception:
             continue
+        # 覆盖 `-x264-params <x>`、`-x264-params=<x>`、`-x264opts <x>`、`-x264opts=<x>`。
+        if any(opt in text for opt in _X264_PARAMS_OPTS):
+            return []
 
     entries = []
-    if 'color_primaries' in resolved:
-        entries.append(f"colorprim={resolved['color_primaries']}")
-    if 'color_trc' in resolved:
-        entries.append(f"transfer={resolved['color_trc']}")
-    if 'colorspace' in resolved:
-        entries.append(f"colormatrix={resolved['colorspace']}")
+    for field, entry_key in (
+        ('color_primaries', 'colorprim'),
+        ('color_trc', 'transfer'),
+        ('colorspace', 'colormatrix'),
+    ):
+        value = resolved.get(field)
+        if not value:
+            continue
+        if value in _X264_PARAMS_UNSUPPORTED.get(field, ()):
+            continue
+        value = _X264_PARAMS_ALIASES.get(field, {}).get(value, value)
+        entries.append(f'{entry_key}={value}')
     if not entries:
         return []
     return ['-x264-params', ':'.join(entries)]
@@ -485,7 +637,20 @@ def _resolve_context(ctx):
 
 
 def _build_cpu(settings):
-    """libx264 参数。"""
+    """libx264 参数。
+
+    四项 x264 质量增强（-aq-mode/-aq-strength/-psy-rd/-rc-lookahead）与
+    NVENC/QSV/AMF/VAAPI 的增强项一样，受 hw_quality_boost 总开关控制：关闭时
+    回到与基线（origin/main 的 build_cpu_params）逐字一致的基础参数。
+
+    为什么关闭开关必须真的去掉这四项（实测 N-123313 + libx264）：
+
+    - `-preset veryfast`（VIDEO_CPU_PRESET_HD 路径）下 x264 默认 rc_lookahead=10，
+      `-rc-lookahead 40` 会把它抬到 40；而该 preset 存在的理由正是「1440p+ 长视频
+      避免字幕烧录超时」，前瞻翻 4 倍与初衷相反 —— 用户关掉增强时应当能甩掉它。
+    - `-preset medium` 下 rc_lookahead 默认已是 40，新增项不改变该值，
+      所以这项影响只在 veryfast 路径可见；aq-mode=3 两条路径都生效。
+    """
     preset = settings['cpu_preset']
     if (
         settings['height'] >= _HD_PRESET_MIN_HEIGHT
@@ -498,14 +663,15 @@ def _build_cpu(settings):
     if settings['x264_tune']:
         params += ['-tune', settings['x264_tune']]
     params += [
-        '-crf', format_quality_value(settings['quality']),
+        '-crf', _format_quality_or_recommended(settings['quality'], settings['height']),
         '-fps_mode', 'cfr',
         '-profile:v', 'high',
         '-bf', '2',
         '-g', str(settings['gop']),
         '-pix_fmt', 'yuv420p',
     ]
-    params += list(_X264_QUALITY_PARAMS)
+    if settings['hw_quality_boost']:
+        params += list(_X264_QUALITY_PARAMS)
     return params
 
 
@@ -517,7 +683,7 @@ def _build_nvidia(settings):
         '-tune', 'hq',
         '-rc:v', 'vbr',
         '-b:v', '0',
-        '-cq:v', format_quality_value(settings['quality']),
+        '-cq:v', _format_quality_or_recommended(settings['quality'], settings['height']),
         '-fps_mode', 'cfr',
         '-profile:v', 'main',
         '-bf', '2',
@@ -600,6 +766,10 @@ def build_encoder_params(encoder_key, ctx):
     quality_mode='auto'、preset='medium'、hw_quality_boost=True、
     hw_quality_level='quality'）。amd_backend 为 'none' 或未知值时统一回退到
     'amf' 分支（调用方负责不可用回退）。本函数绝不抛异常。
+
+    hw_quality_boost 是**唯一**的质量增强总开关，五个分支（cpu / nvidia / intel /
+    amd-amf / amd-vaapi）一律受它控制：关闭时回到与基线逐字一致的基础参数。
+    默认 True 的输出与历史（含 _CPU_1080_EXPECTED 快照）保持一致。
     """
     custom_params = _normalize_custom_params(
         ctx.get('custom_params') if isinstance(ctx, dict) else None

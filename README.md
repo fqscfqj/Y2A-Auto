@@ -223,6 +223,12 @@ python app.py
 - `FFMPEG_LOCATION`：自定义 FFmpeg 路径
 - `FFMPEG_AUTO_DOWNLOAD`：Windows 缺失时自动下载 FFmpeg，默认 `true`
 
+> **FFmpeg 版本要求：≥ 5.1。** 字幕烧录使用 `-fps_mode cfr` 控制帧率模式，
+> 该选项在 FFmpeg 5.1 才引入（5.0 及更早只认已弃用的 `-vsync`）。仓库自带的
+> 与自动下载的 FFmpeg（BtbN latest）都远高于该版本；但若通过 `FFMPEG_LOCATION`
+> 指向 5.0 或更早的旧版本，软件编码路径会因 `Unrecognized option 'fps_mode'`
+> 直接失败（非硬件编码器没有降级重试，任务会直接报错）。
+
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置

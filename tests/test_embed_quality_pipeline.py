@@ -15,6 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from modules.subtitle_style import parse_style_overrides
 from modules.task_manager import TaskProcessor
 from modules.video_encoder_params import (
     build_color_vui_params,
@@ -301,16 +302,115 @@ class EncoderWiringTests(unittest.TestCase):
         self.assertEqual(resolve_color_metadata('off', info), [])
 
 
+class AssInputStyleTests(unittest.TestCase):
+    """ASS/SSA 输入的对外观配置处理。
+
+    缺陷：该分支此前一律「保留源样式」，用户设置的字号/颜色/描边/背景全部
+    静默失效，但日志照样打印「字幕外观提示」，让人误以为配置已应用。
+    """
+
+    def test_default_config_is_detected_as_unchanged(self):
+        # parse_style_overrides 总返回完整字典，不能靠「非空」判断用户意图
+        self.assertFalse(TaskProcessor._style_overrides_differ_from_defaults(
+            parse_style_overrides({})))
+
+    def test_explicit_default_value_is_not_a_change(self):
+        self.assertFalse(TaskProcessor._style_overrides_differ_from_defaults(
+            parse_style_overrides({'SUBTITLE_FONT_SIZE_SCALE': 1.0})))
+
+    def test_real_changes_are_detected(self):
+        for config in (
+            {'SUBTITLE_FONT_SIZE_SCALE': 1.5},
+            {'SUBTITLE_FONT_COLOR': '#FF0000'},
+            {'SUBTITLE_OUTLINE_ENABLED': False},
+            {'SUBTITLE_BACKGROUND_ENABLED': True},
+            {'SUBTITLE_MARGIN_V_SCALE': 0.6},
+        ):
+            self.assertTrue(
+                TaskProcessor._style_overrides_differ_from_defaults(
+                    parse_style_overrides(config)),
+                config)
+
+    def test_non_dict_is_not_a_change(self):
+        for value in (None, '', 123, []):
+            self.assertFalse(TaskProcessor._style_overrides_differ_from_defaults(value))
+
+    def test_custom_appearance_produces_force_style_covering_user_keys(self):
+        """确实改过配置时，force_style 必须带出用户改动的键。"""
+        overrides = parse_style_overrides(
+            {'SUBTITLE_FONT_SIZE_SCALE': 1.5, 'SUBTITLE_OUTLINE_ENABLED': False})
+        forced = TaskProcessor._build_subtitle_force_style(
+            'Noto Sans CJK SC', 1920, 1080, overrides)
+        self.assertIn('force_style=', forced)
+        self.assertIn('FontSize=', forced)
+        # 关闭描边后 Outline 必须为 0，否则用户设置等于没生效
+        self.assertIn('Outline=0', forced)
+
+
 class RetryStageTests(unittest.TestCase):
     """硬件编码失败的降级阶段决策。"""
 
-    def test_hw_with_boost_retries_boost_off_then_cpu(self):
-        stages = TaskProcessor._resolve_embed_retry_stages('nvidia', True, True)
+    def test_hw_with_boost_and_option_error_retries_boost_off_then_cpu(self):
+        """参数类错误：关掉质量增强有可能治好，值得保留硬件加速再试一次。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'nvidia', True, True, hw_option_error=True)
+        self.assertEqual(stages, ['hw_no_boost', 'cpu'])
+
+    def test_hw_with_boost_and_device_error_goes_straight_to_cpu(self):
+        """设备/驱动类错误：关掉增强没有任何作用，直接 CPU。
+
+        此前 `hw_error_detected` 形参在函数体内从未被读取，真硬编失败
+        （设备被占用、驱动崩溃、显存不足）仍会先按同一个硬编器把整部视频
+        重跑一遍才轮到 CPU —— 长视频上这是纯浪费。
+        """
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'nvidia', True, True, hw_option_error=False)
+        self.assertEqual(stages, ['cpu'])
+
+    def test_hw_with_boost_and_unknown_error_still_tries_boost_off(self):
+        """错误文本完全未知：无法断定是设备问题，仍先试关增强。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'amd', True, False, hw_option_error=False)
         self.assertEqual(stages, ['hw_no_boost', 'cpu'])
 
     def test_hw_without_boost_goes_straight_to_cpu(self):
         stages = TaskProcessor._resolve_embed_retry_stages('intel', False, True)
         self.assertEqual(stages, ['cpu'])
+
+    def test_legacy_signature_still_works(self):
+        """未传 hw_option_error 时按旧语义（已知硬件错误不关增强重试）。"""
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages('nvidia', True, True), ['cpu'])
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages('nvidia', True, False),
+            ['hw_no_boost', 'cpu'])
+
+    def test_option_error_detection_is_a_strict_subset(self):
+        """参数类模式必须是已知硬件错误模式的子集，否则分流会漏掉错误。"""
+        known = set(TaskProcessor._KNOWN_HW_ENCODER_ERROR_PATTERNS)
+        option = set(TaskProcessor._HW_OPTION_ERROR_PATTERNS)
+        self.assertTrue(option, '参数类模式集合不得为空')
+        self.assertTrue(option.issubset(known), option - known)
+
+    def test_option_and_device_errors_are_classified_differently(self):
+        """端到端分流：同一组真实错误文本必须落到相反的两支。"""
+        option_messages = (
+            "Unrecognized option 'spatial-aq'.",
+            'Option not found',
+            'Error setting option rc-lookahead to value 32',
+        )
+        device_messages = (
+            'No NVENC capable devices found',
+            'CUDA_ERROR_OUT_OF_MEMORY',
+            'Error creating a VAAPI device',
+            'Error initializing an internal MFX session',
+        )
+        for message in option_messages:
+            self.assertTrue(TaskProcessor._is_hw_option_error(message), message)
+            self.assertTrue(TaskProcessor._is_known_hw_encoder_error(message), message)
+        for message in device_messages:
+            self.assertFalse(TaskProcessor._is_hw_option_error(message), message)
+            self.assertTrue(TaskProcessor._is_known_hw_encoder_error(message), message)
 
     def test_cpu_encoder_does_not_retry_itself(self):
         # 已是 CPU 编码时重跑同一命令必然同样失败，不再浪费一次完整转码
