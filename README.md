@@ -242,12 +242,21 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED`：下载 YouTube 自动生成字幕，默认 `false`
 - `SUBTITLE_SOURCE_LANGUAGE`：源语言，默认 `auto`
 - `SUBTITLE_TARGET_LANGUAGE`：目标语言，默认 `zh`
-- `SUBTITLE_FONT_NAME`：烧录字幕字体名，默认 `SourceHanSansHWSC-VF.otf`
+- `SUBTITLE_FONT_NAME`：烧录字幕字体名，默认 `NotoSansCJKsc-Regular.otf`
 - `SUBTITLE_BATCH_SIZE`：翻译批次大小
 - `SUBTITLE_MAX_RETRIES` / `SUBTITLE_RETRY_DELAY`：翻译重试策略
 - `SUBTITLE_EMBED_IN_VIDEO`：是否将字幕嵌入视频
 - `SUBTITLE_KEEP_ORIGINAL`：是否保留原始字幕文件
 - `SUBTITLE_MAX_WORKERS`：字幕翻译并发线程数
+
+烧录字幕外观（默认值即历史观感，不配置等于不改变现状）：
+
+- `SUBTITLE_FONT_SIZE_SCALE` / `SUBTITLE_MARGIN_V_SCALE`：字号与底部边距倍率，范围 `0.5-2.0`，默认 `1.0`
+- `SUBTITLE_FONT_COLOR` / `SUBTITLE_OUTLINE_COLOR`：字体色与描边色，`#RRGGBB`，默认 `#FFFFFF` / `#000000`
+- `SUBTITLE_OUTLINE_ENABLED` / `SUBTITLE_OUTLINE_SCALE`：描边开关与粗细倍率（`0-3`）
+- `SUBTITLE_SHADOW_ENABLED` / `SUBTITLE_SHADOW_SCALE`：阴影开关与倍率（`0-3`）
+- `SUBTITLE_TEXT_BOLD`：是否粗体，默认 `true`
+- `SUBTITLE_BACKGROUND_ENABLED` / `SUBTITLE_BACKGROUND_COLOR` / `SUBTITLE_BACKGROUND_OPACITY`：半透明底板（`BorderStyle=4`）及其颜色与不透明度（`0-1`）。开启后 libass 会把阴影当作底框外扩，建议同时关闭阴影
 
 ### 语音识别（ASR）
 
@@ -265,7 +274,13 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `VIDEO_ENCODER`：`auto` / `cpu` / `nvidia` / `intel` / `amd`
 - `VIDEO_CPU_PRESET`：常规 CPU/libx264 转码 preset，默认 `medium`
 - `VIDEO_CPU_PRESET_HD`：1440p+ 且超过 10 分钟时使用的 preset，默认 `veryfast`
-- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数
+- `VIDEO_QUALITY_MODE`：`auto`（按分辨率推荐）或 `manual`（使用 `VIDEO_QUALITY_VALUE`），默认 `auto`
+- `VIDEO_QUALITY_VALUE`：固定质量值 CRF/CQ/QP，范围 `0-51`，越小质量越高。自动模式的推荐值为 4K `22.5` / 1440p `23` / 1080p `23.5` / 720p `24.5`
+- `VIDEO_HW_QUALITY_BOOST`：硬件编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。老 GPU 驱动不认识这些参数时可关闭，命令会回到基础参数并自动重试
+- `VIDEO_HW_QUALITY_LEVEL`：`fast` / `balanced` / `quality`，映射到各硬件编码器的速度档，默认 `quality`
+- `VIDEO_COLOR_METADATA_MODE`：`auto`（透传源流色彩信息）/ `bt709`（强制）/ `off`（不写入），默认 `auto`。不写入时播放器会按默认色域解释，可能偏色
+- `VIDEO_X264_TUNE`：libx264 `-tune` 取值（如 `film` / `animation`），留空则不传
+- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数（启用后完全覆盖内置编码参数与色彩参数）
 - `MAX_CONCURRENT_TASKS`：最大并发任务数，默认 `2`
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
 - `LOG_CLEANUP_ENABLED` / `LOG_CLEANUP_HOURS` / `LOG_CLEANUP_INTERVAL`
