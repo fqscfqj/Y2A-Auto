@@ -82,6 +82,16 @@ class AsrConfig:
     request_timeout_s: float = 300.0
     voxtral_max_audio_duration_s: float = 10800.0
     voxtral_enforce_max_duration: bool = True
+    # Whisper decoding quality knobs.  These are legal form fields for
+    # OpenAI-compatible /audio/transcriptions endpoints and suppress
+    # hallucination loops and timestamp drift.  They must keep defaults so
+    # existing positional/named constructions (speech_recognition.py) stay
+    # valid; callers that do not pass them inherit the defaults below.
+    temperature: Optional[float] = 0.0
+    condition_on_previous_text: Optional[bool] = False
+    no_speech_threshold: Optional[float] = 0.6
+    compression_ratio_threshold: Optional[float] = 2.4
+    logprob_threshold: Optional[float] = -1.0
 
 
 @dataclass
@@ -129,6 +139,10 @@ class AsrApiClient:
         self._capability_probe_in_progress = False
         self._capability_probe_incompatible = False
         self._logged_capability_signature: Optional[Tuple[str, str, Tuple[str, ...]]] = None
+        # Failure visibility for the last concurrent window batch.
+        self.last_failure_ratio: float = 0.0
+        self.last_failed_count: int = 0
+        self.last_window_count: int = 0
         self._init_client()
 
     @staticmethod
@@ -544,13 +558,20 @@ class AsrApiClient:
         use_translation_endpoint: Optional[bool] = None,
     ):
         with open(wav_path, 'rb') as file_obj:
+            if use_translation_endpoint is None:
+                use_translation_endpoint = bool(self.config.translate)
+            effective_temperature = temperature
+            if effective_temperature is None:
+                effective_temperature = self.config.temperature
             params: Dict[str, Any] = {
                 'model': model,
                 'file': file_obj,
                 'response_format': response_format,
             }
-            if temperature is not None:
-                params['temperature'] = temperature
+            # The SDK only exposes ``temperature``; the remaining decoding
+            # quality knobs are injected on the raw HTTP path instead.
+            if effective_temperature is not None:
+                params['temperature'] = effective_temperature
             if include_language_hint:
                 language = self._language_hint or self._normalize_language_code(self.config.language)
                 if language:
@@ -559,25 +580,60 @@ class AsrApiClient:
                 prompt = str(self.config.prompt or '').strip()
                 if prompt:
                     params['prompt'] = prompt
-            if response_format == 'verbose_json' and granularities:
+            # The translations endpoint rejects timestamp_granularities.
+            if response_format == 'verbose_json' and granularities and not use_translation_endpoint:
                 params['timestamp_granularities'] = list(granularities)
 
-            if use_translation_endpoint is None:
-                use_translation_endpoint = bool(self.config.translate)
             if use_translation_endpoint:
                 return self.client.audio.translations.create(**params)
             return self.client.audio.transcriptions.create(**params)
 
-    def _build_whisper_transcriptions_url(self) -> str:
-        """Build the /v1/audio/transcriptions URL for direct HTTP requests."""
+    def _build_whisper_audio_url(self, resource: str) -> str:
+        """Build the ``/audio/<resource>`` URL for direct HTTP requests."""
         base = str(self.config.base_url or 'https://api.openai.com/v1').strip().rstrip('/')
+        for suffix in ('/audio/transcriptions', '/audio/translations'):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        base = base.rstrip('/')
         if not base:
             base = 'https://api.openai.com/v1'
-        if base.endswith('/audio/transcriptions'):
-            return base
-        if base.endswith('/v1'):
-            return f"{base}/audio/transcriptions"
-        return f"{base}/audio/transcriptions"
+        return f"{base}/audio/{resource}"
+
+    def _build_whisper_transcriptions_url(self) -> str:
+        """Build the /v1/audio/transcriptions URL for direct HTTP requests."""
+        return self._build_whisper_audio_url('transcriptions')
+
+    def _build_whisper_translations_url(self) -> str:
+        """Build the /v1/audio/translations URL for direct HTTP requests."""
+        return self._build_whisper_audio_url('translations')
+
+    @staticmethod
+    def _format_form_scalar(value: Any) -> str:
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        if isinstance(value, float):
+            return f"{value:.10g}"
+        return str(value)
+
+    def _whisper_quality_form_fields(self) -> List[Tuple[str, str]]:
+        """Decoding quality form fields for the raw HTTP transcriptions path.
+
+        Values set to ``None`` on ``AsrConfig`` are omitted so the server
+        default applies.
+        """
+        fields: List[Tuple[str, str]] = []
+        for name, value in (
+            ('temperature', self.config.temperature),
+            ('condition_on_previous_text', self.config.condition_on_previous_text),
+            ('no_speech_threshold', self.config.no_speech_threshold),
+            ('compression_ratio_threshold', self.config.compression_ratio_threshold),
+            ('logprob_threshold', self.config.logprob_threshold),
+        ):
+            if value is None:
+                continue
+            fields.append((name, self._format_form_scalar(value)))
+        return fields
 
     def _request_whisper_raw_json(
         self,
@@ -596,7 +652,11 @@ class AsrApiClient:
         silently dropped.  By making a raw ``requests.post`` we preserve the
         full JSON response including segment-level word timestamps.
         """
-        endpoint_url = self._build_whisper_transcriptions_url()
+        use_translation_endpoint = bool(self.config.translate)
+        if use_translation_endpoint:
+            endpoint_url = self._build_whisper_translations_url()
+        else:
+            endpoint_url = self._build_whisper_transcriptions_url()
         headers: Dict[str, str] = {}
         if self.config.api_key:
             headers['Authorization'] = f"Bearer {self.config.api_key}"
@@ -610,8 +670,14 @@ class AsrApiClient:
             prompt = str(self.config.prompt or '').strip()
             if prompt:
                 form_data.append(('prompt', prompt))
-        for gran in granularities:
-            form_data.append(('timestamp_granularities', str(gran)))
+        # The translations endpoint rejects timestamp_granularities, so the
+        # granularity request is dropped there.  Downstream timestamp_mode is
+        # derived from the returned payload (see _payload_to_transcription_result),
+        # so it degrades to 'segment' automatically.
+        if not use_translation_endpoint:
+            for gran in granularities:
+                form_data.append(('timestamp_granularities', str(gran)))
+        form_data.extend(self._whisper_quality_form_fields())
 
         with open(wav_path, 'rb') as file_obj:
             response = requests.post(
@@ -849,7 +915,7 @@ class AsrApiClient:
                         form_data.append(('diarize', 'true'))
                     for item in self._parse_context_bias(self.config.context_bias):
                         form_data.append(('context_bias', item))
-                    if include_language_hint and lang_hint and lang_hint.lower() != 'unknown' and not granularities:
+                    if include_language_hint and lang_hint and lang_hint.lower() != 'unknown':
                         form_data.append(('language', lang_hint))
 
                     with open(wav_path, 'rb') as file_obj:
@@ -921,13 +987,19 @@ class AsrApiClient:
         self,
         windows: List[Tuple[DetectedSpeechWindow, str]],
     ) -> List[AsrTranscriptionResult]:
+        self.last_failure_ratio = 0.0
+        self.last_failed_count = 0
+        self.last_window_count = 0
         if not windows:
             return []
 
         results: Dict[int, AsrTranscriptionResult] = {}
         workers = max(1, int(self.config.max_workers or 1))
         total_failures = 0
-        max_total_failures = max(5, len(windows) // 2)
+        # 15% failure tolerance (at least 3 windows) instead of the previous
+        # "half the batch" allowance, which let severely degraded runs pass as
+        # partial success.
+        max_total_failures = max(3, int(len(windows) * 0.15))
         jobs: List[Tuple[int, DetectedSpeechWindow, str, str]] = []
         for idx, (window, wav_path) in enumerate(windows):
             jobs.append((idx, window, wav_path, f"{window.start_s:.2f}s-{window.end_s:.2f}s"))
@@ -979,6 +1051,16 @@ class AsrApiClient:
                     failure_token='asr_failed',
                 ),
             ))
+        self.last_window_count = len(windows)
+        self.last_failed_count = total_failures
+        self.last_failure_ratio = total_failures / len(windows) if windows else 0.0
+        if self.last_failure_ratio > 0:
+            self.logger.warning(
+                "ASR window batch finished with %d/%d failed windows (%.1f%% failure ratio)",
+                total_failures,
+                len(windows),
+                self.last_failure_ratio * 100.0,
+            )
         return ordered
 
     def detect_language(self, wav_path: str) -> str:
@@ -1026,7 +1108,11 @@ class AsrApiClient:
         if not normalized_segments:
             return ''
         sorted_segments = sorted(normalized_segments, key=lambda segment: segment[0])
-        pick_indices = {0, len(sorted_segments) // 2, len(sorted_segments) - 1}
+        count = len(sorted_segments)
+        # Sample five evenly spread windows (head/quarter/middle/three-quarter/tail)
+        # instead of the previous three, so a single dominant mid-roll segment
+        # cannot decide the language on its own.
+        pick_indices = {0, count // 4, count // 2, (3 * count) // 4, count - 1}
         picks = [sorted_segments[index] for index in sorted(pick_indices) if 0 <= index < len(sorted_segments)]
 
         detected: List[Tuple[str, float]] = []
@@ -1038,6 +1124,12 @@ class AsrApiClient:
             if lang:
                 detected.append((lang, max(0.0, float(end_s) - float(start_s))))
         if not detected:
+            self.logger.warning(
+                "Language detection produced no usable sample from %d window(s) "
+                "(%d sampled); falling back to configured language or auto-detection",
+                count,
+                len(picks),
+            )
             return ''
 
         counts: Dict[str, int] = {}
@@ -1051,6 +1143,11 @@ class AsrApiClient:
             durations[normalized_lang] = durations.get(normalized_lang, 0.0) + float(duration_s)
             first_seen.setdefault(normalized_lang, index)
         if not counts:
+            self.logger.warning(
+                "Language detection returned only unusable language codes "
+                "(%s); falling back to configured language or auto-detection",
+                ', '.join(sorted({str(lang)[:24] for lang, _ in detected})),
+            )
             return ''
         return sorted(
             counts,
