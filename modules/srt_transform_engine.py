@@ -989,6 +989,22 @@ class SrtTransformEngine:
             processed.extend(self.split_long_cue(cue))
         return processed
 
+    def _clamp_end_within_limits(self, start_s: float, end_s: float, cue) -> float:
+        """把打算写入的 cue 结束时间收敛到「最长时长上限」之内。
+
+        `finalize_cues` 的时长修正（延长到 min_dur、或延长到「下一条起点 − 最小
+        间隔」）此前不做上限复查，于是当 `min_cue_duration_s` 接近甚至大于
+        `max_cue_duration_s` 时会产出超出上限的 cue —— 而这是落盘链路的最后一步，
+        下游已无任何时长校验。
+
+        字速上限不在这里额外收紧：延长时长只会**降低**字速，因此延长本身不会
+        让原本合规的 cue 违反字速上限；真正可能越界的只有时长。
+        """
+        max_duration = float(self.config.max_cue_duration_s or 0.0)
+        if max_duration <= 0.0:
+            return float(end_s)
+        return min(float(end_s), float(start_s) + max_duration)
+
     def finalize_cues(self, cues: Sequence[Any], total_duration_s: float) -> List[Dict[str, Any]]:
         normalized_cues = sorted(self._coerce_cue_dicts(cues), key=lambda cue: float(cue.get('start', 0.0)))
         if not normalized_cues:
@@ -997,6 +1013,11 @@ class SrtTransformEngine:
         merge_gap = max(0.0, float(self.config.merge_gap_s or 0.0))
         min_text = max(0, int(self.config.min_text_length or 0))
         min_dur = max(0.05, float(self.config.min_cue_duration_s or 0.05))
+        # 最短时长不得大于最长时长上限：否则「把过短 cue 延长到 min_dur」这条
+        # 修正必然产出越界 cue。两个配置项独立校验时这种组合是合法提交。
+        max_dur_limit = float(self.config.max_cue_duration_s or 0.0)
+        if max_dur_limit > 0.0:
+            min_dur = min(min_dur, max_dur_limit)
         drop_dur = min(0.3, min_dur)
 
         for cue in normalized_cues:
@@ -1050,17 +1071,35 @@ class SrtTransformEngine:
                 next_start = float(merged[idx + 1]['start']) if idx + 1 < len(merged) else total_duration_s
                 gap_to_next = next_start - start
                 if gap_to_next > min_dur + _MIN_GAP_S:
-                    cue['end'] = start + min_dur
+                    cue['end'] = self._clamp_end_within_limits(start, start + min_dur, cue)
                 elif gap_to_next > _MIN_VISIBLE_DUR_S:
-                    cue['end'] = next_start - _MIN_GAP_S
+                    cue['end'] = self._clamp_end_within_limits(start, next_start - _MIN_GAP_S, cue)
                 elif idx + 1 < len(merged):
-                    merged[idx + 1]['start'] = start
-                    merged[idx + 1]['text'] = _join_texts(str(cue['text']), str(merged[idx + 1]['text']))
-                    continue
+                    # 把下一条的起点提前到本条起点会让它的跨度变大，可能越过
+                    # 「最长时长 / 最高字速」上限 —— 必须先验证再改，否则这里
+                    # 是整个后处理链里唯一一处不做上限复查的时长修改点。
+                    candidate = dict(merged[idx + 1])
+                    candidate['start'] = start
+                    candidate['text'] = _join_texts(str(cue['text']), str(candidate['text']))
+                    if self._merge_within_limits(
+                        start, float(candidate['end']), str(candidate['text'])
+                    ):
+                        merged[idx + 1] = candidate
+                        continue
+                    # 上限不允许前移时退回「延长自身」，且**不得越过下一条起点** ——
+                    # 否则会造出 overlap（subtitle_qc 的 timeline_overlap 会判失败）。
+                    # 延长不足 drop_dur 时交给下游 cleaned 阶段的吸收逻辑处理（那里
+                    # 有完整的上限校验与丢弃告警）。
+                    cue['end'] = max(
+                        float(cue['end']),
+                        min(start + min_dur, next_start - _MIN_GAP_S),
+                    )
                 else:
                     # 末条过短：先尝试延长到 min_dur；已到视频末尾延不了时，
                     # 若前面已有可用 cue 就把这句话并进去，避免留下不可读的碎片。
-                    extended_end = min(total_duration_s, start + min_dur)
+                    extended_end = self._clamp_end_within_limits(
+                        start, min(total_duration_s, start + min_dur), cue
+                    )
                     if extended_end - start >= drop_dur or not finalized:
                         cue['end'] = extended_end
                     else:

@@ -149,6 +149,67 @@ class UnplaceableCueGuardTests(_LogAssertionTestCase):
         self.assertGreaterEqual(finalized[0]['end'] - finalized[0]['start'], 0.3)
 
 
+class FinalizeDurationLimitTests(_LogAssertionTestCase):
+    """finalize_cues 的时长修正必须复查「最长时长上限」。
+
+    该阶段有两条会改动时长的路径（延长到 min_dur、把下一条起点前移），此前都
+    不做上限复查，而这是落盘链路的最后一步，下游已无任何时长校验。
+    """
+
+    def test_min_duration_above_max_duration_does_not_overflow(self):
+        """min_cue_duration_s 大于 max_cue_duration_s 时不得产出超限 cue。
+
+        两个配置项是独立校验的，这种组合是一次合法提交；此前「把过短 cue 延长到
+        min_dur」会直接写出超过上限的时长。
+        """
+        engine = _engine(max_cue_duration_s=0.5, min_cue_duration_s=0.6)
+        out = engine.finalize_cues(
+            [{'start': 0.0, 'end': 0.1, 'text': 'alpha'},
+             {'start': 2.0, 'end': 2.5, 'text': 'beta'}],
+            3.0,
+        )
+        for cue in out:
+            span = float(cue['end']) - float(cue['start'])
+            self.assertLessEqual(span, 0.5 + 1e-9, cue)
+
+    def test_shifting_next_cue_start_respects_limits(self):
+        """把下一条起点提前会放大它的跨度，越限时必须放弃前移。"""
+        engine = _engine(max_cue_duration_s=0.5, min_cue_duration_s=0.4)
+        out = engine.finalize_cues(
+            [{'start': 0.0, 'end': 0.02, 'text': 'alpha'},
+             {'start': 0.05, 'end': 0.51, 'text': 'beta gamma'}],
+            2.0,
+        )
+        for cue in out:
+            span = float(cue['end']) - float(cue['start'])
+            self.assertLessEqual(span, 0.5 + 1e-9, cue)
+
+    def test_finalized_stage_never_produces_overlaps(self):
+        """时长修正不得造出 overlap（subtitle_qc 的 timeline_overlap 会判失败）。"""
+        engine = _engine(max_cue_duration_s=0.5, min_cue_duration_s=0.4)
+        out = engine.finalize_cues(
+            [{'start': 0.0, 'end': 0.02, 'text': 'alpha'},
+             {'start': 0.05, 'end': 0.51, 'text': 'beta gamma'}],
+            2.0,
+        )
+        for previous, current in zip(out, out[1:]):
+            self.assertLessEqual(
+                float(current['start']), float(previous['end']) + 1e-9,
+                f'{(previous["start"], previous["end"])} 与 '
+                f'{(current["start"], current["end"])} 重叠')
+
+    def test_normal_config_unaffected(self):
+        """反向守卫：默认量级配置下不得被这些收敛逻辑误伤。"""
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        out = engine.finalize_cues(
+            [{'start': 0.0, 'end': 0.2, 'text': 'alpha'},
+             {'start': 1.0, 'end': 2.0, 'text': 'beta'}],
+            3.0,
+        )
+        self.assertEqual(len(out), 2)
+        self.assertIn('alpha', _joined_text(out))
+
+
 class NoTextLossPropertyTests(_LogAssertionTestCase):
     """性质测试：任意碎片化输入，输出都不得丢词。"""
 
