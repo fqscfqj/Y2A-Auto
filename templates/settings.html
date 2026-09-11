@@ -1546,6 +1546,97 @@
                                         </article>
                                     </div>
 
+                                    <div class="col-12">
+                                        <article class="settings-card">
+                                            <div class="settings-card-header">
+                                                <div>
+                                                    <span class="section-eyebrow">画面观感</span>
+                                                    <h4>字幕外观</h4>
+                                                </div>
+                                            </div>
+                                            <div class="settings-card-body">
+                                                <p class="help-text">字号与边距的基准值仍按视频分辨率自动适配，这里只做倍率与配色覆盖。默认值即历史观感，不改动就是现在的效果。</p>
+                                                <div class="row g-3">
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-font-size-scale" class="form-label">字号倍率（0.5-2.0）</label>
+                                                            <input type="number" id="subtitle-font-size-scale" name="SUBTITLE_FONT_SIZE_SCALE" value="{{ config.get('SUBTITLE_FONT_SIZE_SCALE', 1.0) }}" min="0.5" max="2.0" step="0.05" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-margin-v-scale" class="form-label">底部边距倍率（0.5-2.0）</label>
+                                                            <input type="number" id="subtitle-margin-v-scale" name="SUBTITLE_MARGIN_V_SCALE" value="{{ config.get('SUBTITLE_MARGIN_V_SCALE', 1.0) }}" min="0.5" max="2.0" step="0.05" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-font-color" class="form-label">字体颜色</label>
+                                                            <input type="color" id="subtitle-font-color" name="SUBTITLE_FONT_COLOR" value="{{ config.get('SUBTITLE_FONT_COLOR', '#FFFFFF')|lower }}" class="form-control form-control-color">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-outline-color" class="form-label">描边颜色</label>
+                                                            <input type="color" id="subtitle-outline-color" name="SUBTITLE_OUTLINE_COLOR" value="{{ config.get('SUBTITLE_OUTLINE_COLOR', '#000000')|lower }}" class="form-control form-control-color">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_TEXT_BOLD" {% if config.get('SUBTITLE_TEXT_BOLD', True) %}checked{% endif %}>
+                                                            粗体
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_OUTLINE_ENABLED" {% if config.get('SUBTITLE_OUTLINE_ENABLED', True) %}checked{% endif %}>
+                                                            启用描边
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-outline-scale" class="form-label">描边粗细倍率（0-3）</label>
+                                                            <input type="number" id="subtitle-outline-scale" name="SUBTITLE_OUTLINE_SCALE" value="{{ config.get('SUBTITLE_OUTLINE_SCALE', 1.0) }}" min="0" max="3" step="0.05" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_SHADOW_ENABLED" {% if config.get('SUBTITLE_SHADOW_ENABLED', True) %}checked{% endif %}>
+                                                            启用阴影
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-shadow-scale" class="form-label">阴影倍率（0-3）</label>
+                                                            <input type="number" id="subtitle-shadow-scale" name="SUBTITLE_SHADOW_SCALE" value="{{ config.get('SUBTITLE_SHADOW_SCALE', 1.0) }}" min="0" max="3" step="0.05" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_BACKGROUND_ENABLED" {% if config.get('SUBTITLE_BACKGROUND_ENABLED', False) %}checked{% endif %}>
+                                                            使用半透明底板
+                                                        </label>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-background-color" class="form-label">底板颜色</label>
+                                                            <input type="color" id="subtitle-background-color" name="SUBTITLE_BACKGROUND_COLOR" value="{{ config.get('SUBTITLE_BACKGROUND_COLOR', '#000000')|lower }}" class="form-control form-control-color">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <div class="form-group">
+                                                            <label for="subtitle-background-opacity" class="form-label">底板不透明度（0-1）</label>
+                                                            <input type="number" id="subtitle-background-opacity" name="SUBTITLE_BACKGROUND_OPACITY" value="{{ config.get('SUBTITLE_BACKGROUND_OPACITY', 0.5) }}" min="0" max="1" step="0.05" class="form-control">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <p class="help-text mb-0">开启底板后描边会自动切换为圆角底框样式（BorderStyle=4），此时阴影会被 libass 当作底框外扩，建议同时关掉阴影。</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </div>
+
                                     <div class="col-xl-6">
                                         <article class="settings-card">
                                             <div class="settings-card-header">
@@ -2021,6 +2112,58 @@
                                                                 {% endfor %}
                                                             </select>
                                                             <p class="help-text mb-0">1440p 及以上且超过 10 分钟时使用，默认 veryfast。</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="row g-3 mt-2">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-quality-mode" class="form-label">质量模式</label>
+                                                            <select id="video-quality-mode" name="VIDEO_QUALITY_MODE" class="form-select">
+                                                                <option value="auto" {% if config.get('VIDEO_QUALITY_MODE', 'auto') == 'auto' %}selected{% endif %}>自动（按分辨率推荐）</option>
+                                                                <option value="manual" {% if config.get('VIDEO_QUALITY_MODE') == 'manual' %}selected{% endif %}>手动指定质量值</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-quality-value" class="form-label">固定质量值 CRF/CQ/QP（0-51）</label>
+                                                            <input type="number" id="video-quality-value" name="VIDEO_QUALITY_VALUE" value="{{ config.get('VIDEO_QUALITY_VALUE', 23.5) }}" min="0" max="51" step="0.5" class="form-control">
+                                                            <p class="help-text mb-0">越小质量越高、体积越大。自动模式下的推荐值：4K 22.5 / 1440p 23 / 1080p 23.5 / 720p 24.5。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-hw-quality-level" class="form-label">硬件编码档位</label>
+                                                            <select id="video-hw-quality-level" name="VIDEO_HW_QUALITY_LEVEL" class="form-select">
+                                                                <option value="fast" {% if config.get('VIDEO_HW_QUALITY_LEVEL') == 'fast' %}selected{% endif %}>快速（优先速度）</option>
+                                                                <option value="balanced" {% if config.get('VIDEO_HW_QUALITY_LEVEL') == 'balanced' %}selected{% endif %}>均衡</option>
+                                                                <option value="quality" {% if config.get('VIDEO_HW_QUALITY_LEVEL', 'quality') == 'quality' %}selected{% endif %}>质量优先</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="VIDEO_HW_QUALITY_BOOST" id="video-hw-quality-boost" {% if config.get('VIDEO_HW_QUALITY_BOOST', True) %}checked{% endif %}>
+                                                            启用硬件编码质量增强
+                                                        </label>
+                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；老 GPU 驱动不支持时报参数错误，可关闭回退基础参数。</p>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-color-metadata-mode" class="form-label">色彩元数据</label>
+                                                            <select id="video-color-metadata-mode" name="VIDEO_COLOR_METADATA_MODE" class="form-select">
+                                                                <option value="auto" {% if config.get('VIDEO_COLOR_METADATA_MODE', 'auto') == 'auto' %}selected{% endif %}>透传源流信息</option>
+                                                                <option value="bt709" {% if config.get('VIDEO_COLOR_METADATA_MODE') == 'bt709' %}selected{% endif %}>强制 BT.709</option>
+                                                                <option value="off" {% if config.get('VIDEO_COLOR_METADATA_MODE') == 'off' %}selected{% endif %}>不写入</option>
+                                                            </select>
+                                                            <p class="help-text mb-0">不写入时播放器会按默认色域解释，可能偏色。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-x264-tune" class="form-label">libx264 tune（可留空）</label>
+                                                            <input type="text" id="video-x264-tune" name="VIDEO_X264_TUNE" value="{{ config.get('VIDEO_X264_TUNE', '') }}" class="form-control" placeholder="留空 / film / animation">
                                                         </div>
                                                     </div>
                                                 </div>

@@ -23,7 +23,21 @@ from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_root_dir, get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
-from .config_manager import normalize_video_cpu_preset
+from .subtitle_style import (
+    apply_style_overrides,
+    parse_style_overrides,
+    diagnose_style,
+)
+from .video_encoder_params import (
+    build_audio_params,
+    build_color_vui_params,
+    build_encoder_params,
+    format_quality_value,
+    normalize_color_metadata,
+    parse_encoder_config,
+    recommend_quality,
+    resolve_color_metadata,
+)
 from .notifications import (
     EVENT_TASK_ADDED,
     EVENT_TASK_COMPLETED,
@@ -3989,6 +4003,15 @@ class TaskProcessor:
         "failed to load library 'libX11.so.6'",
         'cannot open shared object file',
         'Assertion in generated code',
+        # 编码器不接受某个选项：多见于老版本 FFmpeg 或老驱动不支持
+        # 新引入的质量增强参数（AQ / 前瞻 / 多遍 / blbrc 等）。
+        # 命中后走「关闭质量增强 → CPU」的分级降级，而不是直接掉到 CPU。
+        'Unrecognized option',
+        'Option not found',
+        'Error setting option',
+        'Error applying encoder options',
+        'Error parsing options',
+        'Invalid option',
     )
 
     _HW_PROBE_DEFAULT_SIZE = '640x480'
@@ -4349,26 +4372,12 @@ class TaskProcessor:
 
     @classmethod
     def _build_audio_transcode_params(cls, audio_info):
-        """统一音频转码参数，AAC 优先直拷，其他编码按源码率上限转 AAC。"""
-        info = audio_info if isinstance(audio_info, dict) else {}
-        codec_name = str(info.get('codec_name') or '').strip().lower()
-        if codec_name == 'aac':
-            return ['-c:a', 'copy']
+        """统一音频转码参数，AAC 优先直拷，其他编码按源码率上限转 AAC。
 
-        aparams = ['-c:a', 'aac', '-b:a', cls._select_audio_target_bitrate(info.get('bit_rate'))]
-        channels = cls._coerce_int(info.get('channels'))
-        if channels == 1:
-            aparams += ['-ac', '1']
-        else:
-            aparams += ['-ac', '2']
-
-        input_sample_rate = cls._coerce_int(info.get('sample_rate'))
-        if input_sample_rate:
-            try:
-                aparams += ['-ar', str(int(input_sample_rate))]
-            except Exception:
-                pass
-        return aparams
+        实现统一收敛到 video_encoder_params.build_audio_params，保留本方法作为
+        类内兼容入口（既有测试与调用方签名不变）。
+        """
+        return build_audio_params(audio_info)
 
     @staticmethod
     def _estimate_embed_timeout(video_duration):
@@ -4379,13 +4388,23 @@ class TaskProcessor:
         return 3600
 
     @staticmethod
-    def _build_embed_ffmpeg_cmd(ffmpeg_bin, input_video, vf_filter, vparams, aparams, output_video):
+    def _build_embed_ffmpeg_cmd(
+        ffmpeg_bin,
+        input_video,
+        vf_filter,
+        vparams,
+        aparams,
+        output_video,
+        color_params=None,
+    ):
         """构建统一的 FFmpeg 转码命令。"""
         return [
             ffmpeg_bin, '-y',
             '-i', input_video,
             '-vf', vf_filter,
             *vparams,
+            # 色彩元数据必须显式写出，否则播放器会按默认色域解释导致偏色
+            *(color_params or []),
             *aparams,
             '-movflags', '+faststart',
             '-progress', 'pipe:1',
@@ -4399,6 +4418,26 @@ class TaskProcessor:
             return False
         error_lower = error_output.lower()
         return any(err.lower() in error_lower for err in cls._KNOWN_HW_ENCODER_ERROR_PATTERNS)
+
+    @staticmethod
+    def _resolve_embed_retry_stages(actual_encoder, hw_quality_boost, hw_error_detected):
+        """决定字幕烧录失败后的降级阶段顺序。
+
+        硬件编码器失败时先尝试「关闭质量增强后用同一编码器重试」，保住硬件加速；
+        只有在仍失败时才退回 CPU。若当前已经是 CPU 编码，重跑同样的命令必然
+        同样失败（失败原因在滤镜或输入而不在编码器），因此不再重试 —— 这能避免
+        为一个失败的长视频白跑一遍完整转码。
+
+        返回 'hw_no_boost' / 'cpu' 组成的列表，按执行顺序排列。
+        """
+        encoder = str(actual_encoder or '').strip().lower()
+        if encoder in ('nvidia', 'intel', 'amd'):
+            stages = []
+            if hw_quality_boost:
+                stages.append('hw_no_boost')
+            stages.append('cpu')
+            return stages
+        return []
 
     @staticmethod
     def _finalize_embedded_video_output(temp_output_path, final_output_path):
@@ -4544,7 +4583,7 @@ class TaskProcessor:
         return f"{{\\fs{override_font_size}}}{payload}"
 
     @classmethod
-    def _build_streaming_ass_style(cls, video_width, video_height):
+    def _build_streaming_ass_style(cls, video_width, video_height, style_overrides=None):
         width, height = cls._resolve_ass_dimensions(video_width, video_height)
 
         style = dict(cls._ASS_STYLE_BASE)
@@ -4603,7 +4642,10 @@ class TaskProcessor:
             'MarginL': side_margin,
             'MarginR': side_margin,
         })
-        return style
+        if not style_overrides:
+            # 未提供覆盖项时返回原样式，保证默认渲染行为与历史版本逐字段一致。
+            return style
+        return apply_style_overrides(style, style_overrides)
 
     @staticmethod
     def _sanitize_ass_font_name(font_family):
@@ -4846,8 +4888,8 @@ class TaskProcessor:
             return False
 
     @classmethod
-    def _build_subtitle_style_description(cls, font_family, video_width, video_height):
-        style = cls._build_streaming_ass_style(video_width, video_height)
+    def _build_subtitle_style_description(cls, font_family, video_width, video_height, style_overrides=None):
+        style = cls._build_streaming_ass_style(video_width, video_height, style_overrides)
         font_name = cls._sanitize_ass_font_name(font_family)
         force_style = {
             'FontName': font_name,
@@ -4862,19 +4904,20 @@ class TaskProcessor:
         return style, force_style
 
     @classmethod
-    def _build_subtitle_force_style(cls, font_family, video_width, video_height):
+    def _build_subtitle_force_style(cls, font_family, video_width, video_height, style_overrides=None):
         _, force_style = cls._build_subtitle_style_description(
             font_family,
             video_width,
             video_height,
+            style_overrides,
         )
         entries = [f"{key}={value}" for key, value in force_style.items()]
         payload = ','.join(entries).replace("'", r"\'")
         return f"force_style='{payload}'"
 
     @classmethod
-    def _estimate_subtitle_layout_limits(cls, video_width, video_height):
-        style = cls._build_streaming_ass_style(video_width, video_height)
+    def _estimate_subtitle_layout_limits(cls, video_width, video_height, style_overrides=None):
+        style = cls._build_streaming_ass_style(video_width, video_height, style_overrides)
         is_portrait = float(style['PlayResY']) > float(style['PlayResX'])
         usable_width = max(
             120.0,
@@ -5858,6 +5901,7 @@ class TaskProcessor:
         *,
         prefer_single_line=True,
         single_line_min_font_scale=None,
+        style_overrides=None,
     ):
         # Normalize internal line breaks so that a single SRT cue is always
         # treated as one logical line. The ASS burn-in stage decides whether
@@ -5874,8 +5918,10 @@ class TaskProcessor:
         if not normalized:
             return ('', wrap_meta) if return_meta else ''
 
-        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(video_width, video_height)
-        style = cls._build_streaming_ass_style(video_width, video_height)
+        max_line_length, max_lines = cls._estimate_subtitle_layout_limits(
+            video_width, video_height, style_overrides
+        )
+        style = cls._build_streaming_ass_style(video_width, video_height, style_overrides)
         is_portrait = float(style['PlayResY']) > float(style['PlayResX'])
         usable_width = max(
             120.0,
@@ -6258,6 +6304,25 @@ class TaskProcessor:
 
         return resolved_font
 
+    def _resolve_subtitle_style_overrides(self, task_logger=None):
+        """解析烧录字幕的外观配置。
+
+        解析失败时返回 None，此时下游会退回历史默认观感，不会中断烧录。
+        """
+        try:
+            overrides = parse_style_overrides(getattr(self, 'config', {}) or {})
+        except Exception as exc:
+            if task_logger:
+                task_logger.warning(f"解析字幕外观配置失败，回退默认观感: {exc}")
+            return None
+        if task_logger:
+            try:
+                for issue in diagnose_style(overrides) or ():
+                    task_logger.info(f"字幕外观提示: {issue}")
+            except Exception:
+                pass
+        return overrides
+
     @classmethod
     def _build_default_ass_document(
         cls,
@@ -6268,11 +6333,13 @@ class TaskProcessor:
         *,
         prefer_single_line=True,
         single_line_min_font_scale=None,
+        style_overrides=None,
     ):
         style, force_style = cls._build_subtitle_style_description(
             font_family,
             video_width,
             video_height,
+            style_overrides,
         )
         font_name = force_style['FontName']
         ass_header = (
@@ -6322,6 +6389,7 @@ class TaskProcessor:
                 return_meta=True,
                 prefer_single_line=prefer_single_line,
                 single_line_min_font_scale=single_line_min_font_scale,
+                style_overrides=style_overrides,
             )
             # `return_meta=True` is expected to return a tuple, but keep a safe fallback
             # to satisfy static analysis and guard unexpected call-path changes.
@@ -6375,6 +6443,7 @@ class TaskProcessor:
         font_family=None,
         prefer_single_line=True,
         single_line_min_font_scale=None,
+        style_overrides=None,
     ):
         """将SRT/VTT字幕转换为带默认流媒体样式的ASS格式。"""
         try:
@@ -6401,6 +6470,9 @@ class TaskProcessor:
                 return False
 
             config = getattr(self, 'config', {}) or {}
+            if style_overrides is None:
+                # 未显式指定时按当前配置解析，避免任何调用方漏传导致外观配置静默失效。
+                style_overrides = self._resolve_subtitle_style_overrides(task_logger)
             ass_content = self._build_default_ass_document(
                 cues,
                 font_family=font_family,
@@ -6412,6 +6484,7 @@ class TaskProcessor:
                     if single_line_min_font_scale is not None
                     else config.get('SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE', self._ASS_SINGLE_LINE_FONT_SCALE_MIN)
                 ),
+                style_overrides=style_overrides,
             )
             with open(ass_path, 'w', encoding='utf-8') as ass_file:
                 ass_file.write(ass_content)
@@ -6566,6 +6639,7 @@ class TaskProcessor:
                 except Exception as e:
                     task_logger.warning(f"清理旧临时输出文件失败: {e}")
                 
+                style_overrides = self._resolve_subtitle_style_overrides(task_logger)
                 subtitle_font = self._resolve_subtitle_font(task_logger, temp_fonts_dir)
                 font_family = subtitle_font.get('font_family') or subtitle_font.get('configured_font_name')
                 if task_logger:
@@ -6620,6 +6694,7 @@ class TaskProcessor:
                             'SUBTITLE_SINGLE_LINE_MIN_FONT_SCALE',
                             self._ASS_SINGLE_LINE_FONT_SCALE_MIN,
                         ),
+                        style_overrides=style_overrides,
                     ):
                         task_logger.error("生成清晰ASS字幕失败，无法继续嵌入字幕流程")
                         update_task(task_id, upload_progress=None, status=previous_status, silent=True)
@@ -6778,123 +6853,80 @@ class TaskProcessor:
 
                 # 从配置中获取（可选）自定义视频参数
                 custom_video_params = self._parse_custom_video_params(task_logger)
+                # 编码器附加配置（质量模式/预设/增强开关/色彩元数据）
+                encoder_settings = parse_encoder_config(getattr(self, 'config', {}) or {})
 
-                # 根据分辨率确定推荐固定质量值（CRF/CQ，越小质量越高）
-                # 基准：1080p 使用 CRF 23.5
-                def get_recommended_quality(height: int) -> float:
-                    """返回推荐固定质量值（CRF/CQ）"""
-                    if height >= 2160:  # 4K
-                        return 22.5
-                    elif height >= 1440:  # 2K
-                        return 23.0
-                    elif height >= 1080:  # 1080p
-                        return 23.5
-                    elif height >= 720:  # 720p
-                        return 24.5
-                    else:  # 低于 720p
-                        return 25.5
-
-                target_quality = get_recommended_quality(input_height)
-                target_quality_str = f"{target_quality:.1f}"
-                target_quality_int = max(0, min(51, int(round(target_quality))))
+                # 固定质量值（CRF/CQ/QP，越小质量越高）。auto 模式按分辨率推荐，
+                # manual 模式使用用户在设置页指定的值。
+                target_quality = recommend_quality(input_height)
+                effective_quality = target_quality
+                if (
+                    encoder_settings.get('quality_mode') == 'manual'
+                    and encoder_settings.get('quality_value') is not None
+                ):
+                    effective_quality = float(encoder_settings['quality_value'])
+                target_quality_str = format_quality_value(effective_quality)
+                target_quality_int = max(0, min(51, int(round(effective_quality))))
                 task_logger.info(
-                    f"视频分辨率: {input_width}x{input_height}, 固定质量参数: float={target_quality_str}, int={target_quality_int}"
+                    f"视频分辨率: {input_width}x{input_height}, 推荐质量={format_quality_value(target_quality)}, "
+                    f"实际质量={target_quality_str} (int={target_quality_int}), "
+                    f"质量模式={encoder_settings.get('quality_mode')}, "
+                    f"硬件质量增强={'开' if encoder_settings.get('hw_quality_boost') else '关'}, "
+                    f"硬件档位={encoder_settings.get('hw_quality_level')}"
                 )
+
+                # 色彩元数据：auto 模式透传源流信息，避免播放器按默认色域解释导致偏色
+                color_params = []
+                color_map = {}
+                try:
+                    color_map = normalize_color_metadata(
+                        encoder_settings.get('color_metadata_mode'),
+                        stream_info,
+                    )
+                    color_params = resolve_color_metadata(
+                        encoder_settings.get('color_metadata_mode'),
+                        stream_info,
+                    )
+                except Exception as color_exc:
+                    task_logger.debug(f"解析色彩元数据失败，跳过色彩参数: {color_exc}")
+                if color_params:
+                    task_logger.info(f"输出色彩元数据: {' '.join(color_params)}")
+
+                def _video_param_ctx(amd_backend=None):
+                    """汇总编码上下文，交由 video_encoder_params 统一构造参数。"""
+                    ctx = {
+                        'height': input_height,
+                        'gop': gop,
+                        'gop_hevc': gop_hevc,
+                        'quality_mode': encoder_settings.get('quality_mode'),
+                        'quality_value': encoder_settings.get('quality_value'),
+                        'cpu_preset': encoder_settings.get('cpu_preset'),
+                        'cpu_preset_hd': encoder_settings.get('cpu_preset_hd'),
+                        'duration_s': video_duration,
+                        'hw_quality_boost': encoder_settings.get('hw_quality_boost'),
+                        'hw_quality_level': encoder_settings.get('hw_quality_level'),
+                        'x264_tune': encoder_settings.get('x264_tune'),
+                        'custom_params': custom_video_params,
+                    }
+                    if amd_backend is not None:
+                        ctx['amd_backend'] = amd_backend
+                    return ctx
 
                 # 针对软编码生成统一参数 (libx264)
                 def build_cpu_params():
-                    if custom_video_params:
-                        return list(custom_video_params)
-                    cpu_preset = normalize_video_cpu_preset(
-                        self.config.get('VIDEO_CPU_PRESET'), 'medium'
-                    )
-                    # 1440p+ 且超过 10 分钟时使用独立的快速 preset，避免字幕烧录超时。
-                    if input_height >= 1440 and video_duration and video_duration > 600:
-                        cpu_preset = normalize_video_cpu_preset(
-                            self.config.get('VIDEO_CPU_PRESET_HD'), 'veryfast'
-                        )
-                        task_logger.info(
-                            f"检测到 {input_height}p 长视频，CPU preset 自动调整为 {cpu_preset}"
-                        )
-                    # 默认参数：按固定质量（CRF）设置
-                    return [
-                        '-c:v', 'libx264',
-                        '-preset', cpu_preset,
-                        '-crf', target_quality_str,
-                        '-vsync', 'cfr',
-                        '-profile:v', 'high',
-                        '-bf', '2',
-                        '-g', str(gop),
-                        '-pix_fmt', 'yuv420p'
-                    ]
+                    return build_encoder_params('cpu', _video_param_ctx())
 
                 def build_nvidia_params():
                     """生成 NVIDIA NVENC HEVC 编码参数"""
-                    if custom_video_params:
-                        return list(custom_video_params)
-                    return [
-                        '-c:v', 'hevc_nvenc',
-                        '-preset', 'p7',
-                        '-tune', 'hq',
-                        '-rc:v', 'vbr',
-                        '-b:v', '0',
-                        '-cq:v', target_quality_str,
-                        '-vsync', 'cfr',
-                        '-profile:v', 'main',
-                        '-bf', '2',
-                        '-g', str(gop_hevc),
-                        '-pix_fmt', 'yuv420p',
-                        '-tag:v', 'hvc1'
-                    ]
+                    return build_encoder_params('nvidia', _video_param_ctx())
 
                 def build_intel_params():
                     """生成 Intel QSV HEVC 编码参数"""
-                    if custom_video_params:
-                        return list(custom_video_params)
-                    return [
-                        '-c:v', 'hevc_qsv',
-                        '-preset', 'veryslow',
-                        '-global_quality', str(target_quality_int),
-                        '-look_ahead', '0',
-                        '-vsync', 'cfr',
-                        '-profile:v', 'main',
-                        '-bf', '2',
-                        '-g', str(gop_hevc),
-                        '-pix_fmt', 'nv12',
-                        '-tag:v', 'hvc1'
-                    ]
+                    return build_encoder_params('intel', _video_param_ctx())
 
                 def build_amd_params():
                     """生成 AMD AMF/VAAPI HEVC 编码参数"""
-                    if custom_video_params:
-                        return list(custom_video_params)
-                    amd_backend = _detect_amd_backend()
-                    
-                    if amd_backend == 'amf':
-                        # AMF (Windows)
-                        return [
-                            '-c:v', 'hevc_amf',
-                            '-usage', 'transcoding',
-                            '-quality', 'balanced',
-                            '-rc', 'qvbr',
-                            '-qvbr_quality_level', str(target_quality_int),
-                            '-vsync', 'cfr',
-                            '-profile:v', 'main',
-                            '-g', str(gop_hevc),
-                            '-pix_fmt', 'yuv420p',
-                            '-tag:v', 'hvc1'
-                        ]
-                    else:
-                        # VAAPI (Linux)
-                        return [
-                            '-vaapi_device', '/dev/dri/renderD128',
-                            '-c:v', 'hevc_vaapi',
-                            '-qp', str(target_quality_int),
-                            '-vsync', 'cfr',
-                            '-profile:v', 'main',
-                            '-g', str(gop_hevc),
-                            '-tag:v', 'hvc1'
-                        ]
+                    return build_encoder_params('amd', _video_param_ctx(_detect_amd_backend()))
 
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
@@ -6978,6 +7010,29 @@ class TaskProcessor:
 
                 # 音频优先直拷 AAC，非 AAC 再按源码率上限转 AAC
                 aparams = self._build_audio_transcode_params(audio_info)
+
+                # libx264 会静默忽略 -color_primaries/-color_trc，必须用编码器私有
+                # 参数补写 VUI，否则输出文件缺少原色与传递特性（通用选项仅对硬件编码器
+                # 有效）。按编码器解析，保证 CPU 回退阶段也能补上。
+                def _color_params_for(encoder_key):
+                    params = list(color_params)
+                    if encoder_key == 'cpu' and color_map:
+                        try:
+                            vui_params = build_color_vui_params(
+                                'cpu', color_map, custom_video_params
+                            )
+                        except Exception as vui_exc:
+                            task_logger.debug(f"构造色彩 VUI 参数失败: {vui_exc}")
+                            vui_params = []
+                        params += vui_params
+                    return params
+
+                main_color_params = _color_params_for(actual_encoder)
+                if len(main_color_params) > len(color_params):
+                    task_logger.info(
+                        f"软件编码色彩 VUI: {' '.join(main_color_params[len(color_params):])}"
+                    )
+
                 task_logger.info(f"视频编码参数: {' '.join(vparams)}")
                 task_logger.info(f"音频编码参数: {' '.join(aparams)}")
 
@@ -6996,6 +7051,7 @@ class TaskProcessor:
                     vparams=vparams,
                     aparams=aparams,
                     output_video=simple_output,
+                    color_params=main_color_params,
                 )
                 
                 task_logger.debug(f"FFmpeg命令: {' '.join(cmd)}")
@@ -7006,224 +7062,225 @@ class TaskProcessor:
                 
                 task_logger.debug(f"设置处理超时时间: {timeout//60} 分钟")
                 
-                # 执行FFmpeg命令并实时获取进度
-                process = subprocess.Popen(
-                    cmd, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE, 
-                    text=True, 
-                    cwd=temp_dir,  # 在临时目录执行
-                    encoding='utf-8',
-                    errors='replace'  # 遇到无法解码的字符时用?替换
-                )
-                
-                # 创建线程来读取输出，避免管道阻塞
-                output_queue = queue.Queue()
-                error_queue = queue.Queue()
-                
-                def read_output():
-                    try:
-                        # 检查 process.stdout 是否为 None
-                        if process.stdout is not None:
-                            for line in process.stdout:
-                                output_queue.put(('stdout', line.strip()))
-                        else:
-                            task_logger.warning("process.stdout 为 None，无法读取输出")
-                    except:
-                        pass
-                    finally:
-                        output_queue.put(('stdout', None))
-                
-                def read_error():
-                    try:
-                        # 检查 process.stderr 是否为 None
-                        if process.stderr is not None:
-                            for line in process.stderr:
-                                error_queue.put(('stderr', line.strip()))
-                        else:
-                            task_logger.warning("process.stderr 为 None，无法读取错误输出")
-                    except:
-                        pass
-                    finally:
-                        error_queue.put(('stderr', None))
-                
-                # 启动读取线程
-                output_thread = threading.Thread(target=read_output, daemon=True)
-                error_thread = threading.Thread(target=read_error, daemon=True)
-                output_thread.start()
-                error_thread.start()
-                
-                # 实时解析进度
-                last_time = 0
-                start_time = time.time()
-                last_progress_time = start_time
-                error_messages = []
-                
-                while True:
-                    if is_task_cancelled(task_id):
-                        task_logger.info("检测到任务取消请求，终止FFmpeg转码")
-                        process.terminate()
-                        try:
-                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
-                        except subprocess.TimeoutExpired:
-                            if process.poll() is None:
-                                process.kill()
-                        raise TaskCancelledError("任务已取消")
-                    # 检查超时
-                    current_time = time.time()
-                    if current_time - start_time > timeout:
-                        task_logger.error(f"FFmpeg处理超时（{timeout//60}分钟），强制终止")
-                        process.terminate()
-                        try:
-                            process.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
-                        except subprocess.TimeoutExpired:
-                            if process.poll() is None:
-                                process.kill()
-                        break
-                    
-                    # 检查进程状态
-                    if process.poll() is not None:
-                        break
-                    
-                    # 读取输出
-                    try:
-                        msg_type, line = output_queue.get(timeout=1)
-                        if line is None:
-                            break
-                        
-                        if line.startswith('out_time_us='):
-                            try:
-                                # 解析当前处理时间（微秒）
-                                time_us = int(line.split('=')[1])
-                                current_time = time_us / 1000000.0  # 转换为秒
-                                
-                                if video_duration and current_time > last_time:
-                                    progress = min((current_time / video_duration) * 100, 100)
-                                    # 更新任务进度显示
-                                    update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
-                                    last_time = current_time
-                                    last_progress_time = time.time()
-                            except (ValueError, IndexError):
-                                continue
-                    except queue.Empty:
-                        # 检查是否长时间没有进度更新（可能卡死了）
-                        if time.time() - last_progress_time > 300:  # 5分钟没有进度更新
-                            task_logger.debug("长时间没有进度更新，可能处理卡死")
-                        continue
-                    
-                    # 读取错误信息
-                    try:
-                        msg_type, error_line = error_queue.get_nowait()
-                        if error_line:
-                            error_messages.append(error_line)
-                            if len(error_messages) > 50:  # 限制错误信息数量
-                                error_messages.pop(0)
-                    except queue.Empty:
-                        pass
-                
-                # 等待进程完成
-                try:
-                    process.wait(timeout=30)  # 最多等待30秒
-                except subprocess.TimeoutExpired:
-                    task_logger.error("进程未能在30秒内正常结束，强制终止")
-                    process.kill()
+                # 执行 FFmpeg 命令并实时获取进度。
+                # 抽成可复用函数：硬件编码失败时需要按「硬编关增强 → CPU」分级重试，
+                # 每次都走同一套进度解析与超时/取消处理，避免逻辑分叉。
+                def _execute_embed(embed_cmd, run_timeout, stage_label=''):
+                    stage_suffix = f"[{stage_label}] " if stage_label else ''
+                    proc = subprocess.Popen(
+                        embed_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        cwd=temp_dir,  # 在临时目录执行
+                        encoding='utf-8',
+                        errors='replace'  # 遇到无法解码的字符时用?替换
+                    )
 
-                if process.returncode == 0 and os.path.exists(simple_output):
+                    # 创建线程来读取输出，避免管道阻塞
+                    stage_output_queue = queue.Queue()
+                    stage_error_queue = queue.Queue()
+
+                    def read_stream(stream, target_queue, stream_name):
+                        try:
+                            if stream is not None:
+                                for raw_line in stream:
+                                    target_queue.put(raw_line.strip())
+                            else:
+                                task_logger.warning(f"{stage_suffix}process.{stream_name} 为 None，无法读取输出")
+                        except Exception:
+                            pass
+                        finally:
+                            target_queue.put(None)
+
+                    # 启动读取线程
+                    output_thread = threading.Thread(
+                        target=read_stream,
+                        args=(proc.stdout, stage_output_queue, 'stdout'),
+                        daemon=True,
+                    )
+                    error_thread = threading.Thread(
+                        target=read_stream,
+                        args=(proc.stderr, stage_error_queue, 'stderr'),
+                        daemon=True,
+                    )
+                    output_thread.start()
+                    error_thread.start()
+
+                    # 实时解析进度
+                    stage_last_time = 0
+                    stage_start_time = time.time()
+                    stage_last_progress_time = stage_start_time
+                    stage_error_messages = []
+
+                    while True:
+                        if is_task_cancelled(task_id):
+                            task_logger.info(f"{stage_suffix}检测到任务取消请求，终止FFmpeg转码")
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                            except subprocess.TimeoutExpired:
+                                if proc.poll() is None:
+                                    proc.kill()
+                            raise TaskCancelledError("任务已取消")
+                        # 检查超时
+                        if time.time() - stage_start_time > run_timeout:
+                            task_logger.error(f"{stage_suffix}FFmpeg处理超时（{run_timeout//60}分钟），强制终止")
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
+                            except subprocess.TimeoutExpired:
+                                if proc.poll() is None:
+                                    proc.kill()
+                            break
+
+                        # 检查进程状态
+                        if proc.poll() is not None:
+                            break
+
+                        # 读取输出
+                        try:
+                            line = stage_output_queue.get(timeout=1)
+                            if line is None:
+                                break
+
+                            if line.startswith('out_time_us='):
+                                try:
+                                    # 解析当前处理时间（微秒）
+                                    time_us = int(line.split('=')[1])
+                                    current_time = time_us / 1000000.0  # 转换为秒
+
+                                    if video_duration and current_time > stage_last_time:
+                                        progress = min((current_time / video_duration) * 100, 100)
+                                        # 更新任务进度显示
+                                        update_task(task_id, upload_progress=f"{progress:.1f}%", silent=True)
+                                        stage_last_time = current_time
+                                        stage_last_progress_time = time.time()
+                                except (ValueError, IndexError):
+                                    continue
+                        except queue.Empty:
+                            # 检查是否长时间没有进度更新（可能卡死了）
+                            if time.time() - stage_last_progress_time > 300:  # 5分钟没有进度更新
+                                task_logger.debug(f"{stage_suffix}长时间没有进度更新，可能处理卡死")
+                            continue
+
+                        # 读取错误信息
+                        try:
+                            error_line = stage_error_queue.get_nowait()
+                            if error_line:
+                                stage_error_messages.append(error_line)
+                                if len(stage_error_messages) > 50:  # 限制错误信息数量
+                                    stage_error_messages.pop(0)
+                        except queue.Empty:
+                            pass
+
+                    # 等待进程完成
+                    try:
+                        proc.wait(timeout=30)  # 最多等待30秒
+                    except subprocess.TimeoutExpired:
+                        task_logger.error(f"{stage_suffix}进程未能在30秒内正常结束，强制终止")
+                        proc.kill()
+
+                    error_text = '\n'.join(stage_error_messages)
+                    return proc.returncode, error_text, os.path.exists(simple_output)
+
+                process_returncode, error_output_full, output_ready = _execute_embed(cmd, timeout)
+
+                if process_returncode == 0 and output_ready:
                     # 成功：优先原子替换，避免重复复制大文件
                     self._finalize_embedded_video_output(simple_output, embedded_video_path)
                     _log_output_media_summary(embedded_video_path)
                     # 结束日志：成功
                     task_logger.info(f"字幕嵌入完成: {embedded_video_path}")
-                    
+
                     # 清除进度显示并恢复之前的状态
                     update_task(task_id, upload_progress=None, status=previous_status, silent=True)
                     return embedded_video_path
-                else:
-                    # 收集错误信息
-                    error_output_full = '\n'.join(error_messages) if error_messages else "无详细错误信息"
-                    error_output_tail = '\n'.join(error_messages[-50:]) if error_messages else "无详细错误信息"
-                    task_logger.error(f"字幕嵌入失败 (返回码: {process.returncode})")
-                    task_logger.error(f"错误信息(尾部): {error_output_tail}")
 
-                    # 针对硬件编码失败自动降级至 CPU 重试一次
-                    should_retry_cpu = False
-                    hw_error_detected = self._is_known_hw_encoder_error(error_output_full)
-                    if hw_error_detected:
-                        should_retry_cpu = True
-                    # 如果选择了硬编但返回码非零，也尝试一次CPU（但记录原因）
-                    if actual_encoder in ('nvidia', 'intel', 'amd') and process.returncode != 0:
-                        if not hw_error_detected:
-                            task_logger.warning(f"硬件编码器 {actual_encoder} 失败（返回码: {process.returncode}），未检测到已知硬件错误，仍尝试 CPU 回退")
-                        should_retry_cpu = True
+                # 收集错误信息
+                error_output_tail = error_output_full.strip() or "无详细错误信息"
+                task_logger.error(f"字幕嵌入失败 (返回码: {process_returncode})")
+                task_logger.error(f"错误信息(尾部): {error_output_tail.splitlines()[-50:]}")
 
-                    if should_retry_cpu:
-                        if is_task_cancelled(task_id):
-                            task_logger.info("检测到任务取消请求，跳过FFmpeg回退方案")
-                            raise TaskCancelledError("任务已取消")
-                        task_logger.warning("检测到硬件编码不可用或字幕滤镜异常，尝试使用CPU编码回退方案...")
-                        vparams = build_cpu_params()
-                        cmd_retry = self._build_embed_ffmpeg_cmd(
-                            ffmpeg_bin=ffmpeg_bin,
-                            input_video=simple_video,
-                            vf_filter=vf_filter,
-                            vparams=vparams,
-                            aparams=aparams,
-                            output_video=simple_output,
-                        )
-                        task_logger.debug(f"回退FFmpeg命令: {' '.join(cmd_retry)}")
+                def _rebuild_hw_params(boost_enabled):
+                    """按同一硬件编码器重建参数（用于关闭质量增强后的降级重试）。"""
+                    encoder_settings['hw_quality_boost'] = boost_enabled
+                    if actual_encoder == 'nvidia':
+                        return build_nvidia_params()
+                    if actual_encoder == 'intel':
+                        return build_intel_params()
+                    if actual_encoder == 'amd':
+                        return build_amd_params()
+                    return build_cpu_params()
 
-                        # 重新执行（缩短超时以避免长时间卡住）
-                        process2 = subprocess.Popen(
-                            cmd_retry,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True,
-                            cwd=temp_dir,
-                            encoding='utf-8',
-                            errors='replace'
-                        )
-                        try:
-                            fallback_start_time = time.time()
-                            fallback_timeout = max(300, int(timeout))
-                            while process2.poll() is None:
-                                if is_task_cancelled(task_id):
-                                    task_logger.info("检测到任务取消请求，终止FFmpeg回退转码")
-                                    process2.terminate()
-                                    try:
-                                        process2.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
-                                    except subprocess.TimeoutExpired:
-                                        if process2.poll() is None:
-                                            process2.kill()
-                                    raise TaskCancelledError("任务已取消")
-                                if time.time() - fallback_start_time > fallback_timeout:
-                                    task_logger.error(f"FFmpeg CPU回退处理超时（{fallback_timeout//60}分钟），强制终止")
-                                    process2.terminate()
-                                    try:
-                                        process2.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
-                                    except subprocess.TimeoutExpired:
-                                        if process2.poll() is None:
-                                            process2.kill()
-                                    break
-                                time.sleep(1)
-                            stdout2, stderr2 = process2.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process2.kill()
-                            stdout2, stderr2 = process2.communicate()
+                # 分级降级：硬编+质量增强失败时，先尝试关闭增强保留硬件加速，
+                # 仍失败才退回 CPU。直接跳 CPU 会让可用 GPU 白白闲置。
+                hw_error_detected = self._is_known_hw_encoder_error(error_output_full)
+                if actual_encoder in ('nvidia', 'intel', 'amd') and not hw_error_detected:
+                    task_logger.warning(
+                        f"硬件编码器 {actual_encoder} 失败（返回码: {process_returncode}），"
+                        f"未检测到已知硬件错误，仍尝试降级重试"
+                    )
+                retry_stages = self._resolve_embed_retry_stages(
+                    actual_encoder,
+                    encoder_settings.get('hw_quality_boost'),
+                    hw_error_detected,
+                )
 
-                        if process2.returncode == 0 and os.path.exists(simple_output):
-                            self._finalize_embedded_video_output(simple_output, embedded_video_path)
-                            _log_output_media_summary(embedded_video_path)
-                            # 结束日志：成功（CPU回退）
-                            task_logger.info(f"字幕嵌入完成: {embedded_video_path}（CPU回退）")
-                            update_task(task_id, upload_progress=None, status=previous_status, silent=True)
-                            return embedded_video_path
-                        else:
-                            task_logger.error("CPU回退方案仍然失败")
-                            if stderr2:
-                                task_logger.error(f"FFmpeg错误(回退): {stderr2.splitlines()[-50:]}")
+                for stage in retry_stages:
+                    if is_task_cancelled(task_id):
+                        task_logger.info("检测到任务取消请求，跳过FFmpeg回退方案")
+                        raise TaskCancelledError("任务已取消")
 
-                    update_task(task_id, upload_progress=None, status=previous_status, silent=True)
-                    return None
+                    if stage == 'hw_no_boost':
+                        stage_label = f"{actual_encoder} 关闭质量增强"
+                        task_logger.warning("硬件编码或质量增强参数不被支持，尝试关闭质量增强后用同一编码器重试...")
+                        stage_vparams = _rebuild_hw_params(False)
+                        stage_filter = final_vf
+                        stage_timeout = max(300, int(timeout))
+                        stage_color_params = _color_params_for(actual_encoder)
+                    else:
+                        stage_label = 'CPU 软编码'
+                        task_logger.warning("尝试使用CPU编码回退方案...")
+                        stage_vparams = build_cpu_params()
+                        stage_filter = vf_filter
+                        stage_timeout = max(300, int(timeout))
+                        stage_color_params = _color_params_for('cpu')
+
+                    cmd_retry = self._build_embed_ffmpeg_cmd(
+                        ffmpeg_bin=ffmpeg_bin,
+                        input_video=simple_video,
+                        vf_filter=stage_filter,
+                        vparams=stage_vparams,
+                        aparams=aparams,
+                        output_video=simple_output,
+                        color_params=stage_color_params,
+                    )
+                    task_logger.debug(f"回退FFmpeg命令({stage_label}): {' '.join(cmd_retry)}")
+
+                    retry_returncode, retry_error, retry_ready = _execute_embed(
+                        cmd_retry, stage_timeout, stage_label
+                    )
+                    if retry_returncode == 0 and retry_ready:
+                        self._finalize_embedded_video_output(simple_output, embedded_video_path)
+                        _log_output_media_summary(embedded_video_path)
+                        task_logger.info(f"字幕嵌入完成: {embedded_video_path}（{stage_label}回退）")
+                        update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                        return embedded_video_path
+
+                    task_logger.error(f"{stage_label}回退方案仍然失败 (返回码: {retry_returncode})")
+                    if retry_error:
+                        task_logger.error(f"FFmpeg错误({stage_label}回退): {retry_error.splitlines()[-50:]}")
+
+                    # 清理上一阶段可能残留的半成品输出，避免下一次重试用旧文件误判成功
+                    try:
+                        if os.path.exists(simple_output):
+                            os.remove(simple_output)
+                    except Exception as cleanup_exc:
+                        task_logger.warning(f"清理回退残留输出失败: {cleanup_exc}")
+
+                update_task(task_id, upload_progress=None, status=previous_status, silent=True)
+                return None
             
             finally:
                 # 清理残留临时输出
@@ -7299,6 +7356,11 @@ class TaskProcessor:
             "pix_fmt": None,
             "codec_name": None,
             "bit_rate": None,
+            # 色彩元数据：转码时透传，避免播放器按默认色域解释导致偏色
+            "color_space": None,
+            "color_primaries": None,
+            "color_transfer": None,
+            "color_range": None,
         }
         try:
             # subprocess/json handled at module level where needed
@@ -7331,6 +7393,10 @@ class TaskProcessor:
                         info['height'] = s.get('height')
                         info['pix_fmt'] = s.get('pix_fmt')
                         info['codec_name'] = s.get('codec_name')
+                        info['color_space'] = s.get('color_space')
+                        info['color_primaries'] = s.get('color_primaries')
+                        info['color_transfer'] = s.get('color_transfer')
+                        info['color_range'] = s.get('color_range')
                         bit_rate = s.get('bit_rate')
                         if bit_rate:
                             try:
