@@ -52,6 +52,26 @@ TIMELINE_CPS_LOWER = 2.0
 TIMELINE_HARD_STUTTER_RUN = 4               # 相邻同文本且间隔 <0.3s 的连续条数
 TIMELINE_SUSPICIOUS_STUTTER_RUN = 3
 TIMELINE_STUTTER_GAP_S = 0.3
+# 退化 cue（零时长 / 逆序）：VAD 崩坏最典型的产物就是「有文本、没有时长」。
+# 此前这类条目被 `end > start` 的判断整体排除出 timeline_pairs，于是最需要检查的
+# 输入反而让整个时间轴维度静默关闭（timeline_checked=False 且无任何 warning）。
+# 现在它们计入统计并单独度量，占比超阈值即硬失败。
+# 取值理由：零时长硬线 25% + 最少 3 条 —— 真实素材里偶发 1–2 条零时长 cue
+# （音频块边界重合）完全正常，即使它们占满 10 条字幕的 20% 也不该判死；
+# 而 1/4 以上的 cue 完全没有时长，只可能是时间戳生成崩坏。
+TIMELINE_MAX_ZERO_DURATION_RATIO = 0.25
+TIMELINE_MIN_ZERO_DURATION_COUNT = 3
+TIMELINE_SUSPICIOUS_ZERO_DURATION_RATIO = 0.10
+# 逆序 cue（start > end）在 SRT 语义上不该出现，单条按偶发处理（仅送 AI 复核），
+# 达到 2 条且超过 5% 才判系统性倒挂 —— 5% 与重叠率硬线同口径；
+# 占比达到 25% 时无论条数都判病态（小样本兜底，例如 4 条里 1 条倒挂）。
+TIMELINE_MAX_REVERSED_CUE_RATIO = 0.05
+TIMELINE_MIN_REVERSED_CUE_COUNT = 2
+TIMELINE_EXTREME_DEGENERATE_RATIO = 0.25
+# 片尾留白容忍带：结束卡 / 黑屏 / 静音吃掉末尾十几秒是常态，
+# 因此「末条提前结束」只有在**绝对秒数**也超出该容忍带时才视为可疑。
+# 50 分钟以上的视频若末条只到 83%，600s 的缺口远超 30s，仍会被抓住。
+TIMELINE_TAIL_GRACE_SECONDS = 30.0
 
 
 def _pipeline_timeline_default(key: str, fallback: float) -> float:
@@ -292,7 +312,18 @@ def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     return get_ai_client(cfg)
 
 
-def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _build_item_stats(
+    items: List[Any],
+    total_duration_s: Optional[float] = None,
+    timeline_limits: Optional[Dict[str, float]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    timeline_limits = timeline_limits or {}
+    # CPS 上限必须取**运行时配置**，不能锚定模块导入期常量 TIMELINE_CPS_UPPER：
+    # 用户把上限放宽到 25 以上（设置页允许 1–200）时，若统计口径仍用导入期默认，
+    # 放宽方向恒不生效，同一份字幕在 25 与 30 下得到完全相同的结论。
+    cps_upper = _to_float(timeline_limits.get('max_cps', TIMELINE_CPS_UPPER), TIMELINE_CPS_UPPER)
+    if not math.isfinite(cps_upper) or cps_upper <= 0:
+        cps_upper = TIMELINE_CPS_UPPER
     stats: List[Dict[str, Any]] = []
     usable_normalized: List[str] = []
     suspicious_examples: List[str] = []
@@ -320,6 +351,8 @@ def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None
     cps_values: List[float] = []
     previous_start_for_overlap: Optional[float] = None
     previous_end_for_overlap: Optional[float] = None
+    zero_duration_count = 0
+    reversed_cue_count = 0
 
     for idx, it in enumerate(items):
         text = (getattr(it, 'source_text', '') or '').strip()
@@ -359,41 +392,57 @@ def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None
         ):
             short_duration_count += 1
 
-        # 时间轴度量（仅统计有有效时间与文本的条目）
-        if text and start_seconds is not None and end_seconds is not None and end_seconds > start_seconds:
-            timeline_pairs.append((start_seconds, end_seconds, normalized))
-            duration_s = end_seconds - start_seconds
-            if normalized:
-                cps = len(normalized) / max(duration_s, 0.01)
+        # 时间轴度量（仅统计有有效时间与文本的条目）。
+        # 零时长 / 逆序 cue 必须**计入**：它们正是 VAD 崩坏的产物，
+        # 排除掉会让整个时间轴维度在最需要检查的输入下静默关闭。
+        if text and start_seconds is not None and end_seconds is not None:
+            span_seconds = end_seconds - start_seconds
+            if span_seconds > 0:
+                pair_start, pair_end = start_seconds, end_seconds
+            else:
+                # 退化 cue 折成零长度点：不贡献并集、不参与重叠链，
+                # 因此既不会让维度关闭，也不会被误报成 rule_fail:timeline_overlap。
+                pair_start = pair_end = min(start_seconds, end_seconds)
+                if span_seconds < 0:
+                    reversed_cue_count += 1
+                else:
+                    zero_duration_count += 1
+            timeline_pairs.append((pair_start, pair_end, normalized))
+            # CPS 只统计正时长条目：退化 cue 的「每秒字符数」无意义（除以 0），
+            # 它们由 zero_duration_ratio / reversed_cue_ratio 单独度量，
+            # 避免同一处缺陷被 cps_outlier 二次计入、把 1–2 条偶发条目放大成硬失败。
+            if normalized and span_seconds > 0:
+                cps = len(normalized) / span_seconds
                 cps_comparable_count += 1
                 cps_values.append(cps)
-                if cps > TIMELINE_CPS_UPPER or cps < TIMELINE_CPS_LOWER:
+                if cps > cps_upper or cps < TIMELINE_CPS_LOWER:
                     cps_outlier_count += 1
-            # 相邻 cue 间隔 / 重叠：按条目原始顺序比较（SRT 应天然有序）
-            if previous_start_for_overlap is not None and previous_end_for_overlap is not None:
-                comparable_pairs += 1
-                if start_seconds < previous_end_for_overlap - 1e-6:
-                    overlap_pairs += 1
-            previous_start_for_overlap = start_seconds
-            previous_end_for_overlap = end_seconds
-            # 结巴/重复刷屏：相邻同文本且间隔极小
-            gap_from_prev = (
-                start_seconds - previous_end_for_stutter
-                if previous_end_for_stutter is not None
-                else None
-            )
-            if (
-                normalized
-                and normalized == previous_text_normalized
-                and gap_from_prev is not None
-                and abs(gap_from_prev) < TIMELINE_STUTTER_GAP_S
-            ):
-                current_stutter_run += 1
-            else:
-                current_stutter_run = 1
-            previous_text_normalized = normalized
-            previous_end_for_stutter = end_seconds
-            max_stutter_run = max(max_stutter_run, current_stutter_run if normalized else 0)
+            # 相邻 cue 间隔 / 重叠 / 结巴：只让正时长条目进入链条，
+            # 退化点落在后一条字幕内部时不应被算作重叠。
+            if span_seconds > 0:
+                if previous_start_for_overlap is not None and previous_end_for_overlap is not None:
+                    comparable_pairs += 1
+                    if start_seconds < previous_end_for_overlap - 1e-6:
+                        overlap_pairs += 1
+                previous_start_for_overlap = start_seconds
+                previous_end_for_overlap = end_seconds
+                gap_from_prev = (
+                    start_seconds - previous_end_for_stutter
+                    if previous_end_for_stutter is not None
+                    else None
+                )
+                if (
+                    normalized
+                    and normalized == previous_text_normalized
+                    and gap_from_prev is not None
+                    and abs(gap_from_prev) < TIMELINE_STUTTER_GAP_S
+                ):
+                    current_stutter_run += 1
+                else:
+                    current_stutter_run = 1
+                previous_text_normalized = normalized
+                previous_end_for_stutter = end_seconds
+                max_stutter_run = max(max_stutter_run, current_stutter_run if normalized else 0)
 
         stats.append({
             'index': idx,
@@ -447,9 +496,14 @@ def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None
     duration_bound = float(total_duration_s or 0.0)
     if timeline_pairs:
         ordered = sorted(timeline_pairs, key=lambda pair: pair[0])
+        # 几何量（并集 / 首尾位置 / 最大空档）只由**正时长**条目决定：
+        # 退化点不代表真实覆盖，也不能把一个大空档切成两半从而掩盖问题；
+        # 若全部条目都退化，则退回用点位置计算，保证维度仍给出诊断数值。
+        positive_pairs = [pair for pair in ordered if pair[1] > pair[0]]
+        geometry_pairs = positive_pairs or ordered
         merged_union = 0.0
-        cursor_start, cursor_end = ordered[0][0], ordered[0][1]
-        for pair_start, pair_end, _ in ordered[1:]:
+        cursor_start, cursor_end = geometry_pairs[0][0], geometry_pairs[0][1]
+        for pair_start, pair_end, _ in geometry_pairs[1:]:
             if pair_start <= cursor_end + 1e-6:
                 cursor_end = max(cursor_end, pair_end)
             else:
@@ -457,16 +511,22 @@ def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None
                 cursor_start, cursor_end = pair_start, pair_end
         merged_union += max(0.0, cursor_end - cursor_start)
 
-        first_cue_start = ordered[0][0]
-        last_cue_end = max(pair[1] for pair in ordered)
+        first_cue_start = geometry_pairs[0][0]
+        last_cue_end = max(pair[1] for pair in geometry_pairs)
         max_gap = 0.0
-        for prev_pair, next_pair in zip(ordered, ordered[1:]):
+        for prev_pair, next_pair in zip(geometry_pairs, geometry_pairs[1:]):
             max_gap = max(max_gap, max(0.0, next_pair[0] - prev_pair[1]))
 
+        timed_cue_count = len(ordered)
         timeline_metrics = {
             'timeline_checked': True,
             'timeline_skipped': False,
-            'timeline_cue_count': len(ordered),
+            'timeline_cue_count': timed_cue_count,
+            'timeline_positive_cue_count': len(positive_pairs),
+            'zero_duration_count': zero_duration_count,
+            'reversed_cue_count': reversed_cue_count,
+            'zero_duration_ratio': (zero_duration_count / timed_cue_count) if timed_cue_count else 0.0,
+            'reversed_cue_ratio': (reversed_cue_count / timed_cue_count) if timed_cue_count else 0.0,
             'timeline_union_seconds': merged_union,
             'timeline_span_seconds': max(0.0, last_cue_end - first_cue_start),
             'first_cue_start_seconds': first_cue_start,
@@ -542,6 +602,37 @@ def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None
     return stats, metrics
 
 
+def _tail_within_grace(metrics: Dict[str, Any]) -> bool:
+    """末条结束位置距视频结尾是否在容忍带内（片尾黑屏/静音/结束卡的常态留白）。
+
+    没有总时长或末条位置时返回 False（无法证明是良性留白，按可疑处理）。
+    """
+    duration = float(metrics.get('total_duration_seconds', 0.0) or 0.0)
+    last_cue_end = metrics.get('last_cue_end_seconds')
+    if duration <= 0 or last_cue_end is None:
+        return False
+    return (duration - float(last_cue_end)) <= TIMELINE_TAIL_GRACE_SECONDS
+
+
+def _timeline_materially_deficient(metrics: Dict[str, Any]) -> bool:
+    """时间轴是否存在**实质缺陷**：覆盖率严重不足，或末条明显提前结束。
+
+    只有这两类信号才禁止在 AI 不可用时放行 —— 它们是时间轴维度真正要抓的目标
+    （VAD 中途崩坏、字幕只覆盖前段）。其余可疑信号（轻微重叠 / 语速异常 /
+    空档偏大 / 文本维度软信号）在规则分达到高置信线时允许放行，避免良性字幕
+    仅因「末条没压到最后 85%」而在未配置 AI 时永远无法烧录。
+    """
+    if not metrics.get('timeline_checked'):
+        return False
+    coverage_ratio = metrics.get('coverage_ratio')
+    if coverage_ratio is not None and float(coverage_ratio) < TIMELINE_SUSPICIOUS_COVERAGE_RATIO:
+        return True
+    last_end_ratio = metrics.get('last_cue_end_ratio')
+    if last_end_ratio is not None and float(last_end_ratio) < TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO:
+        return not _tail_within_grace(metrics)
+    return False
+
+
 def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     usable_count = int(metrics.get('usable_count', 0) or 0)
     low_content_ratio = float(metrics.get('low_content_ratio', 1.0) or 0.0)
@@ -584,8 +675,12 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
         if coverage_ratio is not None:
             score -= min(0.40, max(0.0, TIMELINE_SUSPICIOUS_COVERAGE_RATIO - float(coverage_ratio)) * 0.80)
         last_end_ratio = metrics.get('last_cue_end_ratio')
-        if last_end_ratio is not None:
+        # 片尾容忍带内的留白不扣分（否则良性字幕会被扣着分送去 AI 复核）。
+        if last_end_ratio is not None and not _tail_within_grace(metrics):
             score -= min(0.30, max(0.0, TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO - float(last_end_ratio)) * 0.75)
+        zero_duration_ratio = float(metrics.get('zero_duration_ratio', 0.0) or 0.0)
+        score -= min(0.20, max(0.0, zero_duration_ratio - TIMELINE_SUSPICIOUS_ZERO_DURATION_RATIO) * 0.60)
+        score -= min(0.20, float(metrics.get('reversed_cue_ratio', 0.0) or 0.0) * 1.20)
         max_gap = float(metrics.get('max_gap_seconds', 0.0) or 0.0)
         score -= min(0.20, max(0.0, max_gap - TIMELINE_SUSPICIOUS_MAX_GAP_SECONDS) * 0.005)
         score -= min(0.20, max(0.0, float(metrics.get('overlap_ratio', 0.0) or 0.0) - TIMELINE_SUSPICIOUS_OVERLAP_RATIO) * 1.20)
@@ -601,7 +696,25 @@ def _timeline_hard_fail_reason(metrics: Dict[str, Any], limits: Optional[Dict[st
     limits = limits or {}
     min_coverage = float(limits.get('min_coverage_ratio', TIMELINE_MIN_COVERAGE_RATIO))
     max_gap_s = float(limits.get('max_gap_seconds', TIMELINE_MAX_GAP_SECONDS))
-    max_cps = float(limits.get('max_cps', TIMELINE_CPS_UPPER))
+    # 退化 cue（零时长 / 逆序）最先判定：这是最具体的诊断。若放到覆盖率 / 重叠
+    # 之后，VAD 崩坏的字幕会被统一报成 coverage_too_low / overlap，误导排查方向。
+    zero_duration_count = int(metrics.get('zero_duration_count', 0) or 0)
+    zero_duration_ratio = float(metrics.get('zero_duration_ratio', 0.0) or 0.0)
+    if (
+        zero_duration_count >= TIMELINE_MIN_ZERO_DURATION_COUNT
+        and zero_duration_ratio >= TIMELINE_MAX_ZERO_DURATION_RATIO
+    ):
+        return 'rule_fail:timeline_zero_duration'
+    reversed_cue_count = int(metrics.get('reversed_cue_count', 0) or 0)
+    reversed_cue_ratio = float(metrics.get('reversed_cue_ratio', 0.0) or 0.0)
+    if reversed_cue_count > 0 and (
+        reversed_cue_ratio >= TIMELINE_EXTREME_DEGENERATE_RATIO
+        or (
+            reversed_cue_count >= TIMELINE_MIN_REVERSED_CUE_COUNT
+            and reversed_cue_ratio > TIMELINE_MAX_REVERSED_CUE_RATIO
+        )
+    ):
+        return 'rule_fail:timeline_reversed_cue'
     stutter_run = int(metrics.get('stutter_run', 0) or 0)
     if stutter_run >= TIMELINE_HARD_STUTTER_RUN:
         return 'rule_fail:timeline_stutter_repeat'
@@ -626,13 +739,9 @@ def _timeline_hard_fail_reason(metrics: Dict[str, Any], limits: Optional[Dict[st
         return 'rule_fail:timeline_gap_too_large'
     if max_gap_ratio is not None and float(max_gap_ratio) > TIMELINE_MAX_GAP_RATIO:
         return 'rule_fail:timeline_gap_too_large'
-    # CPS 上限可由配置收紧（默认 25），只影响异常占比统计口径
-    if max_cps > 0 and max_cps < TIMELINE_CPS_UPPER:
-        cps_list = metrics.get('cps_values') or []
-        if cps_list:
-            outliers = sum(1 for value in cps_list if float(value) > max_cps)
-            if outliers / max(1, len(cps_list)) > TIMELINE_MAX_CPS_OUTLIER_RATIO:
-                return 'rule_fail:timeline_cps_outlier'
+    # CPS 上限（含放宽方向）已在 _build_item_stats 中按运行时配置的 limits['max_cps']
+    # 计入 cps_outlier_ratio，这里不再与模块导入期常量 TIMELINE_CPS_UPPER 比较：
+    # 那段分支让「放宽到 25 以上」恒不生效（用户设 30 想放过 25–30 区间无效）。
     return None
 
 
@@ -640,6 +749,13 @@ def _timeline_suspicious(metrics: Dict[str, Any]) -> bool:
     """时间轴可疑判定：命中则必须送 AI 复核（boundary_level 降为 suspicious）。"""
     if not metrics.get('timeline_checked'):
         return False
+    if int(metrics.get('reversed_cue_count', 0) or 0) > 0:
+        return True
+    if (
+        int(metrics.get('zero_duration_count', 0) or 0) > 0
+        and float(metrics.get('zero_duration_ratio', 0.0) or 0.0) > TIMELINE_SUSPICIOUS_ZERO_DURATION_RATIO
+    ):
+        return True
     if int(metrics.get('stutter_run', 0) or 0) >= TIMELINE_SUSPICIOUS_STUTTER_RUN:
         return True
     if float(metrics.get('overlap_ratio', 0.0) or 0.0) > TIMELINE_SUSPICIOUS_OVERLAP_RATIO:
@@ -650,7 +766,13 @@ def _timeline_suspicious(metrics: Dict[str, Any]) -> bool:
     if coverage_ratio is not None and float(coverage_ratio) < TIMELINE_SUSPICIOUS_COVERAGE_RATIO:
         return True
     last_end_ratio = metrics.get('last_cue_end_ratio')
-    if last_end_ratio is not None and float(last_end_ratio) < TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO:
+    # 片尾留白（结束卡 / 黑屏 / 静音）是常态：只有绝对缺口也超出容忍带，
+    # 也就是「末条明显提前结束」时才降级为可疑。
+    if (
+        last_end_ratio is not None
+        and float(last_end_ratio) < TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO
+        and not _tail_within_grace(metrics)
+    ):
         return True
     first_start_ratio = metrics.get('first_cue_start_ratio')
     if first_start_ratio is not None and float(first_start_ratio) > TIMELINE_SUSPICIOUS_FIRST_CUE_START_RATIO:
@@ -665,7 +787,9 @@ def _rule_check(
     total_duration_s: Optional[float] = None,
     timeline_limits: Optional[Dict[str, float]] = None,
 ) -> RuleCheckResult:
-    item_stats, metrics = _build_item_stats(items, total_duration_s=total_duration_s)
+    item_stats, metrics = _build_item_stats(
+        items, total_duration_s=total_duration_s, timeline_limits=timeline_limits
+    )
     metrics['checked_by'] = 'rule'
     metrics['boundary_level'] = 'boundary'
     metrics['rule_score'] = _estimate_rule_score(metrics)
@@ -1105,7 +1229,9 @@ def _resolve_ai_unavailable_result(
     此前 boundary 级样本在 AI 不可用时直接 ``passed=True``，等于把「质检没跑成」
     当成「质检通过」，低质量字幕因此静默烧录。现在：
     - ``strict=True``（ASR 来源退化）：一律不放行；
-    - 非 strict 且边界等级为 suspicious：不放行；
+    - 非 strict 且边界等级为 suspicious：时间轴存在实质缺陷（覆盖率严重不足 /
+      末条明显提前结束）时一律不放行；否则规则分达到高置信线即可放行 ——
+      片尾正常留白不应让良性字幕在未配置 AI 时永远无法烧录；
     - 非 strict 且边界等级为 boundary：仅当规则分达到高置信线才放行。
     """
     sample_meta = sample_meta or {}
@@ -1113,7 +1239,10 @@ def _resolve_ai_unavailable_result(
     if strict:
         passed = False
     elif is_suspicious:
-        passed = False
+        passed = (
+            float(rule_score) >= STRICT_MIN_RULE_SCORE
+            and not _timeline_materially_deficient(metrics)
+        )
     else:
         passed = float(rule_score) >= STRICT_MIN_RULE_SCORE
     prefix = 'qc_skipped' if passed else 'ai_fail'

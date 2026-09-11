@@ -235,8 +235,17 @@ class PreservableVerbatimTests(unittest.TestCase):
             self.assertTrue(_is_preservable_verbatim(text), text)
 
     def test_symbols_and_cjk_are_preservable(self):
-        for text in ('---', '♪♪', '你好世界'):
-            self.assertTrue(_is_preservable_verbatim(text), text)
+        """纯符号无可翻译内容；汉字在「目标是中文」时也无需翻译。
+
+        CJK 的放行现在依赖目标语言：假名/谚文属明确的「非中文」信号，
+        必须是未译（见 tests/test_translator_cjk_regression.py）。
+        """
+        for text in ('---', '♪♪'):
+            self.assertTrue(_is_preservable_verbatim(text, target_language='zh'), text)
+        self.assertTrue(_is_preservable_verbatim('你好世界', target_language='zh'))
+        self.assertFalse(_is_preservable_verbatim('こんにちは', target_language='zh'))
+        self.assertFalse(_is_preservable_verbatim('안녕하세요', target_language='zh'))
+        self.assertFalse(_is_preservable_verbatim('你好世界', target_language='en'))
 
     def test_names_and_codes_are_preservable(self):
         for text in ('NVIDIA', 'RTX 4090', 'iPhone', 'x86_64', 'GPU'):

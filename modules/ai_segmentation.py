@@ -749,15 +749,45 @@ def _cues_from_index_ranges(
 
 
 # 允许 AI 新增的标点（不视为"凭空造字"），含 ASCII 与常见全角标点
+# 常见全角/中文/日文标点与纯符号字符。
+# 覆盖面不足会造成**误杀**：模型把 `《标题》` 换成 `【标题】`、把 `・` 删掉，
+# 或把 `©` 改写掉时，未被识别为标点的字符会被算成"造字/丢字" → 整批降级。
+# 字符只需"不承载实词内容"，因此用码位区间而非逐个枚举：
+#   U+2010-U+2015 各类连字符与破折号；U+2018-U+201F 引号；U+2026 省略号
+#   U+3001-U+3003 、。〃；U+3008-U+3011 〈〉《》「」『』【】〕〖〗；U+3014-U+301B
+#   U+30FB 片假名中点；U+FF01-U+FF0F / U+FF1A-U+FF20 / U+FF3B-U+FF40 / U+FF5B-U+FF65
+#   为全角标点（**必须**避开 U+FF10-U+FF19 全角数字与 U+FF21-U+FF5A 全角字母）
+#   U+00A9 ©、U+00AE ®、U+2122 ™、U+00B0 °、U+2116 № 等纯符号
 _EXTRA_PUNCTUATION = frozenset(
     '，。！？；：、（）「」『』【】…·—～'
     '\u3000\u2018\u2019\u201c\u201d\uFF01\uFF1F\uFF1B\uFF1A\uFF0C\uFF0E'
+    '\u2010\u2011\u2012\u2013\u2014\u2015\u2026\u2018\u2019\u201a\u201b'
+    '\u201c\u201d\u201e\u201f\u3001\u3002\u3003\u3008\u3009\u300a\u300b'
+    '\u300c\u300d\u300e\u300f\u3010\u3011\u3014\u3015\u3016\u3017\u3018'
+    '\u3019\u301a\u301b\u30fb\uFF0D\uFF5E\uFF5F\uFF60\uFF61\uFF62\uFF63'
+    '\uFF64\uFF65\u00a9\u00ae\u2122\u00b0\u2116\u301c\uFF5B\uFF5D\uFF3B'
+    '\uFF3D\uFF5C\uFF1C\uFF1E\uFF20\uFF3E\uFF40\uFF3F'
 )
 
 
 def _is_punctuation_char(ch: str) -> bool:
-    """判断是否为标点（ASCII 标点或常见全角标点）。"""
-    return ch in string.punctuation or ch in _EXTRA_PUNCTUATION
+    """判断是否为标点（ASCII 标点、常见全角标点或纯符号）。"""
+    if not ch:
+        return False
+    if ch in string.punctuation or ch in _EXTRA_PUNCTUATION:
+        return True
+    code = ord(ch)
+    return (
+        0x2010 <= code <= 0x2015
+        or 0x2018 <= code <= 0x201F
+        or 0x3001 <= code <= 0x3003
+        or 0x3008 <= code <= 0x3011
+        or 0x3014 <= code <= 0x301B
+        or 0xFF01 <= code <= 0xFF0F
+        or 0xFF1A <= code <= 0xFF20
+        or 0xFF3B <= code <= 0xFF40
+        or 0xFF5B <= code <= 0xFF65
+    )
 
 
 def _strip_for_coverage(text: str) -> str:
@@ -1773,20 +1803,28 @@ def _flatten_segments_from_words(words: List[AsrWordTiming]) -> Tuple[List[AsrSe
 def _normalize_output_cues(
     cues: List[AlignedSubtitleCue],
     total_duration_s: Optional[float] = None,
+    logger=None,
 ) -> List[AlignedSubtitleCue]:
     """出口归一化：丢弃非法 cue → 升序 → 去重叠 → 时长钳制。
 
     下游 srt_transform_engine.resolve_overlaps 与 _refine_boundaries 都假定输入
     按时间有序且不重叠，而 context_cues 又取 all_cues[-N:] 作为下一批上下文；
     因此这里做统一兜底，避免未排序/重叠的 AI 输出污染上下文和落盘结果。
+
+    丢弃的 cue **必须**记 warning：这是落盘前的最后一道归一化，丢一条就是丢
+    一段字幕内容，静默丢失会让用户只看到字幕莫名缺句而无从排查。
     """
+    discarded = []
     cleaned: List[AlignedSubtitleCue] = []
     for cue in cues or []:
-        if not str(getattr(cue, 'text', '') or '').strip():
+        text = str(getattr(cue, 'text', '') or '').strip()
+        if not text:
+            discarded.append(('empty_text', cue))
             continue
         start_s = float(cue.start_s)
         end_s = float(cue.end_s)
         if end_s <= start_s:
+            discarded.append((f'non_positive_duration:{start_s:.3f}-{end_s:.3f}', cue))
             continue
         cleaned.append(cue)
 
@@ -1808,6 +1846,7 @@ def _normalize_output_cues(
             # 重叠：后一条抬到前一条结尾（不改变文本归属）
             start_s = previous_end
         if end_s <= start_s:
+            discarded.append((f'collapsed_after_clamp:{start_s:.3f}-{end_s:.3f}', cue))
             continue
         previous_end = end_s
         if start_s == float(cue.start_s) and end_s == float(cue.end_s):
@@ -1827,6 +1866,21 @@ def _normalize_output_cues(
             source_window_index=getattr(cue, 'source_window_index', -1),
             metadata=dict(getattr(cue, 'metadata', {}) or {}),
         ))
+
+    if discarded and logger is not None:
+        try:
+            samples = ' | '.join(
+                f"{reason}: {str(getattr(cue, 'text', '') or '')[:40]!r}"
+                for reason, cue in discarded[:3]
+            )
+            logger.warning(
+                "出口归一化丢弃 %d/%d 条 cue（内容随之丢失，请检查上游时间戳）：%s",
+                len(discarded),
+                len(cues or []),
+                samples,
+            )
+        except Exception:
+            pass
     return normalized
 
 
@@ -1947,10 +2001,10 @@ class AISegmenter:
         if self.config.rhythm_enabled:
             self.logger.info('节奏后处理已开启，执行 enforce_rhythm')
             return _normalize_output_cues(
-                enforce_rhythm(all_cues, self.config), self._total_duration_s,
+                enforce_rhythm(all_cues, self.config), self._total_duration_s, self.logger,
             )
         self.logger.info('节奏后处理已关闭，直接返回 AI 分段结果')
-        return _normalize_output_cues(all_cues, self._total_duration_s)
+        return _normalize_output_cues(all_cues, self._total_duration_s, self.logger)
 
     def _segment_batch_with_context(
         self,
@@ -2092,7 +2146,7 @@ class AISegmenter:
         total_duration_s: Optional[float] = None,
     ) -> List[AlignedSubtitleCue]:
         """实例方法包装（保持既有调用点可用），实现见模块级 _normalize_output_cues。"""
-        return _normalize_output_cues(cues, total_duration_s)
+        return _normalize_output_cues(cues, total_duration_s, getattr(self, 'logger', None))
 
     def _call_with_retry(
         self,
