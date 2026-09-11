@@ -714,9 +714,101 @@ def _build_missing_translation_review_message(field_names) -> str:
     return f"自动翻译未完成：{'、'.join(readable)}仍缺少有效译文，任务已转入人工审核。"
 
 
+def _is_asr_subtitle_artifact(task_id, subtitle_path, quality_state=None) -> bool:
+    """判断某字幕文件是否来自 ASR（而非平台自带 / 人工提供）。
+
+    质检只应约束 ASR 产物：它才是幻觉与时间轴错位的高风险来源。
+    外部字幕走原有流程，既不增加 AI 调用成本，也不会被 ASR 的历史标记误拦。
+    """
+    state = str(quality_state or '').strip().lower()
+    if state in ('degraded', 'failed'):
+        # 任务级质量结局存在即说明该任务经历过 ASR，其字幕按 ASR 产物对待。
+        return True
+    try:
+        name = os.path.basename(str(subtitle_path or '')).lower()
+    except Exception:
+        return False
+    if not name:
+        return False
+    if name.startswith('asr_'):
+        return True
+    return name == f"asr_{str(task_id or '').lower()}.srt"
+
+
+def _candidate_subtitle_paths(task, task_dir: str) -> list:
+    """收集任务相关字幕文件路径，用于判断已烧录视频产物是否仍然新鲜。"""
+    paths = []
+    if isinstance(task, dict):
+        for key in ('subtitle_path_original', 'subtitle_path_translated'):
+            value = str(task.get(key) or '').strip()
+            if value:
+                paths.append(value)
+    for ext in ('.srt', '.vtt'):
+        paths.append(os.path.join(task_dir, f"asr_{os.path.basename(task_dir)}{ext}"))
+    try:
+        for name in os.listdir(task_dir):
+            if isinstance(name, str) and name.lower().endswith(('.srt', '.vtt')):
+                paths.append(os.path.join(task_dir, name))
+    except Exception:
+        pass
+    seen = set()
+    unique_paths = []
+    for path in paths:
+        if path and path not in seen:
+            seen.add(path)
+            unique_paths.append(path)
+    return unique_paths
+
+
 def _is_asr_enabled(config: dict) -> bool:
     """ASR总开关。"""
     return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False))
+
+
+def _subtitle_embed_allowed(
+    config: dict,
+    quality_state,
+    qc_failed,
+    *,
+    qc_cleared: bool = False,
+    task_logger=None,
+) -> bool:
+    """统一烧录门控：决定当前字幕是否允许烧进成片。
+
+    - ``quality_state == 'failed'``：ASR/VAD 来源不可信，拒绝烧录；
+    - ``quality_state == 'degraded'``：字幕来源退化，必须本次通过严格质检才放行；
+    - ``qc_failed`` 为真且本次未通过质检：拒绝烧录。
+
+    这是「VAD/ASR 已报错却照样烧录」的修复点：此前 ``asr_warning_message``
+    只写不读，告警与烧录决策之间没有任何连接边。
+    ``ASR_FAILURE_BLOCKS_EMBED=False`` 时恢复旧行为（仅记录警告后照常烧录）。
+    """
+    if not _as_bool(config.get('ASR_FAILURE_BLOCKS_EMBED', True)):
+        return True
+
+    state = str(quality_state or '').strip().lower()
+    reasons = []
+    if state == 'failed':
+        reasons.append('asr_quality_failed')
+    if _as_bool(qc_failed) and not qc_cleared:
+        reasons.append('subtitle_qc_rejected')
+    if state == 'degraded' and not qc_cleared:
+        reasons.append('asr_quality_degraded_without_strict_qc')
+    if not reasons:
+        return True
+
+    if task_logger is not None:
+        try:
+            task_logger.warning(
+                "字幕烧录被门控拦截: quality_state=%s, qc_failed=%s, qc_cleared=%s, reasons=%s",
+                state or 'ok',
+                bool(_as_bool(qc_failed)),
+                bool(qc_cleared),
+                reasons,
+            )
+        except Exception:
+            pass
+    return False
 
 
 def _parse_pipeline_checkpoint(raw_value):
@@ -774,8 +866,19 @@ def _infer_completed_stages_from_task(task):
     elif isinstance(video_path, str) and video_path and os.path.exists(video_path):
         completed.add(PIPELINE_STAGE_DOWNLOAD_VIDEO)
 
-    # 字幕：任一字幕路径存在且文件存在
-    for key in ('subtitle_path_original', 'subtitle_path_translated'):
+    # 字幕：译文路径存在才无条件认定完成。若质检已失败或 ASR 质量结局为 failed，
+    # 不得把字幕阶段推断为已完成 —— 否则任务重跑会被 checkpoint 永久跳过，
+    # 既拿不到新字幕，也无法重新质检。
+    subtitle_rejected = (
+        task.get('subtitle_qc_failed') == 1
+        or str(task.get('subtitle_quality_state') or '').strip().lower() == 'failed'
+    )
+    subtitle_keys = (
+        ('subtitle_path_translated',)
+        if subtitle_rejected
+        else ('subtitle_path_original', 'subtitle_path_translated')
+    )
+    for key in subtitle_keys:
         p = task.get(key)
         if isinstance(p, str) and p and os.path.exists(p):
             completed.add(PIPELINE_STAGE_TRANSLATE_SUBTITLE)
@@ -867,9 +970,20 @@ def recover_interrupted_tasks_to_pending():
                 recovered += 1
                 continue
 
-            # 其他处理中状态：恢复为 pending，由流水线根据checkpoint跳过已完成阶段
+            # 其他处理中状态：恢复为 pending，由流水线根据checkpoint跳过已完成阶段。
+            # 同时清理上一轮的字幕质检/质量结局标记，否则这些与任务终身绑定的旧标记
+            # 会让恢复后的任务永久跳过字幕生成（既拿不到新字幕，也无法重新质检）。
             conn.execute(
-                'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                '''UPDATE tasks
+                   SET status = ?, updated_at = ?,
+                       subtitle_qc_failed = 0,
+                       subtitle_qc_reason = NULL,
+                       subtitle_qc_score = NULL,
+                       subtitle_qc_checked_at = NULL,
+                       subtitle_quality_state = NULL,
+                       asr_warning_message = NULL,
+                       subtitle_warning_message = NULL
+                   WHERE id = ?''',
                 (TASK_STATES['PENDING'], now_str, task_id)
             )
             recovered += 1
@@ -1047,7 +1161,8 @@ def init_db():
         acfun_upload_response TEXT,
         bilibili_upload_response TEXT,
         asr_warning_message TEXT,  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
-        subtitle_warning_message TEXT  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        subtitle_warning_message TEXT,  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        subtitle_quality_state TEXT  -- ASR质量结局（ok/degraded/failed），failed时禁止烧录字幕
     )
     ''')
     
@@ -1275,6 +1390,13 @@ def init_db():
             logger.info("数据库升级：添加subtitle_warning_message字段")
             conn.commit()
 
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'subtitle_quality_state' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN subtitle_quality_state TEXT")
+            logger.info("数据库升级：添加subtitle_quality_state字段")
+            conn.commit()
+
         # 数据迁移：将 error_message 中纯 ASR/VAD 警告 token 挪至 asr_warning_message，清空 error_message
         cursor.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
@@ -1461,6 +1583,7 @@ def update_task(task_id, silent=False, **kwargs):
         'bilibili_upload_response': 'bilibili_upload_response = ?',
         'asr_warning_message': 'asr_warning_message = ?',
         'subtitle_warning_message': 'subtitle_warning_message = ?',
+        'subtitle_quality_state': 'subtitle_quality_state = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -2057,10 +2180,18 @@ def reset_stuck_tasks(skip_active=False, cancel_active=False):
                     )
                     continue
                 
-                # 重置为失败状态
+                # 重置为失败状态；同时清理字幕质检/质量结局标记，
+                # 避免重跑时被残留标记永久锁死。
                 conn.execute('''
                     UPDATE tasks 
-                    SET status = ?, error_message = ?, updated_at = ?
+                    SET status = ?, error_message = ?, updated_at = ?,
+                        subtitle_qc_failed = 0,
+                        subtitle_qc_reason = NULL,
+                        subtitle_qc_score = NULL,
+                        subtitle_qc_checked_at = NULL,
+                        subtitle_quality_state = NULL,
+                        asr_warning_message = NULL,
+                        subtitle_warning_message = NULL
                     WHERE id = ?
                 ''', (TASK_STATES['FAILED'], 
                       f"任务超时重置 (原状态: {old_status})",
@@ -3144,18 +3275,56 @@ class TaskProcessor:
         if not task:
             task_logger.error("任务不存在")
             return False
-        
-        # 检查是否已经有ASR QC失败的记录，如果失败则跳过所有字幕处理
-        if task.get('subtitle_qc_failed') == 1:
-            task_logger.warning("检测到字幕质检已失败，跳过字幕翻译/烧录流程")
-            return True
-        
+
         translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
         config_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
         if embed_in_video_override is None:
             should_embed_subtitle = config_embed_enabled
         else:
             should_embed_subtitle = bool(embed_in_video_override)
+
+        # 烧录门控状态。质检失败不再直接短路整个字幕流程，否则任务重跑会被
+        # 旧标记永久锁死、永远拿不到新字幕；改为在每次烧录前统一裁决。
+        embed_quality_state = str(task.get('subtitle_quality_state') or '').strip().lower() or 'ok'
+        qc_failed = task.get('subtitle_qc_failed') == 1
+        qc_cleared = False
+        # ASR_FAILURE_BLOCKS_EMBED=False 时置真：本轮 ASR 产物按旧行为放行烧录。
+        escape_hatch_active = False
+
+        def _embed_guard(subtitle_file, *, asr_artifact=True):
+            """烧录前统一门控。
+
+            ``subtitle_quality_state`` 描述的是**ASR 产物**的来源可靠度，
+            因此只看 ASR 生成的字幕；已有外部字幕（如平台自带 SRT）不受它约束，
+            否则一次历史 ASR 失败会永久阻断正常字幕的烧录。
+            ``subtitle_qc_failed`` 始终生效 —— 它针对的是具体字幕文件的质检结论。
+            """
+            return _subtitle_embed_allowed(
+                self.config,
+                embed_quality_state if asr_artifact else 'ok',
+                qc_failed,
+                qc_cleared=qc_cleared,
+                task_logger=task_logger,
+            )
+
+        def _ensure_asr_qc(subtitle_file):
+            """确保 ASR 产物在烧录前通过质检。
+
+            此前质检只在「本次 ASR 现场生成」的分支里执行；已有 ``asr_*.srt``
+            被复用时直接烧录，完全绕过质检 —— 这是「字幕质量差却照样烧录」的
+            另一条真实路径。此处按文件来源补齐：ASR 产物必须过质检，
+            外部字幕（平台自带/人工提供）保持原行为，不额外增加 AI 调用。
+            """
+            nonlocal qc_cleared, qc_failed
+            if qc_cleared:
+                return True
+            allowed, cleared = self._ensure_asr_subtitle_qc(
+                task_id, subtitle_file, task_logger, embed_quality_state
+            )
+            if cleared:
+                qc_cleared = True
+                qc_failed = False
+            return allowed
 
         if translation_enabled:
             task_logger.info("开始字幕翻译")
@@ -3168,6 +3337,9 @@ class TaskProcessor:
         try:
             task_upload_target = _get_task_upload_target(task)
             asr_generated = False
+            # 显式初始化：读取 ASR 质量结局的日志路径引用它，避免「未启用 ASR
+            # 且已有外部字幕」时出现未绑定变量。
+            recognizer = None
             # 查找字幕文件（大小写无关）
             task_dir = os.path.join(DOWNLOADS_DIR, task_id)
             subtitle_files = []
@@ -3216,7 +3388,21 @@ class TaskProcessor:
                                 asr_ext = '.srt'
                                 asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
                                 out_path = None
-                                update_task(task_id, asr_warning_message=None)
+                                # 新一轮 ASR 前复位上一轮的质检/质量结局标记，
+                                # 否则旧标记会让任务永久跳过字幕生成。
+                                update_task(
+                                    task_id,
+                                    asr_warning_message=None,
+                                    subtitle_qc_failed=0,
+                                    subtitle_qc_reason=None,
+                                    subtitle_qc_score=None,
+                                    subtitle_qc_checked_at=None,
+                                    subtitle_warning_message=None,
+                                    subtitle_quality_state=None,
+                                )
+                                qc_failed = False
+                                qc_cleared = False
+                                embed_quality_state = 'ok'
                                 out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                                 # 恢复到字幕翻译状态
                                 update_task(task_id, status=prev_status)
@@ -3231,15 +3417,23 @@ class TaskProcessor:
                         if out_path and os.path.exists(out_path):
                             subtitle_files = [out_path]
                             asr_generated = True
+                            embed_quality_state = (
+                                str(getattr(recognizer, 'last_quality_state', '') or 'ok').strip().lower() or 'ok'
+                            )
                             task_logger.info(f"语音识别生成字幕成功: {os.path.basename(out_path)}")
                             update_task(
                                 task_id,
                                 asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                                subtitle_quality_state=embed_quality_state,
                             )
                         else:
                             update_task(
                                 task_id,
                                 asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                                subtitle_quality_state=(
+                                    str(getattr(recognizer, 'last_quality_state', '') or 'failed').strip().lower()
+                                    or 'failed'
+                                ),
                             )
                             if getattr(recognizer, 'last_error_message', ''):
                                 _t = get_task(task_id)
@@ -3258,27 +3452,70 @@ class TaskProcessor:
                     task_logger.info("未启用语音识别，跳过字幕流程")
                     return True
 
-            # 仅对“转录/ASR生成”的字幕执行质检：通过才继续翻译/烧录；失败则跳过字幕相关后续
+            # ASR/VAD 质量结局与质检门控：
+            # failed  → 直接拒绝烧录（来源不可信）；
+            # degraded→ 必须通过严格质检（含时间轴维度）才允许烧录；
+            # ok      → 走常规质检。
             if asr_generated:
                 asr_subtitle_path = subtitle_files[0] if subtitle_files else None
-                if asr_subtitle_path and os.path.exists(asr_subtitle_path):
-                    if not self._run_subtitle_qc(task_id, asr_subtitle_path, task_logger):
-                        task_logger.warning("转录字幕质检未通过：跳过字幕翻译/烧录，保留字幕文件并继续上传原视频")
-                        detected_lang = self._detect_subtitle_language(asr_subtitle_path)
+                detected_lang = self._detect_subtitle_language(asr_subtitle_path) if asr_subtitle_path else None
+
+                if embed_quality_state == 'failed':
+                    block_embed = _as_bool(self.config.get('ASR_FAILURE_BLOCKS_EMBED', True))
+                    log_fn = task_logger.error if block_embed else task_logger.warning
+                    log_fn(
+                        "ASR/VAD 质量结局为 failed（%s），%s：继续上传%s",
+                        '/'.join(str(item) for item in (getattr(recognizer, 'last_degraded_reasons', []) or []))
+                        or 'unknown',
+                        '拒绝烧录字幕' if block_embed else '按 ASR_FAILURE_BLOCKS_EMBED=False 放行烧录',
+                        '原视频' if block_embed else '本次产物',
+                    )
+                    if block_embed:
+                        self._quarantine_rejected_subtitle(asr_subtitle_path, task_logger)
                         update_task(
                             task_id,
-                            subtitle_path_original=asr_subtitle_path,
-                            subtitle_path_translated=None,
-                            subtitle_language_detected=detected_lang
+                            subtitle_language_detected=detected_lang,
+                            subtitle_warning_message='asr_failed_block_embed',
+                            upload_progress=None,
                         )
                         return True
+                    # 逃生口：DB 中仍保留 failed 结局供展示，但本轮放行烧录
+                    # （这就是 ASR_FAILURE_BLOCKS_EMBED=False 的旧行为语义）。
+                    embed_quality_state = 'ok'
+                    escape_hatch_active = True
+
+                if asr_subtitle_path and os.path.exists(asr_subtitle_path):
+                    strict_qc = embed_quality_state == 'degraded'
+                    qc_result = self._run_subtitle_qc(
+                        task_id, asr_subtitle_path, task_logger, strict=strict_qc
+                    )
+                    # 逃生口生效时，「质检没跑成」也不应阻断烧录 —— 否则
+                    # ASR_FAILURE_BLOCKS_EMBED=False 依然无法恢复旧行为。
+                    qc_blocks = qc_result is False or (qc_result is None and not escape_hatch_active)
+                    if qc_blocks:
+                        reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
+                        task_logger.warning(
+                            "转录字幕质检未通过（%s, strict=%s）：跳过字幕翻译/烧录，"
+                            "保留字幕文件并继续上传原视频",
+                            reason_text,
+                            strict_qc,
+                        )
+                        self._quarantine_rejected_subtitle(asr_subtitle_path, task_logger)
+                        update_task(
+                            task_id,
+                            subtitle_language_detected=detected_lang,
+                            subtitle_warning_message=reason_text,
+                            upload_progress=None,
+                        )
+                        return True
+                    qc_cleared = True
+                    qc_failed = False
             
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
             detected_list = []
             for f in subtitle_files:
                 lang = self._detect_subtitle_language(f)
                 detected_list.append((f, lang))
-            
             zh_candidates = [f for f, lang in detected_list if str(lang).lower().startswith('zh')]
             en_candidates = [f for f, lang in detected_list if str(lang).lower().startswith('en')]
             
@@ -3288,7 +3525,7 @@ class TaskProcessor:
                 subtitle_lang = 'zh'
                 task_logger.info(f"检测到中文字幕，直接烧录，无需翻译: {os.path.basename(subtitle_file)}")
 
-                if should_embed_subtitle:
+                if should_embed_subtitle and _embed_guard(subtitle_file, asr_artifact=asr_generated) and _ensure_asr_qc(subtitle_file):
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], subtitle_file, task_logger
                     )
@@ -3313,6 +3550,16 @@ class TaskProcessor:
                             subtitle_warning_message='subtitle_embed_failed',
                         )
                         return False
+                elif should_embed_subtitle:
+                    task_logger.warning("中文字幕被烧录门控拦截，保留原视频并继续上传")
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=None,
+                        subtitle_language_detected=subtitle_lang,
+                        subtitle_warning_message='asr_failed_block_embed',
+                    )
+                    return True
                 else:
                     # 不嵌入字幕，只保存信息
                     update_task(
@@ -3330,7 +3577,7 @@ class TaskProcessor:
                 subtitle_lang = self._detect_subtitle_language(subtitle_file)
                 task_logger.info(f"字幕翻译未启用，直接使用原字幕进行烧录: {os.path.basename(subtitle_file)}")
 
-                if should_embed_subtitle:
+                if should_embed_subtitle and _embed_guard(subtitle_file, asr_artifact=asr_generated) and _ensure_asr_qc(subtitle_file):
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], subtitle_file, task_logger
                     )
@@ -3355,6 +3602,16 @@ class TaskProcessor:
                         subtitle_warning_message='subtitle_embed_failed',
                     )
                     return False
+                elif should_embed_subtitle:
+                    task_logger.warning("原字幕被烧录门控拦截，保留原视频并继续上传")
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=None,
+                        subtitle_language_detected=subtitle_lang,
+                        subtitle_warning_message='asr_failed_block_embed',
+                    )
+                    return True
 
                 update_task(
                     task_id,
@@ -3419,7 +3676,7 @@ class TaskProcessor:
                 update_task(task_id, upload_progress=None, silent=True)
                 
                 # 如果配置了将字幕嵌入视频
-                if should_embed_subtitle:
+                if should_embed_subtitle and _embed_guard(translated_subtitle_path, asr_artifact=asr_generated):
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], 
                         translated_subtitle_path, task_logger
@@ -3443,6 +3700,15 @@ class TaskProcessor:
                             subtitle_language_detected=subtitle_lang,
                             subtitle_warning_message='subtitle_embed_failed',
                         )
+                elif should_embed_subtitle:
+                    task_logger.warning("翻译字幕被烧录门控拦截，保留原视频和字幕文件")
+                    update_task(
+                        task_id,
+                        subtitle_path_original=subtitle_file,
+                        subtitle_path_translated=translated_subtitle_path,
+                        subtitle_language_detected=subtitle_lang,
+                        subtitle_warning_message='asr_failed_block_embed',
+                    )
                 else:
                     # 不嵌入字幕，只保存字幕文件信息
                     update_task(
@@ -3480,20 +3746,94 @@ class TaskProcessor:
             )
             return False
 
-    def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
-        """对 ASR 生成字幕执行预检，每次都重新计算结果。"""
+    def _ensure_asr_subtitle_qc(self, task_id, subtitle_file, task_logger, quality_state):
+        """ASR 产物烧录前的质检闸门，返回 ``(allowed, qc_cleared)``。
+
+        非 ASR 产物（平台自带 / 人工提供字幕）直接放行且不标记 ``qc_cleared``
+        —— 它们不是幻觉与时间轴错位的高风险来源，也不该被 ASR 的历史标记误拦。
+        """
+        if not _is_asr_subtitle_artifact(task_id, subtitle_file, quality_state):
+            return True, False
+        qc_result = self._run_subtitle_qc(
+            task_id,
+            subtitle_file,
+            task_logger,
+            strict=(str(quality_state or '').strip().lower() == 'degraded'),
+        )
+        if qc_result is True:
+            return True, True
+        reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
+        task_logger.warning(
+            "ASR 字幕质检未通过（%s）：跳过烧录，保留字幕文件并继续上传原视频",
+            reason_text,
+        )
+        self._quarantine_rejected_subtitle(subtitle_file, task_logger)
+        update_task(task_id, subtitle_warning_message=reason_text, upload_progress=None)
+        return False, False
+
+    def _quarantine_rejected_subtitle(self, subtitle_path, task_logger=None) -> str:
+        """把被质检/质量门控拒绝的 ASR 字幕移出扫描范围。
+
+        为什么必须移动：被拒绝的字幕文件留在 task_dir 里会让下一轮
+        ``_translate_subtitle`` 的 ``os.listdir`` 扫描命中它，从而**跳过 ASR
+        重新生成**、直接复用这条已被判定不合格的字幕 —— 用户重跑任务永远
+        拿不到新字幕。改名为 ``.rejected.txt`` 后内容仍保留供人工检查，但不再
+        匹配 ``.srt/.vtt`` 过滤条件，因此既不会被复用也不会被上传。
+        """
         try:
-            enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', False)
-            enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).strip().lower() in ['true', '1', 'on']
-            if not enabled:
-                return True
+            source = str(subtitle_path or '').strip()
+            if not source or not os.path.exists(source):
+                return ''
+            target = f"{os.path.splitext(source)[0]}.rejected.txt"
+            index = 1
+            while os.path.exists(target):
+                target = f"{os.path.splitext(source)[0]}.rejected.{index}.txt"
+                index += 1
+            os.replace(source, target)
+            if task_logger is not None:
+                task_logger.info(
+                    "已被拒绝的 ASR 字幕已移出复用范围（保留供人工检查）：%s",
+                    os.path.basename(target),
+                )
+            return target
+        except Exception as exc:
+            if task_logger is not None:
+                try:
+                    task_logger.warning(f"移动被拒绝的 ASR 字幕失败（不影响上传）: {exc}")
+                except Exception:
+                    pass
+            return ''
 
-            if not srt_path or not os.path.exists(srt_path):
-                return True
+    def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger, strict: bool = False):
+        """对 ASR 生成字幕执行预检，每次都重新计算结果。
 
+        返回三态：``True`` 通过、``False`` 未通过、``None`` 质检不可用
+        （未启用 / 文件缺失 / 执行异常）。调用方必须区分「通过」与「没跑成」——
+        此前两种情况都返回 ``True``，导致质检形同虚设。
+        ``strict=True`` 时对 ASR 来源退化的字幕启用更严格判定。
+        """
+        enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', True)
+        enabled = _as_bool(enabled_raw)
+        if not enabled:
+            task_logger.info("字幕质检未启用，跳过质检")
+            return None
+
+        if not srt_path or not os.path.exists(srt_path):
+            try:
+                task_logger.warning(f"字幕质检不可用：字幕文件缺失 {srt_path}")
+            except Exception:
+                pass
+            return None
+
+        try:
             from modules.subtitle_qc import run_subtitle_qc
 
-            result = run_subtitle_qc(srt_path, self.config)
+            result = run_subtitle_qc(
+                srt_path,
+                self.config,
+                total_duration_s=self._resolve_qc_total_duration(task_id, task_logger),
+                strict=bool(strict),
+            )
             checked_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             update_task(
                 task_id,
@@ -3506,7 +3846,7 @@ class TaskProcessor:
             if result.passed:
                 raw_ai = result.raw_ai if isinstance(result.raw_ai, dict) else {}
                 task_logger.info(
-                    "字幕质检通过: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s",
+                    "字幕质检通过: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s, timeline=%s",
                     result.decision or 'unknown',
                     result.reason,
                     float(result.score),
@@ -3516,12 +3856,13 @@ class TaskProcessor:
                     bool(raw_ai.get('ai_override')),
                     result.sample_items,
                     result.sample_chars,
+                    raw_ai.get('timeline_metrics') or 'n/a',
                 )
                 return True
 
             raw_ai = result.raw_ai if isinstance(result.raw_ai, dict) else {}
             task_logger.warning(
-                "字幕质检失败: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s",
+                "字幕质检失败: decision=%s, reason=%s, final_score=%.3f, rule_score=%.3f, ai_score=%s, ai_mode=%s, ai_override=%s, sample_items=%s, sample_chars=%s, timeline=%s",
                 result.decision or 'unknown',
                 result.reason,
                 float(result.score),
@@ -3531,15 +3872,30 @@ class TaskProcessor:
                 bool(raw_ai.get('ai_override')),
                 result.sample_items,
                 result.sample_chars,
+                raw_ai.get('timeline_metrics') or 'n/a',
             )
             return False
         except Exception as e:
-            # QC 失败不应阻断主流程，默认放行
+            # 质检执行异常不再默认放行：返回 None 表示「不可用」，由调用方拒绝烧录。
             try:
-                task_logger.warning(f"字幕质检执行异常，已默认放行（不影响上传）: {e}")
+                task_logger.warning(f"字幕质检执行异常，判定为质检不可用，将不烧录字幕: {e}")
             except Exception:
                 pass
-            return True
+            return None
+
+    def _resolve_qc_total_duration(self, task_id: str, task_logger=None):
+        """取视频总时长用于质检的时间轴维度；取不到时返回 None（跳过该维度）。"""
+        try:
+            task = get_task(task_id)
+            video_path = str(task.get('video_path_local') or '') if task else ''
+            if not video_path or not os.path.exists(video_path):
+                return None
+            # _get_video_duration 要求有效 logger（内部直接调用 .info/.warning）。
+            duration = self._get_video_duration(video_path, task_logger or logger)
+            duration_value = float(duration or 0.0)
+            return duration_value if duration_value > 0 else None
+        except Exception:
+            return None
 
     def _mark_subtitle_issue(self, task_id: str, reason: str, score=None):
         """将字幕异常写入任务表，复用前端现有“字幕异常”展示。"""
@@ -7425,17 +7781,39 @@ class TaskProcessor:
                 error_category=CONTENT_MODERATION_ERROR_CATEGORY,
             )
 
-    def _get_embedded_video_candidate(self, video_path: str) -> str:
+    def _get_embedded_video_candidate(self, video_path: str, subtitle_paths=None) -> str:
+        """返回可复用的带字幕视频路径。
+
+        复用的前提是产物不能比字幕文件更旧 —— 否则字幕已重新生成，
+        旧的 ``_with_subtitle.mp4`` 会把错误字幕继续带到成片里。
+        """
+        def _is_fresh(candidate: str) -> bool:
+            if not candidate or not os.path.exists(candidate):
+                return False
+            try:
+                candidate_mtime = os.path.getmtime(candidate)
+            except OSError:
+                return False
+            for subtitle_path in (subtitle_paths or []):
+                if not subtitle_path or not os.path.exists(subtitle_path):
+                    continue
+                try:
+                    if os.path.getmtime(subtitle_path) > candidate_mtime + 1e-6:
+                        return False
+                except OSError:
+                    continue
+            return True
+
         if not video_path:
             return ''
         if os.path.exists(video_path):
             base_name_no_ext = os.path.splitext(os.path.basename(video_path))[0]
-            if base_name_no_ext.endswith('_with_subtitle'):
+            if base_name_no_ext.endswith('_with_subtitle') and _is_fresh(video_path):
                 return video_path
         video_dir = os.path.dirname(video_path)
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         candidate = os.path.join(video_dir, f"{video_name}_with_subtitle.mp4")
-        return candidate if os.path.exists(candidate) else ''
+        return candidate if _is_fresh(candidate) else ''
 
     def _resolve_existing_subtitle_assets(self, task_id: str, task: dict, task_dir: str):
         def _existing_path(value):
@@ -7496,18 +7874,45 @@ class TaskProcessor:
         try:
             _raise_if_cancelled(task_id, task_logger)
             task_dir = os.path.dirname(video_path)
-            reusable_embedded_video = self._get_embedded_video_candidate(video_path)
-            if reusable_embedded_video:
+
+            # 门控先于旧产物复用：否则质检失败的标记会被已存在的 _with_subtitle.mp4
+            # 完全绕过，成片继续沿用旧的错误字幕。
+            #
+            # 注意这里是「延迟拦截」而不是直接 return：直接返回会连带阻断下面的
+            # ASR 重新生成分支，导致用户修好 VAD 配置后重跑依然拿不到字幕。
+            # 正确语义是——既有（可能已被判定不合格的）产物不得复用烧录，
+            # 但新一轮 ASR 产物仍可在复位标记并重新质检后烧录。
+            embed_quality_state = str(task.get('subtitle_quality_state') or '').strip().lower() or 'ok'
+            qc_failed = task.get('subtitle_qc_failed') == 1
+            embed_blocked = not _subtitle_embed_allowed(
+                self.config,
+                embed_quality_state,
+                qc_failed,
+                task_logger=task_logger,
+            )
+            if embed_blocked:
+                task_logger.warning(
+                    "上传前烧录被门控拦截（quality_state=%s, qc_failed=%s）：不会复用既有字幕产物",
+                    embed_quality_state,
+                    qc_failed,
+                )
+
+            config_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+            embed_allowed = config_embed_enabled and not embed_blocked
+
+            reusable_embedded_video = self._get_embedded_video_candidate(
+                video_path,
+                subtitle_paths=_candidate_subtitle_paths(task, task_dir),
+            )
+            if reusable_embedded_video and not embed_blocked:
                 if reusable_embedded_video != video_path:
                     update_task(task_id, video_path_local=reusable_embedded_video)
                 task_logger.info("检测到已存在带字幕视频，复用现有转码产物")
                 return get_task(task_id)
+            if reusable_embedded_video and embed_blocked:
+                task_logger.info("检测到既有带字幕视频，但本次被门控拦截，不复用该转码产物")
 
-            if task.get('subtitle_qc_failed') == 1:
-                task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
-                return get_task(task_id)
-
-            should_embed_subtitle = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+            should_embed_subtitle = embed_allowed
             translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
             subtitle_path_original, subtitle_path_translated, subtitle_language = self._resolve_existing_subtitle_assets(
                 task_id, task, task_dir
@@ -7529,6 +7934,10 @@ class TaskProcessor:
             if subtitle_path_translated and os.path.exists(subtitle_path_translated):
                 if not should_embed_subtitle:
                     task_logger.info("检测到已存在翻译字幕且未开启烧录，复用现有字幕产物")
+                    return get_task(task_id)
+                if not self._ensure_asr_subtitle_qc(
+                    task_id, subtitle_path_translated, task_logger, embed_quality_state
+                )[0]:
                     return get_task(task_id)
 
                 embedded_video_path = self._embed_subtitle_in_video(
@@ -7552,6 +7961,10 @@ class TaskProcessor:
             if subtitle_path_original and (str(subtitle_language or '').startswith('zh') or not translation_enabled):
                 if not should_embed_subtitle:
                     task_logger.info("检测到已存在字幕且未开启烧录，复用现有字幕产物")
+                    return get_task(task_id)
+                if not self._ensure_asr_subtitle_qc(
+                    task_id, subtitle_path_original, task_logger, embed_quality_state
+                )[0]:
                     return get_task(task_id)
 
                 embedded_video_path = self._embed_subtitle_in_video(
@@ -7590,14 +8003,9 @@ class TaskProcessor:
             if _is_asr_enabled(self.config):
                 if translation_enabled:
                     task_logger.info("上传前执行字幕处理：启用字幕翻译，先尝试ASR/翻译/嵌入")
-                    if task.get('subtitle_qc_failed') == 1:
-                        task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
-                    else:
-                        self._translate_subtitle(task_id, task_logger)
+                    self._translate_subtitle(task_id, task_logger)
                 else:
-                    if task.get('subtitle_qc_failed') == 1:
-                        task_logger.warning("检测到字幕质检已失败，跳过上传前的ASR处理")
-                    elif not subtitle_files:
+                    if not subtitle_files:
                         task_logger.info("上传前执行字幕处理：启用ASR但未启用字幕翻译，生成基础字幕文件")
                         try:
                             from modules.speech_recognition import create_speech_recognizer_from_config
@@ -7612,38 +8020,81 @@ class TaskProcessor:
                             asr_ext = '.srt' if str(self.config.get('SPEECH_RECOGNITION_OUTPUT_FORMAT', 'srt')).lower() == 'srt' else '.vtt'
                             asr_subtitle_path = os.path.join(task_dir, f"asr_{task_id}{asr_ext}")
                             _raise_if_cancelled(task_id, task_logger)
+                            # 新一轮 ASR 即将复位全部旧标记，因此本轮产物可按配置重新
+                            # 决定是否烧录（不再受入口时的 embed_blocked 约束）。
+                            should_embed_subtitle = config_embed_enabled
+                            update_task(
+                                task_id,
+                                asr_warning_message=None,
+                                subtitle_qc_failed=0,
+                                subtitle_qc_reason=None,
+                                subtitle_qc_score=None,
+                                subtitle_qc_checked_at=None,
+                                subtitle_warning_message=None,
+                                subtitle_quality_state=None,
+                            )
                             out_path = recognizer.transcribe_video_to_subtitles(video_path, asr_subtitle_path)
                             update_task(task_id, status=prev_status2)
+                            quality_state = (
+                                str(getattr(recognizer, 'last_quality_state', '') or 'ok').strip().lower()
+                                or 'ok'
+                            )
                             if out_path and os.path.exists(out_path):
-                                qc_passed = self._run_subtitle_qc(task_id, out_path, task_logger)
                                 detected_lang = self._detect_subtitle_language(out_path)
                                 update_task(
                                     task_id,
+                                    asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                                    subtitle_quality_state=quality_state,
                                     subtitle_path_original=out_path,
                                     subtitle_path_translated=None,
                                     subtitle_language_detected=detected_lang
                                 )
                                 task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
-                                if should_embed_subtitle and qc_passed:
-                                    embedded_video_path = self._embed_subtitle_in_video(
-                                        task_id, video_path, out_path, task_logger
+
+                                if quality_state == 'failed':
+                                    task_logger.error(
+                                        "上传前 ASR 质量结局为 failed，拒绝烧录字幕并继续上传原视频"
                                     )
-                                    if embedded_video_path:
-                                        update_task(
-                                            task_id,
-                                            video_path_local=embedded_video_path,
-                                            subtitle_path_original=out_path,
-                                            subtitle_path_translated=None,
-                                            subtitle_language_detected=detected_lang,
-                                            subtitle_warning_message=None,
+                                    self._quarantine_rejected_subtitle(out_path, task_logger)
+                                    update_task(
+                                        task_id,
+                                        subtitle_warning_message='asr_failed_block_embed',
+                                    )
+                                elif should_embed_subtitle:
+                                    qc_result = self._run_subtitle_qc(
+                                        task_id,
+                                        out_path,
+                                        task_logger,
+                                        strict=(quality_state == 'degraded'),
+                                    )
+                                    if qc_result is True:
+                                        embedded_video_path = self._embed_subtitle_in_video(
+                                            task_id, video_path, out_path, task_logger
                                         )
-                                        task_logger.info("ASR 字幕烧录完成")
+                                        if embedded_video_path:
+                                            update_task(
+                                                task_id,
+                                                video_path_local=embedded_video_path,
+                                                subtitle_path_original=out_path,
+                                                subtitle_path_translated=None,
+                                                subtitle_language_detected=detected_lang,
+                                                subtitle_warning_message=None,
+                                            )
+                                            task_logger.info("ASR 字幕烧录完成")
+                                        else:
+                                            task_logger.warning("ASR 字幕烧录失败，保留原视频继续上传")
+                                            update_task(task_id, subtitle_warning_message='subtitle_embed_failed')
                                     else:
-                                        task_logger.warning("ASR 字幕烧录失败，保留原视频继续上传")
-                                        update_task(task_id, subtitle_warning_message='subtitle_embed_failed')
-                                elif should_embed_subtitle and not qc_passed:
-                                    task_logger.warning("ASR 字幕质检未通过，跳过上传前烧录")
+                                        reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
+                                        task_logger.warning(f"ASR 字幕质检未通过（{reason_text}），跳过上传前烧录")
+                                        self._quarantine_rejected_subtitle(out_path, task_logger)
+                                        update_task(task_id, subtitle_warning_message=reason_text)
                             else:
+                                update_task(
+                                    task_id,
+                                    asr_warning_message=(getattr(recognizer, 'last_warning_message', '') or None),
+                                    subtitle_quality_state='failed',
+                                )
                                 self._mark_subtitle_issue(task_id, 'asr_no_subtitle')
                                 task_logger.warning("ASR 未能生成字幕，继续上传流程")
                     else:

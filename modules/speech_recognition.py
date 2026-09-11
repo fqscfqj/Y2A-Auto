@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from .asr_api_client import AsrApiClient, AsrConfig
@@ -21,6 +21,14 @@ from .subtitle_pipeline_types import (
     DetectedSpeechWindow,
 )
 from .vad_processor import VadConfig, VadProcessor
+
+try:  # 默认值统一从配置中心取，避免同一键在多处硬编码后分叉
+    from .config_manager import DEFAULT_CONFIG as _DEFAULT_CONFIG
+except Exception:  # pragma: no cover - 防御性兜底
+    _DEFAULT_CONFIG = {}
+
+_SUBTITLE_DEFAULT_LINE_LENGTH = int(_DEFAULT_CONFIG.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42)
+_SUBTITLE_DEFAULT_LINES = int(_DEFAULT_CONFIG.get('SUBTITLE_MAX_LINES', 2) or 2)
 
 try:  # AI 智能分段为可选增强，导入失败不应阻断语音识别主流程
     from .ai_segmentation import AISegmentationConfig, AISegmenter, AISegmentationError
@@ -53,6 +61,31 @@ def _config_int(config: Dict[str, Any], key: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# ASR/VAD 警告 token → 质量结局分类。烧录侧据此决定是否允许把字幕烧进成片。
+# failed：来源不可信或无有效产出，禁止烧录；
+# degraded：有产出但来源退化，必须通过严格质检（含时间轴维度）才允许烧录。
+_QUALITY_FAILED_TOKEN_PREFIXES = (
+    'vad_no_speech',
+    'asr_failed',
+    'no subtitles generated',
+    'no cues remaining after post-processing',
+    'failed to render srt',
+)
+_QUALITY_DEGRADED_TOKEN_PREFIXES = (
+    'vad_failed',
+    'vad_no_usable_window',
+    'vad_partial_chunks',
+    'vad_low_coverage',
+    'asr_no_timestamps',
+)
+# 窗口级 ASR 失败占比阈值：达到该值即视为来源退化，全部失败即视为不可信。
+_QUALITY_DEGRADED_FAILURE_RATIO = 0.5
+# 送往 ASR 的最小窗口时长：过短窗口只会产出噪声或幻觉。
+_MIN_ASR_WINDOW_S = 0.4
+# 相邻窗口间隔小于该值时先合并，避免把同一句话拆成两次 ASR 请求。
+_PRE_MERGE_WINDOW_GAP_S = 0.15
 
 
 def _setup_task_logger(task_id: str) -> logging.Logger:
@@ -108,6 +141,11 @@ class SpeechRecognitionConfig:
     voxtral_max_audio_duration_s: float = 10800.0
     voxtral_long_audio_margin_s: float = 5.0
     voxtral_enforce_max_duration: bool = True
+    # Whisper 解码质量参数（OpenAI Whisper API 的合法 form 字段）。
+    # 缺失时幻觉与时间戳漂移只能靠后处理猜，故给出保守默认值。
+    whisper_temperature: Optional[float] = 0.0
+    whisper_condition_on_previous_text: bool = False
+    whisper_no_speech_threshold: float = 0.6
     max_workers: int = 3
     max_subtitle_line_length: int = 42
     max_subtitle_lines: int = 2
@@ -138,6 +176,9 @@ class SpeechRecognizer:
         self.logger = _setup_task_logger(self.task_id)
         self.last_warning_message: str = ''
         self.last_error_message: str = ''
+        # 结构化质量结局：ok / degraded / failed，以及触发降级的具体原因列表。
+        self.last_quality_state: str = 'ok'
+        self.last_degraded_reasons: List[str] = []
         self._temp_dirs: List[str] = []
 
         if config.provider not in ('whisper', 'voxtral'):
@@ -184,19 +225,33 @@ class SpeechRecognizer:
                 request_timeout_s=config.request_timeout_s,
                 voxtral_max_audio_duration_s=config.voxtral_max_audio_duration_s,
                 voxtral_enforce_max_duration=config.voxtral_enforce_max_duration,
+                # Whisper 解码质量参数：抑制幻觉与时间戳漂移
+                temperature=config.whisper_temperature,
+                condition_on_previous_text=config.whisper_condition_on_previous_text,
+                no_speech_threshold=config.whisper_no_speech_threshold,
             ),
             logger=self.logger,
         )
         self._srt = SrtTransformEngine(
             SrtTransformConfig(
-                max_line_length=config.max_subtitle_line_length if config.subtitle_max_line_length_enabled else 42,
-                max_lines=config.max_subtitle_lines if config.subtitle_max_lines_enabled else 2,
+                max_line_length=(
+                    config.max_subtitle_line_length
+                    if config.subtitle_max_line_length_enabled
+                    else _SUBTITLE_DEFAULT_LINE_LENGTH
+                ),
+                max_lines=(
+                    config.max_subtitle_lines
+                    if config.subtitle_max_lines_enabled
+                    else _SUBTITLE_DEFAULT_LINES
+                ),
                 normalize_punctuation=config.normalize_punctuation,
                 filter_filler_words=config.filter_filler_words,
                 time_offset_s=config.subtitle_time_offset_s if config.subtitle_time_offset_enabled else 0.0,
                 min_cue_duration_s=config.subtitle_min_cue_duration_s if config.subtitle_min_cue_duration_enabled else 0.6,
                 merge_gap_s=config.subtitle_merge_gap_s if config.subtitle_merge_gap_enabled else 0.3,
                 min_text_length=config.subtitle_min_text_length if config.subtitle_min_text_length_enabled else 2,
+                max_cue_duration_s=_config_float(_DEFAULT_CONFIG, 'SUBTITLE_MAX_CUE_DURATION_S', 8.0),
+                max_chars_per_second=_config_float(_DEFAULT_CONFIG, 'SUBTITLE_MAX_CPS', 20.0),
             ),
             logger=self.logger,
         )
@@ -205,6 +260,8 @@ class SpeechRecognizer:
         try:
             self.last_warning_message = ''
             self.last_error_message = ''
+            self.last_quality_state = 'ok'
+            self.last_degraded_reasons = []
 
             if not self._asr.client:
                 self.last_error_message = 'ASR client not initialised'
@@ -254,7 +311,59 @@ class SpeechRecognizer:
             self.logger.exception("Transcription failed")
             return None
         finally:
+            self._resolve_quality_state(output_path)
             self._cleanup_temp_files()
+
+    def _resolve_quality_state(self, output_path: Optional[str]) -> None:
+        """按实际产出与警告 token 裁决本次转录的质量结局。
+
+        这是「VAD/ASR 已报错却照样烧录」的修复核心：烧录侧读取
+        ``last_quality_state``，``failed`` 直接拒绝烧录，``degraded`` 必须先
+        通过严格质检（含时间轴维度）。
+        """
+        self.last_quality_state = 'ok'
+        self.last_degraded_reasons = []
+
+        produced = bool(output_path) and os.path.exists(str(output_path))
+        tokens: List[str] = []
+        for raw in (self.last_warning_message, self.last_error_message):
+            text = str(raw or '').strip()
+            if text:
+                tokens.append(text)
+
+        failed_reasons = [
+            token for token in tokens
+            if any(token.lower().startswith(prefix) for prefix in _QUALITY_FAILED_TOKEN_PREFIXES)
+        ]
+        degraded_reasons = [
+            token for token in tokens
+            if any(token.lower().startswith(prefix) for prefix in _QUALITY_DEGRADED_TOKEN_PREFIXES)
+        ]
+
+        # 窗口级失败占比：全部失败视为不可信，过半视为退化。
+        failure_ratio = float(getattr(self._asr, 'last_failure_ratio', 0.0) or 0.0)
+        window_count = int(getattr(self._asr, 'last_window_count', 0) or 0)
+        if window_count > 0 and failure_ratio >= 1.0:
+            failed_reasons.append(f"asr_all_windows_failed: {failure_ratio:.2f}")
+        elif failure_ratio >= _QUALITY_DEGRADED_FAILURE_RATIO:
+            degraded_reasons.append(f"asr_high_failure_ratio: {failure_ratio:.2f}")
+
+        if not produced:
+            self.last_quality_state = 'failed'
+            self.last_degraded_reasons = failed_reasons or ['no_subtitle_output']
+        elif failed_reasons:
+            self.last_quality_state = 'failed'
+            self.last_degraded_reasons = failed_reasons
+        elif degraded_reasons:
+            self.last_quality_state = 'degraded'
+            self.last_degraded_reasons = degraded_reasons
+
+        self.logger.info(
+            "ASR quality state: state=%s, produced=%s, reasons=%s",
+            self.last_quality_state,
+            produced,
+            self.last_degraded_reasons,
+        )
 
     def _transcribe_with_vad(self, audio_wav: str, total_duration: float) -> List[AlignedSubtitleCue]:
         try:
@@ -271,6 +380,11 @@ class SpeechRecognizer:
         if not windows:
             self.last_warning_message = getattr(self._vad, 'last_failure_reason', 'vad_no_speech')
             return []
+        if vad_state == 'partial':
+            # 部分分片失败：仍有字幕产出，但覆盖不完整，必须走严格质检。
+            self.last_warning_message = (
+                getattr(self._vad, 'last_failure_reason', '') or 'vad_partial_chunks'
+            )
 
         if coverage_ratio < self.config.vad_min_speech_coverage_ratio:
             self.last_warning_message = 'vad_low_coverage'
@@ -384,11 +498,50 @@ class SpeechRecognizer:
         windows: List[DetectedSpeechWindow],
     ) -> List[Tuple[DetectedSpeechWindow, str]]:
         inputs: List[Tuple[DetectedSpeechWindow, str]] = []
-        for window in windows:
+        for window in self._merge_narrow_windows(windows):
+            # 极短窗口只会产出噪声或幻觉，直接丢弃而不是送给 ASR。
+            if float(window.duration_s) < _MIN_ASR_WINDOW_S:
+                self.logger.info(
+                    "Skip too-short VAD window [%.2fs-%.2fs] duration=%.2fs (< %.2fs)",
+                    window.start_s,
+                    window.end_s,
+                    window.duration_s,
+                    _MIN_ASR_WINDOW_S,
+                )
+                continue
             clip = self._extract_audio_clip(audio_wav, window.start_s, window.end_s)
             if clip:
                 inputs.append((window, clip))
         return inputs
+
+    def _merge_narrow_windows(
+        self,
+        windows: List[DetectedSpeechWindow],
+    ) -> List[DetectedSpeechWindow]:
+        """把间隔极小的相邻窗口先合并，避免同一句话被拆成两次 ASR 请求。
+
+        合并后必须同步扩展 ownership 边界与 raw_spans，否则下游 ``_align_segment``
+        会按 ownership 把刚并入的尾部重新裁掉。
+        """
+        merged: List[DetectedSpeechWindow] = []
+        max_segment_s = float(getattr(self.config, 'vad_max_segment_s', 0.0) or 0.0)
+        for window in sorted(windows, key=lambda item: float(item.start_s)):
+            if merged:
+                prev = merged[-1]
+                gap = float(window.start_s) - float(prev.end_s)
+                combined = float(window.end_s) - float(prev.start_s)
+                within_cap = max_segment_s <= 0.0 or combined <= max_segment_s + 1e-6
+                if 0.0 <= gap <= _PRE_MERGE_WINDOW_GAP_S and within_cap:
+                    merged[-1] = replace(
+                        prev,
+                        end_s=max(float(prev.end_s), float(window.end_s)),
+                        ownership_end_s=max(float(prev.ownership_end_s), float(window.ownership_end_s)),
+                        speech_duration_s=float(prev.speech_duration_s) + float(window.speech_duration_s),
+                        raw_spans=list(prev.raw_spans) + list(window.raw_spans),
+                    )
+                    continue
+            merged.append(window)
+        return merged
 
     def _prepare_chunk_inputs(
         self,
@@ -596,6 +749,15 @@ def create_speech_recognizer_from_config(
             voxtral_max_audio_duration_s=float(app_config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) or 10800.0),
             voxtral_long_audio_margin_s=float(app_config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) or 5.0),
             voxtral_enforce_max_duration=coerce_bool(app_config.get('VOXTRAL_ENFORCE_MAX_DURATION', True)),
+            whisper_temperature=_config_float(
+                app_config, 'WHISPER_TEMPERATURE', 0.0
+            ),
+            whisper_condition_on_previous_text=coerce_bool(
+                app_config.get('WHISPER_CONDITION_ON_PREVIOUS_TEXT', False)
+            ),
+            whisper_no_speech_threshold=_config_float(
+                app_config, 'WHISPER_NO_SPEECH_THRESHOLD', 0.6
+            ),
             max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
             max_subtitle_line_length=int(app_config.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42),
             max_subtitle_lines=int(app_config.get('SUBTITLE_MAX_LINES', 2) or 2),

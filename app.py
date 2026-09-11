@@ -795,14 +795,12 @@ _NUMERIC_WHITELIST_OVERLAP = sorted(set(SETTINGS_INT_FIELDS) & set(SETTINGS_FLOA
 if _NUMERIC_WHITELIST_OVERLAP:
     raise RuntimeError(f'数值白名单存在交叉：{_NUMERIC_WHITELIST_OVERLAP}')
 
-# 模板中被刻意钉死为固定值的键（templates/settings.html 用 hidden 输入固定写入）。
-# 这些值是"不变量"而非"可配置默认值"，因此不取 DEFAULT_CONFIG：
-#   SUBTITLE_MAX_LINE_LENGTH / SUBTITLE_MAX_LINES 钉死为 999 / 1，
-#   目的是让 SRT 格式化器永不强制换行（单行字幕）。
-_PINNED_SETTINGS_DEFAULTS = {
-    'SUBTITLE_MAX_LINE_LENGTH': 999,
-    'SUBTITLE_MAX_LINES': 1,
-}
+# 此前 SUBTITLE_MAX_LINE_LENGTH / SUBTITLE_MAX_LINES 在模板中用 hidden 钉死为
+# 999 / 1，与 DEFAULT_CONFIG 的 42 / 2 分叉：全新安装（从未保存过设置页）用 42/2，
+# 一旦保存过设置页就变成「永不换行的单行字幕」，同一版本出现两种换行格式。
+# 现已改为设置页真实控件，钉死表保留为空以维持 _settings_fallback_default 的
+# 统一语义（回退值一律取 DEFAULT_CONFIG）。
+_PINNED_SETTINGS_DEFAULTS = {}
 
 
 def _settings_fallback_default(field, fallback=1):
@@ -911,6 +909,40 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     logger.debug(f"浮点数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     form_data[field] = str(float(_settings_fallback_default(field, 0.0)))
                     logger.debug(f"浮点字段使用默认值 - field: {field}, value: {form_data[field]}")
+
+        # 语音识别 / VAD / 字幕关键数值项的服务端范围校验。
+        # 这是唯一有效防线：设置页提交时 event.preventDefault() 会跳过全部 HTML5
+        # 原生校验（min/max 全部失效），只能由服务端拦截越界值。
+        # 越界或非法一律回退 DEFAULT_CONFIG 的默认值。
+        _range_guards = (
+            ('VAD_MAX_SEGMENT_S', 5.0, 120.0),
+            ('AUDIO_CHUNK_WINDOW_S', 3.0, 120.0),
+            ('AUDIO_CHUNK_OVERLAP_S', 0.0, 5.0),
+            ('VAD_MIN_SEGMENT_S', 0.0, 5.0),
+            ('VAD_MERGE_GAP_S', 0.0, 5.0),
+            ('VAD_MAX_SEGMENT_S_FOR_SPLIT', 5.0, 120.0),
+            ('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.0, 1.0),
+            ('SUBTITLE_MAX_LINE_LENGTH', 10.0, 200.0),
+            ('SUBTITLE_MAX_LINES', 1.0, 5.0),
+            ('SUBTITLE_MAX_CUE_DURATION_S', 1.0, 30.0),
+            ('SUBTITLE_MAX_CPS', 5.0, 60.0),
+            ('SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH', 200.0, 20000.0),
+            ('WHISPER_TEMPERATURE', 0.0, 1.0),
+            ('WHISPER_NO_SPEECH_THRESHOLD', 0.0, 1.0),
+        )
+        for _guard_key, _guard_min, _guard_max in _range_guards:
+            if _guard_key not in form_data:
+                continue
+            try:
+                _guard_value = float(str(form_data[_guard_key]).strip())
+            except (ValueError, TypeError):
+                _guard_value = None
+            if _guard_value is None or _guard_value != _guard_value or not (_guard_min <= _guard_value <= _guard_max):
+                _guard_default = _settings_fallback_default(_guard_key)
+                logger.debug(
+                    f"{_guard_key} 越界或非法，回退默认 {_guard_default}: {form_data.get(_guard_key)}"
+                )
+                form_data[_guard_key] = str(_guard_default)
 
         if 'SUBTITLE_FONT_NAME' in form_data:
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()

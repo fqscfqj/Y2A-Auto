@@ -24,6 +24,60 @@ ADVISORY_MODE_HARD_FAIL_REASONS = {
     'noise_command_phrase',
     'template_like_phrase',
 }
+# 时间轴维度阈值：这些量决定「字幕是否贯穿全片、节奏是否可用」，
+# 此前质检只有文本维度，无法识别 VAD 失败造成的句界错位与时间轴崩坏。
+#
+# 阈值取值原则：硬失败只抓**病态**情形（例如 VAD 只跑完前段就中断、字幕只覆盖
+# 开头一小截），不能误杀本来就稀疏但合法的内容 —— 含大量静音、长镜头、
+# 纯音乐段的视频，正常覆盖率也可能只有 20–30%。因此硬失败线定得低，
+# 可疑线负责把边界情况交给 AI 复核。
+# 这些数值是**兜底默认**：真实取值由 SPEECH_PIPELINE_DEFAULTS / DEFAULT_CONFIG
+# 的 SUBTITLE_QC_* 键提供（可在设置页调整），二者由 tests/test_subtitle_qc_timeline.py
+# 的一致性用例锁死，避免再次出现「两套默认值分叉」。
+TIMELINE_MIN_COVERAGE_RATIO = 0.15          # cue 时长并集 / 视频时长（低于此值视为未覆盖全片）
+TIMELINE_SUSPICIOUS_COVERAGE_RATIO = 0.35
+TIMELINE_MIN_LAST_CUE_END_RATIO = 0.60      # 末条 cue 结束位置 / 视频时长
+TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO = 0.85
+TIMELINE_MAX_FIRST_CUE_START_RATIO = 0.25   # 首条 cue 起点 / 视频时长（片头长镜头常见）
+TIMELINE_SUSPICIOUS_FIRST_CUE_START_RATIO = 0.08
+TIMELINE_MAX_GAP_SECONDS = 90.0             # 相邻 cue 间最大空档（绝对秒）
+TIMELINE_MAX_GAP_RATIO = 0.20               # 相邻 cue 间最大空档（占总时长）
+TIMELINE_SUSPICIOUS_MAX_GAP_SECONDS = 20.0
+TIMELINE_MAX_OVERLAP_RATIO = 0.05           # 重叠 cue 对数 / 总 cue 数
+TIMELINE_SUSPICIOUS_OVERLAP_RATIO = 0.01
+TIMELINE_MAX_CPS_OUTLIER_RATIO = 0.20       # CPS 异常条目占比（>25 或 <2）
+TIMELINE_SUSPICIOUS_CPS_OUTLIER_RATIO = 0.08
+TIMELINE_CPS_UPPER = 25.0
+TIMELINE_CPS_LOWER = 2.0
+TIMELINE_HARD_STUTTER_RUN = 4               # 相邻同文本且间隔 <0.3s 的连续条数
+TIMELINE_SUSPICIOUS_STUTTER_RUN = 3
+TIMELINE_STUTTER_GAP_S = 0.3
+
+
+def _pipeline_timeline_default(key: str, fallback: float) -> float:
+    """从配置中心读取时间轴阈值默认值，保证与设置页/DEFAULT_CONFIG 单一来源。"""
+    try:
+        from .config_manager import DEFAULT_CONFIG
+    except Exception:
+        return fallback
+    value = DEFAULT_CONFIG.get(key)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+TIMELINE_MIN_COVERAGE_RATIO = _pipeline_timeline_default(
+    'SUBTITLE_QC_MIN_COVERAGE_RATIO', TIMELINE_MIN_COVERAGE_RATIO
+)
+TIMELINE_MAX_GAP_SECONDS = _pipeline_timeline_default(
+    'SUBTITLE_QC_MAX_GAP_S', TIMELINE_MAX_GAP_SECONDS
+)
+TIMELINE_CPS_UPPER = _pipeline_timeline_default('SUBTITLE_QC_MAX_CPS', TIMELINE_CPS_UPPER)
+# strict 模式下允许的最低保底规则分（AI 不可用时的放行下限）
+STRICT_MIN_RULE_SCORE = 0.85
+# advisory 覆盖的最低 AI 分：低于该值视为 AI 明确否决，禁止被 advisory 推翻
+ADVISORY_OVERRIDE_MIN_AI_SCORE = 0.4
 def _to_int(value: Any, default: int) -> int:
     try:
         return int(float(str(value).strip()))
@@ -36,6 +90,19 @@ def _to_float(value: Any, default: float) -> float:
         return float(str(value).strip())
     except Exception:
         return default
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in ('true', '1', 'on', 'yes')
 
 
 @dataclass
@@ -225,7 +292,7 @@ def _build_openai_client(api_key: str, base_url: str, model_name: str = None):
     return get_ai_client(cfg)
 
 
-def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _build_item_stats(items: List[Any], total_duration_s: Optional[float] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     stats: List[Dict[str, Any]] = []
     usable_normalized: List[str] = []
     suspicious_examples: List[str] = []
@@ -239,6 +306,20 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
     previous_normalized = ''
     earliest_start: Optional[float] = None
     latest_end: Optional[float] = None
+    # 时间轴维度采集：这些量回答「字幕是否贯穿全片、节奏是否可用」，
+    # 文本维度无法覆盖 VAD 失败导致的句界错位与时间轴崩坏。
+    timeline_pairs: List[Tuple[float, float, str]] = []
+    previous_text_normalized = ''
+    previous_end_for_stutter: Optional[float] = None
+    current_stutter_run = 0
+    max_stutter_run = 0
+    overlap_pairs = 0
+    comparable_pairs = 0
+    cps_outlier_count = 0
+    cps_comparable_count = 0
+    cps_values: List[float] = []
+    previous_start_for_overlap: Optional[float] = None
+    previous_end_for_overlap: Optional[float] = None
 
     for idx, it in enumerate(items):
         text = (getattr(it, 'source_text', '') or '').strip()
@@ -277,6 +358,43 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
             and (end_seconds - start_seconds) < SHORT_DURATION_THRESHOLD_S
         ):
             short_duration_count += 1
+
+        # 时间轴度量（仅统计有有效时间与文本的条目）
+        if text and start_seconds is not None and end_seconds is not None and end_seconds > start_seconds:
+            timeline_pairs.append((start_seconds, end_seconds, normalized))
+            duration_s = end_seconds - start_seconds
+            if normalized:
+                cps = len(normalized) / max(duration_s, 0.01)
+                cps_comparable_count += 1
+                cps_values.append(cps)
+                if cps > TIMELINE_CPS_UPPER or cps < TIMELINE_CPS_LOWER:
+                    cps_outlier_count += 1
+            # 相邻 cue 间隔 / 重叠：按条目原始顺序比较（SRT 应天然有序）
+            if previous_start_for_overlap is not None and previous_end_for_overlap is not None:
+                comparable_pairs += 1
+                if start_seconds < previous_end_for_overlap - 1e-6:
+                    overlap_pairs += 1
+            previous_start_for_overlap = start_seconds
+            previous_end_for_overlap = end_seconds
+            # 结巴/重复刷屏：相邻同文本且间隔极小
+            gap_from_prev = (
+                start_seconds - previous_end_for_stutter
+                if previous_end_for_stutter is not None
+                else None
+            )
+            if (
+                normalized
+                and normalized == previous_text_normalized
+                and gap_from_prev is not None
+                and abs(gap_from_prev) < TIMELINE_STUTTER_GAP_S
+            ):
+                current_stutter_run += 1
+            else:
+                current_stutter_run = 1
+            previous_text_normalized = normalized
+            previous_end_for_stutter = end_seconds
+            max_stutter_run = max(max_stutter_run, current_stutter_run if normalized else 0)
+
         stats.append({
             'index': idx,
             'item': it,
@@ -320,6 +438,65 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
         if timeline_span_seconds > 0
         else float(total_text_chars)
     )
+
+    # ---- 时间轴聚合度量 ----
+    timeline_metrics: Dict[str, Any] = {
+        'timeline_checked': False,
+        'timeline_skipped': True,
+    }
+    duration_bound = float(total_duration_s or 0.0)
+    if timeline_pairs:
+        ordered = sorted(timeline_pairs, key=lambda pair: pair[0])
+        merged_union = 0.0
+        cursor_start, cursor_end = ordered[0][0], ordered[0][1]
+        for pair_start, pair_end, _ in ordered[1:]:
+            if pair_start <= cursor_end + 1e-6:
+                cursor_end = max(cursor_end, pair_end)
+            else:
+                merged_union += max(0.0, cursor_end - cursor_start)
+                cursor_start, cursor_end = pair_start, pair_end
+        merged_union += max(0.0, cursor_end - cursor_start)
+
+        first_cue_start = ordered[0][0]
+        last_cue_end = max(pair[1] for pair in ordered)
+        max_gap = 0.0
+        for prev_pair, next_pair in zip(ordered, ordered[1:]):
+            max_gap = max(max_gap, max(0.0, next_pair[0] - prev_pair[1]))
+
+        timeline_metrics = {
+            'timeline_checked': True,
+            'timeline_skipped': False,
+            'timeline_cue_count': len(ordered),
+            'timeline_union_seconds': merged_union,
+            'timeline_span_seconds': max(0.0, last_cue_end - first_cue_start),
+            'first_cue_start_seconds': first_cue_start,
+            'last_cue_end_seconds': last_cue_end,
+            'max_gap_seconds': max_gap,
+            'overlap_ratio': (overlap_pairs / comparable_pairs) if comparable_pairs else 0.0,
+            'cps_outlier_ratio': (cps_outlier_count / cps_comparable_count) if cps_comparable_count else 0.0,
+            'cps_values': list(cps_values),
+            'stutter_run': int(max_stutter_run),
+        }
+        if duration_bound > 0:
+            timeline_metrics.update({
+                'total_duration_seconds': duration_bound,
+                'coverage_ratio': merged_union / max(duration_bound, 0.01),
+                'last_cue_end_ratio': last_cue_end / max(duration_bound, 0.01),
+                'first_cue_start_ratio': first_cue_start / max(duration_bound, 0.01),
+                'max_gap_ratio': max_gap / max(duration_bound, 0.01),
+            })
+        else:
+            # 拿不到视频总时长时只保留绝对值维度供诊断，**判定维度整体关闭**，
+            # 与 run_subtitle_qc 的契约一致（「取不到时自动跳过这些维度，
+            # 不影响既有文本维度判定」）。此前仅把 coverage_ratio 置空，
+            # timeline_checked 仍为 True，导致 gap/overlap/cps/stutter 这些
+            # 绝对值维度继续参与硬失败判定 —— 视频缺失或探测失败时，
+            # 合法但稀疏的字幕会被 rule_fail:timeline_* 误杀。
+            timeline_metrics['coverage_ratio'] = None
+            timeline_metrics['timeline_checked'] = False
+            timeline_metrics['timeline_skipped'] = True
+            timeline_metrics['timeline_absolute_only'] = True
+
     top_repeated_texts = [
         {
             'text': normalized_examples.get(normalized, normalized)[:120],
@@ -359,6 +536,8 @@ def _build_item_stats(items: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str,
             else 0.0
         ),
         'suspicious_examples': suspicious_examples,
+        'timeline_metrics': timeline_metrics,
+        **timeline_metrics,
     }
     return stats, metrics
 
@@ -378,6 +557,7 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     credit_like_count = int(metrics.get('credit_like_count', 0) or 0)
     noise_command_count = int(metrics.get('noise_command_count', 0) or 0)
     template_like_count = int(metrics.get('template_like_count', 0) or 0)
+    timeline_checked = bool(metrics.get('timeline_checked'))
 
     score = 1.0
     if usable_count < 8:
@@ -396,11 +576,96 @@ def _estimate_rule_score(metrics: Dict[str, Any]) -> float:
     score -= min(0.30, credit_like_count * 0.20)
     score -= min(0.25, noise_command_count * 0.10)
     score -= min(0.20, template_like_count * 0.08)
+
+    # 时间轴质量扣分：与文本维度等权，因为「文本干净但时间轴崩坏」正是
+    # VAD 失败最典型的表现，纯文本质检发现不了。
+    if timeline_checked:
+        coverage_ratio = metrics.get('coverage_ratio')
+        if coverage_ratio is not None:
+            score -= min(0.40, max(0.0, TIMELINE_SUSPICIOUS_COVERAGE_RATIO - float(coverage_ratio)) * 0.80)
+        last_end_ratio = metrics.get('last_cue_end_ratio')
+        if last_end_ratio is not None:
+            score -= min(0.30, max(0.0, TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO - float(last_end_ratio)) * 0.75)
+        max_gap = float(metrics.get('max_gap_seconds', 0.0) or 0.0)
+        score -= min(0.20, max(0.0, max_gap - TIMELINE_SUSPICIOUS_MAX_GAP_SECONDS) * 0.005)
+        score -= min(0.20, max(0.0, float(metrics.get('overlap_ratio', 0.0) or 0.0) - TIMELINE_SUSPICIOUS_OVERLAP_RATIO) * 1.20)
+        score -= min(0.20, max(0.0, float(metrics.get('cps_outlier_ratio', 0.0) or 0.0) - TIMELINE_SUSPICIOUS_CPS_OUTLIER_RATIO) * 0.70)
+        score -= min(0.15, max(0, int(metrics.get('stutter_run', 0) or 0) - 2) * 0.05)
     return max(0.0, min(1.0, score))
 
 
-def _rule_check(items: List[Any]) -> RuleCheckResult:
-    item_stats, metrics = _build_item_stats(items)
+def _timeline_hard_fail_reason(metrics: Dict[str, Any], limits: Optional[Dict[str, float]] = None) -> Optional[str]:
+    """时间轴硬失败判定。返回 reason token 或 None。"""
+    if not metrics.get('timeline_checked'):
+        return None
+    limits = limits or {}
+    min_coverage = float(limits.get('min_coverage_ratio', TIMELINE_MIN_COVERAGE_RATIO))
+    max_gap_s = float(limits.get('max_gap_seconds', TIMELINE_MAX_GAP_SECONDS))
+    max_cps = float(limits.get('max_cps', TIMELINE_CPS_UPPER))
+    stutter_run = int(metrics.get('stutter_run', 0) or 0)
+    if stutter_run >= TIMELINE_HARD_STUTTER_RUN:
+        return 'rule_fail:timeline_stutter_repeat'
+    overlap_ratio = float(metrics.get('overlap_ratio', 0.0) or 0.0)
+    if overlap_ratio > TIMELINE_MAX_OVERLAP_RATIO:
+        return 'rule_fail:timeline_overlap'
+    cps_outlier_ratio = float(metrics.get('cps_outlier_ratio', 0.0) or 0.0)
+    if cps_outlier_ratio > TIMELINE_MAX_CPS_OUTLIER_RATIO:
+        return 'rule_fail:timeline_cps_outlier'
+    coverage_ratio = metrics.get('coverage_ratio')
+    if coverage_ratio is not None and float(coverage_ratio) < min_coverage:
+        return 'rule_fail:timeline_coverage_too_low'
+    last_end_ratio = metrics.get('last_cue_end_ratio')
+    if last_end_ratio is not None and float(last_end_ratio) < TIMELINE_MIN_LAST_CUE_END_RATIO:
+        return 'rule_fail:timeline_truncated_tail'
+    first_start_ratio = metrics.get('first_cue_start_ratio')
+    if first_start_ratio is not None and float(first_start_ratio) > TIMELINE_MAX_FIRST_CUE_START_RATIO:
+        return 'rule_fail:timeline_late_start'
+    max_gap = float(metrics.get('max_gap_seconds', 0.0) or 0.0)
+    max_gap_ratio = metrics.get('max_gap_ratio')
+    if max_gap > max_gap_s:
+        return 'rule_fail:timeline_gap_too_large'
+    if max_gap_ratio is not None and float(max_gap_ratio) > TIMELINE_MAX_GAP_RATIO:
+        return 'rule_fail:timeline_gap_too_large'
+    # CPS 上限可由配置收紧（默认 25），只影响异常占比统计口径
+    if max_cps > 0 and max_cps < TIMELINE_CPS_UPPER:
+        cps_list = metrics.get('cps_values') or []
+        if cps_list:
+            outliers = sum(1 for value in cps_list if float(value) > max_cps)
+            if outliers / max(1, len(cps_list)) > TIMELINE_MAX_CPS_OUTLIER_RATIO:
+                return 'rule_fail:timeline_cps_outlier'
+    return None
+
+
+def _timeline_suspicious(metrics: Dict[str, Any]) -> bool:
+    """时间轴可疑判定：命中则必须送 AI 复核（boundary_level 降为 suspicious）。"""
+    if not metrics.get('timeline_checked'):
+        return False
+    if int(metrics.get('stutter_run', 0) or 0) >= TIMELINE_SUSPICIOUS_STUTTER_RUN:
+        return True
+    if float(metrics.get('overlap_ratio', 0.0) or 0.0) > TIMELINE_SUSPICIOUS_OVERLAP_RATIO:
+        return True
+    if float(metrics.get('cps_outlier_ratio', 0.0) or 0.0) > TIMELINE_SUSPICIOUS_CPS_OUTLIER_RATIO:
+        return True
+    coverage_ratio = metrics.get('coverage_ratio')
+    if coverage_ratio is not None and float(coverage_ratio) < TIMELINE_SUSPICIOUS_COVERAGE_RATIO:
+        return True
+    last_end_ratio = metrics.get('last_cue_end_ratio')
+    if last_end_ratio is not None and float(last_end_ratio) < TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO:
+        return True
+    first_start_ratio = metrics.get('first_cue_start_ratio')
+    if first_start_ratio is not None and float(first_start_ratio) > TIMELINE_SUSPICIOUS_FIRST_CUE_START_RATIO:
+        return True
+    if float(metrics.get('max_gap_seconds', 0.0) or 0.0) > TIMELINE_SUSPICIOUS_MAX_GAP_SECONDS:
+        return True
+    return False
+
+
+def _rule_check(
+    items: List[Any],
+    total_duration_s: Optional[float] = None,
+    timeline_limits: Optional[Dict[str, float]] = None,
+) -> RuleCheckResult:
+    item_stats, metrics = _build_item_stats(items, total_duration_s=total_duration_s)
     metrics['checked_by'] = 'rule'
     metrics['boundary_level'] = 'boundary'
     metrics['rule_score'] = _estimate_rule_score(metrics)
@@ -484,6 +749,18 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
             boundary_level='suspicious',
         )
 
+    # 时间轴硬失败：先于文本健康度放行判定，因为「文本干净但时间轴崩坏」
+    # 正是 VAD/ASR 降级的典型表现。
+    timeline_fail_reason = _timeline_hard_fail_reason(metrics, timeline_limits)
+    if timeline_fail_reason:
+        return RuleCheckResult(
+            decision='rule_fail',
+            score=rule_score,
+            reason=timeline_fail_reason,
+            metrics=metrics,
+            boundary_level='suspicious',
+        )
+
     if (
         suspicious_phrase_count >= 2
         and (top_ratio >= 0.30 or repeat_mass_ratio >= 0.45)
@@ -530,6 +807,7 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
         and unique_ratio >= 0.55
         and avg_len >= 3.0
         and suspicious_phrase_count == 0
+        and not _timeline_suspicious(metrics)
     ):
         return RuleCheckResult(
             decision='rule_pass',
@@ -554,6 +832,7 @@ def _rule_check(items: List[Any]) -> RuleCheckResult:
         or template_like_count > 0
         or repeat_mass_ratio >= 0.40
         or suspicious_phrase_ratio >= 0.12
+        or _timeline_suspicious(metrics)
     ):
         boundary_level = 'suspicious'
 
@@ -819,10 +1098,24 @@ def _resolve_ai_unavailable_result(
     rule_score: float,
     reason_token: str,
     sample_meta: Optional[Dict[str, Any]] = None,
+    strict: bool = False,
 ) -> SubtitleQCResult:
+    """AI 不可用（超时/未配置/解析失败）时的兜底判定。
+
+    此前 boundary 级样本在 AI 不可用时直接 ``passed=True``，等于把「质检没跑成」
+    当成「质检通过」，低质量字幕因此静默烧录。现在：
+    - ``strict=True``（ASR 来源退化）：一律不放行；
+    - 非 strict 且边界等级为 suspicious：不放行；
+    - 非 strict 且边界等级为 boundary：仅当规则分达到高置信线才放行。
+    """
     sample_meta = sample_meta or {}
     is_suspicious = rule_result.boundary_level == 'suspicious'
-    passed = not is_suspicious
+    if strict:
+        passed = False
+    elif is_suspicious:
+        passed = False
+    else:
+        passed = float(rule_score) >= STRICT_MIN_RULE_SCORE
     prefix = 'qc_skipped' if passed else 'ai_fail'
     reason = f'{prefix}:{normalize_qc_reason_token(reason_token)}'
     return SubtitleQCResult(
@@ -831,7 +1124,12 @@ def _resolve_ai_unavailable_result(
         reason=reason,
         rule_score=float(rule_score),
         ai_score=None,
-        raw_ai={'decision': 'needs_ai', 'ai_status': normalize_qc_reason_token(reason_token), **metrics},
+        raw_ai={
+            'decision': 'needs_ai',
+            'ai_status': normalize_qc_reason_token(reason_token),
+            'ai_unavailable_strict': bool(strict),
+            **metrics,
+        },
         decision='needs_ai',
         sample_items=int(sample_meta.get('sample_items', 0) or 0),
         sample_chars=int(sample_meta.get('sample_chars', 0) or 0),
@@ -842,8 +1140,16 @@ def run_subtitle_qc(
     srt_path: str,
     config: Dict[str, Any],
     threshold: Optional[float] = None,
+    total_duration_s: Optional[float] = None,
+    strict: bool = False,
 ) -> SubtitleQCResult:
-    """对 ASR 生成的 SRT 做预检。失败时跳过字幕使用，但保留字幕文件并继续上传原视频。"""
+    """对 ASR 生成的 SRT 做预检。失败时跳过字幕使用，但保留字幕文件并继续上传原视频。
+
+    ``total_duration_s`` 提供视频总时长后，质检会额外校验时间轴维度
+    （覆盖率、尾部截断、首条起点、最大空档、重叠、语速异常、重复刷屏）。
+    取不到时自动跳过这些维度，不影响既有文本维度判定。
+    ``strict=True`` 用于 ASR 来源退化的场景：AI 不可用时不再放行。
+    """
     max_items = _to_int(config.get('SUBTITLE_QC_SAMPLE_MAX_ITEMS', 80), 80)
     max_chars = _to_int(config.get('SUBTITLE_QC_MAX_CHARS', 9000), 9000)
 
@@ -851,8 +1157,33 @@ def run_subtitle_qc(
     if threshold_val is None:
         threshold_val = _to_float(config.get('SUBTITLE_QC_THRESHOLD', 0.60), 0.60)
 
+    # 时间轴维度开关与阈值：允许用户收紧/放宽，未配置时用模块默认。
+    timeline_enabled = _to_bool(config.get('SUBTITLE_QC_TIMELINE_ENABLED', True), True)
+    timeline_limits = {
+        'min_coverage_ratio': _to_float(
+            config.get('SUBTITLE_QC_MIN_COVERAGE_RATIO', TIMELINE_MIN_COVERAGE_RATIO),
+            TIMELINE_MIN_COVERAGE_RATIO,
+        ),
+        'max_gap_seconds': _to_float(
+            config.get('SUBTITLE_QC_MAX_GAP_S', TIMELINE_MAX_GAP_SECONDS),
+            TIMELINE_MAX_GAP_SECONDS,
+        ),
+        'max_cps': _to_float(
+            config.get('SUBTITLE_QC_MAX_CPS', TIMELINE_CPS_UPPER),
+            TIMELINE_CPS_UPPER,
+        ),
+    }
+
     items = _read_srt_items(srt_path)
-    rule_result = _rule_check(items)
+    rule_result = _rule_check(
+        items,
+        total_duration_s=total_duration_s if timeline_enabled else None,
+        timeline_limits=timeline_limits,
+    )
+    if not timeline_enabled:
+        rule_result.metrics['timeline_checked'] = False
+        rule_result.metrics['timeline_skipped'] = True
+        rule_result.metrics['timeline_disabled_by_config'] = True
     item_stats = list(rule_result.metrics.get('item_stats') or [])
     rule_metrics = {k: v for k, v in rule_result.metrics.items() if k != 'item_stats'}
     checked_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -896,6 +1227,7 @@ def run_subtitle_qc(
             metrics=metrics,
             rule_score=float(rule_result.score),
             reason_token='provider_disabled',
+            strict=strict,
         )
 
     sample_text, sample_meta = _sample_items(
@@ -914,6 +1246,7 @@ def run_subtitle_qc(
             rule_score=float(rule_result.score),
             reason_token='empty_sample',
             sample_meta=sample_meta,
+            strict=strict,
         )
 
     ai_passed, ai_score, raw_ai, ai_status = _call_ai_judge(sample_text, metrics=metrics, config=config)
@@ -924,12 +1257,13 @@ def run_subtitle_qc(
             rule_score=float(rule_result.score),
             reason_token=ai_status,
             sample_meta=sample_meta,
+            strict=strict,
         )
 
     raw_reason = ''
     if raw_ai and isinstance(raw_ai, dict):
         raw_reason = normalize_qc_reason_token(raw_ai.get('reason') or '')
-    advisory_mode = _is_high_rule_score_clean_boundary_sample(rule_result)
+    advisory_mode = _is_high_rule_score_clean_boundary_sample(rule_result) and not strict
     ai_override = False
 
     if advisory_mode:
@@ -946,6 +1280,12 @@ def run_subtitle_qc(
                 if ai_score is not None
                 else float(rule_result.score)
             )
+            passed = False
+            prefix = 'ai_fail'
+        elif ai_score is not None and float(ai_score) < ADVISORY_OVERRIDE_MIN_AI_SCORE:
+            # AI 给出强否定（低分）时禁止 advisory 覆盖：advisory 判据全为文本维度，
+            # 无法识别时间轴崩坏，不能被用来推翻 AI 的明确否决。
+            final_score = float(ai_score)
             passed = False
             prefix = 'ai_fail'
         else:

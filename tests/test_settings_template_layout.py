@@ -348,7 +348,12 @@ ALL_FIELD_NAMES = frozenset([
     'SUBTITLE_TRANSLATE_STRICT_MODE',
     'SUBTITLE_TRANSLATE_STRICT_TEXT',
     'SUBTITLE_TRANSLATE_TEXT',
+    'SUBTITLE_TRANSLATION_ALLOW_PARTIAL',
     'SUBTITLE_TRANSLATION_ENABLED',
+    'ASR_FAILURE_BLOCKS_EMBED',
+    'SUBTITLE_QC_TIMELINE_ENABLED',
+    'VAD_DROP_ISOLATED_SHORT',
+    'WHISPER_CONDITION_ON_PREVIOUS_TEXT',
     'TRANSLATE_DESCRIPTION',
     'TRANSLATE_TITLE',
     'UPLOAD_APPEND_REPOST_NOTICE',
@@ -587,17 +592,23 @@ class SettingsTemplateLayoutTests(unittest.TestCase):
     # 一旦交叉,app.py 在 import 期就会抛错,本文件根本收集不到,那条测试永远
     # 不可能失败,属于「死测试」。raise 的错误信息里已带上冲突的键名。
 
-    def test_钉死字段的回退值不被DEFAULT_CONFIG带偏(self):
-        # 模板用 hidden 输入把这两个键钉死为固定值(hidden value 见模板),
-        # 它们是「不变量」而非「默认值」,回退时必须维持钉死值。
-        pinned = {'SUBTITLE_MAX_LINE_LENGTH': '999', 'SUBTITLE_MAX_LINES': '1'}
-        for key, expected in pinned.items():
-            self.assertEqual(str(_settings_fallback_default(key)), expected,
-                             f'{key} 的回退值必须保持模板钉死的 {expected}')
+    def test_换行上限字段不再被钉死且与DEFAULT_CONFIG一致(self):
+        # 历史实现用 hidden 输入把 SUBTITLE_MAX_LINE_LENGTH / SUBTITLE_MAX_LINES
+        # 钉死为 999 / 1，与 DEFAULT_CONFIG 的 42 / 2 分叉：从未保存过设置页
+        # 的安装用 42/2，保存过一次就变成「永不换行的单行字幕」。
+        # 该分叉已修复：现在是真实控件，回退值统一取 DEFAULT_CONFIG。
+        for key in ('SUBTITLE_MAX_LINE_LENGTH', 'SUBTITLE_MAX_LINES'):
+            self.assertEqual(
+                str(_settings_fallback_default(key)),
+                str(DEFAULT_CONFIG[key]),
+                f'{key} 的回退值必须与 DEFAULT_CONFIG 一致')
             hidden = self.doc.xpath(
                 f"//form[@id='settings-form']//input[@type='hidden'][@name='{key}']/@value")
-            self.assertEqual(hidden, [expected],
-                             f'模板中 {key} 的钉死值应仍为 {expected}')
+            self.assertEqual(hidden, [], f'{key} 不应再被 hidden 输入钉死')
+            on_page = self.doc.xpath(
+                f"//form[@id='settings-form']//input[@name='{key}']/@value")
+            self.assertEqual(on_page, [str(DEFAULT_CONFIG[key])],
+                             f'{key} 应以真实控件呈现 DEFAULT_CONFIG 的值')
 
     def test_模板兜底字面量与DEFAULT_CONFIG一致(self):
         # 模板里的 config.get('KEY', 字面量) 与 DEFAULT_CONFIG 分叉时,

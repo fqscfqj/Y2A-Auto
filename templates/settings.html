@@ -1094,6 +1094,13 @@
                                                                 </label>
                                                             </div>
                                                             <div class="col-md-4">
+                                                                <label class="checkbox-label">
+                                                                    <input type="checkbox" name="WHISPER_CONDITION_ON_PREVIOUS_TEXT" {% if config.get('WHISPER_CONDITION_ON_PREVIOUS_TEXT', False) %}checked{% endif %}>
+                                                                    依赖上文解码
+                                                                </label>
+                                                                <p class="help-text mb-0">关闭（默认）可避免幻觉在相邻片段间传播。</p>
+                                                            </div>
+                                                            <div class="col-md-4">
                                                                 <div class="form-group">
                                                                     <label for="whisper-max-retries" class="form-label">Whisper 最大重试次数</label>
                                                                     <input type="number" min="1" id="whisper-max-retries" name="WHISPER_MAX_RETRIES" value="{{ config.get('WHISPER_MAX_RETRIES', 3) }}" class="form-control">
@@ -1233,6 +1240,13 @@
                                                                                 <input type="checkbox" name="VAD_REFINEMENT_ENABLED" {% if config.get('VAD_REFINEMENT_ENABLED', True) %}checked{% endif %}>
                                                                                 启用二次边界收敛
                                                                             </label>
+                                                                        </div>
+                                                                        <div class="col-12">
+                                                                            <label class="checkbox-label">
+                                                                                <input type="checkbox" name="VAD_DROP_ISOLATED_SHORT" {% if config.get('VAD_DROP_ISOLATED_SHORT', True) %}checked{% endif %}>
+                                                                                丢弃孤立极短语音段
+                                                                            </label>
+                                                                            <p class="help-text mb-0">低于 0.4 秒的孤立窗口只会产出噪声或幻觉，默认丢弃而不送往语音识别。</p>
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -1520,6 +1534,13 @@
                                                                 保留原始字幕文件
                                                             </label>
                                                         </div>
+                                                        <div class="col-md-6">
+                                                            <label class="checkbox-label">
+                                                                <input type="checkbox" name="SUBTITLE_TRANSLATION_ALLOW_PARTIAL" {% if config.get('SUBTITLE_TRANSLATION_ALLOW_PARTIAL', False) %}checked{% endif %}>
+                                                                允许部分未翻译条目
+                                                            </label>
+                                                            <p class="help-text mb-0">关闭（默认）时任一未译条目都会让整批翻译失败，避免成片出现原文与译文混排。</p>
+                                                        </div>
                                                 </div>
                                             </div>
                                         </article>
@@ -1582,6 +1603,15 @@
                                                             启用 ASR 源字幕质检
                                                         </label>
                                                         <p class="help-text mb-0">质量优先：质检不通过时不烧录字幕，但保留字幕文件并继续上传原视频（任务仍记为完成）。开关与其调优参数同在本卡片；质检所用模型端点在 <a href="#vtab-ai">AI 服务与端点</a> 分组配置。</p>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-field settings-field-switch mt-3">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="SUBTITLE_QC_TIMELINE_ENABLED" {% if config.get('SUBTITLE_QC_TIMELINE_ENABLED', True) %}checked{% endif %}>
+                                                            启用时间轴质检维度
+                                                        </label>
+                                                        <p class="help-text mb-0">除文本维度外，额外校验字幕覆盖率、尾部截断、首条起点、最大空档、重叠、语速异常与重复刷屏。需要视频总时长，取不到时自动跳过这些维度。</p>
                                                     </div>
                                                 </div>
                                                 <div class="mt-3">
@@ -1680,27 +1710,19 @@
                                                         <div class="col-md-6">
                                                             <div class="settings-toggle-field">
                                                                 <label class="checkbox-label settings-toggle-label">
-                                                                    <input type="checkbox" checked disabled>
+                                                                    <input type="checkbox" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" id="subtitle-max-line-length-enabled" {% if config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False) %}checked{% endif %}>
                                                                     每行最大字符数
                                                                 </label>
-                                                                <input type="number" value="999" class="form-control form-control-sm" disabled placeholder="字符">
-                                                                <!-- Hard-coded: SUBTITLE_MAX_LINE_LENGTH is pinned to 999 so cues
-                                                                     are never force-wrapped by the SRT formatter. -->
-                                                                <input type="hidden" name="SUBTITLE_MAX_LINE_LENGTH_ENABLED" value="on">
-                                                                <input type="hidden" name="SUBTITLE_MAX_LINE_LENGTH" value="999">
+                                                                <input type="number" min="10" max="200" step="1" id="subtitle-max-line-length" name="SUBTITLE_MAX_LINE_LENGTH" value="{{ config.get('SUBTITLE_MAX_LINE_LENGTH', 42) }}" class="form-control form-control-sm" disabled placeholder="字符">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
                                                             <div class="settings-toggle-field">
                                                                 <label class="checkbox-label settings-toggle-label">
-                                                                    <input type="checkbox" checked disabled>
+                                                                    <input type="checkbox" name="SUBTITLE_MAX_LINES_ENABLED" id="subtitle-max-lines-enabled" {% if config.get('SUBTITLE_MAX_LINES_ENABLED', False) %}checked{% endif %}>
                                                                     最大行数
                                                                 </label>
-                                                                <input type="number" value="1" class="form-control form-control-sm" disabled placeholder="行">
-                                                                <!-- Hard-coded: SUBTITLE_MAX_LINES is pinned to 1 to prefer
-                                                                     single-line captions. -->
-                                                                <input type="hidden" name="SUBTITLE_MAX_LINES_ENABLED" value="on">
-                                                                <input type="hidden" name="SUBTITLE_MAX_LINES" value="1">
+                                                                <input type="number" min="1" max="5" step="1" id="subtitle-max-lines" name="SUBTITLE_MAX_LINES" value="{{ config.get('SUBTITLE_MAX_LINES', 2) }}" class="form-control form-control-sm" disabled placeholder="行">
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6">
@@ -1717,6 +1739,15 @@
                                                                     <input type="checkbox" name="SUBTITLE_FILTER_FILLER_WORDS" {% if config.get('SUBTITLE_FILTER_FILLER_WORDS', False) %}checked{% endif %}>
                                                                     过滤填充词
                                                                 </label>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="settings-toggle-field settings-toggle-field-static">
+                                                                <label class="checkbox-label settings-toggle-label">
+                                                                    <input type="checkbox" name="ASR_FAILURE_BLOCKS_EMBED" {% if config.get('ASR_FAILURE_BLOCKS_EMBED', True) %}checked{% endif %}>
+                                                                    语音识别异常时禁止烧录字幕
+                                                                </label>
+                                                                <div class="form-text">VAD/ASR 判定为失败时，保留字幕文件但拒绝烧进成片，继续上传原视频。</div>
                                                             </div>
                                                         </div>
                                                     </div>
