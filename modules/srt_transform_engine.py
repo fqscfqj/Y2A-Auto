@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import difflib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .subtitle_pipeline_types import (
     AlignedSubtitleCue,
@@ -19,8 +20,13 @@ _PUNCTUATION_SPACE_RE = re.compile(r'([.!?,:;])(?=\S)')
 _TRIM_TEXT_RE = re.compile(r'^[\s\W_]+|[\s\W_]+$')
 _NON_WORD_RE = re.compile(r'[\W_]+', re.UNICODE)
 _FILLER_PATTERNS = [
-    re.compile(r'\b(um|uh|er|ah|hmm|like|you know)\b', re.IGNORECASE),
-    re.compile(r'[嗯啊呃哦唔]+'),
+    # 仅句首语气词：`like` / `you know` 在句中常是实词，删除会破坏语义，故移除。
+    re.compile(r'(?:^|(?<=[.!?,;:]\s))(?:um|uh|er|ah|hmm)\b', re.IGNORECASE),
+    # 仅句尾语气词。
+    re.compile(r'\b(?:um|uh|er|ah|hmm)(?=\s*[.!?,;:]|$)', re.IGNORECASE),
+    # 中文语气词：只在整条就是短语气、或位于句尾时命中。
+    re.compile(r'^[嗯啊呃哦唔]{1,3}$'),
+    re.compile(r'[嗯啊哦](?=\s*[。！？!?]?\s*$)'),
     re.compile(
         r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|'
         r'chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b',
@@ -30,7 +36,8 @@ _FILLER_PATTERNS = [
     re.compile(r'\[[^\]]*\]', re.IGNORECASE),
     re.compile(r'\([^)]*\)', re.IGNORECASE),
 ]
-_REPEATED_WORD_RE = re.compile(r'\b(\w+)(?:[,\s]+\1\b)+', re.IGNORECASE)
+# 仅在拉丁词上折叠重复，避免把 CJK 的「好好好」压成「好」。
+_REPEATED_WORD_RE = re.compile(r'\b([A-Za-z]{2,})(?:[,\s]+\1\b)+', re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r'([.!?。！？;；,，]+\s*)')
 _SENTENCE_PUNCT_RE = re.compile(r'[.!?。！？;；,，]+\s*')
 _LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
@@ -49,12 +56,42 @@ _NOISE_TAG_RE = re.compile(
     r'^\s*[\[\(（【]\s*(?:music|noise|applause|laughter|silence|background noise|音乐|噪声|掌声|笑声|静音)\s*[\]\)）】]\s*$',
     re.IGNORECASE,
 )
+# 订阅/引流类话术（ASR 幻觉高发），仅在文本很短时判可疑，避免误杀正常长句提及。
+_SUBSCRIPTION_LIKE_RE = re.compile(
+    r'点赞|订阅|转发|分享|打赏|关注|收藏|一键三连|'
+    r'\b(?:like|subscribe|share|bell|notification|patreon)\b|'
+    r'チャンネル登録|高評価|グッドボタン|登録お願い',
+    re.IGNORECASE,
+)
+# 纯符号/装饰行（含反复的音乐符号）没有可读内容。
+_SYMBOL_ONLY_RE = re.compile(r'^[\s\W_♪♫♩♬·…]+$', re.UNICODE)
 # ASS/SSA 格式标签：\h（硬空格）、\N（换行）、\n（软换行）、{\...}（样式覆盖）
 _ASS_TAG_RE = re.compile(r'\\[hHnN]|{\\[^}]*}')
+
+# 换行用的 CJK 边界（含日文假名），只在 wrap_text 内部使用。
+_WRAP_CJK_LIKE_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\u3400-\u9fff]')
+# 折行禁则：这些字符不得出现在行末 / 行首。
+_NO_LINE_END_CHARS = '「『（【〔［｛“‘'
+_NO_LINE_START_CHARS = '、。，！？；：）」』】〕］｝”’·ー～…'
+# max_line_length 达到该值即视为「不做换行」（task_manager 用 999 关掉换行）。
+_WRAP_DISABLED_LINE_LENGTH = 999
 
 _MIN_GAP_S = 0.01
 _MIN_VISIBLE_DUR_S = 0.05
 _INVALID_TS_FALLBACK_S = 0.5
+
+
+def _join_texts(left: str, right: str) -> str:
+    """拼接两段文本：两侧都是 CJK 时直接相连，否则用单个空格分隔。"""
+    left_text = str(left or '').strip()
+    right_text = str(right or '').strip()
+    if not left_text:
+        return right_text
+    if not right_text:
+        return left_text
+    if _CJK_CHAR_RE.match(left_text[-1]) and _CJK_CHAR_RE.match(right_text[0]):
+        return left_text + right_text
+    return left_text + ' ' + right_text
 
 
 @dataclass
@@ -69,6 +106,10 @@ class SrtTransformConfig:
     min_cue_duration_s: float = 0.6
     merge_gap_s: float = 0.3
     min_text_length: int = 2
+    max_cue_duration_s: float = 8.0
+    max_chars_per_second: float = 20.0
+    cross_window_dup_tolerance_s: float = 2.0
+    cross_window_dup_ratio: float = 0.8
 
 
 class SrtTransformEngine:
@@ -131,6 +172,12 @@ class SrtTransformEngine:
         if _CREDIT_LIKE_RE.search(normalized):
             return True
         if _NOISE_COMMAND_RE.match(normalized) or _NOISE_TAG_RE.match(normalized):
+            return True
+        # 纯符号/装饰行（如 ♪♪♪）没有任何可读内容。
+        if _SYMBOL_ONLY_RE.match(normalized):
+            return True
+        # 订阅/引流话术只在文本很短时判可疑：长句里的「点赞」多为正常表达。
+        if len(normalized) <= 30 and _SUBSCRIPTION_LIKE_RE.search(normalized):
             return True
         return False
 
@@ -333,7 +380,7 @@ class SrtTransformEngine:
                 if merged:
                     stitched[-1] = merged
                     continue
-                if self._is_duplicate_cue(stitched[-1], cue):
+                if self._is_duplicate_cue(stitched[-1], cue) or self._is_cross_window_dup(stitched[-1], cue):
                     stitched[-1] = self._pick_better_duplicate(stitched[-1], cue)
                     continue
             stitched.append(cue)
@@ -367,6 +414,52 @@ class SrtTransformEngine:
         close_in_time = abs(float(left.start_s) - float(right.start_s)) <= 1.0 or float(right.start_s) <= float(left.end_s)
         return same_text and close_in_time
 
+    @staticmethod
+    def _window_index_of(cue: Any) -> int:
+        if isinstance(cue, dict):
+            raw = cue.get('source_window_index', -1)
+        else:
+            raw = getattr(cue, 'source_window_index', -1)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return -1
+
+    def _is_cross_window_dup(self, left: Any, right: Any) -> bool:
+        """跨识别窗口的重复 cue：不同窗口 + 起点接近 + 文本相同或高度相似。"""
+        left_window = self._window_index_of(left)
+        right_window = self._window_index_of(right)
+        if left_window < 0 or right_window < 0 or left_window == right_window:
+            return False
+        try:
+            start_delta = abs(float(left.start_s) - float(right.start_s))
+        except (TypeError, ValueError):
+            return False
+        tolerance = max(0.0, float(self.config.cross_window_dup_tolerance_s or 0.0))
+        if start_delta > tolerance:
+            return False
+        left_key = self._normalize_compare_text(left.text)
+        right_key = self._normalize_compare_text(right.text)
+        if not left_key or not right_key:
+            return False
+        if left_key == right_key:
+            return True
+        ratio = float(self.config.cross_window_dup_ratio or 0.0)
+        if ratio <= 0.0:
+            return False
+        return difflib.SequenceMatcher(None, left_key, right_key).ratio() >= ratio
+
+    def _max_expected_duration(self, text: str) -> float:
+        """按语速上限估算一段文本合理的最长显示时长，并夹在 [1.0, 6.0] 秒内。"""
+        try:
+            chars_per_second = float(self.config.max_chars_per_second or 0.0)
+        except (TypeError, ValueError):
+            chars_per_second = 0.0
+        if chars_per_second <= 0.0:
+            chars_per_second = 20.0
+        raw = len(str(text or '')) / max(1.0, chars_per_second)
+        return min(6.0, max(1.0, raw))
+
     def _pick_better_duplicate(self, left: AlignedSubtitleCue, right: AlignedSubtitleCue) -> AlignedSubtitleCue:
         if right.alignment_confidence > left.alignment_confidence:
             better = right
@@ -376,9 +469,11 @@ class SrtTransformEngine:
             better = left
         start_s = min(left.start_s, right.start_s)
         end_s = max(left.end_s, right.end_s)
+        # 合并出的 cue 不得因为「取最晚结束时间」而变成超长显示。
+        end_s = min(end_s, start_s + self._max_expected_duration(better.text))
         return AlignedSubtitleCue(
             start_s=start_s,
-            end_s=end_s,
+            end_s=max(end_s, start_s + _MIN_VISIBLE_DUR_S),
             text=better.text,
             provider=better.provider or left.provider,
             timing_source=better.timing_source,
@@ -403,9 +498,12 @@ class SrtTransformEngine:
         max_chars = max(0, int(self.config.max_line_length) * int(self.config.max_lines))
         if max_chars > 0 and len(merged_text) > max_chars:
             return None
+        start_s = min(float(left.start_s), float(right.start_s))
+        end_s = max(float(left.end_s), float(right.end_s))
+        end_s = min(end_s, start_s + self._max_expected_duration(merged_text))
         return AlignedSubtitleCue(
-            start_s=min(float(left.start_s), float(right.start_s)),
-            end_s=max(float(left.end_s), float(right.end_s)),
+            start_s=start_s,
+            end_s=max(end_s, start_s + _MIN_VISIBLE_DUR_S),
             text=merged_text,
             provider=left.provider or right.provider,
             timing_source=left.timing_source if left.alignment_confidence >= right.alignment_confidence else right.timing_source,
@@ -452,10 +550,32 @@ class SrtTransformEngine:
                 return (left_text + (' ' + suffix if suffix else '')).strip()
         return ''
 
-    def clean_hallucinations(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _speech_coverage_ratio(start_s: float, end_s: float, speech_spans: Sequence[Any]) -> float:
+        duration = max(float(end_s) - float(start_s), 0.0)
+        if duration <= 0.0:
+            return 0.0
+        covered = 0.0
+        for span in speech_spans:
+            try:
+                span_start = float(span[0])
+                span_end = float(span[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            overlap = min(float(end_s), span_end) - max(float(start_s), span_start)
+            if overlap > 0.0:
+                covered += overlap
+        return min(1.0, covered / duration)
+
+    def clean_hallucinations(
+        self,
+        cues: Sequence[Any],
+        speech_spans: Optional[Sequence[Tuple[float, float]]] = None,
+    ) -> List[Dict[str, Any]]:
         normalized_cues = self._coerce_cue_dicts(cues)
         cleaned: List[Dict[str, Any]] = []
         seen_texts: Dict[str, float] = {}
+        spans = [span for span in (speech_spans or []) if span]
         for cue in normalized_cues:
             text = str(cue.get('text') or '').strip()
             if not text:
@@ -479,10 +599,31 @@ class SrtTransformEngine:
             prev_end = seen_texts.get(dedupe_key)
             if prev_end is not None and abs(float(cue.get('start', 0.0)) - prev_end) < 5.0:
                 continue
+            # 静音段重复上一句：cue 与语音区间的交集过少，且内容与上一条保留 cue 高度相似。
+            if spans and cleaned and self._is_repeat_in_silence(cue, collapsed, cleaned[-1], spans):
+                continue
             seen_texts[dedupe_key] = float(cue.get('end', 0.0))
             cue['text'] = collapsed
             cleaned.append(cue)
         return cleaned
+
+    def _is_repeat_in_silence(
+        self,
+        cue: Dict[str, Any],
+        collapsed_text: str,
+        previous_cue: Dict[str, Any],
+        speech_spans: Sequence[Any],
+    ) -> bool:
+        start_s = float(cue.get('start', 0.0) or 0.0)
+        end_s = float(cue.get('end', 0.0) or 0.0)
+        coverage = self._speech_coverage_ratio(start_s, end_s, speech_spans)
+        if coverage >= 0.2:
+            return False
+        current_key = self._normalize_compare_text(collapsed_text)
+        previous_key = self._normalize_compare_text(previous_cue.get('text'))
+        if not current_key or not previous_key:
+            return False
+        return difflib.SequenceMatcher(None, current_key, previous_key).ratio() >= 0.6
 
     def resolve_overlaps(self, cues: Sequence[Any], total_duration_s: float = 0.0) -> List[Dict[str, Any]]:
         normalized_cues = sorted(self._coerce_cue_dicts(cues), key=lambda cue: (cue['start'], cue['end']))
@@ -575,6 +716,176 @@ class SrtTransformEngine:
                 lines.append(cleaned)
         return '\n'.join(lines).strip()
 
+    def wrap_text(
+        self,
+        text: str,
+        max_line_length: Optional[int] = None,
+        max_lines: Optional[int] = None,
+    ) -> str:
+        """把一条字幕折成最多 max_lines 行的真实换行文本。
+
+        `max_line_length >= 999` 或 `max_lines <= 0` 时原样返回：task_manager 用
+        (999, 99) 构造引擎并明确要求「不要在这里切分传入的 SRT cue」。
+        """
+        raw = str(text or '')
+        if not raw:
+            return text
+        limit = int(self.config.max_line_length if max_line_length is None else max_line_length)
+        line_limit = int(self.config.max_lines if max_lines is None else max_lines)
+        if limit <= 0 or line_limit <= 0 or limit >= _WRAP_DISABLED_LINE_LENGTH:
+            return text
+
+        segments = [
+            part.strip()
+            for part in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        ]
+        segments = [part for part in segments if part]
+        if not segments:
+            return text
+
+        wrapped: List[str] = []
+        for segment in segments:
+            wrapped.extend(self._wrap_single_segment(segment, limit))
+        wrapped = [line for line in wrapped if line]
+        if not wrapped:
+            return text
+        if len(wrapped) > line_limit:
+            head = wrapped[:line_limit - 1]
+            folded = wrapped[line_limit - 1]
+            for extra in wrapped[line_limit:]:
+                folded = _join_texts(folded, extra)
+            wrapped = head + [folded]
+        return '\n'.join(wrapped).strip()
+
+    def _wrap_single_segment(self, segment: str, limit: int) -> List[str]:
+        if not _WRAP_CJK_LIKE_RE.search(segment):
+            return self._wrap_latin_segment(segment, limit)
+        return self._wrap_token_segment(segment, limit)
+
+    def _wrap_latin_segment(self, segment: str, limit: int) -> List[str]:
+        """拉丁文本按空格折行，不切断单词；只有单词语义上超长才硬断。"""
+        words = [word for word in _WHITESPACE_RE.split(segment) if word]
+        if not words:
+            return [segment]
+        lines: List[str] = []
+        current = ''
+        for word in words:
+            if not current:
+                current = word
+            elif len(current) + 1 + len(word) <= limit:
+                current = current + ' ' + word
+            else:
+                lines.append(current)
+                current = word
+            while len(current) > limit:
+                lines.append(current[:limit])
+                current = current[limit:]
+        if current:
+            lines.append(current)
+        return lines or [segment]
+
+    @staticmethod
+    def _wrap_tokens(segment: str) -> List[Tuple[str, bool]]:
+        """按空格与 CJK 边界切 token，返回 (文本, 前面是否有空白)。"""
+        tokens: List[Tuple[str, bool]] = []
+        text = str(segment or '')
+        pending_space = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char.isspace():
+                pending_space = True
+                index += 1
+                continue
+            if _WRAP_CJK_LIKE_RE.match(char):
+                tokens.append((char, pending_space))
+                pending_space = False
+                index += 1
+                continue
+            start = index
+            while index < len(text) and not text[index].isspace() and not _WRAP_CJK_LIKE_RE.match(text[index]):
+                index += 1
+            tokens.append((text[start:index], pending_space))
+            pending_space = False
+        return tokens
+
+    @staticmethod
+    def _wrap_prefix_index(text: str, limit: int) -> int:
+        """返回视觉宽度不超过 limit 的最长前缀字符数（至少 1）。"""
+        used = 0.0
+        for idx, char in enumerate(str(text or '')):
+            used += SrtTransformEngine._visual_char_units(char)
+            if used > limit + 1e-9:
+                return max(1, idx)
+        return len(str(text or ''))
+
+    @staticmethod
+    def _adjust_wrap_break_index(text: str, index: int) -> int:
+        """按禁则微调折行点：行末不留前引号类字符，行首不留标点类字符。"""
+        text = str(text or '')
+        length = len(text)
+        if length <= 1:
+            return length
+        cut = max(1, min(int(index), length))
+        guard = 0
+        while cut < length and text[cut - 1] in _NO_LINE_END_CHARS and guard < 4:
+            cut += 1
+            guard += 1
+        guard = 0
+        while 1 < cut < length and text[cut] in _NO_LINE_START_CHARS and guard < 4:
+            cut -= 1
+            guard += 1
+        return max(1, min(cut, length))
+
+    def _wrap_token_segment(self, segment: str, limit: int) -> List[str]:
+        """CJK/混排文本：按 token 贪心累加视觉宽度，并遵守折行禁则。"""
+        tokens = self._wrap_tokens(segment)
+        if not tokens:
+            return [segment]
+        lines: List[str] = []
+        current = ''
+        for token_text, glue_space in tokens:
+            if not current:
+                current = token_text
+            else:
+                candidate = _join_texts(current, token_text) if glue_space else current + token_text
+                if (
+                    self._visual_text_units(candidate) <= limit + 1e-9
+                    or self._ends_with_no_break_char(current)
+                    or self._starts_with_no_break_char(token_text)
+                ):
+                    current = candidate
+                else:
+                    cut = self._adjust_wrap_break_index(current, len(current))
+                    head = current[:cut].strip()
+                    tail = current[cut:]
+                    if head:
+                        lines.append(head)
+                    if tail:
+                        current = _join_texts(tail, token_text) if glue_space else tail + token_text
+                    else:
+                        current = token_text
+            # 单个 token 本身超宽（例如超长 URL）：按视觉宽度硬断，保证不丢字。
+            while self._visual_text_units(current) > limit + 1e-9 and len(current) > 1:
+                cut = self._adjust_wrap_break_index(current, self._wrap_prefix_index(current, limit))
+                if cut <= 0 or cut >= len(current):
+                    break
+                head = current[:cut].strip()
+                if head:
+                    lines.append(head)
+                current = current[cut:]
+        if current.strip():
+            lines.append(current.strip())
+        return [line for line in lines if line] or [segment]
+
+    @staticmethod
+    def _starts_with_no_break_char(text: str) -> bool:
+        return bool(text) and text[0] in _NO_LINE_START_CHARS
+
+    @staticmethod
+    def _ends_with_no_break_char(text: str) -> bool:
+        return bool(text) and text[-1] in _NO_LINE_END_CHARS
+
     def split_long_cue(self, cue: Dict[str, Any]) -> List[Dict[str, Any]]:
         text = cue.get('text', '')
         if not text or not self.config.split_long_cues:
@@ -583,7 +894,7 @@ class SrtTransformEngine:
         max_lines = int(self.config.max_lines)
         max_total = max_line * max_lines
         text_units = self._visual_text_units(text)
-        if text_units <= max_line or text_units <= max_total:
+        if text_units <= max_total:
             return [cue]
 
         sentences = [part for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
@@ -606,12 +917,15 @@ class SrtTransformEngine:
             sentence = sentence.strip()
             if not sentence:
                 continue
-            test = (current_text + ' ' + sentence).strip() if current_text else sentence
+            test = _join_texts(current_text, sentence) if current_text else sentence
             if self._visual_text_units(test) > max_total and current_text:
                 units_in = self._visual_text_units(current_text)
                 frac = units_in / total_units
                 cue_duration = max(duration * frac, 0.5)
                 cue_duration = min(cue_duration, cue['end'] - start_time)
+                # 切分后仍可能超出单条时长上限：压缩到上限，且下一段从压缩后的时间点继续，
+                # 避免产生重叠的 cue。
+                cue_duration = self._clamp_split_duration(start_time, start_time + cue_duration) - start_time
                 result.append({'start': start_time, 'end': start_time + cue_duration, 'text': current_text})
                 start_time += cue_duration
                 total_units = max(1.0, total_units - units_in)
@@ -620,8 +934,14 @@ class SrtTransformEngine:
             else:
                 current_text = test
         if current_text:
-            result.append({'start': start_time, 'end': cue['end'], 'text': current_text})
+            result.append({'start': start_time, 'end': self._clamp_split_duration(start_time, cue['end']), 'text': current_text})
         return result or [cue]
+
+    def _clamp_split_duration(self, start_s: float, end_s: float) -> float:
+        max_duration = float(self.config.max_cue_duration_s or 0.0)
+        if max_duration <= 0.0:
+            return float(end_s)
+        return min(float(end_s), float(start_s) + max_duration)
 
     def apply_text_processing(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
         processed: List[Dict[str, Any]] = []
@@ -640,12 +960,13 @@ class SrtTransformEngine:
         merge_gap = max(0.0, float(self.config.merge_gap_s or 0.0))
         min_text = max(0, int(self.config.min_text_length or 0))
         min_dur = max(0.05, float(self.config.min_cue_duration_s or 0.05))
+        drop_dur = min(0.3, min_dur)
 
         for cue in normalized_cues:
             cue['start'] = max(0.0, min(total_duration_s, float(cue['start']) + offset))
             cue['end'] = max(0.0, min(total_duration_s, float(cue['end']) + offset))
             if cue['end'] <= cue['start']:
-                cue['end'] = min(total_duration_s, cue['start'] + _MIN_VISIBLE_DUR_S)
+                cue['end'] = min(total_duration_s, cue['start'] + min_dur)
 
         max_merge_chars = int(self.config.max_line_length) * int(self.config.max_lines)
         merged: List[Dict[str, Any]] = []
@@ -657,22 +978,27 @@ class SrtTransformEngine:
             gap = float(cue['start']) - float(prev['end'])
             prev_text = str(prev.get('text') or '').strip()
             cur_text = str(cue.get('text') or '').strip()
-            prev_dur = float(prev['end']) - float(prev['start'])
-            cur_dur = float(cue['end']) - float(cue['start'])
             should_merge = False
             if gap <= merge_gap:
                 continuity = self._merge_text_with_overlap(prev_text, cur_text)
-                if continuity:
-                    should_merge = True
-                elif gap < 0.0 or prev_dur < 0.9 or cur_dur < 0.9:
+                if continuity or gap < 0.0:
                     should_merge = True
                 elif len(prev_text) < min_text or len(cur_text) < min_text:
                     should_merge = True
-            if should_merge and max_merge_chars > 0 and len(prev_text) + 1 + len(cur_text) > max_merge_chars:
-                should_merge = False
+            merged_text = ''
             if should_merge:
-                merged_text = self._merge_text_with_overlap(prev_text, cur_text) or (prev_text + ' ' + cur_text).strip()
-                prev['text'] = _WHITESPACE_RE.sub(' ', merged_text).strip()
+                merged_text = self._merge_text_with_overlap(prev_text, cur_text) or _join_texts(prev_text, cur_text)
+                merged_text = _WHITESPACE_RE.sub(' ', merged_text).strip()
+                if max_merge_chars > 0 and len(merged_text) > max_merge_chars:
+                    should_merge = False
+                elif not self._merge_within_limits(
+                    min(float(prev['start']), float(cue['start'])),
+                    max(float(prev['end']), float(cue['end'])),
+                    merged_text,
+                ):
+                    should_merge = False
+            if should_merge:
+                prev['text'] = merged_text
                 prev['end'] = max(float(prev['end']), float(cue['end']))
                 prev['alignment_confidence'] = max(float(prev.get('alignment_confidence', 0.0)), float(cue.get('alignment_confidence', 0.0)))
             else:
@@ -692,24 +1018,42 @@ class SrtTransformEngine:
                     cue['end'] = next_start - _MIN_GAP_S
                 elif idx + 1 < len(merged):
                     merged[idx + 1]['start'] = start
-                    merged[idx + 1]['text'] = (str(cue['text']).strip() + ' ' + str(merged[idx + 1]['text']).strip()).strip()
+                    merged[idx + 1]['text'] = _join_texts(str(cue['text']), str(merged[idx + 1]['text']))
                     continue
-                elif finalized:
-                    finalized[-1]['end'] = max(float(finalized[-1]['end']), end)
-                    finalized[-1]['text'] = (str(finalized[-1]['text']).strip() + ' ' + str(cue['text']).strip()).strip()
-                    continue
+                else:
+                    # 末条过短：先尝试延长到 min_dur；已到视频末尾延不了时，
+                    # 若前面已有可用 cue 就把这句话并进去，避免留下不可读的碎片。
+                    extended_end = min(total_duration_s, start + min_dur)
+                    if extended_end - start >= drop_dur or not finalized:
+                        cue['end'] = extended_end
+                    else:
+                        finalized[-1]['end'] = max(float(finalized[-1]['end']), extended_end)
+                        finalized[-1]['text'] = _join_texts(str(finalized[-1]['text']), str(cue['text']))
+                        continue
             finalized.append(cue)
 
         cleaned: List[Dict[str, Any]] = []
         for cue in finalized:
             text = str(cue.get('text') or '').strip()
             dur = float(cue['end']) - float(cue['start'])
-            if dur < _MIN_VISIBLE_DUR_S:
+            if dur < drop_dur:
                 continue
             if len(text) < min_text and dur < min_dur:
                 continue
             cleaned.append(cue)
         return cleaned
+
+    def _merge_within_limits(self, start_s: float, end_s: float, text: str) -> bool:
+        """合并后的 cue 必须同时满足「最长时长」与「最高字速」两个上限。"""
+        duration = max(0.0, float(end_s) - float(start_s))
+        max_duration = float(self.config.max_cue_duration_s or 0.0)
+        if max_duration > 0.0 and duration > max_duration:
+            return False
+        max_chars_per_second = float(self.config.max_chars_per_second or 0.0)
+        if max_chars_per_second > 0.0 and duration > 0.0:
+            if len(str(text or '')) / duration > max_chars_per_second:
+                return False
+        return True
 
     def render_srt(self, cues: Sequence[Any]) -> Optional[str]:
         lines: List[str] = []
@@ -720,9 +1064,21 @@ class SrtTransformEngine:
         for idx, cue in enumerate(normalized_cues, start=1):
             lines.append(str(idx))
             lines.append(f"{self._format_timestamp(cue['start'])} --> {self._format_timestamp(cue['end'])}")
-            lines.append(str(cue.get('text') or '').strip())
+            lines.append(self._render_cue_text(str(cue.get('text') or '').strip()))
             lines.append('')
         return '\n'.join(lines).strip() + '\n'
+
+    def _render_cue_text(self, text: str) -> str:
+        """渲染单条 cue 的文本。
+
+        已含换行的文本**原样保留**：调用方（例如烧录前的流媒体 SRT 生成）
+        已经按真实视频尺寸做过分行与字号安全判断，此处再重排会把它精心折好的
+        行合并回一行，导致成片字幕超宽。只有单行文本才交给 ``wrap_text`` 折行 ——
+        这正是 ASR 直接落盘 SRT 的场景。
+        """
+        if '\n' in text:
+            return text
+        return self.wrap_text(text)
 
     def _coerce_cue_dicts(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
@@ -735,6 +1091,8 @@ class SrtTransformEngine:
                     'provider': cue.get('provider', ''),
                     'timing_source': cue.get('timing_source', 'segment'),
                     'alignment_confidence': float(cue.get('alignment_confidence', 0.0) or 0.0),
+                    # 跨窗去重依赖窗口索引，coerce 时必须保留，否则后续阶段丢失来源信息。
+                    'source_window_index': self._window_index_of(cue),
                     'metadata': dict(cue.get('metadata') or {}),
                 })
             elif isinstance(cue, AlignedSubtitleCue):
@@ -747,6 +1105,7 @@ class SrtTransformEngine:
                     'provider': getattr(cue, 'provider', ''),
                     'timing_source': getattr(cue, 'timing_source', 'segment'),
                     'alignment_confidence': float(getattr(cue, 'alignment_confidence', 0.0) or 0.0),
+                    'source_window_index': self._window_index_of(cue),
                     'metadata': dict(getattr(cue, 'metadata', {}) or {}),
                 })
         return normalized

@@ -14,6 +14,7 @@ from logging.handlers import RotatingFileHandler
 import concurrent.futures
 from threading import Lock
 from modules.task_manager import TaskCancelledError
+from .speech_pipeline_settings import SPEECH_PIPELINE_DEFAULTS, coerce_bool
 from .utils import (
     get_app_subdir,
     openai_chat_create_with_thinking_control,
@@ -29,14 +30,107 @@ _CHINESE_CHAR_RE = re.compile(r'[\u4e00-\u9fff]')
 SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD = 0.15
 SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD = 3
 
+# 配对/批次契约的默认值：与 SPEECH_PIPELINE_DEFAULTS 中的注册值保持单一来源，
+# 缺失或非法时回退到规格默认（未译残留不容忍 / 单批 2000 字符）。
+SUBTITLE_ALLOW_PARTIAL_DEFAULT = bool(
+    SPEECH_PIPELINE_DEFAULTS.get('SUBTITLE_TRANSLATION_ALLOW_PARTIAL', False)
+)
+try:
+    SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT = int(
+        SPEECH_PIPELINE_DEFAULTS.get('SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH', 2000) or 2000
+    )
+except Exception:
+    SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT = 2000
+if SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT <= 0:
+    SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT = 2000
 
-def _should_fail_translation_residue(total_items: int, unresolved_count: int) -> bool:
+# 行首「编号 + 分隔符」前缀：用于识别模型自行附加的序号。
+# 点号后紧跟数字（如 "10.5%"）视为小数点，不认作序号，避免破坏数字信息。
+_LEADING_INDEX_PREFIX_RE = re.compile(
+    r'^(?:[\(（]?\s*\d{1,4}\s*[\)）:：、]\s*|\d{1,4}\s*[.)](?!\d)\s*|[-–—·•]\s+)'
+)
+
+
+def _should_fail_translation_residue(
+    total_items: int,
+    unresolved_count: int,
+    allow_partial: bool = False,
+) -> bool:
+    """字幕翻译验收：判定是否必须整体失败。
+
+    allow_partial=False（默认）：任一条未译残留即失败，防止原文/译文混排烧录成片。
+    allow_partial=True：保留旧的容忍阈值（同时超过 3 条且超过 15% 才失败）。
+    """
     if total_items <= 0 or unresolved_count <= 0:
         return False
+    if not allow_partial:
+        return True
     unresolved_ratio = unresolved_count / max(1, total_items)
     return (
         unresolved_count > SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD
         and unresolved_ratio > SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD
+    )
+
+
+def _normalize_batch_size(value, default: int = 3) -> int:
+    """批次条数上限归一化：非法/空值回退默认值；<=0 表示不限制条数。"""
+    try:
+        if value is None or str(value).strip() == '':
+            return default
+        return int(float(str(value).strip()))
+    except Exception:
+        return default
+
+
+def _normalize_chars_per_batch(
+    value,
+    default: int = SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT,
+) -> int:
+    """批次字符预算归一化：非法/非正值回退默认值（预算必须为正）。"""
+    try:
+        if value is None or str(value).strip() == '':
+            return default
+        number = int(float(str(value).strip()))
+    except Exception:
+        return default
+    return number if number > 0 else default
+
+
+def _split_by_budget(entries: List[Tuple[object, int]], size_limit: int, char_limit: int) -> List[list]:
+    """按「条数上限 + 字符预算」把 (载荷, 字符数) 列表切分成批。
+
+    规则：批内条数不超过 size_limit（<=0 表示不限条数）；
+    批内字符数之和不超过 char_limit；单条自身超过 char_limit 时该条独占一批
+    （不丢弃、不截断），避免超长 cue 撑爆单次请求导致整批失败。
+    """
+    batches: List[list] = []
+    current: list = []
+    current_chars = 0
+    for payload, char_count in entries:
+        if current:
+            over_count = size_limit > 0 and len(current) >= size_limit
+            over_chars = char_limit > 0 and (current_chars + char_count) > char_limit
+            if over_count or over_chars:
+                batches.append(current)
+                current = []
+                current_chars = 0
+        current.append(payload)
+        current_chars += char_count
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _split_items_into_batches(
+    items: List['SubtitleItem'],
+    batch_size: int = 3,
+    max_chars_per_batch: int = SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT,
+) -> List[List['SubtitleItem']]:
+    """字幕条目分批：条数与字符预算双约束（见 _split_by_budget）。"""
+    return _split_by_budget(
+        [(item, len(str(getattr(item, 'source_text', '') or ''))) for item in items],
+        _normalize_batch_size(batch_size),
+        _normalize_chars_per_batch(max_chars_per_batch),
     )
 
 def setup_task_logger(task_id):
@@ -94,7 +188,10 @@ class SubtitleItem:
     end_time: str
     source_text: str
     translated_text: str = ""
-    
+    # 未译残留标记：仅在 SUBTITLE_TRANSLATION_ALLOW_PARTIAL=True 且验收阶段
+    # 判定该条仍未翻译时置位；默认 False，不影响既有构造方式与时间轴字段。
+    residual_untranslated: bool = False
+
     @property
     def time_range(self):
         return f"{self.start_time} --> {self.end_time}"
@@ -119,6 +216,11 @@ class TranslationConfig:
     prompt_text: str = ""         # 字幕翻译主 Prompt 用户文本
     prompt_strict_mode: str = "builtin"  # 字幕翻译严格补救 Prompt 模式
     prompt_strict_text: str = ""  # 字幕翻译严格补救 Prompt 用户文本
+    # 未译残留策略：False（默认）时任一条未译即整体失败，不写盘；
+    # True 时保留旧的少量残留容忍行为（标记 + 警告 + 写盘回退原文）。
+    allow_partial: bool = SUBTITLE_ALLOW_PARTIAL_DEFAULT
+    # 单批字符预算：批内 source_text 长度之和上限，超限即另起一批。
+    max_chars_per_batch: int = SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -313,6 +415,12 @@ class SubtitleWriter:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 for item in items:
+                    # 空译文回退原文的语义：
+                    # - allow_partial=False（默认）：存在未译残留会在验收阶段直接失败，
+                    #   不会走到写盘，因此这里只等同于「译文恰好为空串」的兜底；
+                    # - allow_partial=True：未译条目在验收阶段被标记
+                    #   （SubtitleItem.residual_untranslated）并清空译文，此处回退为原文，
+                    #   属于显式容忍的原文/译文混排行为，已在验收阶段记录 warning。
                     text = item.translated_text if translated and item.translated_text else item.source_text
                     if translated:
                         text = SubtitleWriter._strip_terminal_full_stop(text)
@@ -330,6 +438,7 @@ class SubtitleWriter:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("WEBVTT\n\n")
                 for item in items:
+                    # 空译文回退原文的语义同 write_srt（见上方注释）
                     text = item.translated_text if translated and item.translated_text else item.source_text
                     if translated:
                         text = SubtitleWriter._strip_terminal_full_stop(text)
@@ -340,6 +449,25 @@ class SubtitleWriter:
             logger.info(f"VTT文件已保存: {output_path}")
         except Exception as e:
             logger.error(f"写入VTT文件失败: {e}")
+
+class SubtitleAlignmentError(RuntimeError):
+    """译文与原文无法按下标严格配对（缺项/合并/增项/条数不符）时抛出。
+
+    由批次重试逻辑（config.max_retries）接管；重试耗尽后沿用既有「整批失败」语义：
+    该批译文全部置空并交由补翻/验收处理，绝不按位置回填错位译文。
+    """
+
+
+# 下标键与译文键的候选名（兼容不同网关/模型对下标对象数组的命名差异）
+_INDEX_KEY_CANDIDATES = ('index', 'idx', 'i', 'id', 'n', 'no', 'seq')
+_TRANSLATION_KEY_CANDIDATES = (
+    'translation', 'translated_text', 'text', 't', 'output', 'content', '译文',
+)
+# 常见包装键：{"items": [...]} / {"translations": [...]} / {"results": [...]} 等
+_INDEXED_WRAPPER_KEYS = (
+    'items', 'item', 'translations', 'results', 'result', 'data', 'output', 'list', 'segments',
+)
+
 
 class LLMRequester:
     """LLM请求处理器 (与ai_enhancer.py保持一致的调用方式)"""
@@ -494,7 +622,12 @@ class LLMRequester:
         batch_id: str,
         scene_name: str,
     ) -> List[str]:
-        """请求并解析字幕；JSON 模式产出不可解析时自动改用纯文本 JSON 重试。"""
+        """请求并解析字幕；JSON 模式产出不可解析时自动改用纯文本 JSON 重试。
+
+        配对契约：只有能证明「译文与输入逐条严格对齐」时才返回结果；
+        条数不符、下标缺项/重复/增项一律判定该批失败并抛 SubtitleAlignmentError，
+        由调用方的 max_retries 重试逻辑接管，绝不补齐、绝不按位置回填。
+        """
         with self._capability_lock:
             json_mode = not self._json_mode_disabled
         response = self._create_translation_completion(
@@ -515,8 +648,13 @@ class LLMRequester:
         ) = self._parse_structured_translation_result_with_status(
             response.choices[0].message, expected_count, batch_id
         )
-        if parsed_successfully or not json_mode:
+        if parsed_successfully:
             return translations
+
+        if not json_mode:
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: 响应无法与输入按下标严格配对（期望 {expected_count} 条），判定该批失败"
+            )
 
         with self._log_lock:
             self.logger.warning(
@@ -527,13 +665,19 @@ class LLMRequester:
             system_prompt=(
                 system_prompt
                 + "\n重要：只返回 JSON 对象，不要使用 Markdown 代码块或添加解释。"
+                + "\n必须按输入下标逐条返回："
+                + '{"translations":[{"index":0,"translation":"译文1"},{"index":1,"translation":"译文2"}]}；'
+                + "index 与输入条目编号一一对应，不得缺项、不得合并、不得增项；"
+                + "若只能输出纯文本，则每行一条译文，行数必须与输入条数完全相同且顺序一致。"
             ),
             user_prompt=user_prompt,
             scene_name=f'{scene_name}_plain_json_retry',
             json_mode=False,
         )
         if not getattr(retry_response, 'choices', None):
-            return translations
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: 纯文本JSON重试返回空的choices列表，判定该批失败"
+            )
         (
             retried,
             retry_parsed_successfully,
@@ -546,7 +690,10 @@ class LLMRequester:
             with self._capability_lock:
                 self._json_mode_disabled = True
             return retried
-        return translations
+        raise SubtitleAlignmentError(
+            f"批次 {batch_id}: JSON模式与纯文本模式均无法与输入按下标严格配对"
+            f"（期望 {expected_count} 条），判定该批失败"
+        )
     
     def _build_structured_system_prompt(self, target_language: str) -> str:
         """构建结构化系统提示词（委托给统一 Prompt 中心）。"""
@@ -578,14 +725,17 @@ class LLMRequester:
                     "one_to_one_alignment": True,
                     "no_cross_item_carryover": True,
                     "keep_fragment_boundaries": True,
+                    # 输出契约：下游按下标回填，缺项/合并/增项都会让整批判定失败
+                    "output_format": '{"translations":[{"index":0,"translation":"..."}]}',
+                    "output_index_rule": "index 必须完整覆盖 0..N-1 且与 texts 下标一一对应，不得缺项、不得合并、不得增项",
                 },
                 "texts": texts,
             },
             ensure_ascii=False,
         )
 
-    def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
-        """解析结构化翻译结果"""
+    def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> Optional[List[str]]:
+        """解析结构化翻译结果（配对不成立时返回 None）"""
         translations, _ = self._parse_structured_translation_result_with_status(
             message,
             expected_count,
@@ -598,8 +748,17 @@ class LLMRequester:
         message,
         expected_count: int,
         batch_id: str,
-    ) -> Tuple[List[str], bool]:
-        """解析结构化翻译结果，并区分解析失败与合法的空译文。"""
+    ) -> Tuple[Optional[List[str]], bool]:
+        """解析结构化翻译结果，并区分解析成功与配对失败。
+
+        配对优先级：
+        1) 带下标的对象数组（{"items":[{"index":0,"translation":"..."}]}、顶层数组、
+           数字字符串键对象、下标键/译文键变体）：下标集合必须构成 0..N-1 或 1..N 的
+           完整双射，否则判定失败；
+        2) 无下标的纯数组：条数必须严格等于期望条数，否则判定失败；
+        3) 纯文本编号行兜底：行数与编号序列都必须严格对齐，否则判定失败。
+        任何情况下都不补齐、不按位置回填无法证明对齐的译文。
+        """
         try:
             json_result = extract_chat_message_json(message, expected_type=None)
             # 如果首次解析失败，尝试清洗 ASS 标签后重试
@@ -609,25 +768,56 @@ class LLMRequester:
                 cleaned_text = re.sub(r'{\\[^}]*}', '', cleaned_text)
                 json_result = extract_json_from_text(cleaned_text, expected_type=None)
 
-            translations = self._coerce_translation_list(json_result, expected_count)
-            if translations is None:
-                preview = get_chat_message_text(message)
-                translations = self._parse_plain_translation_lines(preview, expected_count)
-            if translations is None:
+            preview = get_chat_message_text(message)
+
+            indexed, has_index_hint = self._build_translations_by_index(json_result)
+            if indexed is not None:
+                if set(indexed.keys()) == set(range(expected_count)):
+                    ordered = [indexed[i] for i in range(expected_count)]
+                elif set(indexed.keys()) == set(range(1, expected_count + 1)):
+                    # 兼容 1 基下标：仍是完整双射（无缺项/无合并/无增项），按下标回填
+                    ordered = [indexed[i] for i in range(1, expected_count + 1)]
+                else:
+                    with self._log_lock:
+                        self.logger.warning(
+                            "批次 %s: 译文下标集合与输入不匹配（期望 0..%s，实际 %s），判定该批失败",
+                            batch_id,
+                            expected_count - 1,
+                            sorted(indexed.keys()),
+                        )
+                    return None, False
+            elif has_index_hint:
                 with self._log_lock:
                     self.logger.warning(
-                        f"批次 {batch_id}: 未解析到有效翻译列表，响应预览: {preview[:200]}"
+                        f"批次 {batch_id}: 响应含下标但无法构成合法映射，判定该批失败"
                     )
-                return [""] * expected_count, False
+                return None, False
+            else:
+                positional = self._coerce_translation_list(json_result, expected_count)
+                if positional is not None:
+                    if len(positional) != expected_count:
+                        with self._log_lock:
+                            self.logger.warning(
+                                "批次 %s: 无下标译文条数 %s 与输入条数 %s 不符，判定该批失败",
+                                batch_id,
+                                len(positional),
+                                expected_count,
+                            )
+                        return None, False
+                    ordered = positional
+                else:
+                    ordered = self._parse_plain_translation_lines(preview, expected_count)
+                    if ordered is None:
+                        with self._log_lock:
+                            self.logger.warning(
+                                f"批次 {batch_id}: 未解析到可严格对齐的翻译列表，响应预览: {preview[:200]}"
+                            )
+                        return None, False
 
-            # 确保返回的翻译数量正确
-            translations = list(translations[:expected_count])
-            translations.extend([""] * (expected_count - len(translations)))
-            
-            # 截断多余的翻译，并清洗 ASS 标签
+            # 条数与顺序已由上面的配对校验保证，这里只做清洗
             _ass_tag_re = re.compile(r'\\[hHnN]|{\\[^}]*}')
             final_translations = []
-            for t in translations[:expected_count]:
+            for t in ordered:
                 cleaned = _ass_tag_re.sub('', str(t or '')).strip()
                 cleaned = re.sub(r'\s+', ' ', cleaned).strip()
                 final_translations.append(cleaned)
@@ -639,11 +829,133 @@ class LLMRequester:
         except Exception as e:
             with self._log_lock:
                 self.logger.error(f"批次 {batch_id}: 解析翻译结果失败: {e}")
-            return [""] * expected_count, False
+            return None, False
+
+    @staticmethod
+    def _has_index_key(element) -> bool:
+        """元素是否显式携带下标键。"""
+        if not isinstance(element, dict):
+            return False
+        return any(key in element for key in _INDEX_KEY_CANDIDATES)
+
+    @staticmethod
+    def _extract_indexed_item(element) -> Optional[Tuple[int, str]]:
+        """从单个对象元素中取出 (下标, 译文)；无法确定时返回 None。"""
+        if not isinstance(element, dict):
+            return None
+        index_value = None
+        for key in _INDEX_KEY_CANDIDATES:
+            if key in element:
+                index_value = element[key]
+                break
+        if index_value is None or isinstance(index_value, (dict, list)):
+            return None
+        try:
+            index_int = int(str(index_value).strip())
+        except Exception:
+            return None
+        if index_int < 0:
+            return None
+
+        text_value = None
+        for key in _TRANSLATION_KEY_CANDIDATES:
+            if key in element:
+                text_value = element[key]
+                break
+        if text_value is None or isinstance(text_value, (dict, list)):
+            return None
+        return index_int, text_value
+
+    @staticmethod
+    def _collect_numeric_keyed_mapping(value) -> Optional[Dict[int, str]]:
+        """把 {"0": "甲", "1": "乙"} 这类数字字符串键对象转成下标字典。"""
+        if not isinstance(value, dict) or not value:
+            return None
+        mapping: Dict[int, str] = {}
+        for key, item in value.items():
+            try:
+                index_int = int(str(key).strip())
+            except Exception:
+                return None
+            if index_int in mapping or isinstance(item, (dict, list)):
+                return None
+            mapping[index_int] = item
+        return mapping
+
+    @staticmethod
+    def _build_translations_by_index(json_result, _depth: int = 0) -> Tuple[Optional[Dict[int, str]], bool]:
+        """尝试把 JSON 结果解析为「下标 → 译文」映射。
+
+        返回值 `(mapping, has_index_hint)`：
+        - mapping 非 None：成功解析出下标映射（是否合法由调用方校验）；
+        - (None, True)：响应里出现下标线索却无法构成合法映射（契约破坏，必须失败）；
+        - (None, False)：响应完全没有下标线索（可退回按位置配对，但要求条数严格相等）。
+
+        支持的形态：
+        - {"items": [{"index": 0, "translation": "..."}]} 等包装键
+        - 顶层直接是 [{"index": 0, "translation": "..."}]
+        - 下标键变体 index/idx/i/id/n/no/seq，译文键变体 translation/translated_text/text/t/...
+        - 数字字符串键对象 {"0": "...", "1": "..."}
+        - 单个条目对象 {"index": 0, "translation": "..."}
+        """
+        value = json_result
+        if isinstance(value, dict):
+            numeric_mapping = LLMRequester._collect_numeric_keyed_mapping(value)
+            if numeric_mapping is not None:
+                return numeric_mapping, True
+
+            single = LLMRequester._extract_indexed_item(value)
+            if single is not None:
+                return {single[0]: single[1]}, True
+
+            if _depth < 3:
+                for key in _INDEXED_WRAPPER_KEYS:
+                    if key in value:
+                        inner_indexed, inner_hint = LLMRequester._build_translations_by_index(
+                            value[key], _depth + 1
+                        )
+                        if inner_indexed is not None or inner_hint:
+                            return inner_indexed, inner_hint
+
+            if LLMRequester._has_index_key(value):
+                return None, True
+            return None, False
+
+        if isinstance(value, list):
+            if not value:
+                return None, False
+            objects = [element for element in value if isinstance(element, dict)]
+            if len(objects) != len(value):
+                # 混入非对象元素：只有出现下标线索时才判定为契约破坏
+                hint = any(LLMRequester._has_index_key(element) for element in value)
+                return None, hint
+            flags = [LLMRequester._has_index_key(element) for element in objects]
+            if not any(flags):
+                return None, False
+            if not all(flags):
+                # 部分带下标、部分不带：无法证明对齐，判定为契约破坏
+                return None, True
+            mapping: Dict[int, str] = {}
+            for element in objects:
+                extracted = LLMRequester._extract_indexed_item(element)
+                if extracted is None:
+                    return None, True
+                index_int, text_value = extracted
+                if index_int in mapping:
+                    return None, True
+                mapping[index_int] = text_value
+            return mapping, True
+
+        return None, False
 
     @staticmethod
     def _coerce_translation_list(json_result, expected_count: int):
-        """兼容常见网关/模型的 JSON 包装差异，并保持原始顺序。"""
+        """兼容常见网关/模型的 JSON 包装差异，并保持原始顺序。
+
+        注意：本函数只做「无下标线索」场景下的按位置展开，不校验下标；
+        调用方（_parse_structured_translation_result_with_status）会强制要求
+        展开后的条数严格等于输入条数，否则判定该批失败。
+        """
         value = json_result
         if isinstance(value, dict):
             for key in ('translations', 'translation', 'results', 'result', 'data', 'output'):
@@ -685,22 +997,53 @@ class LLMRequester:
 
     @staticmethod
     def _parse_plain_translation_lines(text: str, expected_count: int):
-        """最后兜底：兼容只返回编号逐行译文、但不返回 JSON 的小模型。"""
+        """最后兜底：兼容只返回编号逐行译文、但不返回 JSON 的小模型。
+
+        严格契约（与下标配对同一标准）：
+        - 编号行条数必须严格等于输入条数；
+        - 行首编号必须构成 0..N-1 或 1..N 的连续序列（缺项/合并/重复一律拒绝）；
+        - 若全部是无编号的项目符号行，则要求条数严格相等并保持顺序；
+        - 首个编号行之前的开场白/解释会被忽略，其后出现无编号行即判为结构不可信。
+        """
         raw = str(text or '').strip()
         if not raw:
             return None
         if expected_count == 1 and '\n' not in raw:
+            # 单条请求只给一行裸译文：仅在明确是「序号+点/括号+空白」前缀时剥离，
+            # 避免把 "10.5% 的人…" 这类数字文本当成编号清单损坏。
+            single_prefix = re.match(r'^\s*\d{1,4}\s*[.)]\s+(?=\S)(.+)$', raw)
+            if single_prefix:
+                return [single_prefix.group(1).strip()]
             return [raw]
 
-        numbered = []
-        pattern = re.compile(r'^\s*(?:\d+\s*[.)、:：-]|[-*•])\s*(.+?)\s*$')
+        pattern = re.compile(r'^\s*(?:(\d+)\s*[.)、:：-]|[-*•])\s*(.+?)\s*$')
+        index_texts: List[Tuple[Optional[int], str]] = []
         for line in raw.splitlines():
+            if not line.strip():
+                continue
             match = pattern.match(line)
-            if match and match.group(1).strip():
-                numbered.append(match.group(1).strip())
-        if len(numbered) >= expected_count:
-            return numbered[:expected_count]
-        return None
+            if not match:
+                if not index_texts:
+                    # 首个编号行之前的开场白/解释，忽略
+                    continue
+                return None
+            body = (match.group(2) or '').strip()
+            if not body:
+                return None
+            index_texts.append(
+                (int(match.group(1)) if match.group(1) is not None else None, body)
+            )
+
+        if len(index_texts) != expected_count:
+            return None
+        if all(index is None for index, _ in index_texts):
+            return [body for _, body in index_texts]
+        if any(index is None for index, _ in index_texts):
+            return None
+        indices = [index for index, _ in index_texts]
+        if indices != list(range(expected_count)) and indices != list(range(1, expected_count + 1)):
+            return None
+        return [body for _, body in index_texts]
 
 class SubtitleTranslator:
     """字幕翻译器主类"""
@@ -856,9 +1199,15 @@ class SubtitleTranslator:
         """使用多线程并发翻译"""
         try:
             total_items = len(items)
-            batch_size = self.config.batch_size
-            # 允许不设上限：当配置为0或小于1时，按需要的批次数动态分配
-            required_workers = max(1, (total_items + batch_size - 1) // batch_size)
+            batch_size = _normalize_batch_size(self.config.batch_size)
+            # 批次同时受条数与字符预算约束（E4）：避免单条超长 cue 或长句密集批次
+            # 把整批 texts JSON 化后撑爆单次请求（超时/输出截断 → 整批失败）。
+            char_budget = _normalize_chars_per_batch(
+                getattr(self.config, 'max_chars_per_batch', SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT)
+            )
+            item_batches = _split_items_into_batches(items, batch_size, char_budget)
+            # 允许不设上限：当配置为0或小于1时，按实际批次数动态分配
+            required_workers = max(1, len(item_batches))
             if isinstance(self.config.max_workers, int) and self.config.max_workers > 0:
                 max_workers = min(self.config.max_workers, required_workers)
             else:
@@ -881,17 +1230,17 @@ class SubtitleTranslator:
             
             self.logger.info(f"开始并发翻译，批次大小: {batch_size}, 并发线程数: {max_workers}")
             
-            # 创建批次
+            # 创建批次（条数上限 + 字符预算双约束，单条超预算时独占一批）
             batches = []
-            for i in range(0, total_items, batch_size):
-                batch_items = items[i:i + batch_size]
-                batch_texts = [item.source_text for item in batch_items]
+            start_index = 0
+            for batch_no, batch_items in enumerate(item_batches, 1):
                 batches.append({
-                    'batch_id': f"{self.task_id}_{i//batch_size + 1}",
-                    'start_index': i,
+                    'batch_id': f"{self.task_id}_{batch_no}",
+                    'start_index': start_index,
                     'items': batch_items,
-                    'texts': batch_texts
+                    'texts': [item.source_text for item in batch_items]
                 })
+                start_index += len(batch_items)
             
             # 进度跟踪
             completed_items = 0
@@ -926,10 +1275,18 @@ class SubtitleTranslator:
                             batch_id=batch_id
                         )
                         
-                        # 将翻译结果赋值给字幕项
+                        # 配对契约：译文必须与输入逐条严格对齐。条数不符说明模型
+                        # 漏项/合并/增项，直接判定该批失败（交由重试），
+                        # 绝不按位置回填错位译文，也不补齐空串。
+                        if not isinstance(translations, (list, tuple)) or len(translations) != len(batch_items):
+                            raise SubtitleAlignmentError(
+                                f"批次 {batch_id}: 译文条数 {len(translations) if isinstance(translations, (list, tuple)) else 'invalid'}"
+                                f" != 输入条数 {len(batch_items)}，判定该批失败"
+                            )
+                        
+                        # 将翻译结果赋值给字幕项（条数已严格相等）
                         for j, translation in enumerate(translations):
-                            if j < len(batch_items):
-                                batch_items[j].translated_text = self._sanitize_translated_text(translation)
+                            batch_items[j].translated_text = self._sanitize_translated_text(translation)
 
                         invalid_translations = [
                             idx for idx, batch_item in enumerate(batch_items)
@@ -1057,34 +1414,48 @@ class SubtitleTranslator:
             return []
 
     def _finalize_residual_untranslated_items(self, items: List[SubtitleItem]) -> bool:
+        """字幕翻译验收：决定未译残留条目是否可继续写盘。
+
+        - allow_partial=False（默认，SUBTITLE_TRANSLATION_ALLOW_PARTIAL）：
+          任一条未译即整体失败并返回 False，调用方不写盘，
+          避免成片出现原文/译文混排（不再容忍 unresolved_count <= 3）。
+        - allow_partial=True：保留旧的少量残留容忍阈值；未译条目打
+          residual_untranslated 标记、译文置空并记录 warning，
+          写盘阶段按 SubtitleWriter 的回退语义输出原文。
+        """
         unresolved_indices = self._collect_untranslated_indices(items)
         unresolved_count = len(unresolved_indices)
         total_items = len(items)
         if unresolved_count == 0:
             return True
 
+        allow_partial = bool(getattr(self.config, 'allow_partial', SUBTITLE_ALLOW_PARTIAL_DEFAULT))
         unresolved_ratio = unresolved_count / max(1, total_items)
         sample_indices = unresolved_indices[:5]
-        if _should_fail_translation_residue(total_items, unresolved_count):
+        if _should_fail_translation_residue(total_items, unresolved_count, allow_partial=allow_partial):
             self.logger.error(
-                "字幕翻译验收失败：仍有 %s/%s 条疑似未翻译（%.1f%%），样本索引=%s",
+                "字幕翻译验收失败：仍有 %s/%s 条疑似未翻译（%.1f%%），样本索引=%s（allow_partial=%s）",
                 unresolved_count,
                 total_items,
                 unresolved_ratio * 100.0,
                 sample_indices,
+                allow_partial,
             )
             return False
 
         self.logger.warning(
-            "字幕翻译验收保留少量原文：%s/%s 条疑似未翻译（%.1f%%），样本索引=%s",
+            "字幕翻译验收保留未译残留：%s/%s 条仍疑似未翻译（%.1f%%），下标=%s；"
+            "已标记 residual_untranslated，写盘时将回退为原文（allow_partial=True）",
             unresolved_count,
             total_items,
             unresolved_ratio * 100.0,
-            sample_indices,
+            unresolved_indices,
         )
         for idx in unresolved_indices:
             try:
-                items[idx].translated_text = items[idx].source_text
+                items[idx].residual_untranslated = True
+                # 保留原译文为空（不再用原文伪造译文），由写盘阶段决定回退
+                items[idx].translated_text = ""
             except Exception:
                 pass
         return True
@@ -1097,12 +1468,21 @@ class SubtitleTranslator:
                 return
             self.logger.info(f"检测到 {len(to_fix_indices)} 条疑似未翻译条目，开始补翻...")
 
-            bs = max(1, int(self.config.batch_size) if self.config.batch_size else 5)
-            for i in range(0, len(to_fix_indices), bs):
-                chunk = to_fix_indices[i:i+bs]
+            bs = _normalize_batch_size(self.config.batch_size, default=5) or 5
+            char_budget = _normalize_chars_per_batch(
+                getattr(self.config, 'max_chars_per_batch', SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT)
+            )
+            for chunk_no, chunk in enumerate(
+                _split_by_budget(
+                    [(idx, len(str(items[idx].source_text or ''))) for idx in to_fix_indices],
+                    bs,
+                    char_budget,
+                ),
+                1,
+            ):
                 texts = [items[idx].source_text for idx in chunk]
                 try:
-                    translations = self.llm_requester.translate_batch(texts, self.config.target_language, batch_id=f"repair_{self.task_id}_{i//bs+1}")
+                    translations = self.llm_requester.translate_batch(texts, self.config.target_language, batch_id=f"repair_{self.task_id}_{chunk_no}")
                 except Exception as e:
                     self.logger.warning(f"补翻批次失败，跳过该批：{e}")
                     continue
@@ -1119,12 +1499,18 @@ class SubtitleTranslator:
             if not still_untranslated:
                 return
             self.logger.info(f"仍有 {len(still_untranslated)} 条未充分翻译，启动严格模式补救...")
-            bs2 = max(1, int(self.config.batch_size) if self.config.batch_size else 5)
-            for i in range(0, len(still_untranslated), bs2):
-                chunk = still_untranslated[i:i+bs2]
+            bs2 = _normalize_batch_size(self.config.batch_size, default=5) or 5
+            for chunk_no, chunk in enumerate(
+                _split_by_budget(
+                    [(idx, len(str(items[idx].source_text or ''))) for idx in still_untranslated],
+                    bs2,
+                    char_budget,
+                ),
+                1,
+            ):
                 texts = [items[idx].source_text for idx in chunk]
                 try:
-                    translations = self.llm_requester.translate_batch_strict(texts, self.config.target_language, batch_id=f"repair_strict_{self.task_id}_{i//bs2+1}")
+                    translations = self.llm_requester.translate_batch_strict(texts, self.config.target_language, batch_id=f"repair_strict_{self.task_id}_{chunk_no}")
                 except Exception as e:
                     self.logger.warning(f"严格模式补翻批次失败，跳过该批：{e}")
                     continue
@@ -1145,19 +1531,29 @@ class SubtitleTranslator:
         try:
             # 标准化换行
             lines = [line.strip() for line in str(text).split('\n')]
+            stripped_lines = [line for line in lines if line]
+
+            # 仅当「本次响应的全部非空行都以编号+分隔符开头」且存在多行时，
+            # 才认定整体是编号清单并剥离行首编号；否则原样保留，避免把
+            # "10.5% 的人…"、"3、4 号方案" 这类数字开头的正文损坏成 "5% 的人…"。
+            is_numbered_list = (
+                len(stripped_lines) >= 2
+                and all(_LEADING_INDEX_PREFIX_RE.match(line) for line in stripped_lines)
+            )
+
             cleaned_lines: List[str] = []
             seen: set = set()
 
             for line in lines:
                 if not line:
                     continue
-                original = line
-                # 反复移除前置编号或项目符号（最多10次防止无限循环）
-                for _ in range(10):
-                    new_line = re.sub(r'^(?:[\(（]?\s*\d+\s*[\)）.:、]\s*|[-–—·•]\s+)', '', line)
-                    if new_line == line:
-                        break
-                    line = new_line.strip()
+                if is_numbered_list:
+                    # 反复移除前置编号或项目符号（最多10次防止无限循环）
+                    for _ in range(10):
+                        new_line = _LEADING_INDEX_PREFIX_RE.sub('', line)
+                        if new_line == line:
+                            break
+                        line = new_line.strip()
 
                 # 去除整行包裹引号
                 if ((line.startswith('"') and line.endswith('"')) or
@@ -1248,6 +1644,18 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         max_workers = app_config.get('SUBTITLE_MAX_WORKERS', 2)  # 降低默认并发数
         if isinstance(max_workers, str):
             max_workers = int(max_workers)
+
+        # 未译残留策略：默认关闭部分容忍（任一条未译即整体失败，不写盘）
+        allow_partial = coerce_bool(
+            app_config.get(
+                'SUBTITLE_TRANSLATION_ALLOW_PARTIAL',
+                SUBTITLE_ALLOW_PARTIAL_DEFAULT,
+            )
+        )
+        # 单批字符预算：非法/非正值回退 2000
+        max_chars_per_batch = _normalize_chars_per_batch(
+            app_config.get('SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH')
+        )
         
         # 计算字幕翻译专用Base URL（优先使用SUBTITLE_OPENAI_BASE_URL，否则回退到OPENAI_BASE_URL）
         subtitle_base_url = app_config.get('SUBTITLE_OPENAI_BASE_URL') or app_config.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
@@ -1288,6 +1696,8 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             prompt_text=prompt_text,
             prompt_strict_mode=prompt_strict_mode,
             prompt_strict_text=prompt_strict_text,
+            allow_partial=allow_partial,
+            max_chars_per_batch=max_chars_per_batch,
         )
         
         if not translation_config.api_key:

@@ -82,7 +82,15 @@ _SUBTITLE_STRICT_SHARED_RULES = (
     "若源文本是不完整短语、半句或续句，译文也保持不完整，不要补全。"
 )
 
-_SUBTITLE_JSON_SUFFIX = '只返回 JSON：{"translations":["译文1","译文2"]}。'
+# 协议壳输出格式：带下标的 JSON 对象数组。
+# 下标是下游能否安全回填译文的唯一依据：缺项/合并/增项/条数不符都会被判为
+# 该批失败并重试，因此这里必须显式要求逐条带上 index。
+_SUBTITLE_JSON_SUFFIX = (
+    '严格返回 JSON：{"translations":[{"index":0,"translation":"译文1"},{"index":1,"translation":"译文2"}]}。'
+    'index 必须与输入条目编号一一对应，不得缺项、不得合并、不得增项。'
+    '不要输出 Markdown 代码块，不要输出解释。'
+    '若确实无法输出 JSON，则每行只写一条译文，行数必须与输入条数完全相同且顺序一致。'
+)
 
 _METADATA_JSON_SUFFIX = '只返回 JSON：{"title":"","description":""}。'
 _METADATA_DESC_RETRY_JSON_SUFFIX = '只返回 JSON：{"description":""}。'

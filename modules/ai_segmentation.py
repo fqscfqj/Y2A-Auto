@@ -17,6 +17,7 @@
 import json
 import logging
 import re
+import string
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,6 +47,8 @@ _CJK_FUNCTION_WORDS = frozenset(
 # 句末标点——用于判断一条 cue 是否在句子边界结束
 _SENTENCE_END_PUNCTS = set('.!?。！？')
 _CLAUSE_END_PUNCTS = set(';:；：，、')
+# 段级 AI 时间戳吸附容差：超出该容差视为"该时间点不属于任何输入段边界"
+_BOUNDARY_SNAP_TOL_S = 0.3
 
 
 def _words_to_text(words) -> str:
@@ -595,11 +598,11 @@ def _parse_index_ranges(
     raw_text: str,
     word_count: int,
 ) -> List[Tuple[int, int]]:
-    """从 AI 响应解析索引范围数组 [{start_index, end_index}]，自动填补缺口。
+    """从 AI 响应解析索引范围数组 [{start_index, end_index}]，并做硬契约校验。
 
-    - 每个范围为闭区间 [start, end]
-    - 缺口并入前一段，尾部未覆盖追加到最后
-    - 完整覆盖 0..word_count-1
+    - 每个范围为闭区间 [start, end]，必须连续、无缺口、无重叠、无乱序
+    - 必须从 0 开始、到 word_count-1 结束
+    - 任何违反契约的情况抛 AISegmentationError，由上层降级到段级/基线
     """
     if word_count <= 0:
         return []
@@ -648,34 +651,62 @@ def _fill_gap_ranges(
     ranges: List[Tuple[int, int]],
     word_count: int,
 ) -> List[Tuple[int, int]]:
-    """将 AI 返回的可能有缝隙的分段填补为连续覆盖。
+    """索引契约硬校验：要求 ranges 恰好连续覆盖 [0, word_count-1]，原样返回。
 
-    缺口并入前一段；尾部未覆盖追加到最后。
-    参考 ai-subtitle-studio 的 _fill_gap_ranges 实现。
+    历史实现会把缺口"并入前一段"、把尾部缺口"追加到最后"——这条修补逻辑是错的：
+    输入 [(0,5),(7,9)] 会被整批塌缩成 [(0,9)]，输入乱序 [(6,10),(0,5)] 会产出
+    时间重叠且文本重复的两条 cue。修补掩盖了模型返回非法索引的事实，比直接降级更危险。
+
+    当前语义（保留函数名以兼容调用方）：
+    - ranges 为空 → 抛错
+    - 任一段 start > end，或索引值非法 → 抛错
+    - 按 start 升序排序后，第一段必须 start == 0
+    - 每段必须 start == prev_end + 1（缺口 = 内容静默丢失，判非法）
+    - 任意重叠/乱序/非连续 → 抛错
+    - 最后一段必须 end == word_count - 1（尾部未覆盖 = 内容静默丢失，判非法）
+
+    校验通过时原样返回（不做任何修补），失败一律抛 AISegmentationError，
+    由 AISegmenter._segment_batch_with_context 的 except 转为降级。
     """
     if not ranges:
-        return ranges
+        raise AISegmentationError('索引范围为空')
 
-    filled: List[Tuple[int, int]] = []
-    expected_start = 0
-    for start, end in ranges:
-        if start > expected_start:
-            # 将缺口并入前一段
-            if filled:
-                prev_start, _ = filled[-1]
-                filled[-1] = (prev_start, end)
-            else:
-                filled.append((expected_start, end))
-        else:
-            filled.append((start, end))
-        expected_start = end + 1
+    ordered: List[Tuple[int, int]] = []
+    for item in ranges:
+        try:
+            start = int(item[0])
+            end = int(item[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            raise AISegmentationError(f'索引范围格式非法: {item!r}')
+        if start < 0 or end < 0:
+            raise AISegmentationError(f'索引范围含负数: [{start}, {end}]')
+        if start > end:
+            raise AISegmentationError(f'索引范围非法: start={start} > end={end}')
+        ordered.append((start, end))
 
-    # 尾部未覆盖的词追加到最后
-    if expected_start < word_count and filled:
-        prev_start, _ = filled[-1]
-        filled[-1] = (prev_start, word_count - 1)
+    ordered.sort(key=lambda r: r[0])
 
-    return filled
+    if ordered[0][0] != 0:
+        raise AISegmentationError(
+            f'索引范围未从 0 开始: 首段 start={ordered[0][0]}（应为 0）'
+        )
+
+    previous_end = -1
+    for start, end in ordered:
+        if start != previous_end + 1:
+            raise AISegmentationError(
+                f'索引范围不连续: 段 [{start}, {end}] 与上一段 end={previous_end} 之间存在'
+                f'缺口或重叠（要求每段 start == 上一段 end + 1）'
+            )
+        previous_end = end
+
+    if previous_end != word_count - 1:
+        raise AISegmentationError(
+            f'索引范围未覆盖全部内容: 末段 end={previous_end}，词总数={word_count}'
+            f'（应为 {word_count - 1}）'
+        )
+
+    return ordered
 
 
 def _cues_from_index_ranges(
@@ -684,13 +715,20 @@ def _cues_from_index_ranges(
     provider: str,
     logger=None,
 ) -> List[AlignedSubtitleCue]:
-    """将索引范围映射回 AlignedSubtitleCue（使用原始词时间戳）。"""
+    """将索引范围映射回 AlignedSubtitleCue（使用原始词时间戳）。
+
+    任一索引范围越界即整批拒绝（抛 AISegmentationError）：
+    旧实现只 warning + continue，会静默丢弃该区间的字幕内容，而"部分内容消失"
+    比整批降级到段级/基线更糟——降级至少保证内容完整。
+    空文本区间仍然跳过（安全）：文本由 _words_to_text 从 ASR 原文切片，
+    空文本意味着该区间内没有有效词，不构成内容丢失。
+    """
     cues: List[AlignedSubtitleCue] = []
     for start_idx, end_idx in ranges:
         if start_idx < 0 or end_idx >= len(words):
-            if logger:
-                logger.warning('索引范围越界: [%d, %d], 词总数: %d', start_idx, end_idx, len(words))
-            continue
+            raise AISegmentationError(
+                f'索引范围越界: [{start_idx}, {end_idx}], 词总数: {len(words)}'
+            )
         cue_words = words[start_idx:end_idx + 1]
         text = _words_to_text(cue_words)
         if not text:
@@ -701,9 +739,99 @@ def _cues_from_index_ranges(
             text=text,
             provider=provider,
             timing_source='ai',
-            alignment_confidence=0.95,
+            # 置信度按来源可靠度分层（见 _cues_from_response/_baseline_align_batch 注释）：
+            # 字级 AI 的时间戳取自 ASR 词边界，只受分段决策影响，故最高。
+            alignment_confidence=0.90,
         ))
     return cues
+
+
+# 允许 AI 新增的标点（不视为"凭空造字"），含 ASCII 与常见全角标点
+_EXTRA_PUNCTUATION = frozenset(
+    '，。！？；：、（）「」『』【】…·—～'
+    '\u3000\u2018\u2019\u201c\u201d\uFF01\uFF1F\uFF1B\uFF1A\uFF0C\uFF0E'
+)
+
+
+def _is_punctuation_char(ch: str) -> bool:
+    """判断是否为标点（ASCII 标点或常见全角标点）。"""
+    return ch in string.punctuation or ch in _EXTRA_PUNCTUATION
+
+
+def _strip_for_coverage(text: str) -> str:
+    """去空白与标点，得到用于覆盖率比较的纯内容字符序列。"""
+    return ''.join(
+        ch for ch in str(text or '')
+        if not ch.isspace() and not _is_punctuation_char(ch)
+    )
+
+
+def _assert_text_coverage(
+    src_text: str,
+    out_cues: List[AlignedSubtitleCue],
+    *,
+    context: str,
+    logger=None,
+) -> None:
+    """文本覆盖率闸门：AI 只能重排/重标点，不能丢字或造字。
+
+    两条硬约束（任一违反抛 AISegmentationError，由上层转降级）：
+    1. 覆盖率 = (原文字符逐个在输出中出现的数量) / len(原文字符) 必须 >= 0.9；
+       低于 0.9 说明输出丢掉了原文内容。原文为空时直接放行（无内容可校验）。
+    2. 输出新增的非标点字符集合必须为空（只允许 AI 新增标点），
+       否则说明输出出现了原文不存在的字词（幻觉/串批）。
+
+    比较前统一去空白与标点，避免把"AI 重新断句/补标点"误判为内容变更。
+    """
+    src_chars = _strip_for_coverage(src_text)
+    out_chars = _strip_for_coverage(''.join(str(c.text or '') for c in out_cues or []))
+    if not src_chars:
+        # 无原文（空批次/纯标点）→ 无内容可校验
+        return
+
+    # 覆盖率按"原文字符逐个是否在输出中出现"计算（重复字符各计一次）：
+    # 这是内容留存率，而不是去重后的字符种类比例。
+    out_set = set(out_chars)
+    total = len(src_chars)
+    covered = sum(1 for ch in src_chars if ch in out_set)
+    coverage = covered / total
+    if coverage < 0.9:
+        message = (
+            f'[{context}] 文本覆盖率不足: {coverage:.3f} < 0.9 '
+            f'(原文 {len(src_chars)} 字符 / 输出 {len(out_chars)} 字符, cue {len(out_cues or [])} 条)'
+        )
+        if logger:
+            logger.warning(message)
+        raise AISegmentationError(message)
+
+    extra = set(out_chars) - set(src_chars)
+    extra.discard('')
+    if extra:
+        sample = ' '.join(sorted(extra))[:40]
+        message = f'[{context}] 输出含原文不存在的非标点字符: {sample}'
+        if logger:
+            logger.warning(message)
+        raise AISegmentationError(message)
+
+
+def _snap_to_boundary(value: float, boundaries: List[float]) -> Optional[float]:
+    """把时间值吸附到最近的输入段边界，超出容差返回 None。"""
+    if not boundaries:
+        return None
+    value = float(value)
+    nearest = min(boundaries, key=lambda b: abs(float(b) - value))
+    if abs(float(nearest) - value) <= _BOUNDARY_SNAP_TOL_S:
+        return float(nearest)
+    return None
+
+
+def _segment_boundaries(segments: List[AsrSegmentTiming]) -> List[float]:
+    """从输入段构造允许的时间边界集合（所有 start/end，去重升序）。"""
+    boundaries = set()
+    for seg in segments:
+        boundaries.add(round(float(seg.start_s), 3))
+        boundaries.add(round(float(seg.end_s), 3))
+    return sorted(boundaries)
 
 
 def _parse_cues_response(
@@ -711,13 +839,24 @@ def _parse_cues_response(
     batch_start_s: float,
     batch_end_s: float,
     input_count: int,
+    input_boundaries: Optional[List[float]] = None,
+    total_duration_s: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """校验并清洗 AI 返回的 cues。
 
+    基础校验：
     - 必须是 {"cues": [...]}
     - 每条 start_s < end_s，且落在批次时间范围内（允许 0.5s 容差）
     - 按时间升序、去重叠
     - 数量合理（1 ~ input_count*2 + 4，防异常膨胀）
+
+    增强校验（input_boundaries / total_duration_s 提供时启用）：
+    - 时间吸附：start_s / end_s 必须落在输入段边界 ±0.3s 内，并吸附到该边界值。
+      时间是 AI 生成的近似值，不能直接当权威时间轴；吸附保证输出边界只可能取
+      输入段的真实边界。任一时间点找不到容差内的边界 → 整批返回 []（触发降级）。
+      吸附后若出现时间重叠也不再截断（截断会产生非边界时间），一律整批返回 []。
+    - 时长上界：total_duration_s > 0 时把 end_s 钳制到总时长、start_s 抬到 >= 0。
+      覆盖率的 95% 闸门不在此函数内，见 _assert_text_coverage（两级 AI 出口共用）。
     """
     if not isinstance(parsed, dict):
         return []
@@ -756,11 +895,56 @@ def _parse_cues_response(
     if not cleaned:
         return []
 
+    # 时间吸附：只允许落在输入段边界上
+    if input_boundaries:
+        snapped: List[Dict[str, Any]] = []
+        for c in cleaned:
+            new_start = _snap_to_boundary(c['start_s'], input_boundaries)
+            new_end = _snap_to_boundary(c['end_s'], input_boundaries)
+            if new_start is None or new_end is None:
+                bad_time = c['start_s'] if new_start is None else c['end_s']
+                bad_field = 'start_s' if new_start is None else 'end_s'
+                message = (
+                    f'段级 AI 时间未吸附到输入段边界: {bad_field}={bad_time:.3f} '
+                    f'在 ±{_BOUNDARY_SNAP_TOL_S}s 内无匹配边界'
+                    f'（输入边界 {len(input_boundaries)} 个），整批拒绝并降级'
+                )
+                logging.getLogger(__name__).warning(message)
+                return []
+            if new_end <= new_start:
+                continue
+            snapped.append({'start_s': new_start, 'end_s': new_end, 'text': c['text']})
+        cleaned = snapped
+        if not cleaned:
+            return []
+
+    # 时长上界钳制（安全兜底：防止输出时间轴溢出视频总时长）
+    if total_duration_s is not None and float(total_duration_s) > 0:
+        limit = float(total_duration_s)
+        clamped: List[Dict[str, Any]] = []
+        for c in cleaned:
+            new_start = max(0.0, min(limit, c['start_s']))
+            new_end = max(0.0, min(limit, c['end_s']))
+            if new_end <= new_start:
+                continue
+            clamped.append({'start_s': new_start, 'end_s': new_end, 'text': c['text']})
+        cleaned = clamped
+        if not cleaned:
+            return []
+
     # 升序 + 去重叠
     cleaned.sort(key=lambda c: c['start_s'])
     deduped: List[Dict[str, Any]] = []
     for c in cleaned:
         if deduped and c['start_s'] < deduped[-1]['end_s'] - 0.001:
+            if input_boundaries:
+                # 吸附模式下不做截断：截断会把 start_s 推到非边界值，
+                # 违反"时间必须取自输入段边界"的契约 → 整批拒绝并降级
+                logging.getLogger(__name__).warning(
+                    '段级 AI 输出时间重叠: [%.3f, %.3f] 与上一条 end=%.3f 冲突，整批拒绝并降级',
+                    c['start_s'], c['end_s'], deduped[-1]['end_s'],
+                )
+                return []
             # 重叠：跳过或截断到上一条结尾
             new_start = deduped[-1]['end_s']
             if c['end_s'] > new_start + 0.05:
@@ -780,6 +964,9 @@ def _cues_from_response(
     timing_source: str,
     provider: str,
 ) -> List[AlignedSubtitleCue]:
+    # 置信度按来源可靠度分层，避免常量决定下游冲突仲裁：
+    # 段级 AI 只能在粗粒度段边界上重排（0.70），低于字级 AI（0.90），
+    # 高于无字级时的按段直转（0.60）；下游 resolve_overlaps 按此值仲裁。
     return [
         AlignedSubtitleCue(
             start_s=c['start_s'],
@@ -787,7 +974,7 @@ def _cues_from_response(
             text=c['text'],
             provider=provider,
             timing_source=timing_source,
-            alignment_confidence=0.9,
+            alignment_confidence=0.70,
         )
         for c in cues_data
     ]
@@ -798,6 +985,11 @@ def _cues_from_response(
 # ---------------------------------------------------------------------------
 
 def _baseline_align_batch(batch: _Batch, provider: str) -> List[AlignedSubtitleCue]:
+    """AI 失败时的批次兜底。
+
+    置信度按来源可靠度分层，避免常量决定下游 resolve_overlaps 的冲突仲裁：
+    有字级时间戳时按词边界聚合（0.85），无字级时只能按段直转（0.60）。
+    """
     cues: List[AlignedSubtitleCue] = []
     if batch.has_word_timestamps and batch.words:
         # 按段语义不可得时，按词序列每 N 个词聚成一条（保守：每 12 词或遇句末标点切）
@@ -811,7 +1003,7 @@ def _baseline_align_batch(batch: _Batch, provider: str) -> List[AlignedSubtitleC
                     text=_words_to_text(unit),
                     provider=provider,
                     timing_source='word',
-                    alignment_confidence=0.5,
+                    alignment_confidence=0.85,
                 ))
                 unit = []
         if unit:
@@ -821,7 +1013,7 @@ def _baseline_align_batch(batch: _Batch, provider: str) -> List[AlignedSubtitleC
                 text=_words_to_text(unit),
                 provider=provider,
                 timing_source='word',
-                alignment_confidence=0.5,
+                alignment_confidence=0.85,
             ))
     else:
         for seg in batch.segments:
@@ -831,7 +1023,7 @@ def _baseline_align_batch(batch: _Batch, provider: str) -> List[AlignedSubtitleC
                 text=str(seg.text or '').strip(),
                 provider=provider,
                 timing_source='segment',
-                alignment_confidence=0.5,
+                alignment_confidence=0.60,
             ))
     return cues
 
@@ -1280,6 +1472,83 @@ def _flatten_segments_from_words(words: List[AsrWordTiming]) -> Tuple[List[AsrSe
 # AI 智能分段器（上下文感知 + 边界精炼）
 # ---------------------------------------------------------------------------
 
+def _normalize_output_cues(
+    cues: List[AlignedSubtitleCue],
+    total_duration_s: Optional[float] = None,
+) -> List[AlignedSubtitleCue]:
+    """出口归一化：丢弃非法 cue → 升序 → 去重叠 → 时长钳制。
+
+    下游 srt_transform_engine.resolve_overlaps 与 _refine_boundaries 都假定输入
+    按时间有序且不重叠，而 context_cues 又取 all_cues[-N:] 作为下一批上下文；
+    因此这里做统一兜底，避免未排序/重叠的 AI 输出污染上下文和落盘结果。
+    """
+    cleaned: List[AlignedSubtitleCue] = []
+    for cue in cues or []:
+        if not str(getattr(cue, 'text', '') or '').strip():
+            continue
+        start_s = float(cue.start_s)
+        end_s = float(cue.end_s)
+        if end_s <= start_s:
+            continue
+        cleaned.append(cue)
+
+    cleaned.sort(key=lambda c: float(c.start_s))
+
+    limit: Optional[float] = None
+    if total_duration_s is not None and float(total_duration_s) > 0:
+        limit = float(total_duration_s)
+
+    normalized: List[AlignedSubtitleCue] = []
+    previous_end: Optional[float] = None
+    for cue in cleaned:
+        start_s = float(cue.start_s)
+        end_s = float(cue.end_s)
+        if limit is not None:
+            start_s = max(0.0, min(limit, start_s))
+            end_s = max(0.0, min(limit, end_s))
+        if previous_end is not None and start_s < previous_end:
+            # 重叠：后一条抬到前一条结尾（不改变文本归属）
+            start_s = previous_end
+        if end_s <= start_s:
+            continue
+        previous_end = end_s
+        if start_s == float(cue.start_s) and end_s == float(cue.end_s):
+            # 未被修改：复用原对象，避免无谓重建
+            normalized.append(cue)
+            continue
+        normalized.append(AlignedSubtitleCue(
+            start_s=start_s,
+            end_s=end_s,
+            text=cue.text,
+            provider=getattr(cue, 'provider', ''),
+            timing_source=getattr(cue, 'timing_source', 'segment'),
+            alignment_confidence=getattr(cue, 'alignment_confidence', 0.0),
+        ))
+    return normalized
+
+
+def _derive_total_duration_s(batches: List[_Batch]) -> Optional[float]:
+    """从批次推导输出时间轴的时长上界（所有输入段的 max(end_s)）。
+
+    AISegmentationConfig 不携带视频总时长，AISegmenter.segment() 也无法从
+    ASR 结果之外拿到容器时长；用"输入覆盖到的最晚时间点"作为上界是安全近似：
+    输出 cue 不应晚于输入内容的结束时间。拿不到任何时间时返回 None（不钳制）。
+    """
+    latest: Optional[float] = None
+    for batch in batches or []:
+        if batch.segments:
+            candidate = max(float(s.end_s) for s in batch.segments)
+        elif batch.words:
+            candidate = max(float(w.end_s) for w in batch.words)
+        else:
+            candidate = float(batch.time_end_s or 0.0)
+        if latest is None or candidate > latest:
+            latest = candidate
+    if latest is None or latest <= 0:
+        return None
+    return latest
+
+
 class AISegmenter:
     """AI 智能分段器：上下文感知 + 边界精炼 + 节奏后处理。
 
@@ -1292,6 +1561,12 @@ class AISegmenter:
     def __init__(self, config: AISegmentationConfig, logger=None):
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
+        # 降级可观测：每次 segment() 重置并累计，供上层读取（不改变返回值类型）
+        self.last_degradation_stats: Dict[str, int] = {
+            'word_level': 0, 'segment_level': 0, 'baseline': 0, 'rejected': 0,
+        }
+        # 本次 segment() 的总时长上界（由输入推导，跨批次安全近似）
+        self._total_duration_s: Optional[float] = None
 
     def segment(self, results: List[AsrTranscriptionResult]) -> List[AlignedSubtitleCue]:
         """主入口：构建批次 → 上下文感知 AI 分段 → 可选边界精炼 → 节奏后处理。"""
@@ -1319,6 +1594,13 @@ class AISegmenter:
             len(batches), self.config.context_window,
             '开启' if self.config.boundary_refine_enabled else '关闭',
         )
+
+        # 总时长上界：所有输入的 max(end)。batches 由 valid_results 派生，
+        # 因此这是"本次分段输入覆盖到的时间终点"，作为输出时间轴的安全上界。
+        self._total_duration_s = _derive_total_duration_s(batches)
+        self.last_degradation_stats = {
+            'word_level': 0, 'segment_level': 0, 'baseline': 0, 'rejected': 0,
+        }
 
         # 逐批处理，维护滑动上下文
         all_cues: List[AlignedSubtitleCue] = []
@@ -1348,11 +1630,24 @@ class AISegmenter:
             all_cues = self._refine_boundaries(all_cues, batches, batch_results, provider)
             self.logger.info('边界精炼完成，共 %d 条 cue', len(all_cues))
 
+        stats = self.last_degradation_stats
+        degraded = stats['baseline'] + stats['rejected']
+        if degraded > 0:
+            ratio = degraded / max(1, len(batches))
+            if ratio > 0.3:
+                self.logger.warning(
+                    'Agent 分段降级比例偏高：%.1f%%（基线 %d + 拒绝 %d / 共 %d 批次）'
+                    '，统计=%s',
+                    ratio * 100, stats['baseline'], stats['rejected'], len(batches), stats,
+                )
+
         if self.config.rhythm_enabled:
             self.logger.info('节奏后处理已开启，执行 enforce_rhythm')
-            return enforce_rhythm(all_cues, self.config)
+            return _normalize_output_cues(
+                enforce_rhythm(all_cues, self.config), self._total_duration_s,
+            )
         self.logger.info('节奏后处理已关闭，直接返回 AI 分段结果')
-        return all_cues
+        return _normalize_output_cues(all_cues, self._total_duration_s)
 
     def _segment_batch_with_context(
         self,
@@ -1365,15 +1660,18 @@ class AISegmenter:
         """单批次三级降级，支持上下文传递。"""
         label = f'批次 {idx + 1}/{total}'
         has_ctx = bool(context_cues)
+        stats = self.last_degradation_stats
 
         # 第一级：字级 AI（带上下文）
         if batch.has_word_timestamps and batch.words:
             try:
                 cues = self._call_ai_word_level(batch, provider, context_cues)
                 if cues:
+                    stats['word_level'] += 1
                     self.logger.info('%s 字级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
                     return cues
             except Exception as exc:
+                stats['rejected'] += 1
                 self.logger.warning('%s 字级 AI 分段失败，降级段级：%s', label, exc)
             # 第二级：段级 AI
             if not batch.segments:
@@ -1383,21 +1681,26 @@ class AISegmenter:
                 try:
                     cues = self._call_ai_segment_level(batch, provider, context_cues)
                     if cues:
+                        stats['segment_level'] += 1
                         self.logger.info('%s 段级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
                         return cues
                 except Exception as exc:
+                    stats['rejected'] += 1
                     self.logger.warning('%s 段级 AI 分段失败，回退基线：%s', label, exc)
         else:
             if batch.segments:
                 try:
                     cues = self._call_ai_segment_level(batch, provider, context_cues)
                     if cues:
+                        stats['segment_level'] += 1
                         self.logger.info('%s 段级 AI 分段成功%s，%d 条 cue', label, '(含上下文)' if has_ctx else '', len(cues))
                         return cues
                 except Exception as exc:
+                    stats['rejected'] += 1
                     self.logger.warning('%s 段级 AI 分段失败，回退基线：%s', label, exc)
 
         # 第三级：基线对齐
+        stats['baseline'] += 1
         self.logger.info('%s 回退基线对齐', label)
         return _baseline_align_batch(batch, provider)
 
@@ -1421,6 +1724,11 @@ class AISegmenter:
         cues = _cues_from_index_ranges(ranges, batch.words, provider, logger=self.logger)
         if not cues:
             raise AISegmentationError('字级 AI 返回无有效 cue')
+        # 出口闸门：索引分段只能重排词，不能丢词/造词
+        _assert_text_coverage(
+            _words_to_text(batch.words), cues,
+            context='word_level', logger=self.logger,
+        )
         return cues
 
     def _call_ai_segment_level(
@@ -1440,8 +1748,11 @@ class AISegmenter:
         )
         payload = _build_segment_payload_with_context(batch.segments, context_cues or [])
         parsed = self._call_with_retry(system_prompt, payload)
+        # 段级时间戳只信输入段边界：吸附 + 覆盖率校验 + 时长上界
         cues_data = _parse_cues_response(
             parsed, batch.time_start_s, batch.time_end_s, len(batch.segments),
+            input_boundaries=_segment_boundaries(batch.segments),
+            total_duration_s=self._total_duration_s,
         )
         if not cues_data:
             # 诊断：记录模型返回的原始结构，帮助定位格式不匹配
@@ -1462,7 +1773,21 @@ class AISegmenter:
             else:
                 self.logger.warning('段级 AI 返回非 dict: %s', str(parsed)[:200])
             raise AISegmentationError('段级 AI 返回无有效 cue')
-        return _cues_from_response(cues_data, timing_source='ai', provider=provider)
+        cues = _cues_from_response(cues_data, timing_source='ai', provider=provider)
+        # 出口闸门：段级分段只能重排/补标点，不能丢字/造字
+        _assert_text_coverage(
+            '\n'.join(str(s.text or '') for s in batch.segments), cues,
+            context='segment_level', logger=self.logger,
+        )
+        return cues
+
+    def _normalize_output_cues(
+        self,
+        cues: List[AlignedSubtitleCue],
+        total_duration_s: Optional[float] = None,
+    ) -> List[AlignedSubtitleCue]:
+        """实例方法包装（保持既有调用点可用），实现见模块级 _normalize_output_cues。"""
+        return _normalize_output_cues(cues, total_duration_s)
 
     def _call_with_retry(
         self,
@@ -1607,11 +1932,19 @@ class AISegmenter:
                     max_cps=self.config.max_cps,
                 )
                 parsed = self._call_with_retry(system_prompt, payload)
+                # 精炼输出同样只信输入词边界（±0.3s 吸附），并受总时长上界约束
+                word_boundaries = sorted({
+                    round(float(w.start_s), 3) for w in boundary_words
+                } | {
+                    round(float(w.end_s), 3) for w in boundary_words
+                })
                 refined_cues_data = _parse_cues_response(
                     parsed,
                     boundary_prev[0].start_s,
                     boundary_next[-1].end_s,
                     len(boundary_words),
+                    input_boundaries=word_boundaries,
+                    total_duration_s=self._total_duration_s,
                 )
                 if refined_cues_data:
                     new_boundary_cues = _cues_from_response(refined_cues_data, timing_source='ai', provider=provider)
@@ -1749,6 +2082,18 @@ def resegment_srt_file(
         cues = segmenter.segment(results)
         if not cues:
             _logger.warning('SRT 重分段：AI 分段返回空结果，跳过')
+            return None
+
+        # 落盘前兜底：SRT 适配层没有其它下游校验，这里再归一化一次
+        # （segment() 已归一化，此处幂等，防配置/调用路径变化导致漏网）
+        latest = max(
+            (float(seg.end_s) for r in results for seg in r.segments),
+            default=0.0,
+        )
+        total_duration_s = latest if latest > 0 else None
+        cues = _normalize_output_cues(cues, total_duration_s)
+        if not cues:
+            _logger.warning('SRT 重分段：归一化后无有效 cue，跳过')
             return None
 
         engine = SrtTransformEngine(SrtTransformConfig(), logger=_logger)
