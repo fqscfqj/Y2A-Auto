@@ -33,7 +33,7 @@ class VadConfig:
     max_segment_s: float = 15.0
     max_segment_s_for_split: float = 15.0
     refinement_enabled: bool = True
-    min_speech_coverage_ratio: float = 0.015
+    min_speech_coverage_ratio: float = 0.01
     # 孤立极短段（既合并不进前一窗、也合并不进后一窗）是否丢弃。
     # 需放在数据类末尾并带默认值，保持 replace() 构造的下游配置自动继承。
     drop_isolated_short: bool = True
@@ -96,10 +96,18 @@ class VadProcessor:
             self.logger.warning("VAD processing failed: %s", exc)
             return None
         finally:
+            # 本轮丢弃汇总统一在此输出一次：_refine_windows 会被 primary 与
+            # relaxed 两轮 pass 各调用一次，若在其内部汇总会把同一批丢弃事件
+            # 重复打印，且第二次携带的是未重置的累积计数（中间值失真）。
             if self.last_dropped_short_count > 0:
                 self.logger.info(
                     "VAD dropped %d isolated short segments (< drop threshold)",
                     self.last_dropped_short_count,
+                )
+            if self.last_refine_dropped_count > 0:
+                self.logger.info(
+                    "Refine pass dropped %d silent/pseudo windows in total",
+                    self.last_refine_dropped_count,
                 )
 
     def _detect_speech_windows_impl(
@@ -544,11 +552,8 @@ class VadProcessor:
                     },
                 )
             )
-        if self.last_refine_dropped_count > 0:
-            self.logger.info(
-                "Refine pass dropped %d silent/pseudo windows in total",
-                self.last_refine_dropped_count,
-            )
+        # 精修丢弃汇总不在此输出：detect_speech_windows 的 finally 统一汇报一次，
+        # 避免两轮 pass 重复打印同一批事件与累积计数的中间值。
         return self._merge_windows(
             refined_windows,
             config=config,
@@ -823,7 +828,26 @@ class VadProcessor:
             else max(0.0, w.end_s - w.start_s)
             for w in windows
         )
-        return total_speech / max(float(total_duration_s or 0.0), 0.01)
+        total_window_span = sum(
+            max(0.0, float(w.end_s) - float(w.start_s))
+            for w in windows
+        )
+        ratio = total_speech / max(float(total_duration_s or 0.0), 0.01)
+        # 仅 debug：同时给出旧口径（窗口全长占比）与新旧比值，便于用真实任务
+        # 标定阈值。生产默认 INFO 级，不产生额外日志量。
+        if self.logger.isEnabledFor(logging.DEBUG):
+            legacy_ratio = total_window_span / max(float(total_duration_s or 0.0), 0.01)
+            self.logger.debug(
+                "VAD coverage ratio: new=%.5f (speech %.2fs / %.2fs), legacy=%.5f (window span %.2fs), boost=%.2fx, threshold=%.5f",
+                ratio,
+                total_speech,
+                max(float(total_duration_s or 0.0), 0.01),
+                legacy_ratio,
+                total_window_span,
+                (legacy_ratio / ratio) if ratio > 0.0 else 0.0,
+                max(0.0, float(self.config.min_speech_coverage_ratio or 0.0)),
+            )
+        return ratio
 
     def _build_relaxed_retry_config(self) -> VadConfig:
         return replace(

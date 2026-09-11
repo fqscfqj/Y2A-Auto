@@ -374,6 +374,7 @@ class VadQualityGuardTests(unittest.TestCase):
         config = VadConfig()
         processor = VadProcessor(config)
         logger = Mock(spec=logging.Logger)
+        logger.isEnabledFor = Mock(return_value=False)
         processor.logger = logger
 
         with patch.object(processor, '_extract_audio_clip', return_value='clip.wav'), patch.object(
@@ -382,6 +383,45 @@ class VadQualityGuardTests(unittest.TestCase):
             processor._refine_windows('input.wav', [self._make_window(0.0, 2.0)], config)
 
         self.assertTrue(logger.info.called)
+
+    def test_refine_dropped_summary_printed_once_per_detection_run(self):
+        """汇总日志每个检测轮次只打印一次，且数字为真实总数。
+
+        修复前汇总位于 _refine_windows 内部，会被 primary 与 relaxed 两轮 pass
+        各打印一次，第二次携带未重置的累积计数（1 -> 2），同一批丢弃事件重复
+        汇报且首个数字失真。
+        """
+        config = VadConfig(
+            chunk_window_s=15.0,
+            chunk_overlap_s=0.4,
+            min_speech_coverage_ratio=0.05,
+            refinement_enabled=True,
+        )
+        processor = VadProcessor(config)
+        logger = Mock(spec=logging.Logger)
+        logger.isEnabledFor = Mock(return_value=False)
+        processor.logger = logger
+
+        def fake_run_vad(wav_path, duration_s, active_config):
+            # 扫描 pass 返回 2s 语音（100s 音频 -> 覆盖率 0.02 < 0.05，触发第二轮）；
+            # 精修 pass（refinement_enabled=False）判为无语音 -> 丢弃该窗口。
+            if active_config.refinement_enabled:
+                return [(0.4, 2.4)]
+            return []
+
+        with patch.object(processor, '_create_chunks', Mock(return_value=[(0.0, 100.0)])), patch.object(
+            processor, '_extract_audio_clip', Mock(return_value='clip.wav')
+        ), patch.object(processor, '_run_vad_on_audio', Mock(side_effect=fake_run_vad)):
+            processor.detect_speech_windows('input.wav', 100.0)
+
+        summary_logs = [
+            call for call in logger.info.call_args_list
+            if 'Refine pass dropped' in str(call) and 'in total' in str(call)
+        ]
+        self.assertEqual(len(summary_logs), 1, msg=f'汇总日志应只打印一次: {summary_logs}')
+        # 两轮 pass 各丢弃一个窗口，汇总给出的总数必须是 2 而不是中间值 1。
+        self.assertEqual(summary_logs[0][0][1], 2)
+        self.assertEqual(processor.last_refine_dropped_count, 2)
 
     # ---------------- B6 覆盖率口径 ----------------
 
@@ -401,15 +441,87 @@ class VadQualityGuardTests(unittest.TestCase):
 
         self.assertAlmostEqual(ratio, 0.5, places=6)
 
+    def _build_coverage_scenario(self, failing_index=None):
+        """构造三分片场景，返回 (processor, config, chunks)，供分母口径测试使用。
+
+        chunk_overlap_s=4.0 → half_overlap=2.0，三个 chunk 的 ownership 区间分别为
+        13.0 / 11.0 / 13.0 秒，与各自 15.0 秒的 chunk 全长明显不同，可区分新旧分母。
+        """
+        config = VadConfig(chunk_window_s=15.0, chunk_overlap_s=4.0, refinement_enabled=False)
+        processor = VadProcessor(config, logger=logging.getLogger('vad_guard_test'))
+        chunks = [(0.0, 15.0), (11.0, 26.0), (22.0, 37.0)]
+
+        def fake_run(wav_path, duration_s, active_config):
+            index = int(os.path.basename(wav_path).split('_')[1].split('.')[0])
+            if index == failing_index:
+                return None
+            return [(3.0, 5.0)]
+
+        def fake_extract(wav_path, start_s, end_s):
+            index = chunks.index((float(start_s), float(end_s)))
+            clip_path = os.path.join(processor._temp_dirs[0], f'clip_{index:03d}.wav') \
+                if processor._temp_dirs else os.path.join(tempfile.gettempdir(), f'clip_{index:03d}.wav')
+            return clip_path
+
+        return processor, config, chunks, fake_extract, fake_run
+
     def test_chunk_coverage_denominator_uses_ownership_range(self):
-        config = VadConfig(chunk_window_s=15.0, chunk_overlap_s=0.4)
-        processor = VadProcessor(config)
-        keep_start, keep_end = processor._ownership_range(
-            config, chunk_index=0, total_chunks=4, chunk_start=0.0, chunk_end=15.0
-        )
-        # ownership 区间 = 14.8s，而 chunk 全长为 15.0s：分母口径必须取前者。
-        self.assertAlmostEqual(keep_end - keep_start, 14.8, places=6)
-        self.assertNotAlmostEqual(keep_end - keep_start, 15.0, places=6)
+        """真测试：必须真正走 _detect_chunked，断言分母是 ownership 区间而非 chunk 全长。
+
+        旧实现用含重叠的 chunk 全长做分母（15.0s），系统性低估覆盖率；正确口径是
+        实际采纳的 ownership 区间（13.0 / 11.0 / 13.0s）。把 _detect_chunked 的分母
+        改回 chunk 全长后，本测试必须失败。
+        """
+        processor, config, chunks, fake_extract, fake_run = self._build_coverage_scenario()
+        processor._temp_dirs.append(self._tmp)
+
+        captured = []
+
+        def capture_merge(windows, **kwargs):
+            captured.extend(windows)
+            return windows
+
+        with patch.object(processor, '_create_chunks', Mock(return_value=chunks)), patch.object(
+            processor, '_extract_audio_clip', Mock(side_effect=fake_extract)
+        ), patch.object(processor, '_run_vad_on_audio', Mock(side_effect=fake_run)), patch.object(
+            processor, '_merge_windows', Mock(side_effect=capture_merge)
+        ):
+            processor._detect_chunked('input.wav', 37.0, config, source_pass='scan')
+
+        self.assertEqual(len(captured), 3, msg='三个分片各应产出一个窗口')
+        expected = [2.0 / 13.0, 2.0 / 11.0, 2.0 / 13.0]
+        legacy = [2.0 / 15.0] * 3
+        actual = [window.coverage_ratio for window in captured]
+        for idx, (value, want, old) in enumerate(zip(actual, expected, legacy)):
+            self.assertAlmostEqual(value, want, places=6, msg=f'chunk {idx} 应采用 ownership 分母')
+            self.assertNotAlmostEqual(value, old, places=6, msg=f'chunk {idx} 不应采用 chunk 全长分母')
+
+    def test_chunk_coverage_reports_partial_state_with_ownership_denominator(self):
+        """失败分片计数与覆盖率分母必须同时正确：1/3 分片失败 -> partial 且分母仍是 ownership。"""
+        processor, config, chunks, fake_extract, fake_run = self._build_coverage_scenario(failing_index=1)
+        processor._temp_dirs.append(self._tmp)
+
+        captured = []
+
+        def capture_merge(windows, **kwargs):
+            captured.extend(windows)
+            return windows
+
+        with patch.object(processor, '_create_chunks', Mock(return_value=chunks)), patch.object(
+            processor, '_extract_audio_clip', Mock(side_effect=fake_extract)
+        ), patch.object(processor, '_run_vad_on_audio', Mock(side_effect=fake_run)), patch.object(
+            processor, '_merge_windows', Mock(side_effect=capture_merge)
+        ):
+            processor._detect_chunked('input.wav', 37.0, config, source_pass='scan')
+
+        # 1/3 分片失败：结果仍可用，但状态必须降级为 partial。
+        self.assertEqual(len(captured), 2, msg='仅两个分片产出窗口')
+        self.assertEqual(processor.last_result_state, 'partial')
+        self.assertEqual(processor.last_failure_reason, 'vad_partial_chunks')
+        expected = [2.0 / 13.0, 2.0 / 13.0]
+        actual = [window.coverage_ratio for window in captured]
+        for idx, (value, want) in enumerate(zip(actual, expected)):
+            self.assertAlmostEqual(value, want, places=6, msg=f'存活 chunk {idx} 应采用 ownership 分母')
 
     # ---------------- B7 临时目录生命周期 ----------------
 

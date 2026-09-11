@@ -279,7 +279,14 @@ LEGACY_PINNED_SUBTITLE_WRAP = {
 
 
 def migrate_pinned_subtitle_wrap_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-    """把旧模板钉死的 999/1 换行组合迁移回默认的 42/2。"""
+    """把旧模板钉死的 999/1 换行组合迁移回默认的 42/2。
+
+    同一组合若走设置页提交（app.py 的数值范围校验）也会被整组回退到
+    42/2/False/False：那里只有越界的 999 会被单独拦截，SUBTITLE_MAX_LINES=1
+    落在合法区间会被保留，落盘成 42/1/True/True，与本函数结果不一致，
+    因此设置页侧补了同样的整组归一。两条路径的结果必须一致，改动任一侧时
+    请同步另一侧（tests/test_settings_guards.py 有跨路径一致性断言）。
+    """
     updated = dict(config or {})
     if not updated:
         return updated, False

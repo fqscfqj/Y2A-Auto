@@ -143,6 +143,11 @@ class AsrApiClient:
         self.last_failure_ratio: float = 0.0
         self.last_failed_count: int = 0
         self.last_window_count: int = 0
+        # 同一轮转录可能连续提交多批窗口（例如 VAD 主路径失败后走 fallback），
+        # 下面两个字段记录本轮的最大批次规模与最差失败占比：调用方读取
+        # last_failure_ratio 时拿到的是最差结局，而不是最后一批的乐观值。
+        self._quality_round_max_batch: int = 0
+        self._quality_round_worst_ratio: float = 0.0
         self._init_client()
 
     @staticmethod
@@ -983,23 +988,36 @@ class AsrApiClient:
             windows.append((offset, self._render_result_to_srt(result, relative_to_window=True)))
         return windows
 
+    def reset_quality_counters(self) -> None:
+        """清零本轮转录的失败占比统计，供新一轮转录（新任务/新尝试）开始时调用。
+
+        ``transcribe_windows_concurrent`` 会把连续多批窗口的失败占比取较差值，
+        因此同一轮内部的 fallback 不会覆盖主路径已经暴露的降级信号；只有在明确
+        进入新一轮时才需要调用本方法。
+        """
+        self.last_failure_ratio = 0.0
+        self.last_failed_count = 0
+        self.last_window_count = 0
+        self._quality_round_max_batch = 0
+        self._quality_round_worst_ratio = 0.0
+
     def transcribe_windows_concurrent(
         self,
         windows: List[Tuple[DetectedSpeechWindow, str]],
     ) -> List[AsrTranscriptionResult]:
-        self.last_failure_ratio = 0.0
-        self.last_failed_count = 0
-        self.last_window_count = 0
         if not windows:
+            # 空批次代表本轮没有可转录窗口，直接清零并准备下一轮统计。
+            self.reset_quality_counters()
             return []
 
         results: Dict[int, AsrTranscriptionResult] = {}
         workers = max(1, int(self.config.max_workers or 1))
         total_failures = 0
-        # 15% failure tolerance (at least 3 windows) instead of the previous
-        # "half the batch" allowance, which let severely degraded runs pass as
-        # partial success.
-        max_total_failures = max(3, int(len(windows) * 0.15))
+        # 15% 失败容错，但下限随窗口规模收缩：3 次容错在 n<20 时会盖过 15% 本身，
+        # n=10 时放宽到 30%、n=4 时放宽到 75%，反而比旧的「半数」策略更宽。
+        # 这里最多允许 min(3, n//4) 次失败，小批量因此收紧到 1 次（n<=7）或 2 次
+        # （n<=11），大批量仍以 15% 为主。
+        max_total_failures = max(min(3, len(windows) // 4), int(len(windows) * 0.15))
         jobs: List[Tuple[int, DetectedSpeechWindow, str, str]] = []
         for idx, (window, wav_path) in enumerate(windows):
             jobs.append((idx, window, wav_path, f"{window.start_s:.2f}s-{window.end_s:.2f}s"))
@@ -1013,6 +1031,7 @@ class AsrApiClient:
                 total_failures += 1
             remaining_jobs = jobs[1:]
 
+        cancelled_jobs = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(self.transcribe_window, wav_path, window, segment_info): (idx, window)
@@ -1035,30 +1054,52 @@ class AsrApiClient:
                 if not result.ok and result.timestamp_mode != 'srt':
                     total_failures += 1
                     if total_failures >= max_total_failures:
+                        # 容错已耗尽：取消所有未启动的任务，整批作废。
+                        # cancel() 只对排队中的任务生效，已在运行的任务仍会返回结果。
                         for pending in futures:
-                            pending.cancel()
+                            if pending.cancel():
+                                cancelled_jobs += 1
                         break
 
         ordered: List[AsrTranscriptionResult] = []
+        skipped_failures = 0
         for idx in range(len(windows)):
-            ordered.append(results.get(
-                idx,
-                AsrTranscriptionResult(
+            result = results.get(idx)
+            if result is None:
+                # 被取消 / 从未执行的窗口按失败记账：它们在最终产物里同样是
+                # asr_failed stub，漏记会让失败占比被系统性低估。
+                skipped_failures += 1
+                result = AsrTranscriptionResult(
                     provider=self.config.provider,
                     response_format='',
                     timestamp_mode='none',
                     window=windows[idx][0],
                     failure_token='asr_failed',
-                ),
-            ))
-        self.last_window_count = len(windows)
-        self.last_failed_count = total_failures
-        self.last_failure_ratio = total_failures / len(windows) if windows else 0.0
-        if self.last_failure_ratio > 0:
+                )
+            ordered.append(result)
+        total_failures += skipped_failures
+
+        # 本轮最差结局：last_failure_ratio 取本轮各批失败占比的最大值，避免
+        # fallback 等后续小批次把主路径已经暴露的降级信号稀释掉；只有当新批次
+        # 比本轮此前的最大批次还大时才视为新一轮转录，重置统计。
+        if len(windows) > self._quality_round_max_batch:
+            self._quality_round_max_batch = len(windows)
+            self._quality_round_worst_ratio = 0.0
+        batch_ratio = total_failures / len(windows)
+        self._quality_round_worst_ratio = max(self._quality_round_worst_ratio, batch_ratio)
+        self.last_failure_ratio = self._quality_round_worst_ratio
+        self.last_window_count = self._quality_round_max_batch
+        self.last_failed_count = int(round(self.last_failure_ratio * self.last_window_count))
+        if total_failures:
             self.logger.warning(
-                "ASR window batch finished with %d/%d failed windows (%.1f%% failure ratio)",
+                "ASR window batch finished with %d/%d failed windows (%.1f%% failure ratio, "
+                "%d cancelled, round worst %d/%d, %.1f%%)",
                 total_failures,
                 len(windows),
+                batch_ratio * 100.0,
+                cancelled_jobs,
+                self.last_failed_count,
+                self.last_window_count,
                 self.last_failure_ratio * 100.0,
             )
         return ordered

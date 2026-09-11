@@ -50,6 +50,100 @@ _LEADING_INDEX_PREFIX_RE = re.compile(
     r'^(?:[\(（]?\s*\d{1,4}\s*[\)）:：、]\s*|\d{1,4}\s*[.)](?!\d)\s*|[-–—·•]\s+)'
 )
 
+# 「原文照留」类条目的判定用正则：这类内容 prompt 明确允许保留原文，
+# 命中它们不算「未翻译」，否则会让一条 URL / 型号丢掉整份译文。
+_URL_LIKE_RE = re.compile(r'(?:https?://|www\.)\S+', re.IGNORECASE)
+_PURE_NUMBER_RE = re.compile(r'\d+(?:[.,:]\d+)*%?')
+_SYMBOL_ONLY_RE = re.compile(r'[\W_]+', re.UNICODE)
+_ALNUM_ONLY_RE = re.compile(r'[A-Za-z0-9]+')
+_CAPS_ACRONYM_RE = re.compile(r'[A-Z]{2,}\d*')
+_CJK_ONLY_RE = re.compile(r'[\u3400-\u9fff]+')
+_COMPACT_TAG_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9+._/-]*')
+# 「像专有名词/代码而非普通英文词」的形态判据：
+# 含数字（v1、x86、mp4）、或首字母之后仍出现大写（iPhone、YouTube、iOS）。
+_LOWER_TO_UPPER_RE = re.compile(r'[a-z][A-Z]')
+
+
+def _looks_like_name_or_code(compact: str) -> bool:
+    """单 token 是否像专有名词/型号/缩写，而不是一个普通英文单词。
+
+    为什么不能只看「短且是 ASCII」：``hello``/``bravo`` 这类普通小写单词同样
+    满足该条件，会被误判为「不可译」→ 模型整句照抄英文原文时残留计数归零，
+    「整批未译」的反向守卫彻底失效。
+
+    因此只认三种可被 prompt 正当保留的形态：含数字的型号/版本、全大写缩写、
+    词中出现大小写转换的专有名词。普通小写英文词一律要求翻译。
+    """
+    if not compact or not compact.isascii():
+        return False
+    if any(ch.isdigit() for ch in compact):
+        return True
+    if _CAPS_ACRONYM_RE.fullmatch(compact):
+        return True
+    return bool(_LOWER_TO_UPPER_RE.search(compact))
+
+
+def _is_preservable_verbatim(text: str) -> bool:
+    """判断文本是否属于「原文照留即可」的不可译条目。
+
+    字幕翻译 prompt 明确允许保留数字、代码、URL、占位符和无公认译名的
+    专有名词；这些条目的译文与原文相同是**正确结果**，不能算未译残留。
+
+    覆盖：URL、纯数字/百分比、纯符号、纯 CJK、缩写/型号/专有名词
+    （``NVIDIA``/``v1.2.3``/``iPhone``）。
+
+    刻意**不**覆盖普通英文词与英文句子：那些是真正该翻译、模型却照抄的
+    情形，必须继续计为残留 —— 否则「整批未译」会被放行。
+    """
+    s = str(text or '').strip()
+    if not s:
+        return False
+    if _URL_LIKE_RE.fullmatch(s):
+        return True
+    if _SYMBOL_ONLY_RE.fullmatch(s):
+        return True
+    if not re.search(r'[A-Za-z0-9]', s):
+        # 没有拉丁字母/数字：纯 CJK（原本就无需翻译）或纯符号 → 可保留
+        return True
+    if _CJK_ONLY_RE.fullmatch(re.sub(r'[\s\W_]+', '', s)):
+        return True
+
+    compact = re.sub(r'[\s\W_]+', '', s)
+    if not compact:
+        return True
+    if _PURE_NUMBER_RE.fullmatch(compact):
+        # 纯数字/百分比或纯数字串（"12345"、"1 2 3"、"60%"）
+        return True
+
+    tokens = s.split()
+    if len(tokens) > 1:
+        # 多 token：单 token 必须足够"不可译"，否则判为需要翻译的句子
+        return all(_is_preservable_token(token) for token in tokens)
+    if _ALNUM_ONLY_RE.fullmatch(compact):
+        # 无空格单 token：必须是专有名词/型号/缩写，普通小写英文词不算
+        return _looks_like_name_or_code(compact)
+    if len(compact) <= 12 and _COMPACT_TAG_RE.fullmatch(compact):
+        # 含符号的型号/短代码（C++、x86_64、A/B）
+        return _looks_like_name_or_code(compact)
+    return False
+
+
+def _is_preservable_token(token: str) -> bool:
+    """多词短语里的单个 token 是否"不可译"。
+
+    只认三类：纯数字、大写的技术缩写/型号（`NVIDIA`/`RTX`/`USB`/`GPU`）、
+    纯 CJK。普通小写英文词（`hello`/`world`/`the`）一律不算 —— 否则英文句子
+    照抄会被整句放行，整批未译就失去了拦截能力。
+    """
+    compact = re.sub(r'[\W_]+', '', token)
+    if not compact:
+        return True
+    if _PURE_NUMBER_RE.fullmatch(compact):
+        return True
+    if _CAPS_ACRONYM_RE.fullmatch(compact):
+        return True
+    return bool(_CJK_ONLY_RE.fullmatch(compact))
+
 
 def _should_fail_translation_residue(
     total_items: int,
@@ -60,6 +154,11 @@ def _should_fail_translation_residue(
 
     allow_partial=False（默认）：任一条未译残留即失败，防止原文/译文混排烧录成片。
     allow_partial=True：保留旧的容忍阈值（同时超过 3 条且超过 15% 才失败）。
+
+    注意：本函数只表达「严格/宽松」两种策略语义，不含少量残留的追认逻辑；
+    真正决定是否写盘的是 SubtitleTranslator._finalize_residual_untranslated_items，
+    它在 allow_partial=False 时还会对少量（<=3 条且 <=15%）残留做标记后放行，
+    避免一条 URL/数字条目丢掉整份译文。
     """
     if total_items <= 0 or unresolved_count <= 0:
         return False
@@ -1372,6 +1471,10 @@ class SubtitleTranslator:
 
         非中文比例判定：仅统计“中文汉字”与“英拉丁字母/数字”，忽略空白与标点；
         当 非中文/(中文+非中文) > 0.8 时，认为疑似未翻译。
+
+        例外：URL、纯数字、代码/版本号、大写缩写、短专有名词等**不可译条目**
+        的译文等于原文是 prompt 允许的正确结果（见 _is_preservable_verbatim），
+        直接判为已翻译，避免一条残留导致整份译文被丢弃。
         """
         try:
             s = (src or '').strip()
@@ -1379,8 +1482,9 @@ class SubtitleTranslator:
             if not d:
                 return True
             if d == s:
-                # 若目标语言是中文但结果与原文一致，多半未翻译
-                return True
+                # 若目标语言是中文但结果与原文一致，多半未翻译；
+                # 但不可译条目（URL/型号/纯数字/专有名词）保留原文是正确行为。
+                return not _is_preservable_verbatim(d)
             # 计算非中文比例（仅中文汉字 vs 英数）
             chinese = 0
             non_chinese = 0
@@ -1400,7 +1504,10 @@ class SubtitleTranslator:
             if denom == 0:
                 return False
             non_cn_ratio = non_chinese / denom
-            return non_cn_ratio > 0.8
+            if non_cn_ratio > 0.8:
+                # 非中文占绝大多数：只有不可译条目才容忍，其余判为未译
+                return not _is_preservable_verbatim(d)
+            return False
         except Exception:
             return False
 
@@ -1417,8 +1524,10 @@ class SubtitleTranslator:
         """字幕翻译验收：决定未译残留条目是否可继续写盘。
 
         - allow_partial=False（默认，SUBTITLE_TRANSLATION_ALLOW_PARTIAL）：
-          任一条未译即整体失败并返回 False，调用方不写盘，
-          避免成片出现原文/译文混排（不再容忍 unresolved_count <= 3）。
+          整批未译（残留超过 3 条或超过 15%）仍然整体失败并返回 False，调用方
+          不写盘；但**少量残留**（<=3 条且 <=15%）按「标记 + 回退原文」放行 ——
+          False 的语义是「不把原文当译文写盘」，而不是「因为一条 URL/型号丢掉
+          整份译文」。标记后的条目译文置空，写盘阶段回退原文。
         - allow_partial=True：保留旧的少量残留容忍阈值；未译条目打
           residual_untranslated 标记、译文置空并记录 warning，
           写盘阶段按 SubtitleWriter 的回退语义输出原文。
@@ -1433,19 +1542,26 @@ class SubtitleTranslator:
         unresolved_ratio = unresolved_count / max(1, total_items)
         sample_indices = unresolved_indices[:5]
         if _should_fail_translation_residue(total_items, unresolved_count, allow_partial=allow_partial):
-            self.logger.error(
-                "字幕翻译验收失败：仍有 %s/%s 条疑似未翻译（%.1f%%），样本索引=%s（allow_partial=%s）",
+            if allow_partial or not self._residual_within_tolerance(unresolved_count, total_items):
+                self.logger.error(
+                    "字幕翻译验收失败：仍有 %s/%s 条疑似未翻译（%.1f%%），样本索引=%s（allow_partial=%s）",
+                    unresolved_count,
+                    total_items,
+                    unresolved_ratio * 100.0,
+                    sample_indices,
+                    allow_partial,
+                )
+                return False
+            self.logger.warning(
+                "字幕翻译存在少量未译残留（%s/%s，%.1f%%），按「标记 + 回退原文」放行以避免丢弃整份译文",
                 unresolved_count,
                 total_items,
                 unresolved_ratio * 100.0,
-                sample_indices,
-                allow_partial,
             )
-            return False
 
         self.logger.warning(
             "字幕翻译验收保留未译残留：%s/%s 条仍疑似未翻译（%.1f%%），下标=%s；"
-            "已标记 residual_untranslated，写盘时将回退为原文（allow_partial=True）",
+            "已标记 residual_untranslated，写盘时将回退为原文",
             unresolved_count,
             total_items,
             unresolved_ratio * 100.0,
@@ -1459,6 +1575,20 @@ class SubtitleTranslator:
             except Exception:
                 pass
         return True
+
+    @staticmethod
+    def _residual_within_tolerance(unresolved_count: int, total_items: int) -> bool:
+        """少量残留的追认条件：不超过 3 条且不超过 15%。
+
+        两个条件必须同时满足，保证「整批未译」（例如模型把英文原文全部照抄）
+        必然超阈值失败：10 条里残留 2 条 → 20% > 15% → 判失败。
+        """
+        if unresolved_count <= 0 or total_items <= 0:
+            return True
+        return (
+            unresolved_count <= SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD
+            and (unresolved_count / total_items) <= SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD
+        )
 
     def _repair_untranslated_items(self, items: List[SubtitleItem]):
         """对疑似未翻译的条目进行小批量补翻，最大化消除漏翻。"""
@@ -1542,7 +1672,7 @@ class SubtitleTranslator:
             )
 
             cleaned_lines: List[str] = []
-            seen: set = set()
+            previous_key = None
 
             for line in lines:
                 if not line:
@@ -1565,11 +1695,13 @@ class SubtitleTranslator:
                 if not line:
                     continue
 
-                # 去重（基于标准化后的小写文本）
+                # 去重**只作用于相邻行**（模型偶尔重复输出同一行）：全局去重会把
+                # 同一译文里本来就重复出现的行（歌词、复读句）当成冗余删掉，在严格
+                # 配对契约下等于凭空丢内容，因此这里只折叠紧邻的重复行。
                 key = line.strip().lower()
-                if key in seen:
+                if previous_key is not None and key == previous_key:
                     continue
-                seen.add(key)
+                previous_key = key
                 cleaned_lines.append(line)
 
             sanitized = '\n'.join(cleaned_lines).strip()

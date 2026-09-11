@@ -714,6 +714,12 @@ def _build_missing_translation_review_message(field_names) -> str:
     return f"自动翻译未完成：{'、'.join(readable)}仍缺少有效译文，任务已转入人工审核。"
 
 
+#: ``_run_subtitle_qc`` 的返回值之一：用户**主动关闭**了字幕质检。
+#: 必须与 ``None``（质检启用但没跑成：文件缺失 / 执行异常）区分开 —— 二者
+#: 混用会造成「关掉质检反而更严格」的反向回归。
+SUBTITLE_QC_DISABLED = 'disabled'
+
+
 def _is_asr_subtitle_artifact(task_id, subtitle_path, quality_state=None) -> bool:
     """判断某字幕文件是否来自 ASR（而非平台自带 / 人工提供）。
 
@@ -765,12 +771,71 @@ def _is_asr_enabled(config: dict) -> bool:
     return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False))
 
 
+def _subtitle_block_reasons(
+    config: dict,
+    quality_state,
+    qc_failed,
+    *,
+    qc_cleared: bool = False,
+    qc_enabled=None,
+) -> list:
+    """返回烧录拦截原因列表；空列表表示放行。
+
+    ``_subtitle_embed_allowed`` 与调用方的归因记录共用这套判定，避免两处
+    逻辑漂移出「拦截了但说不出为什么」的日志。
+
+    ``qc_enabled=None`` 时从 ``config['SUBTITLE_QC_ENABLED']`` 读取，因此
+    「关掉质检」的效果对直接调用本函数的代码同样可见，不需要每个调用点
+    自己解析开关。
+
+    两个开关的作用域**互不重叠**，缺一不可：
+
+    - ``ASR_FAILURE_BLOCKS_EMBED=False``（逃生口）只放宽「ASR 来源结局」
+      （``failed`` / ``degraded``），**不放过**明确的质检失败结论 ——
+      质检结论针对的是字幕文件内容本身，与 ASR 来源可靠度是两件事。
+    - ``SUBTITLE_QC_ENABLED=False``（``qc_enabled=False``）表示用户主动放弃
+      质检这道防线：此时既不再看历史 ``qc_failed``，也不再要求 ``degraded``
+      素材必须通过严格质检（否则「关掉质检」会变成「更严格」，与用户意图相反）。
+    """
+    asr_blocks = _as_bool(config.get('ASR_FAILURE_BLOCKS_EMBED', True))
+    if qc_enabled is None:
+        qc_enabled = _as_bool(config.get('SUBTITLE_QC_ENABLED', True))
+    qc_active = bool(qc_enabled)
+    state = str(quality_state or '').strip().lower()
+
+    reasons = []
+    if state == 'failed' and asr_blocks:
+        reasons.append('asr_quality_failed')
+    if qc_active and _as_bool(qc_failed) and not qc_cleared:
+        reasons.append('subtitle_qc_rejected')
+    if state == 'degraded' and asr_blocks and qc_active and not qc_cleared:
+        reasons.append('asr_quality_degraded_without_strict_qc')
+    return reasons
+
+
+#: 门控原因 → 落库的 ``subtitle_warning_message`` 取值。
+#: UI（``templates/partials/task_row.html``、``task_card.html``）按这些取值渲染
+#: tooltip，新增原因必须同步补映射，否则界面会退化成显示原始英文键名。
+SUBTITLE_BLOCK_WARNING_MESSAGES = {
+    'asr_quality_failed': 'asr_failed_block_embed',
+    'asr_quality_degraded_without_strict_qc': 'asr_degraded_block_embed',
+    'subtitle_qc_rejected': 'subtitle_qc_rejected',
+    'qc_unavailable': 'qc_unavailable',
+}
+
+
+def _block_reason_to_warning(reason) -> str:
+    """把门控原因翻译成落库用的警告文案。"""
+    return SUBTITLE_BLOCK_WARNING_MESSAGES.get(str(reason or '').strip(), 'asr_failed_block_embed')
+
+
 def _subtitle_embed_allowed(
     config: dict,
     quality_state,
     qc_failed,
     *,
     qc_cleared: bool = False,
+    qc_enabled=None,
     task_logger=None,
 ) -> bool:
     """统一烧录门控：决定当前字幕是否允许烧进成片。
@@ -781,29 +846,25 @@ def _subtitle_embed_allowed(
 
     这是「VAD/ASR 已报错却照样烧录」的修复点：此前 ``asr_warning_message``
     只写不读，告警与烧录决策之间没有任何连接边。
-    ``ASR_FAILURE_BLOCKS_EMBED=False`` 时恢复旧行为（仅记录警告后照常烧录）。
+    判定细节与开关作用域见 ``_subtitle_block_reasons``。
     """
-    if not _as_bool(config.get('ASR_FAILURE_BLOCKS_EMBED', True)):
-        return True
-
-    state = str(quality_state or '').strip().lower()
-    reasons = []
-    if state == 'failed':
-        reasons.append('asr_quality_failed')
-    if _as_bool(qc_failed) and not qc_cleared:
-        reasons.append('subtitle_qc_rejected')
-    if state == 'degraded' and not qc_cleared:
-        reasons.append('asr_quality_degraded_without_strict_qc')
+    reasons = _subtitle_block_reasons(
+        config, quality_state, qc_failed, qc_cleared=qc_cleared, qc_enabled=qc_enabled
+    )
     if not reasons:
         return True
 
     if task_logger is not None:
         try:
             task_logger.warning(
-                "字幕烧录被门控拦截: quality_state=%s, qc_failed=%s, qc_cleared=%s, reasons=%s",
-                state or 'ok',
+                "字幕烧录被门控拦截: quality_state=%s, qc_failed=%s, qc_cleared=%s, "
+                "asr_blocks=%s, qc_enabled=%s, reasons=%s",
+                str(quality_state or '').strip().lower() or 'ok',
                 bool(_as_bool(qc_failed)),
                 bool(qc_cleared),
+                bool(_as_bool(config.get('ASR_FAILURE_BLOCKS_EMBED', True))),
+                bool(_as_bool(config.get('SUBTITLE_QC_ENABLED', True))
+                     if qc_enabled is None else qc_enabled),
                 reasons,
             )
         except Exception:
@@ -3290,6 +3351,9 @@ class TaskProcessor:
         qc_cleared = False
         # ASR_FAILURE_BLOCKS_EMBED=False 时置真：本轮 ASR 产物按旧行为放行烧录。
         escape_hatch_active = False
+        # 首个烧录拦截归因。质检闸门写入的 qc_unavailable / subtitle_qc_rejected
+        # 必须比外层兜底的 asr_failed_block_embed 更精确，不能被覆盖。
+        block_reason = None
 
         def _embed_guard(subtitle_file, *, asr_artifact=True):
             """烧录前统一门控。
@@ -3298,14 +3362,25 @@ class TaskProcessor:
             因此只看 ASR 生成的字幕；已有外部字幕（如平台自带 SRT）不受它约束，
             否则一次历史 ASR 失败会永久阻断正常字幕的烧录。
             ``subtitle_qc_failed`` 始终生效 —— 它针对的是具体字幕文件的质检结论。
+
+            被拒时记录**首个**原因，供外层写入精确的 ``subtitle_warning_message``。
             """
-            return _subtitle_embed_allowed(
+            nonlocal block_reason
+            state = embed_quality_state if asr_artifact else 'ok'
+            allowed = _subtitle_embed_allowed(
                 self.config,
-                embed_quality_state if asr_artifact else 'ok',
+                state,
                 qc_failed,
                 qc_cleared=qc_cleared,
                 task_logger=task_logger,
             )
+            if not allowed and block_reason is None:
+                reasons = _subtitle_block_reasons(
+                    self.config, state, qc_failed, qc_cleared=qc_cleared
+                )
+                if reasons:
+                    block_reason = reasons[0]
+            return allowed
 
         def _ensure_asr_qc(subtitle_file):
             """确保 ASR 产物在烧录前通过质检。
@@ -3315,16 +3390,36 @@ class TaskProcessor:
             另一条真实路径。此处按文件来源补齐：ASR 产物必须过质检，
             外部字幕（平台自带/人工提供）保持原行为，不额外增加 AI 调用。
             """
-            nonlocal qc_cleared, qc_failed
+            nonlocal qc_cleared, qc_failed, block_reason
             if qc_cleared:
                 return True
-            allowed, cleared = self._ensure_asr_subtitle_qc(
+            allowed, cleared, reason = self._ensure_asr_subtitle_qc(
                 task_id, subtitle_file, task_logger, embed_quality_state
             )
             if cleared:
                 qc_cleared = True
                 qc_failed = False
+            if not allowed and block_reason is None:
+                block_reason = reason or 'subtitle_qc_rejected'
             return allowed
+
+        def _quarantine_if_asr_artifact(subtitle_file):
+            """被门控拦截的 ASR 产物必须移出扫描范围。
+
+            留在 task_dir 里会让下一轮 ``os.listdir`` 命中它 → ``subtitle_files``
+            非空 → 直接复用这条已被判定不合格的字幕，用户重跑永远拿不到新字幕。
+            外部字幕（平台自带 / 人工提供）保持原地不动。
+
+            判据只看**文件名**（``asr_*.srt``）：这里显式传 ``quality_state=None``
+            —— ``_is_asr_subtitle_artifact`` 在任务级结局为 failed/degraded 时会
+            宽松返回 True（那是为质检设计的），若照搬会把平台自带字幕误改名。
+            """
+            if _is_asr_subtitle_artifact(task_id, subtitle_file, None):
+                self._quarantine_rejected_subtitle(subtitle_file, task_logger)
+
+        def _block_warning(fallback='asr_failed_block_embed'):
+            """保留首个拦截归因，不被外层兜底文案覆盖。"""
+            return _block_reason_to_warning(block_reason) if block_reason else fallback
 
         if translation_enabled:
             task_logger.info("开始字幕翻译")
@@ -3479,9 +3574,11 @@ class TaskProcessor:
                             upload_progress=None,
                         )
                         return True
-                    # 逃生口：DB 中仍保留 failed 结局供展示，但本轮放行烧录
-                    # （这就是 ASR_FAILURE_BLOCKS_EMBED=False 的旧行为语义）。
-                    embed_quality_state = 'ok'
+                    # 逃生口：DB 中仍保留 failed 结局供展示，但本轮 ASR 来源
+                    # 结局不再拦烧录（这就是 ASR_FAILURE_BLOCKS_EMBED=False 的
+                    # 旧行为语义）。注意这里**不改写** embed_quality_state：
+                    # 质检的严格度与归因仍需要真实的结局，放行交由
+                    # ``_subtitle_embed_allowed`` 内部的 asr_blocks 决定。
                     escape_hatch_active = True
 
                 if asr_subtitle_path and os.path.exists(asr_subtitle_path):
@@ -3489,27 +3586,40 @@ class TaskProcessor:
                     qc_result = self._run_subtitle_qc(
                         task_id, asr_subtitle_path, task_logger, strict=strict_qc
                     )
-                    # 逃生口生效时，「质检没跑成」也不应阻断烧录 —— 否则
-                    # ASR_FAILURE_BLOCKS_EMBED=False 依然无法恢复旧行为。
-                    qc_blocks = qc_result is False or (qc_result is None and not escape_hatch_active)
-                    if qc_blocks:
-                        reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
-                        task_logger.warning(
-                            "转录字幕质检未通过（%s, strict=%s）：跳过字幕翻译/烧录，"
-                            "保留字幕文件并继续上传原视频",
-                            reason_text,
-                            strict_qc,
+                    if qc_result is SUBTITLE_QC_DISABLED:
+                        # 用户主动关闭质检：没有任何质检结论可依赖，按配置放行，
+                        # 同时清掉内存中的历史 qc_failed —— 否则「关掉质检」会比
+                        # 开着更严格。``qc_cleared`` 在此表示「本轮质检门控已裁决
+                        # 完毕」，不等于「质检结论为通过」；degraded 的严格质检
+                        # 要求同样随质检开关关闭（见 ``_subtitle_block_reasons``）。
+                        task_logger.info("字幕质检已关闭，跳过本次烧录前质检裁决")
+                        qc_cleared = True
+                        qc_failed = False
+                    else:
+                        # 逃生口生效时，「质检没跑成」也不应阻断烧录 —— 否则
+                        # ASR_FAILURE_BLOCKS_EMBED=False 依然无法恢复旧行为。
+                        # 但明确的质检失败结论（False）不受逃生口影响。
+                        qc_blocks = qc_result is False or (
+                            qc_result is None and not escape_hatch_active
                         )
-                        self._quarantine_rejected_subtitle(asr_subtitle_path, task_logger)
-                        update_task(
-                            task_id,
-                            subtitle_language_detected=detected_lang,
-                            subtitle_warning_message=reason_text,
-                            upload_progress=None,
-                        )
-                        return True
-                    qc_cleared = True
-                    qc_failed = False
+                        if qc_blocks:
+                            reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
+                            task_logger.warning(
+                                "转录字幕质检未通过（%s, strict=%s）：跳过字幕翻译/烧录，"
+                                "保留字幕文件并继续上传原视频",
+                                reason_text,
+                                strict_qc,
+                            )
+                            self._quarantine_rejected_subtitle(asr_subtitle_path, task_logger)
+                            update_task(
+                                task_id,
+                                subtitle_language_detected=detected_lang,
+                                subtitle_warning_message=reason_text,
+                                upload_progress=None,
+                            )
+                            return True
+                        qc_cleared = True
+                        qc_failed = False
             
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
             detected_list = []
@@ -3552,12 +3662,13 @@ class TaskProcessor:
                         return False
                 elif should_embed_subtitle:
                     task_logger.warning("中文字幕被烧录门控拦截，保留原视频并继续上传")
+                    _quarantine_if_asr_artifact(subtitle_file)
                     update_task(
                         task_id,
                         subtitle_path_original=subtitle_file,
                         subtitle_path_translated=None,
                         subtitle_language_detected=subtitle_lang,
-                        subtitle_warning_message='asr_failed_block_embed',
+                        subtitle_warning_message=_block_warning(),
                     )
                     return True
                 else:
@@ -3604,12 +3715,13 @@ class TaskProcessor:
                     return False
                 elif should_embed_subtitle:
                     task_logger.warning("原字幕被烧录门控拦截，保留原视频并继续上传")
+                    _quarantine_if_asr_artifact(subtitle_file)
                     update_task(
                         task_id,
                         subtitle_path_original=subtitle_file,
                         subtitle_path_translated=None,
                         subtitle_language_detected=subtitle_lang,
-                        subtitle_warning_message='asr_failed_block_embed',
+                        subtitle_warning_message=_block_warning(),
                     )
                     return True
 
@@ -3676,7 +3788,14 @@ class TaskProcessor:
                 update_task(task_id, upload_progress=None, silent=True)
                 
                 # 如果配置了将字幕嵌入视频
-                if should_embed_subtitle and _embed_guard(translated_subtitle_path, asr_artifact=asr_generated):
+                # 双闸门：门控看译文产物，质检看**源**字幕 —— 译文由源字幕翻译
+                # 而来，源头不合格就没有烧录价值；此前翻译分支只有单闸门，
+                # 复用已有 asr_*.srt 时会整条绕过质检。
+                if (
+                    should_embed_subtitle
+                    and _embed_guard(translated_subtitle_path, asr_artifact=asr_generated)
+                    and _ensure_asr_qc(subtitle_file)
+                ):
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'], 
                         translated_subtitle_path, task_logger
@@ -3702,12 +3821,15 @@ class TaskProcessor:
                         )
                 elif should_embed_subtitle:
                     task_logger.warning("翻译字幕被烧录门控拦截，保留原视频和字幕文件")
+                    # 拦截的若是 ASR 产物，必须移出扫描范围，否则下轮重跑会复用
+                    # 这条不合格字幕、永远拿不到新字幕。
+                    _quarantine_if_asr_artifact(subtitle_file)
                     update_task(
                         task_id,
                         subtitle_path_original=subtitle_file,
                         subtitle_path_translated=translated_subtitle_path,
                         subtitle_language_detected=subtitle_lang,
-                        subtitle_warning_message='asr_failed_block_embed',
+                        subtitle_warning_message=_block_warning(),
                     )
                 else:
                     # 不嵌入字幕，只保存字幕文件信息
@@ -3747,13 +3869,17 @@ class TaskProcessor:
             return False
 
     def _ensure_asr_subtitle_qc(self, task_id, subtitle_file, task_logger, quality_state):
-        """ASR 产物烧录前的质检闸门，返回 ``(allowed, qc_cleared)``。
+        """ASR 产物烧录前的质检闸门，返回 ``(allowed, qc_cleared, reason)``。
 
         非 ASR 产物（平台自带 / 人工提供字幕）直接放行且不标记 ``qc_cleared``
         —— 它们不是幻觉与时间轴错位的高风险来源，也不该被 ASR 的历史标记误拦。
+
+        ``reason`` 只在与 ``allowed=False`` 搭配时有意义，供调用方在
+        ``subtitle_warning_message`` 中保留**首个**拦截归因（此前外层分支会
+        用 ``asr_failed_block_embed`` 覆盖掉这里更精确的原因）。
         """
         if not _is_asr_subtitle_artifact(task_id, subtitle_file, quality_state):
-            return True, False
+            return True, False, ''
         qc_result = self._run_subtitle_qc(
             task_id,
             subtitle_file,
@@ -3761,7 +3887,12 @@ class TaskProcessor:
             strict=(str(quality_state or '').strip().lower() == 'degraded'),
         )
         if qc_result is True:
-            return True, True
+            return True, True, ''
+        if qc_result is SUBTITLE_QC_DISABLED:
+            # 用户主动关闭质检：放行，但不标记 qc_cleared（不该借机改写历史
+            # 质检结论，也不该让门控以为「本次已通过质检」）。
+            task_logger.info("字幕质检已被配置关闭，ASR 字幕按用户配置放行烧录")
+            return True, False, ''
         reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
         task_logger.warning(
             "ASR 字幕质检未通过（%s）：跳过烧录，保留字幕文件并继续上传原视频",
@@ -3769,7 +3900,7 @@ class TaskProcessor:
         )
         self._quarantine_rejected_subtitle(subtitle_file, task_logger)
         update_task(task_id, subtitle_warning_message=reason_text, upload_progress=None)
-        return False, False
+        return False, False, reason_text
 
     def _quarantine_rejected_subtitle(self, subtitle_path, task_logger=None) -> str:
         """把被质检/质量门控拒绝的 ASR 字幕移出扫描范围。
@@ -3807,16 +3938,18 @@ class TaskProcessor:
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger, strict: bool = False):
         """对 ASR 生成字幕执行预检，每次都重新计算结果。
 
-        返回三态：``True`` 通过、``False`` 未通过、``None`` 质检不可用
-        （未启用 / 文件缺失 / 执行异常）。调用方必须区分「通过」与「没跑成」——
-        此前两种情况都返回 ``True``，导致质检形同虚设。
+        返回三态：``True`` 通过、``False`` 未通过、``SUBTITLE_QC_DISABLED``
+        用户主动关闭质检、``None`` 质检启用但不可用（文件缺失 / 执行异常）。
+        调用方必须区分「通过」与「没跑成」—— 此前两种情况都返回 ``True``，
+        导致质检形同虚设；而「主动关闭」与「没跑成」混用又会造成关闭质检
+        反而更严格的反向回归。
         ``strict=True`` 时对 ASR 来源退化的字幕启用更严格判定。
         """
         enabled_raw = self.config.get('SUBTITLE_QC_ENABLED', True)
         enabled = _as_bool(enabled_raw)
         if not enabled:
-            task_logger.info("字幕质检未启用，跳过质检")
-            return None
+            task_logger.info("字幕质检未启用，按配置跳过质检并放行烧录")
+            return SUBTITLE_QC_DISABLED
 
         if not srt_path or not os.path.exists(srt_path):
             try:
@@ -8051,7 +8184,9 @@ class TaskProcessor:
                                 )
                                 task_logger.info(f"ASR 生成基础字幕成功: {os.path.basename(out_path)}")
 
-                                if quality_state == 'failed':
+                                if quality_state == 'failed' and _as_bool(
+                                    self.config.get('ASR_FAILURE_BLOCKS_EMBED', True)
+                                ):
                                     task_logger.error(
                                         "上传前 ASR 质量结局为 failed，拒绝烧录字幕并继续上传原视频"
                                     )
@@ -8067,7 +8202,9 @@ class TaskProcessor:
                                         task_logger,
                                         strict=(quality_state == 'degraded'),
                                     )
-                                    if qc_result is True:
+                                    # 质检被用户主动关闭（SUBTITLE_QC_DISABLED）时
+                                    # 按配置放行，不能与「质检没跑成」一样拒烧。
+                                    if qc_result is True or qc_result is SUBTITLE_QC_DISABLED:
                                         embedded_video_path = self._embed_subtitle_in_video(
                                             task_id, video_path, out_path, task_logger
                                         )
