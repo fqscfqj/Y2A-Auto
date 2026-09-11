@@ -1098,36 +1098,50 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         # 也避免步进趋近于 0 时同一段音频被反复切片、ASR 调用量爆炸。
         _window_key = 'AUDIO_CHUNK_WINDOW_S'
         _overlap_key = 'AUDIO_CHUNK_OVERLAP_S'
-        if _overlap_key in form_data:
-            # 只提交 overlap 时（脚本提交）拿已存窗口值比较，否则不变量仍会被写坏。
-            _window_raw = form_data.get(_window_key)
-            if _window_raw is None:
-                try:
-                    _window_raw = load_config().get(_window_key)
-                except Exception as exc:  # 读配置失败不应阻断保存
-                    logger.debug(f"读取 {_window_key} 用于交叉校验失败: {exc}")
-                    _window_raw = None
+
+        _cross_cache: dict = {}
+
+        def _cross_constraint_value(key):
+            """取该键本次生效的数值；本次未提交时回读已存配置，取不到返回 None。"""
+            raw = form_data.get(key)
+            if raw is None:
+                if 'config' not in _cross_cache:
+                    try:
+                        _cross_cache['config'] = load_config() or {}
+                    except Exception as exc:  # 读配置失败不应阻断保存
+                        logger.debug(f"读取已存配置用于分片交叉校验失败: {exc}")
+                        _cross_cache['config'] = {}
+                raw = _cross_cache['config'].get(key)
             try:
-                _window_value = float(str(_window_raw).strip()) if _window_raw is not None else None
+                return float(str(raw).strip())
             except (ValueError, TypeError):
-                _window_value = None
-            try:
-                _overlap_value = float(str(form_data[_overlap_key]).strip())
-            except (ValueError, TypeError):
-                _overlap_value = None
-            if (
-                _window_value is not None
-                and _overlap_value is not None
-                and _overlap_value >= _window_value
-            ):
-                _overlap_limit = max(0.0, _window_value - 1.0)
-                _submitted_overlap = form_data[_overlap_key]
-                form_data[_overlap_key] = str(_overlap_limit)
-                remember_revert(
-                    _overlap_key, _submitted_overlap, form_data[_overlap_key],
-                    allowed=f'0–{_format_guard_bound(_overlap_limit)}',
-                    note=f'须小于分片窗口 {_format_guard_bound(_window_value)}',
-                )
+                return None
+
+        # 终态校验：位置必须在全部范围 guard 之后、update_config 之前，且两侧都取
+        # 「本次生效值」而非「本次提交值」。只校验「本次提交了 overlap」这一侧是不够的：
+        # 先保存 window=15 / overlap=5（两者都在各自区间内，完全合法），再只提交
+        # window=5 —— 旧逻辑因为 overlap 不在 form_data 里而完全不触发交叉校验，
+        # 落盘 5/5、步进 0，且不产生任何 warning。模块侧兜底会把 overlap 钳到
+        # window-0.01，步进只剩 0.01 秒：60 秒素材被切成 5502 片、2 小时素材 719501 片，
+        # 每片都要重抽一次音频再跑一轮 ASR，等同于把任务拖垮。所以这里不论哪一侧
+        # 缺失，都回读已存配置补齐后再判一次，保证落盘配置永远满足 overlap < window。
+        _window_value = _cross_constraint_value(_window_key)
+        _overlap_value = _cross_constraint_value(_overlap_key)
+        if (
+            _window_value is not None
+            and _overlap_value is not None
+            and _overlap_value >= _window_value
+        ):
+            _overlap_limit = max(0.0, _window_value - 1.0)
+            # 未提交 overlap 时 submitted 取当前生效值：提示里的「提交值」必须对得上
+            # 用户此刻看到的旧值，否则提示会引用一个用户没提交过的数字。
+            _submitted_overlap = form_data.get(_overlap_key, _overlap_value)
+            form_data[_overlap_key] = str(_overlap_limit)
+            remember_revert(
+                _overlap_key, _submitted_overlap, form_data[_overlap_key],
+                allowed=f'0–{_format_guard_bound(_overlap_limit)}',
+                note=f'须小于分片窗口 {_format_guard_bound(_window_value)}',
+            )
 
         # 旧模板把字幕换行上限钉死为 999/1 且强制两个开关为 on（当时控件是 disabled，
         # 用户选不出这个组合），配置侧由 migrate_pinned_subtitle_wrap_config 迁回

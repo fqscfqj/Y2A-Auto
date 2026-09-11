@@ -259,6 +259,52 @@ class AudioChunkCrossGuardTests(_SettingsSaveTestCase):
                         - self._numeric(result['updated_config'], 'AUDIO_CHUNK_OVERLAP_S'))
                 self.assertGreater(step, 0.0, msg=f'步进不为正: window={window} overlap={overlap}')
 
+    def test_只提交窗口时按已存重叠钳制(self):
+        # 反向提交：先落盘一个各处都在自己区间内的合法组合（15 / 5），再只把窗口压到
+        # 重叠之下。旧逻辑只在「本次提交含 overlap」时才比较，这条路径不触发任何校验，
+        # 会落盘 5/5 —— 步进 0，模块兜底把 overlap 钳到 window-0.01 后步进只剩 0.01 秒，
+        # 60 秒素材被切成 5502 片、2 小时素材 719501 片。
+        web_app.update_config({'AUDIO_CHUNK_WINDOW_S': '15', 'AUDIO_CHUNK_OVERLAP_S': '5'})
+
+        result = self._save({'AUDIO_CHUNK_WINDOW_S': '5'})
+
+        saved_window = self._numeric(result['updated_config'], 'AUDIO_CHUNK_WINDOW_S')
+        saved_overlap = self._numeric(result['updated_config'], 'AUDIO_CHUNK_OVERLAP_S')
+        self.assertEqual(saved_window, 5.0)
+        self.assertLess(saved_overlap, saved_window, msg='落盘后仍不满足 overlap < window')
+        self.assertEqual(saved_overlap, 4.0, msg='应向用户可见地钳到 window-1')
+
+        warnings = self._warnings(result)
+        self.assertEqual(len(warnings), 1, msg=warnings)
+        self.assertIn('AUDIO_CHUNK_OVERLAP_S', warnings[0])
+        self.assertIn('分片窗口', warnings[0])
+        self.assertEqual(result['final_level'], 'warning')
+
+    def test_只提交窗口且不越界时不误报(self):
+        # 反向守卫：合法的窗口提交不能被交叉校验误伤
+        web_app.update_config({'AUDIO_CHUNK_WINDOW_S': '15', 'AUDIO_CHUNK_OVERLAP_S': '5'})
+
+        result = self._save({'AUDIO_CHUNK_WINDOW_S': '20'})
+
+        self.assertEqual(self._numeric(result['updated_config'], 'AUDIO_CHUNK_WINDOW_S'), 20.0)
+        self.assertEqual(self._numeric(result['updated_config'], 'AUDIO_CHUNK_OVERLAP_S'), 5.0)
+        self.assertEqual(self._warnings(result), [])
+        self.assertEqual(result['final_level'], 'success')
+
+    def test_已存配置被写坏时再保存会收回重叠(self):
+        # update_config 本身不做交叉校验（手工改配置、旧版本落盘都可能留下 5/5）。
+        # 终态校验必须覆盖这种「本次两个键都没提交」的情形，否则坏配置会一直留着，
+        # 直到模块兜底把步进压到 0.01 秒。
+        web_app.update_config({'AUDIO_CHUNK_WINDOW_S': '5', 'AUDIO_CHUNK_OVERLAP_S': '5'})
+
+        result = self._save({'SUBTITLE_MAX_LINES': '2'})
+
+        self.assertLess(
+            self._numeric(result['updated_config'], 'AUDIO_CHUNK_OVERLAP_S'),
+            self._numeric(result['updated_config'], 'AUDIO_CHUNK_WINDOW_S'),
+        )
+        self.assertEqual(len(self._warnings(result)), 1, msg=self._warnings(result))
+
 
 class NoControlKeyGuardTests(_SettingsSaveTestCase):
     """没有 UI 控件的键仍可被 /settings 的 POST 写入，必须由服务端守住。"""

@@ -1070,15 +1070,96 @@ class SrtTransformEngine:
             finalized.append(cue)
 
         cleaned: List[Dict[str, Any]] = []
-        for cue in finalized:
+        for idx, cue in enumerate(finalized):
             text = str(cue.get('text') or '').strip()
-            dur = float(cue['end']) - float(cue['start'])
+            start = float(cue['start'])
+            dur = float(cue['end']) - start
             if dur < drop_dur:
+                # 过短的 cue 不允许连文本一起丢掉（修复前这里直接 continue，实测
+                # alpha/gamma/epsilon/eta 四段输入会丢掉 'gamma delta' 且不留任何日志，
+                # 而这是 speech_recognition 落盘链路的最后一步，下游没有文本覆盖率校验）。
+                # 安置顺序：并入前一条 → 并入后一条 → 延长自身到 min_dur。
+                # 只有三者在时间轴上真的都放不下时才丢弃，并记 warning 带上被丢弃的文本。
+                if cleaned and self._absorb_cue_into(cleaned[-1], cue):
+                    continue
+                next_cue = finalized[idx + 1] if idx + 1 < len(finalized) else None
+                # 并入后一条时起点最多提前到「前一条末尾 + 最小间隔」，否则会造出 overlap。
+                absorb_floor = (float(cleaned[-1]['end']) + _MIN_GAP_S) if cleaned else 0.0
+                if next_cue is not None and self._absorb_cue_into(
+                    next_cue, cue, prepend=True, floor_start_s=absorb_floor
+                ):
+                    continue
+                # 邻居都装不下时延长自身：上限取「下一条起点 − 最小间隔」，末条取总时长，
+                # 都不能跨越下一条，否则会造出 overlap（subtitle_qc 的 timeline_overlap 判失败）。
+                extend_limit = (
+                    float(next_cue['start']) - _MIN_GAP_S if next_cue is not None else float(total_duration_s)
+                )
+                cue['end'] = max(float(cue['end']), min(extend_limit, start + min_dur))
+                if float(cue['end']) - start < drop_dur:
+                    self.logger.warning(
+                        'Dropping unplaceable short cue %.3f-%.3fs (%.3fs), text lost: %r',
+                        start,
+                        float(cue['end']),
+                        dur,
+                        text,
+                    )
+                    continue
+                cleaned.append(cue)
                 continue
             if len(text) < min_text and dur < min_dur:
+                # 文本过短且时长不够，既不可读也塞不进邻居的可见时长里。
+                # 这里同样不允许静默丢弃：留下被丢的文本，便于追查字幕缺词。
+                self.logger.warning(
+                    'Dropping too-short-text cue %.3f-%.3fs (%.3fs), text dropped: %r',
+                    start,
+                    float(cue['end']),
+                    dur,
+                    text,
+                )
                 continue
             cleaned.append(cue)
         return cleaned
+
+    def _absorb_cue_into(
+        self,
+        target: Dict[str, Any],
+        cue: Dict[str, Any],
+        prepend: bool = False,
+        floor_start_s: float = 0.0,
+    ) -> bool:
+        """把过短 cue 的文本并入相邻 cue；邻居装不下时返回 False。
+
+        prepend=True 表示并入后一条（文本按时间轴顺序排在前）。并入后的文本同样要过
+        「合并最长时长」与「最高字速」两道上限，否则宁可让调用方延长这条 cue，
+        也不把文字塞进一条读不完或超宽的字幕。
+
+        并入后一条时会把它的起点提前到被吸收 cue 的起点（受 floor_start_s 限制，
+        调用方传入「已定稿前一条的末尾 + 最小间隔」）：跨度变大才能同时满足字速上限
+        与「不丢字」，而只提前到前一条之后就不会造出 subtitle_qc 会判失败的 overlap。
+        """
+        cue_text = str(cue.get('text') or '').strip()
+        if not cue_text:
+            return True
+        target_text = str(target.get('text') or '').strip()
+        merged_text = _join_texts(cue_text, target_text) if prepend else _join_texts(target_text, cue_text)
+        merged_text = _WHITESPACE_RE.sub(' ', merged_text).strip()
+        max_merge_chars = int(self.config.max_line_length) * int(self.config.max_lines)
+        if max_merge_chars > 0 and len(merged_text) > max_merge_chars:
+            return False
+        start_s = float(target['start'])
+        end_s = max(float(target['end']), float(cue['end']))
+        if prepend:
+            start_s = max(min(start_s, float(cue['start'])), float(floor_start_s))
+        if not self._merge_within_limits(start_s, end_s, merged_text):
+            return False
+        target['text'] = merged_text
+        target['start'] = start_s
+        target['end'] = end_s
+        target['alignment_confidence'] = max(
+            float(target.get('alignment_confidence', 0.0) or 0.0),
+            float(cue.get('alignment_confidence', 0.0) or 0.0),
+        )
+        return True
 
     def _merge_within_limits(self, start_s: float, end_s: float, text: str) -> bool:
         """合并后的 cue 必须同时满足「最长时长」与「最高字速」两个上限。"""

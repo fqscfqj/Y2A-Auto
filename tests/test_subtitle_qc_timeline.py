@@ -115,6 +115,15 @@ class TimelineThresholdLockTests(unittest.TestCase):
         self.assertEqual(qc.TIMELINE_MAX_CPS_OUTLIER_RATIO, 0.20)
         self.assertEqual(qc.TIMELINE_HARD_STUTTER_RUN, 4)
         self.assertEqual(qc.TIMELINE_SUSPICIOUS_STUTTER_RUN, 3)
+        # 退化 cue（零时长 / 逆序）与片尾容忍带：取值理由见 modules/subtitle_qc.py
+        # 顶部注释，行为由 tests/test_subtitle_qc_timeline_edge.py 双向锁定。
+        self.assertEqual(qc.TIMELINE_MAX_ZERO_DURATION_RATIO, 0.25)
+        self.assertEqual(qc.TIMELINE_MIN_ZERO_DURATION_COUNT, 3)
+        self.assertEqual(qc.TIMELINE_SUSPICIOUS_ZERO_DURATION_RATIO, 0.10)
+        self.assertEqual(qc.TIMELINE_MAX_REVERSED_CUE_RATIO, 0.05)
+        self.assertEqual(qc.TIMELINE_MIN_REVERSED_CUE_COUNT, 2)
+        self.assertEqual(qc.TIMELINE_EXTREME_DEGENERATE_RATIO, 0.25)
+        self.assertEqual(qc.TIMELINE_TAIL_GRACE_SECONDS, 30.0)
 
 
 class TimelineHardFailTokenTests(_SrtFixtureMixin, unittest.TestCase):

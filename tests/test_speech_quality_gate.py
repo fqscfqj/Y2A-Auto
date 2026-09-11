@@ -9,6 +9,7 @@ checkpoint 推断、``_get_embedded_video_candidate`` 的产物新鲜度判定�
 
 不发起任何真实网络/FFmpeg 调用：字幕识别器、嵌入、DB、任务读写全部 mock。
 """
+import json
 import os
 import shutil
 import tempfile
@@ -626,10 +627,66 @@ class EnsureAsrSubtitleQcGateTests(unittest.TestCase):
         self._run(self._srt(f'asr_{self.task_id}.srt'), 'degraded', True)
         self.assertEqual(self.processor._run_subtitle_qc.call_args.kwargs.get('strict'), True)
 
-    def test_non_asr_artifact_with_degraded_state_is_still_gated(self):
-        # 任务级 degraded 结局说明该任务经历过 ASR，其字幕按 ASR 产物对待。
-        allowed, _cleared, _reason = self._run(self._srt('video.en.srt'), 'degraded', False)
+    def test_external_subtitle_is_never_gated_even_with_degraded_state(self):
+        """平台自带字幕不该被任务级质量结局牵连。
+
+        任务级 `subtitle_quality_state` 描述的是「ASR 产物的来源可靠度」，
+        不构成平台字幕的罪名：此前 degraded/failed 时 `_is_asr_subtitle_artifact`
+        无条件返回 True，于是干净的 `video.en.srt` 也会被送去做质检（与
+        「不额外增加 AI 调用」的声明冲突），被拒后还会被改名成
+        `video.en.rejected.txt` —— 用户既有产物直接丢失。
+        """
+        allowed, cleared, reason = self._run(self._srt('video.en.srt'), 'degraded', False)
+        self.assertTrue(allowed)
+        self.assertFalse(cleared)
+        self.assertEqual(reason, '')
+        self.processor._run_subtitle_qc.assert_not_called()
+        self.processor._quarantine_rejected_subtitle.assert_not_called()
+
+    def test_quarantine_only_renames_asr_artifacts(self):
+        """改名必须自带头文件名判定，不能依赖调用点各自判定。
+
+        防护此前只加在 `_quarantine_if_asr_artifact` 包装层，
+        `_ensure_asr_subtitle_qc` 内部那条路径直接调用本方法。
+        """
+        external = self._srt('video.zh.srt')
+        asr = self._srt(f'asr_{self.task_id}.srt')
+        self.processor.config = {}
+        self.processor._quarantine_rejected_subtitle(external, MagicMock())
+        self.assertTrue(os.path.exists(external), '外部字幕不得被改名')
+        self.processor._quarantine_rejected_subtitle(asr, MagicMock())
+        self.assertFalse(os.path.exists(asr), 'ASR 产物必须被移出复用范围')
+        self.assertTrue(os.path.exists(f"{os.path.splitext(asr)[0]}.rejected.txt"))
+
+    def test_escape_hatch_tolerates_unavailable_qc_on_this_path(self):
+        """逃生口必须在本方法内生效 —— 覆盖不到的上层局部变量不算生效。
+
+        `_translate_subtitle` 里的 `escape_hatch_active` 是函数级局部变量，
+        `_ensure_asr_subtitle_qc` 被翻译分支复用时完全读不到它，导致同一份
+        `asr_*.srt` 因为走哪条分支而得到相反结论。
+        """
+        path = self._srt(f'asr_{self.task_id}.srt')
+        self.processor.config = {'ASR_FAILURE_BLOCKS_EMBED': False}
+        self.processor._run_subtitle_qc = MagicMock(return_value=None)
+        self.processor._quarantine_rejected_subtitle = MagicMock(return_value='')
+        with patch.object(tm, 'update_task', return_value=True):
+            allowed, cleared, reason = self.processor._ensure_asr_subtitle_qc(
+                self.task_id, path, MagicMock(), 'failed')
+        self.assertTrue(allowed, '逃生口生效时质检不可用不应阻断烧录')
+        self.assertFalse(cleared)
+        self.assertEqual(reason, '')
+
+    def test_escape_hatch_still_blocks_explicit_qc_rejection(self):
+        """反向守卫：逃生口只放宽「不可用」，不放过明确的失败结论。"""
+        path = self._srt(f'asr_{self.task_id}.srt')
+        self.processor.config = {'ASR_FAILURE_BLOCKS_EMBED': False}
+        self.processor._run_subtitle_qc = MagicMock(return_value=False)
+        self.processor._quarantine_rejected_subtitle = MagicMock(return_value='')
+        with patch.object(tm, 'update_task', return_value=True):
+            allowed, _cleared, reason = self.processor._ensure_asr_subtitle_qc(
+                self.task_id, path, MagicMock(), 'failed')
         self.assertFalse(allowed)
+        self.assertEqual(reason, 'subtitle_qc_rejected')
 
 
 class RunSubtitleQcTriStateTests(unittest.TestCase):
@@ -672,16 +729,27 @@ class RunSubtitleQcTriStateTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(self.updates, [])
 
-    def test_missing_file_returns_none(self):
+    def test_missing_file_returns_none_and_persists_unavailable_marker(self):
+        """「质检不可用」必须落库，否则后续阶段会把旧成片判为新鲜并复用。
+
+        此前该分支不写任何字段，``subtitle_qc_failed`` 停在 0 → 上传前阶段
+        用 ('ok', 0) 重新裁决时放行 → 命中「既有带字幕视频可复用」→ 用户看到
+        「已跳过烧录」却上传了带被拒字幕的旧成片。
+        """
         missing = os.path.join(self.tmpdir, 'nope.srt')
         self.assertIsNone(self._run({'SUBTITLE_QC_ENABLED': True}, srt_path=missing))
-        self.assertEqual(self.updates, [])
+        self.assertEqual(len(self.updates), 1)
+        self.assertEqual(self.updates[-1]['subtitle_qc_failed'], 1)
+        self.assertEqual(self.updates[-1]['subtitle_qc_reason'], 'qc_unavailable')
 
     def test_exception_returns_none_not_true(self):
         result = self._run({'SUBTITLE_QC_ENABLED': True},
                            run_side_effect=RuntimeError('boom'))
         self.assertIsNone(result)
-        self.assertEqual(self.updates, [])
+        # 同一契约：执行异常也是「不可用」，同样要落库
+        self.assertEqual(len(self.updates), 1)
+        self.assertEqual(self.updates[-1]['subtitle_qc_failed'], 1)
+        self.assertEqual(self.updates[-1]['subtitle_qc_reason'], 'qc_unavailable')
 
     def test_passed_returns_true_and_persists_zero(self):
         qc_result = MagicMock(passed=True, reason='rule_pass:healthy_distribution',
@@ -842,6 +910,124 @@ class EmbeddedVideoCandidateTests(unittest.TestCase):
     def test_invalid_input_returns_empty(self):
         self.assertEqual(self._call(''), '')
         self.assertEqual(self._call(os.path.join(self.tmpdir, 'nope.mp4')), '')
+
+
+class QcUnavailableCrossStageTests(unittest.TestCase):
+    """B-a：「质检不可用」的拦截结论必须跨阶段保持。
+
+    缺陷链：`_run_subtitle_qc` 返回 None 时不落库 → 本阶段拒烧 + 隔离源字幕、
+    只留 `subtitle_warning_message` → 上传前阶段用 ('ok', 0) 重新裁决 → 放行
+    → 源字幕已被隔离，新鲜度检查看不到它 → 复用上一轮烧录的旧成片。
+    用户看到「质检未通过、已跳过烧录」，上传的成片却带着被拒字幕。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='y2a-qc-unavail-')
+        self.task_id = 'task-qc-unavail'
+        self.task_dir = os.path.join(self.tmpdir, self.task_id)
+        os.makedirs(self.task_dir, exist_ok=True)
+        self.processor = tm.TaskProcessor({})
+        self.updates = {}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _srt(self, name):
+        path = os.path.join(self.task_dir, name)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
+        return path
+
+    def test_unavailable_marker_blocks_embed_in_later_stage(self):
+        """落库标记后，后续阶段的门控必须仍拒绝烧录。"""
+        path = self._srt(f'asr_{self.task_id}.srt')
+        self.processor.config = {'SUBTITLE_QC_ENABLED': True}
+        self.processor._get_video_duration = MagicMock(return_value=None)
+
+        def fake_update_task(task_id, **kwargs):
+            self.updates.update({k: v for k, v in kwargs.items() if k != 'silent'})
+            return True
+
+        with patch.object(tm, 'update_task', side_effect=fake_update_task), \
+                patch.object(tm, 'get_task', return_value={'video_path_local': ''}), \
+                patch('modules.subtitle_qc.run_subtitle_qc',
+                      side_effect=RuntimeError('boom')):
+            result = self.processor._run_subtitle_qc(self.task_id, path, MagicMock())
+
+        self.assertIsNone(result)
+        self.assertEqual(self.updates.get('subtitle_qc_failed'), 1)
+
+        task = {'id': self.task_id, 'subtitle_qc_failed': 1,
+                'subtitle_warning_message': 'qc_unavailable'}
+        self.assertTrue(tm._is_subtitle_stage_rejected(task))
+        self.assertFalse(tm._subtitle_embed_allowed(self.processor.config, 'ok', True))
+
+    def test_unavailable_warning_value_counts_as_rejected(self):
+        for warning in ('qc_unavailable', 'subtitle_qc_rejected',
+                        'asr_failed_block_embed', 'asr_degraded_block_embed'):
+            self.assertTrue(
+                tm._is_subtitle_stage_rejected({'subtitle_warning_message': warning}),
+                warning)
+        # 烧录失败不是质量拦截：字幕文件本身是好的，重跑应允许重试烧录
+        self.assertFalse(
+            tm._is_subtitle_stage_rejected({'subtitle_warning_message': 'subtitle_embed_failed'}))
+
+
+class CheckpointSubtitleStageTests(unittest.TestCase):
+    """B-b：checkpoint 只能做并集，被门控拒绝的字幕阶段必须被差集剔除。
+
+    真实形态是「checkpoint 里已写入 translate_subtitle + 本轮质检失败」，
+    此时 `_infer_completed_stages_from_task` 的排除逻辑会被并集掩盖。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='y2a-checkpoint-')
+        self.srt = os.path.join(self.tmpdir, 'asr_x.srt')
+        with open(self.srt, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello\n')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _task(self, **overrides):
+        task = {
+            'id': 'task-cp',
+            'subtitle_path_original': self.srt,
+            'pipeline_checkpoint': json.dumps(
+                {'version': 1, 'completed': ['fetch_info', 'translate_subtitle']}
+            ),
+        }
+        task.update(overrides)
+        return task
+
+    def test_rejected_subtitle_is_discarded_from_checkpoint(self):
+        task = self._task(subtitle_qc_failed=1)
+        completed = tm._get_completed_stages(task)
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE, completed)
+        self.assertIn(tm.PIPELINE_STAGE_FETCH_INFO, completed)
+
+    def test_qc_unavailable_also_discards_stage(self):
+        """质检没跑成同样要剔除 —— 它是 None 路径唯一的落库信号。"""
+        task = self._task(subtitle_warning_message='qc_unavailable')
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                         tm._get_completed_stages(task))
+
+    def test_healthy_task_keeps_checkpoint_stage(self):
+        """反向守卫：正常任务不得被误剔除，否则每次重跑都会重做字幕。"""
+        task = self._task(subtitle_qc_failed=0)
+        self.assertIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                      tm._get_completed_stages(task))
+
+    def test_discard_is_idempotent_and_persists_forward(self):
+        """差集结果会被调用方写回 checkpoint，因此剔除可自我修复 DB 陈旧项。"""
+        task = self._task(subtitle_qc_failed=1)
+        first = tm._get_completed_stages(task)
+        # 模拟调用方写回后再次读取
+        task['pipeline_checkpoint'] = json.dumps(
+            {'version': 1, 'completed': sorted(first)}
+        )
+        second = tm._get_completed_stages(task)
+        self.assertEqual(first, second)
 
 
 class _FakeCursor:

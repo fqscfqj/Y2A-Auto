@@ -634,17 +634,24 @@ class SpeechRecognizer:
             max_duration_s = max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
             margin_s = max(0.0, float(self.config.voxtral_long_audio_margin_s or 0.0))
             window = min(window, max(1.0, max_duration_s - margin_s))
-        # 防御性钳制（与 vad_processor._create_chunks 同口径）：overlap >= window 时
+        # 防御性钳制（与设置页 guard 同口径 window - 1.0）：overlap >= window 时
         # current = end - overlap 不再前进，会造成分片死循环，ASR 线程永不返回、任务卡死。
         # window=5（设置页控件最小值）配 overlap=5（app.py guard 上限）是一条能通过全部
         # 既有校验的合法提交，必须在此兜住。
-        clamped_overlap = max(0.0, min(overlap, max(window - 0.01, 0.0)))
+        #
+        # 为什么不是 window - 0.01：步进会退化成 0.01 秒，1 小时素材被切成约 36 万片
+        # （每片都要抽一次音频并跑一轮 ASR），等效于把任务拖垮。留 1 秒余量与
+        # 设置页 guard 一致；window 极小时（模块硬下限 0.1）钳到 0 即可 ——
+        # 步进等于 window 仍为正，终止性不受影响。
+        clamped_overlap = max(0.0, min(overlap, max(window - 1.0, 0.0)))
         if clamped_overlap != overlap:
             self.logger.warning(
-                "AUDIO_CHUNK_OVERLAP_S=%.3f >= chunk window %.3fs, clamped to %.3fs to keep chunking finite",
+                "AUDIO_CHUNK_OVERLAP_S=%.3f >= chunk window %.3fs, clamped to %.3fs "
+                "to keep chunking finite (step=%.3fs)",
                 overlap,
                 window,
                 clamped_overlap,
+                window - clamped_overlap,
             )
         overlap = clamped_overlap
         if total_duration_s <= window:

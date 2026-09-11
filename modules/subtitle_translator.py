@@ -58,6 +58,44 @@ _SYMBOL_ONLY_RE = re.compile(r'[\W_]+', re.UNICODE)
 _ALNUM_ONLY_RE = re.compile(r'[A-Za-z0-9]+')
 _CAPS_ACRONYM_RE = re.compile(r'[A-Z]{2,}\d*')
 _CJK_ONLY_RE = re.compile(r'[\u3400-\u9fff]+')
+# 非中文的 CJK 文字体系：日文假名（平假名/片假名）、韩文谚文与字母。
+# 汉字码位被中日韩共用，无法单靠汉字判断语种，但假名/谚文是明确的「非中文」信号。
+_NON_CHINESE_CJK_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\u1100-\u11ff]')
+
+
+def _is_chinese_target(target_language) -> bool:
+    """目标语言是否是中文（``zh`` / ``zh-CN`` / ``中文`` 等写法）。"""
+    lang = str(target_language or '').strip().lower()
+    return lang.startswith('zh') or lang == 'chinese'
+
+
+def _is_chinese_text(text: str) -> bool:
+    """文本是否是中文：含汉字，且不含日文假名 / 韩文谚文。"""
+    compact = re.sub(r'[\s\W_]+', '', str(text or ''))
+    if not compact:
+        return False
+    if _NON_CHINESE_CJK_RE.search(compact):
+        return False
+    return bool(_CJK_ONLY_RE.fullmatch(compact))
+
+
+def _is_cjk_preservable(text: str, target_language=None) -> bool:
+    """CJK 文本「照抄原文」是否属于正确保留。
+
+    只有「文本本身是中文**且**目标语言也是中文」才成立 —— 此时本来就无需翻译。
+    此前只要文本不含拉丁字母/数字就一律放行，把整类 CJK 豁免掉，导致：
+
+    - 日文视频译中文时，模型对某条原样返回日文会被判「已翻译」，残留闸门放过，
+      日文原文写进中文字幕并烧录；
+    - 韩文同理；
+    - 目标语言是英文却照抄中文原文也会被放行。
+
+    ``target_language`` 未知时按**不**放行处理：本条修复的方向是收紧漏检，
+    未知目标语言下宁可判为残留交给上游追认逻辑，而不是静默放行。
+    """
+    if not _is_chinese_target(target_language):
+        return False
+    return _is_chinese_text(text)
 _COMPACT_TAG_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9+._/-]*')
 # 「像专有名词/代码而非普通英文词」的形态判据：
 # 含数字（v1、x86、mp4）、或首字母之后仍出现大写（iPhone、YouTube、iOS）。
@@ -83,17 +121,19 @@ def _looks_like_name_or_code(compact: str) -> bool:
     return bool(_LOWER_TO_UPPER_RE.search(compact))
 
 
-def _is_preservable_verbatim(text: str) -> bool:
+def _is_preservable_verbatim(text: str, target_language=None) -> bool:
     """判断文本是否属于「原文照留即可」的不可译条目。
 
     字幕翻译 prompt 明确允许保留数字、代码、URL、占位符和无公认译名的
     专有名词；这些条目的译文与原文相同是**正确结果**，不能算未译残留。
 
-    覆盖：URL、纯数字/百分比、纯符号、纯 CJK、缩写/型号/专有名词
-    （``NVIDIA``/``v1.2.3``/``iPhone``）。
+    覆盖：URL、纯数字/百分比、纯符号、缩写/型号/专有名词
+    （``NVIDIA``/``v1.2.3``/``iPhone``），以及「目标是中文且文本本身也是中文」
+    的 CJK 条目（本来就无需翻译）。
 
-    刻意**不**覆盖普通英文词与英文句子：那些是真正该翻译、模型却照抄的
-    情形，必须继续计为残留 —— 否则「整批未译」会被放行。
+    刻意**不**覆盖普通英文词、英文句子与**非中文的 CJK 文本**：那些是真正该
+    翻译、模型却照抄的情形，必须继续计为残留 —— 否则「整批未译」会被放行
+    （详见 ``_is_cjk_preservable``）。
     """
     s = str(text or '').strip()
     if not s:
@@ -102,23 +142,20 @@ def _is_preservable_verbatim(text: str) -> bool:
         return True
     if _SYMBOL_ONLY_RE.fullmatch(s):
         return True
-    if not re.search(r'[A-Za-z0-9]', s):
-        # 没有拉丁字母/数字：纯 CJK（原本就无需翻译）或纯符号 → 可保留
-        return True
-    if _CJK_ONLY_RE.fullmatch(re.sub(r'[\s\W_]+', '', s)):
-        return True
-
     compact = re.sub(r'[\s\W_]+', '', s)
     if not compact:
         return True
     if _PURE_NUMBER_RE.fullmatch(compact):
         # 纯数字/百分比或纯数字串（"12345"、"1 2 3"、"60%"）
         return True
+    if not re.search(r'[A-Za-z0-9]', s):
+        # 无拉丁字母/数字：CJK 文本（纯符号已在上方返回）
+        return _is_cjk_preservable(s, target_language)
 
     tokens = s.split()
     if len(tokens) > 1:
         # 多 token：单 token 必须足够"不可译"，否则判为需要翻译的句子
-        return all(_is_preservable_token(token) for token in tokens)
+        return all(_is_preservable_token(token, target_language) for token in tokens)
     if _ALNUM_ONLY_RE.fullmatch(compact):
         # 无空格单 token：必须是专有名词/型号/缩写，普通小写英文词不算
         return _looks_like_name_or_code(compact)
@@ -128,12 +165,14 @@ def _is_preservable_verbatim(text: str) -> bool:
     return False
 
 
-def _is_preservable_token(token: str) -> bool:
+def _is_preservable_token(token: str, target_language=None) -> bool:
     """多词短语里的单个 token 是否"不可译"。
 
     只认三类：纯数字、大写的技术缩写/型号（`NVIDIA`/`RTX`/`USB`/`GPU`）、
-    纯 CJK。普通小写英文词（`hello`/`world`/`the`）一律不算 —— 否则英文句子
-    照抄会被整句放行，整批未译就失去了拦截能力。
+    以及「目标是中文且 token 也是中文汉字」。普通小写英文词
+    （`hello`/`world`/`the`）一律不算 —— 否则英文句子照抄会被整句放行，
+    整批未译就失去了拦截能力；日文假名/韩文谚文同理不算（见
+    ``_is_cjk_preservable``）。
     """
     compact = re.sub(r'[\W_]+', '', token)
     if not compact:
@@ -142,7 +181,7 @@ def _is_preservable_token(token: str) -> bool:
         return True
     if _CAPS_ACRONYM_RE.fullmatch(compact):
         return True
-    return bool(_CJK_ONLY_RE.fullmatch(compact))
+    return _is_cjk_preservable(token, target_language)
 
 
 def _should_fail_translation_residue(
@@ -1475,7 +1514,12 @@ class SubtitleTranslator:
         例外：URL、纯数字、代码/版本号、大写缩写、短专有名词等**不可译条目**
         的译文等于原文是 prompt 允许的正确结果（见 _is_preservable_verbatim），
         直接判为已翻译，避免一条残留导致整份译文被丢弃。
+
+        判据依赖 ``self.config.target_language``：CJK 文本只有在「文本本身是
+        中文且目标语言也是中文」时才算合法照抄。否则日文/韩文原文照抄会被
+        误判为已翻译（模型原样返回日文，日文原文就写进中文字幕并烧录）。
         """
+        target_language = getattr(self.config, 'target_language', None)
         try:
             s = (src or '').strip()
             d = (dst or '').strip()
@@ -1484,7 +1528,7 @@ class SubtitleTranslator:
             if d == s:
                 # 若目标语言是中文但结果与原文一致，多半未翻译；
                 # 但不可译条目（URL/型号/纯数字/专有名词）保留原文是正确行为。
-                return not _is_preservable_verbatim(d)
+                return not _is_preservable_verbatim(d, target_language)
             # 计算非中文比例（仅中文汉字 vs 英数）
             chinese = 0
             non_chinese = 0
@@ -1497,6 +1541,10 @@ class SubtitleTranslator:
                     chinese += 1
                 elif re.match(r"[A-Za-z0-9]", ch):
                     non_chinese += 1
+                elif _NON_CHINESE_CJK_RE.match(ch):
+                    # 日文假名 / 韩文谚文：目标是中文时属"非译文"，必须计入分母，
+                    # 否则纯假名译文会因为「分母为 0」被直接判为已翻译。
+                    non_chinese += 1
                 else:
                     # 忽略标点/符号/表情，不计入分母
                     continue
@@ -1506,7 +1554,7 @@ class SubtitleTranslator:
             non_cn_ratio = non_chinese / denom
             if non_cn_ratio > 0.8:
                 # 非中文占绝大多数：只有不可译条目才容忍，其余判为未译
-                return not _is_preservable_verbatim(d)
+                return not _is_preservable_verbatim(d, target_language)
             return False
         except Exception:
             return False
