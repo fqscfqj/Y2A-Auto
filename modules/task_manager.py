@@ -30,10 +30,10 @@ from .subtitle_style import (
 )
 from .video_encoder_params import (
     build_audio_params,
-    build_color_vui_params,
     build_encoder_params,
     format_quality_value,
     normalize_color_metadata,
+    normalize_cpu_codec,
     parse_encoder_config,
     recommend_quality,
     resolve_color_metadata,
@@ -90,6 +90,16 @@ DB_WRITE_RETRY_TIMES = 5
 DB_WRITE_RETRY_SLEEP_SECONDS = 0.2
 METADATA_TRANSLATION_ERROR_CATEGORY = 'metadata_translation_failed'
 CONTENT_MODERATION_ERROR_CATEGORY = 'content_moderation_failed'
+
+# 字幕烧录超时估算参数（见 TaskManager._estimate_embed_timeout）。
+EMBED_TIMEOUT_MIN_SECONDS = 1800
+EMBED_TIMEOUT_MAX_SECONDS = 10800
+# libx265 的编码耗时实测约为同 preset 下 libx264 的 5 倍（仓库自带 FFmpeg
+# N-123313，带 subtitles 滤镜的真实烧录，1080p30 20s：veryfast 1.70s -> 8.44s）。
+# 若沿用 x264 的估算，长视频会被超时强杀；而 CPU 路径失败后只剩「x265 -> x264」
+# 一级降级，被超时杀掉时连这一级也救不回成片，只能整任务失败。故按实测倍数放大。
+EMBED_TIMEOUT_X265_FACTOR = 5.0
+EMBED_TIMEOUT_MAX_SECONDS_X265 = 28800
 
 
 def _convert_vtt_text_to_srt_text(vtt_content: str) -> str:
@@ -4161,6 +4171,11 @@ class TaskProcessor:
             return "auto"
     
     _KNOWN_HW_ENCODER_ERROR_PATTERNS = (
+        # 软件编码器：libx265 不一定被编进用户的 FFmpeg（自备构建常见
+        # --disable-libx265）。此时没有任何 GPU 相关的错误文本，若不登记，
+        # 失败会既不属于已知错误、也拿不到任何降级阶段，整任务直接失败。
+        'Unknown encoder "libx265"',
+        "Unknown encoder 'libx265'",
         # NVENC (NVIDIA)
         'Unknown encoder "h264_nvenc"',
         'Unknown encoder "hevc_nvenc"',
@@ -4617,12 +4632,28 @@ class TaskProcessor:
         return build_audio_params(audio_info)
 
     @staticmethod
-    def _estimate_embed_timeout(video_duration):
-        """根据视频时长估算 FFmpeg 超时时间（秒）。"""
+    def _estimate_embed_timeout(video_duration, cpu_codec=None):
+        """根据视频时长估算 FFmpeg 超时时间（秒）。
+
+        x264 路径的估算与历史完全一致（时长 * 3，超过 30 分钟则 * 2，下限 1800，
+        上限 10800）。x265 路径按 EMBED_TIMEOUT_X265_FACTOR 放大估算与上限：
+        libx265 实测比同 preset 的 libx264 慢约 5 倍，沿用 x264 的预算会让长视频
+        在编码中途被强杀；而且首轮就把 overall_deadline 用完时，后续降级阶段会被
+        「预算已耗尽」直接跳过 —— 连 x265 -> x264 那一级都轮不到。
+        """
         if video_duration:
-            estimated_time = video_duration * 3 if video_duration < 1800 else video_duration * 2
-            return int(max(1800, min(estimated_time, 10800)))
-        return 3600
+            rate = 3 if video_duration < 1800 else 2
+            estimated_time = video_duration * rate
+        else:
+            estimated_time = 3600
+
+        if normalize_cpu_codec(cpu_codec) == 'x265':
+            estimated_time *= EMBED_TIMEOUT_X265_FACTOR
+            ceiling = EMBED_TIMEOUT_MAX_SECONDS_X265
+        else:
+            ceiling = EMBED_TIMEOUT_MAX_SECONDS
+
+        return int(max(EMBED_TIMEOUT_MIN_SECONDS, min(estimated_time, ceiling)))
 
     @staticmethod
     def _build_embed_ffmpeg_cmd(
@@ -4670,7 +4701,7 @@ class TaskProcessor:
 
     @staticmethod
     def _resolve_embed_retry_stages(actual_encoder, hw_quality_boost, hw_error_detected,
-                                    hw_option_error=None):
+                                    hw_option_error=None, cpu_codec=None):
         """决定字幕烧录失败后的降级阶段顺序。
 
         硬件编码器失败时先尝试「关闭质量增强后用同一编码器重试」，保住硬件加速；
@@ -4691,10 +4722,17 @@ class TaskProcessor:
         ``hw_option_error=None`` 时按旧语义处理（已知硬件错误即不值得关增强重试），
         便于既有调用点与测试渐进迁移。
 
-        返回 'hw_no_boost' / 'cpu' 组成的列表，按执行顺序排列。
+        ``cpu_codec`` 是 CPU 软编码器取值（'x264' / 'x265'）。当用户选的软编码器是
+        x265 时，CPU 路径仍有一级可降：改用 libx264 重跑。libx265 不一定被编进
+        用户的 FFmpeg，切换实现时也可能带上不被接受的参数，而 libx264 在
+        --enable-gpl 构建里几乎是必然存在的。x264 已是最底层，没有更下一级。
+
+        返回 'hw_no_boost' / 'cpu' / 'cpu_x264' 组成的列表，按执行顺序排列。
         """
         encoder = str(actual_encoder or '').strip().lower()
         if encoder not in ('nvidia', 'intel', 'amd'):
+            if encoder == 'cpu' and normalize_cpu_codec(cpu_codec) == 'x265':
+                return ['cpu_x264']
             return []
         stages = []
         if hw_quality_boost:
@@ -7168,8 +7206,24 @@ class TaskProcessor:
 
                 # 从配置中获取（可选）自定义视频参数
                 custom_video_params = self._parse_custom_video_params(task_logger)
-                # 编码器附加配置（质量模式/预设/增强开关/色彩元数据）
+                # 编码器附加配置（质量模式/预设/增强开关/色彩元数据/CPU 编码器）
                 encoder_settings = parse_encoder_config(getattr(self, 'config', {}) or {})
+
+                # CPU 软编码器（x264 / x265）。与 VIDEO_ENCODER 正交：后者选硬件，
+                # 这里选软编码实现。x265 输出 HEVC，实测编码耗时约为 x264 的 5 倍。
+                cpu_codec = normalize_cpu_codec(encoder_settings.get('cpu_codec'))
+
+                # tune 是按 CPU 编码器各自的白名单校验的：film / stillimage 在 x264
+                # 下合法，在 x265 下会让编码直接失败。用户切到 x265 后这类取值会被
+                # 丢弃，必须显式告知，否则「配置了却没生效」无从察觉。
+                _configured_tune = str(
+                    (getattr(self, 'config', {}) or {}).get('VIDEO_X264_TUNE', '') or ''
+                ).strip()
+                if _configured_tune and not encoder_settings.get('software_tune'):
+                    task_logger.warning(
+                        f"VIDEO_X264_TUNE='{_configured_tune}' 对 {cpu_codec} 不合法，"
+                        f"已忽略该 tune（x265 不支持 film/stillimage）"
+                    )
 
                 # 固定质量值（CRF/CQ/QP，越小质量越高）。auto 模式按分辨率推荐，
                 # manual 模式使用用户在设置页指定的值。
@@ -7207,8 +7261,15 @@ class TaskProcessor:
                 if color_params:
                     task_logger.info(f"输出色彩元数据: {' '.join(color_params)}")
 
-                def _video_param_ctx(amd_backend=None):
-                    """汇总编码上下文，交由 video_encoder_params 统一构造参数。"""
+                def _video_param_ctx(amd_backend=None, cpu_codec_override=None):
+                    """汇总编码上下文，交由 video_encoder_params 统一构造参数。
+
+                    cpu_codec_override 用于 x265 -> x264 降级阶段覆盖用户选择；
+                    为 None 时使用配置里的 VIDEO_CPU_CODEC。这里刻意不与外层的
+                    cpu_codec 同名，避免遮蔽导致「以为读的是配置、其实读的是形参」。
+                    color_map 交给 encoder_params，由它把色彩 VUI 与（x265 的）
+                    质量增强合并成同一条私有参数选项。
+                    """
                     ctx = {
                         'height': input_height,
                         'gop': gop,
@@ -7220,16 +7281,22 @@ class TaskProcessor:
                         'duration_s': video_duration,
                         'hw_quality_boost': encoder_settings.get('hw_quality_boost'),
                         'hw_quality_level': encoder_settings.get('hw_quality_level'),
-                        'x264_tune': encoder_settings.get('x264_tune'),
+                        'cpu_codec': cpu_codec_override or encoder_settings.get('cpu_codec'),
+                        'software_tune': encoder_settings.get('software_tune'),
+                        'color_map': color_map,
                         'custom_params': custom_video_params,
                     }
                     if amd_backend is not None:
                         ctx['amd_backend'] = amd_backend
                     return ctx
 
-                # 针对软编码生成统一参数 (libx264)
-                def build_cpu_params():
-                    return build_encoder_params('cpu', _video_param_ctx())
+                # 针对软编码生成统一参数（libx264 或 libx265，由 VIDEO_CPU_CODEC 决定）。
+                # 色彩 VUI 已由 build_encoder_params 合并在内，调用方不要再另行追加，
+                # 否则 x265 会出现两条 -x265-params 而后者覆盖前者。
+                def build_cpu_params(cpu_codec_override=None):
+                    return build_encoder_params(
+                        'cpu', _video_param_ctx(cpu_codec_override=cpu_codec_override)
+                    )
 
                 def build_nvidia_params():
                     """生成 NVIDIA NVENC HEVC 编码参数"""
@@ -7321,32 +7388,27 @@ class TaskProcessor:
                         task_logger.info(f"使用 AMD {encoder_name} HEVC 硬件编码（backend={amd_backend}）")
                 else:
                     vparams = build_cpu_params()
-                    task_logger.info("使用 CPU 软编码 (libx264)")
+                    task_logger.info(
+                        f"使用 CPU 软编码 ({'libx265' if cpu_codec == 'x265' else 'libx264'})"
+                    )
 
                 # 音频优先直拷 AAC，非 AAC 再按源码率上限转 AAC
                 aparams = self._build_audio_transcode_params(audio_info)
 
-                # libx264 会静默忽略 -color_primaries/-color_trc，必须用编码器私有
-                # 参数补写 VUI，否则输出文件缺少原色与传递特性（通用选项仅对硬件编码器
-                # 有效）。按编码器解析，保证 CPU 回退阶段也能补上。
-                def _color_params_for(encoder_key):
-                    params = list(color_params)
-                    if encoder_key == 'cpu' and color_map:
-                        try:
-                            vui_params = build_color_vui_params(
-                                'cpu', color_map, custom_video_params
-                            )
-                        except Exception as vui_exc:
-                            task_logger.debug(f"构造色彩 VUI 参数失败: {vui_exc}")
-                            vui_params = []
-                        params += vui_params
-                    return params
+                # 软件编码的色彩 VUI 不再在这里追加：libx264/libx265 会静默忽略
+                # -color_primaries/-color_trc，必须用编码器私有参数补写，而 x265 的
+                # 质量增强与 VUI 必须写进**同一条** -x265-params（实测两条选项时后者
+                # 完全覆盖前者）。因此合并动作放在 build_encoder_params 内部完成，
+                # 这里只回显，避免两处各追加一条而互相覆盖。
+                for _vui_index, _vui_token in enumerate(vparams):
+                    if (
+                        _vui_token in ('-x264-params', '-x265-params')
+                        and _vui_index + 1 < len(vparams)
+                    ):
+                        task_logger.info(f"软件编码私有参数: {_vui_token} {vparams[_vui_index + 1]}")
+                        break
 
-                main_color_params = _color_params_for(actual_encoder)
-                if len(main_color_params) > len(color_params):
-                    task_logger.info(
-                        f"软件编码色彩 VUI: {' '.join(main_color_params[len(color_params):])}"
-                    )
+                main_color_params = list(color_params)
 
                 task_logger.info(f"视频编码参数: {' '.join(vparams)}")
                 task_logger.info(f"音频编码参数: {' '.join(aparams)}")
@@ -7373,7 +7435,9 @@ class TaskProcessor:
                 task_logger.debug(f"临时目录: {temp_dir}")
                 
                 # 设置超时时间（根据视频时长估算）
-                timeout = self._estimate_embed_timeout(video_duration)
+                timeout = self._estimate_embed_timeout(
+                    video_duration, cpu_codec if actual_encoder == 'cpu' else None
+                )
                 
                 task_logger.debug(f"设置处理超时时间: {timeout//60} 分钟")
                 
@@ -7578,10 +7642,12 @@ class TaskProcessor:
                     encoder_settings.get('hw_quality_boost'),
                     hw_error_detected,
                     hw_option_error,
+                    cpu_codec,
                 )
 
                 # 超时预算按剩余量递减：每个阶段各自 max(300, timeout) 重新计时
                 # 会让多阶段重试拿到数倍于预估的预算，长视频上尤其危险。
+                # x265 降级到 x264 反而更快，沿用原预算即可。
                 overall_deadline = time.monotonic() + max(300.0, float(timeout))
 
                 for stage in retry_stages:
@@ -7602,13 +7668,23 @@ class TaskProcessor:
                         task_logger.warning("硬件编码或质量增强参数不被支持，尝试关闭质量增强后用同一编码器重试...")
                         stage_vparams = _rebuild_hw_params(False)
                         stage_filter = final_vf
-                        stage_color_params = _color_params_for(actual_encoder)
+                        stage_color_params = list(color_params)
+                    elif stage == 'cpu_x264':
+                        # x265 不可用（未编进 FFmpeg）或其参数不被接受：改用 libx264
+                        # 重跑。滤镜链与通用色彩选项不变，只有软件编码实现换掉。
+                        stage_label = 'CPU 软编码 (libx265 回退至 libx264)'
+                        task_logger.warning(
+                            "libx265 不可用或其参数不被接受，改用 libx264 软编码重试..."
+                        )
+                        stage_vparams = build_cpu_params(cpu_codec_override='x264')
+                        stage_filter = vf_filter
+                        stage_color_params = list(color_params)
                     else:
                         stage_label = 'CPU 软编码'
                         task_logger.warning("尝试使用CPU编码回退方案...")
                         stage_vparams = build_cpu_params()
                         stage_filter = vf_filter
-                        stage_color_params = _color_params_for('cpu')
+                        stage_color_params = list(color_params)
 
                     # 每个阶段只拿「总预算减去已用掉的部分」，并用 60s 兜底避免
                     # 预算耗尽时把阶段压成 0；多阶段合计因此不超过预估总时长。

@@ -15,6 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from modules import task_manager as tm
 from modules.subtitle_style import parse_style_overrides
 from modules.task_manager import TaskProcessor
 from modules.video_encoder_params import (
@@ -439,6 +440,152 @@ class RetryStageTests(unittest.TestCase):
         self.assertFalse(TaskProcessor._is_known_hw_encoder_error('No space left on device'))
         self.assertFalse(TaskProcessor._is_known_hw_encoder_error(''))
         self.assertFalse(TaskProcessor._is_known_hw_encoder_error(None))
+
+
+class CpuCodecRetryTests(unittest.TestCase):
+    """CPU 软编码器的降级：libx265 不可用时改走 libx264。
+
+    libx265 不一定被编进用户的 FFmpeg（自备构建常见 --disable-libx265）。
+    这条错误既没有 GPU 相关文本，也不属于任何硬件降级分支，若不单独处理，
+    整任务会直接失败 —— 而 libx264 在 --enable-gpl 构建里几乎必然存在。
+    """
+
+    def test_x265_gains_a_libx264_stage(self):
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'cpu', True, True, hw_option_error=False, cpu_codec='x265'),
+            ['cpu_x264'],
+        )
+
+    def test_x264_has_no_further_stage(self):
+        # x264 已是最底层，重跑同一命令必然同样失败
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'cpu', True, True, hw_option_error=False, cpu_codec='x264'),
+            [],
+        )
+
+    def test_default_cpu_codec_keeps_the_old_behaviour(self):
+        """不传 cpu_codec 时与历史一致（默认 x264，无降级阶段）。"""
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages('cpu', True, True), [])
+
+    def test_invalid_cpu_codec_values_fall_back_to_no_retry(self):
+        for bad in (None, '', 'libx265', 'hevc', 265):
+            self.assertEqual(
+                TaskProcessor._resolve_embed_retry_stages(
+                    'cpu', True, True, hw_option_error=False, cpu_codec=bad),
+                [],
+                f'cpu_codec={bad!r}',
+            )
+
+    def test_hardware_stages_are_unaffected_by_cpu_codec(self):
+        """传入 cpu_codec 不得改变硬件编码器的降级链。"""
+        for codec in ('x264', 'x265', None):
+            self.assertEqual(
+                TaskProcessor._resolve_embed_retry_stages(
+                    'nvidia', True, True, hw_option_error=True, cpu_codec=codec),
+                ['hw_no_boost', 'cpu'],
+                f'cpu_codec={codec!r}',
+            )
+
+    def test_missing_libx265_is_a_recognized_error(self):
+        """未登记时该错误文本会落在「未知错误」里，拿不到任何降级阶段。"""
+        for message in ('Unknown encoder "libx265"', "Unknown encoder 'libx265'"):
+            self.assertTrue(
+                TaskProcessor._is_known_hw_encoder_error(message), message
+            )
+
+    def test_unrelated_missing_encoder_does_not_trigger_libx264_stage(self):
+        """其它缺失编码器不该被误当成 libx265 的问题。"""
+        self.assertFalse(
+            TaskProcessor._is_known_hw_encoder_error('Unknown encoder "libvpx"')
+        )
+
+
+class EmbedTimeoutTests(unittest.TestCase):
+    """烧录超时估算：x265 路径必须按实测的慢速比例放大预算。
+
+    实测（N-123313，1080p30 20s，带 subtitles 滤镜的真实烧录）：
+    veryfast 下 libx264 1.70s、libx265 8.44s，约 5 倍。若沿用 x264 的预算，
+    长视频会在编码中途被强杀，而 CPU 路径被超时杀掉时连 x265->x264 这一级
+    也来不及走。
+    """
+
+    def test_x264_budget_matches_history(self):
+        # 与重构前的 _estimate_embed_timeout 逐值一致，确认没有回归
+        cases = {
+            None: 3600,      # 无时长信息
+            0: 3600,         # 0 按「无时长」处理
+            100: 1800,       # 300 -> 下限 1800
+            600: 1800,       # 600*3 = 1800，正好压在下限
+            1200: 3600,      # 1200*3 = 3600
+            1800: 3600,      # 边界：>=1800 起改用 *2
+            7200: 10800,     # 7200*2 = 14400 -> 上限 10800
+        }
+        for duration, expected in cases.items():
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration), expected,
+                f'duration={duration!r}',
+            )
+
+    def test_default_cpu_codec_is_the_x264_budget(self):
+        for duration in (None, 0, 600, 1800, 7200):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration),
+                TaskProcessor._estimate_embed_timeout(duration, 'x264'),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_is_larger(self):
+        for duration in (600, 1800, 3600):
+            self.assertGreater(
+                TaskProcessor._estimate_embed_timeout(duration, 'x265'),
+                TaskProcessor._estimate_embed_timeout(duration, 'x264'),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_scales_by_the_measured_factor(self):
+        factor = tm.EMBED_TIMEOUT_X265_FACTOR
+        self.assertGreaterEqual(factor, 5.0, '实测慢约 5 倍，系数不应低于 5')
+        for duration in (600, 1800):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration, 'x265'),
+                int(duration * 3 * factor) if duration < 1800
+                else int(duration * 2 * factor),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_has_its_own_ceiling(self):
+        """长视频的 x265 预算必须能超过 x264 的 3 小时上限，否则必然被强杀。"""
+        self.assertGreater(
+            tm.EMBED_TIMEOUT_MAX_SECONDS_X265, tm.EMBED_TIMEOUT_MAX_SECONDS
+        )
+        self.assertEqual(
+            TaskProcessor._estimate_embed_timeout(10 ** 6, 'x265'),
+            tm.EMBED_TIMEOUT_MAX_SECONDS_X265,
+        )
+
+    def test_x264_ceiling_is_unchanged(self):
+        self.assertEqual(
+            TaskProcessor._estimate_embed_timeout(10 ** 6), 10800
+        )
+
+    def test_invalid_cpu_codec_uses_the_x264_budget(self):
+        for bad in (None, '', 'libx265', 'hevc', 265, True):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(7200, bad), 10800,
+                f'cpu_codec={bad!r}',
+            )
+
+    def test_budget_never_drops_below_the_floor(self):
+        for codec in ('x264', 'x265'):
+            for duration in (1, 10, 60, 300):
+                self.assertGreaterEqual(
+                    TaskProcessor._estimate_embed_timeout(duration, codec),
+                    tm.EMBED_TIMEOUT_MIN_SECONDS,
+                    f'{codec}/{duration}',
+                )
 
 
 class AudioParamsTests(unittest.TestCase):

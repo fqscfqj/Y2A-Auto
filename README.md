@@ -228,6 +228,10 @@ python app.py
 > 与自动下载的 FFmpeg（BtbN latest）都远高于该版本；但若通过 `FFMPEG_LOCATION`
 > 指向 5.0 或更早的旧版本，软件编码路径会因 `Unrecognized option 'fps_mode'`
 > 直接失败（非硬件编码器没有降级重试，任务会直接报错）。
+>
+> `VIDEO_CPU_CODEC=x265` 还额外要求该 FFmpeg 构建带 `libx265`（需 `--enable-gpl
+> --enable-libx265`，BtbN 与仓库自带版本均满足）。缺失时会自动降级为 `libx264`
+> 并继续烧录，不会因缺库而丢掉整条字幕。
 
 ### AI 与投稿
 
@@ -278,14 +282,15 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 ### 视频转码与维护
 
 - `VIDEO_ENCODER`：`auto` / `cpu` / `nvidia` / `intel` / `amd`
-- `VIDEO_CPU_PRESET`：常规 CPU/libx264 转码 preset，默认 `medium`
+- `VIDEO_CPU_CODEC`：`x264`（H.264，默认）或 `x265`（H.265/HEVC）。仅在最终使用 CPU 编码时生效：`VIDEO_ENCODER=cpu`，或硬编不可用而回退到 CPU 时。编码耗时约为 `libx264` 的 5 倍，超时预算会按同一倍数放大；体积收益**不保证**，取决于素材与 preset，建议开启后自行对比
+- `VIDEO_CPU_PRESET`：常规 CPU 软编码 preset，默认 `medium`
 - `VIDEO_CPU_PRESET_HD`：1440p+ 且超过 10 分钟时使用的 preset，默认 `veryfast`
 - `VIDEO_QUALITY_MODE`：`auto`（按分辨率推荐）或 `manual`（使用 `VIDEO_QUALITY_VALUE`），默认 `auto`
 - `VIDEO_QUALITY_VALUE`：固定质量值 CRF/CQ/QP，范围 `0-51`，越小质量越高。自动模式的推荐值为 4K `22.5` / 1440p `23` / 1080p `23.5` / 720p `24.5`
-- `VIDEO_HW_QUALITY_BOOST`：硬件编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。老 GPU 驱动不认识这些参数时可关闭，命令会回到基础参数并自动重试
+- `VIDEO_HW_QUALITY_BOOST`：编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。对 CPU 软编码同样生效（x264 / x265 各自的增强参数），老驱动不认识硬件参数时可关闭，命令会回到基础参数并自动重试
 - `VIDEO_HW_QUALITY_LEVEL`：`fast` / `balanced` / `quality`，映射到各硬件编码器的速度档，默认 `quality`
 - `VIDEO_COLOR_METADATA_MODE`：`auto`（透传源流色彩信息）/ `bt709`（强制）/ `off`（不写入），默认 `auto`。不写入时播放器会按默认色域解释，可能偏色
-- `VIDEO_X264_TUNE`：libx264 `-tune` 取值（如 `film` / `animation`），留空则不传
+- `VIDEO_X264_TUNE`：软编码 `-tune` 取值（如 `film` / `animation`），留空则不传。取值按 `VIDEO_CPU_CODEC` 各自的白名单校验：`film` 与 `stillimage` 只对 x264 合法，切到 x265 时会被忽略并写入任务日志
 - `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数（启用后完全覆盖内置编码参数与色彩参数）
 - `MAX_CONCURRENT_TASKS`：最大并发任务数，默认 `2`
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
@@ -350,6 +355,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
   "SPEECH_RECOGNITION_PROVIDER": "whisper",
   "VAD_ENABLED": true,
   "VIDEO_ENCODER": "auto",
+  "VIDEO_CPU_CODEC": "x264",
   "VIDEO_CPU_PRESET": "medium",
   "VIDEO_CPU_PRESET_HD": "veryfast",
   "FFMPEG_AUTO_DOWNLOAD": true,
@@ -421,13 +427,17 @@ QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核�
 - 默认优先使用项目内 `ffmpeg/` 目录中的二进制
 - Windows 环境下如果 `ffmpeg/` 缺失，系统可自动下载并补齐
 - `FFMPEG_LOCATION` 可覆盖默认路径，支持直接指向 `ffmpeg.exe` 或其所在目录
-- `VIDEO_ENCODER=cpu` 时使用 `libx264`（H.264）
+- `VIDEO_ENCODER=cpu` 时使用 CPU 软编码，编码器由 `VIDEO_CPU_CODEC` 决定：
+  - `x264`（默认）：`libx264`（H.264）
+  - `x265`：`libx265`（H.265/HEVC）。实测（1080p30，带字幕烧录）耗时约为 `libx264` 的 5 倍（veryfast 1.70s → 8.44s），超时预算已按同一倍数放大
+  - 体积收益并不稳定：实测在合成图文素材上（SSIM 匹配），`veryfast` 下同 CRF 的体积反而是 `libx264` 的 1.6~1.8 倍，`medium` 下约持平。是否更省取决于素材与 preset，建议开启后自行对比再决定；x265 的 CRF 标度与 x264 不可直接比较，本项不做任何自动偏移
 - `VIDEO_ENCODER=auto|nvidia|intel|amd` 时优先使用 HEVC / H.265 硬件编码：
   - NVIDIA：`hevc_nvenc`
   - Intel：`hevc_qsv`
   - AMD（Windows）：`hevc_amf`
   - AMD（Linux）：`hevc_vaapi`
-- 如果 HEVC 硬编不可用或转码失败，会自动回退到 `libx264`（H.264）
+- 如果 HEVC 硬编不可用或转码失败，会自动回退到 CPU 软编码（按 `VIDEO_CPU_CODEC` 选择编码器）
+- 如果 CPU 编码器选了 `x265` 但当前 FFmpeg 不含 `libx265`，或 `libx265` 不接受某个参数，会自动降级为 `libx264` 重试
 
 ### Docker GPU 示例
 

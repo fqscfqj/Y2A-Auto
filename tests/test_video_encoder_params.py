@@ -317,6 +317,7 @@ class ParseEncoderConfigTests(unittest.TestCase):
         parsed = parse_encoder_config({})
         self.assertEqual(parsed, {
             'encoder_pref': 'auto',
+            'cpu_codec': 'x264',
             'cpu_preset': 'medium',
             'cpu_preset_hd': 'veryfast',
             'quality_mode': 'auto',
@@ -326,6 +327,7 @@ class ParseEncoderConfigTests(unittest.TestCase):
             'color_metadata_mode': 'auto',
             'custom_params_enabled': False,
             'custom_params': '',
+            'software_tune': '',
             'x264_tune': '',
         })
 
