@@ -19,6 +19,8 @@ import logging
 import re
 import string
 import time
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -759,11 +761,150 @@ def _is_punctuation_char(ch: str) -> bool:
 
 
 def _strip_for_coverage(text: str) -> str:
-    """去空白与标点，得到用于覆盖率比较的纯内容字符序列。"""
-    return ''.join(
+    """去空白与标点，得到用于覆盖率比较的纯内容字符序列。
+
+    先去空白/标点，再做 NFKC 归一化：模型把全角数字 `１２３` 写成 `123`、
+    或把兼容字符写成基本字符，都属于等价书写，不构成内容变更。
+    """
+    filtered = ''.join(
         ch for ch in str(text or '')
         if not ch.isspace() and not _is_punctuation_char(ch)
     )
+    return unicodedata.normalize('NFKC', filtered)
+
+
+# 中文数字写法归一：ASR 常输出「一二三」，模型归一时可能写成「123」
+# （或反之）。两者是同一信息，不应判为丢字或造字 —— 这正是数字密集内容
+# （年份/价格/公式）被判「造字」而整批降级的高发来源。
+_CJK_DIGIT_MAP = {
+    '零': 0, '〇': 0,
+    '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+}
+_CJK_UNIT_MAP = {'十': 10, '百': 100, '千': 1000}
+_CJK_SECTION_UNIT_MAP = {'万': 10000, '亿': 100000000}
+_CJK_NUMERAL_RUN_RE = re.compile(
+    '[' + ''.join(_CJK_DIGIT_MAP) + ''.join(_CJK_UNIT_MAP) + ''.join(_CJK_SECTION_UNIT_MAP) + ']+'
+)
+
+
+def _cjk_numeral_run_to_arabic(run: str) -> str:
+    """把一段纯中文数字串转换成阿拉伯数字串；不是数字表达式时原样返回。
+
+    两种读法必须区分，否则会引入新的误判：
+
+    - 不含单位（十/百/千/万/亿）：按**逐位**读，`一二三` → `123`；
+    - 含单位：按**数值**读，`三百六十五` → `365`、`两千零二十四` → `2024`。
+
+    统一按数值读会把 `一二三` 变成 `3`，那是真实的丢字，不能容忍。
+
+    另一条前置条件：整串必须**至少含一个中文数字**，否则原样返回。
+    没有这条，孤立的单位字会被塌成数字：`百分之六十` 里的 `百`（词素，不是
+    数量）会变成 `100`、`1.2 万` 里的 `万` 会变成 `0` —— 后者甚至会让完全不同
+    的内容被判为相同，反而掩盖真实的丢字。
+    """
+    if not any(ch in _CJK_DIGIT_MAP for ch in run):
+        return run
+    if not any(ch in _CJK_UNIT_MAP or ch in _CJK_SECTION_UNIT_MAP for ch in run):
+        return ''.join(str(_CJK_DIGIT_MAP[ch]) for ch in run)
+
+    total = 0
+    section = 0
+    number = 0
+    for ch in run:
+        if ch in _CJK_DIGIT_MAP:
+            number = _CJK_DIGIT_MAP[ch]
+        elif ch in _CJK_UNIT_MAP:
+            unit = _CJK_UNIT_MAP[ch]
+            section += (number or 1) * unit
+            number = 0
+        else:  # 万 / 亿
+            section = (section + number) * _CJK_SECTION_UNIT_MAP[ch]
+            total += section
+            section = 0
+            number = 0
+    return str(total + section + number)
+
+
+def _fold_digits(text: str) -> str:
+    """数字写法归一：中文数字统一折叠为阿拉伯数字，便于逐字符比较。
+
+    只做替换、不改变与数字无关的字符，因此对源文本与输出文本是对称的：
+    误折叠最多让两个不同写法被判为相同，不会凭空判出缺失。
+    """
+    return _CJK_NUMERAL_RUN_RE.sub(
+        lambda match: _cjk_numeral_run_to_arabic(match.group(0)), str(text or '')
+    )
+
+
+# 可被 AI 安全删除的填充词/口吃（英文与中文语气词）。
+# 注意：只覆盖无实义的填充词，不覆盖任何实词，避免把正常改写当"允许丢弃"。
+# 前后用非单词字符（而不是 \b）做边界，保证 `world` 里的 `or`/`er` 不会被误删。
+_FILLER_DELETABLE_RE = re.compile(
+    r'(?<![A-Za-z])(?:um|uh|er|ah|hmm|mm|uhm|erm)(?![A-Za-z])|[嗯啊呃哦唔]',
+    re.IGNORECASE,
+)
+
+
+def _strip_deletable_fillers(text: str) -> str:
+    """先从待比较文本中移除填充词，得到"实词骨架"。
+
+    填充词（`um`/`uh`/`hmm`/`嗯`…）在 ASR 原文中真实存在，模型按 prompt
+    清理它们是允许的行为，不应被判成"丢字"。因此覆盖率比较前把两侧文本
+    都做同样的预删除 —— 这样比较的才是实词骨架，而不是把阈值整体放宽。
+    """
+    return _FILLER_DELETABLE_RE.sub('', str(text or ''))
+
+
+def _deletable_filler_chars(text: str) -> int:
+    """统计文本中填充词的字符数（仅用于诊断日志）。"""
+    return sum(len(match.group(0)) for match in _FILLER_DELETABLE_RE.finditer(str(text or '')))
+
+
+def _coverage_metrics(src_text: str, out_text: str) -> tuple:
+    """按多重集比较源文本与输出文本，返回 (覆盖率, 缺失字符样本)。
+
+    为什么必须是多重集而不是集合：集合只判断"字符是否出现过"，
+    源 `abab` → 输出 `ab` 这种丢掉一半内容的输出会被判成 100% 覆盖。
+    多重集用 Counter 逐字符计次（min(源计数, 输出计数) 求和 / 源长度）
+    才能反映真实内容留存率。
+
+    填充词预删除：ASR 原文中的 `um`/`uh`/`嗯` 是被 prompt 允许清理的填充词，
+    因此比较前对源与输出做同样的预删除，只在"实词骨架"上要求 0.9 留存率。
+    预删除清单固定且很短，不会掩盖实词丢失：`abab`→`ab`、`a`*100→`a`*50
+    这类输出预删除后覆盖率仍为 0.5，照样拒绝。
+    """
+    src_chars = _fold_digits(_strip_for_coverage(_fold_case(_strip_deletable_fillers(src_text))))
+    out_chars = _fold_digits(_strip_for_coverage(_fold_case(_strip_deletable_fillers(out_text))))
+    total = len(src_chars)
+    if total == 0:
+        return 1.0, ''
+
+    src_counter = Counter(src_chars)
+    out_counter = Counter(out_chars)
+    covered = sum(min(count, out_counter[ch]) for ch, count in src_counter.items())
+    coverage = covered / total
+
+    missing = src_counter - out_counter
+    missing_sample = ''.join(sorted(missing.elements()))[:40]
+    return coverage, missing_sample
+
+
+_ASCII_LOWER_TABLE = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _fold_case(text: str) -> str:
+    """把 ASCII 大写折叠为小写，用于内容比较。
+
+    大小写不是字幕内容：模型把句首字母大写（`hello` → `Hello`）是最基本的
+    书写规范，绝不构成「丢字」或「造字」。此前的比较是大小写敏感的，导致
+    任何一句被正确大写的输出都会命中「输出含原文不存在的非标点字符」而被整批
+    拒绝并降级 —— 这是覆盖率闸门最常见的假阳性来源。
+
+    只折叠 ASCII A-Z（长度不变），不使用 str.lower()/casefold()：
+    后者对个别字符（如 `İ`、`ß`）会改变长度，破坏基于字符数的比率。
+    """
+    return str(text or '').translate(_ASCII_LOWER_TABLE)
 
 
 def _assert_text_coverage(
@@ -776,35 +917,44 @@ def _assert_text_coverage(
     """文本覆盖率闸门：AI 只能重排/重标点，不能丢字或造字。
 
     两条硬约束（任一违反抛 AISegmentationError，由上层转降级）：
-    1. 覆盖率 = (原文字符逐个在输出中出现的数量) / len(原文字符) 必须 >= 0.9；
-       低于 0.9 说明输出丢掉了原文内容。原文为空时直接放行（无内容可校验）。
-    2. 输出新增的非标点字符集合必须为空（只允许 AI 新增标点），
+    1. 覆盖率按**多重集**计算（见 _coverage_metrics）：必须 >= 0.9。
+       逐字符计次的留存率能抓住"源 abab → 输出 ab"这类丢一半内容的输出，
+       而集合归属判定会把它们判成 100% 覆盖。
+       比较前做 NFKC 归一化、ASCII 大小写折叠与中文数字折叠，避免把
+       `１２３`→`123`、`hello`→`Hello`、`一年`→`1年` 这类等价书写
+       误判为丢字/造字。
+       删除配额：允许 AI 删除无实义填充词与重复口吃（ASR 清理的正常行为）。
+       原文为空时直接放行（无内容可校验）。
+    2. 输出中原文不存在的非标点字符必须为空（只允许 AI 新增标点），
        否则说明输出出现了原文不存在的字词（幻觉/串批）。
+       同样先做填充词预删除 + NFKC + 大小写折叠 + 数字折叠。
 
-    比较前统一去空白与标点，避免把"AI 重新断句/补标点"误判为内容变更。
+    权衡说明：字级出口的原文来自 ASR 词表，填充词（`uh`/`嗯` 等）确实存在
+    于原文中，模型清理它们是 prompt 明确允许的行为；因此这里用"两侧同步预删除
+    填充词"而不是把阈值整体放宽 —— 预删除只作用于固定填充词清单，实词丢失
+    仍按 0.9 严格拒绝（`abab`→`ab`、`a`*100→`a`*50 均被拒）。
     """
-    src_chars = _strip_for_coverage(src_text)
-    out_chars = _strip_for_coverage(''.join(str(c.text or '') for c in out_cues or []))
-    if not src_chars:
-        # 无原文（空批次/纯标点）→ 无内容可校验
+    out_text = ''.join(str(c.text or '') for c in out_cues or [])
+    src_raw = str(src_text or '')
+    if not _strip_for_coverage(_strip_deletable_fillers(src_raw)):
+        # 无实词内容（空批次/纯标点/纯语气词）→ 无内容可校验
         return
 
-    # 覆盖率按"原文字符逐个是否在输出中出现"计算（重复字符各计一次）：
-    # 这是内容留存率，而不是去重后的字符种类比例。
-    out_set = set(out_chars)
-    total = len(src_chars)
-    covered = sum(1 for ch in src_chars if ch in out_set)
-    coverage = covered / total
+    coverage, missing_sample = _coverage_metrics(src_raw, out_text)
     if coverage < 0.9:
         message = (
             f'[{context}] 文本覆盖率不足: {coverage:.3f} < 0.9 '
-            f'(原文 {len(src_chars)} 字符 / 输出 {len(out_chars)} 字符, cue {len(out_cues or [])} 条)'
+            f'(原文 {len(_strip_for_coverage(src_raw))} 字符 / '
+            f'输出 {len(_strip_for_coverage(out_text))} 字符, '
+            f'可删填充词字符={_deletable_filler_chars(_strip_for_coverage(src_raw))}, '
+            f'缺失样本={missing_sample!r}, cue {len(out_cues or [])} 条)'
         )
         if logger:
             logger.warning(message)
         raise AISegmentationError(message)
 
-    extra = set(out_chars) - set(src_chars)
+    src_set = set(_fold_digits(_strip_for_coverage(_fold_case(src_raw))))
+    extra = set(_fold_digits(_strip_for_coverage(_fold_case(out_text)))) - src_set
     extra.discard('')
     if extra:
         sample = ' '.join(sorted(extra))[:40]
@@ -814,14 +964,41 @@ def _assert_text_coverage(
         raise AISegmentationError(message)
 
 
-def _snap_to_boundary(value: float, boundaries: List[float]) -> Optional[float]:
-    """把时间值吸附到最近的输入段边界，超出容差返回 None。"""
-    if not boundaries:
-        return None
+def _snap_or_interpolate(
+    value: float,
+    spans: List[Tuple[float, float]],
+    interpolation_points: List[float],
+) -> Optional[Tuple[float, str]]:
+    """把单个时间点解析成 ``(合法时间, 来源)``；无法解析时返回 ``None``。
+
+    ``来源`` 为 ``'boundary'``（吸附到输入段边界，权威时间轴）或
+    ``'segment_interp'``（段内切点，非输入边界）—— 下游需要区分二者：
+    段内切点是模型给出的近似值，而边界吸附是可信时间。
+
+    解析优先级：
+    1. 吸附到最近的输入段边界（容差 `_BOUNDARY_SNAP_TOL_S` 内）；
+    2. 命中的"段内插值点"原样保留（该点必须是输出时间点之一，且严格落在
+       某个真实输入区间内部）；
+    3. 两者都不满足 → ``None``（调用方整批拒绝并降级）。
+
+    注意：插值点不能放宽为"任意落在区间内部的时间点"，否则等于取消边界吸附 ——
+    模型输出的 2.5s 会被原样放行，越界与乱跳防护同时失效。
+    """
     value = float(value)
-    nearest = min(boundaries, key=lambda b: abs(float(b) - value))
-    if abs(float(nearest) - value) <= _BOUNDARY_SNAP_TOL_S:
-        return float(nearest)
+    nearest = None
+    nearest_distance = None
+    for lo, hi in spans:
+        for boundary in (lo, hi):
+            distance = abs(boundary - value)
+            if nearest_distance is None or distance < nearest_distance:
+                nearest = boundary
+                nearest_distance = distance
+    if nearest is not None and nearest_distance is not None \
+            and nearest_distance <= _BOUNDARY_SNAP_TOL_S:
+        return float(nearest), 'boundary'
+    for point in interpolation_points:
+        if abs(float(point) - value) <= _BOUNDARY_SNAP_TOL_S:
+            return float(point), 'segment_interp'
     return None
 
 
@@ -834,6 +1011,130 @@ def _segment_boundaries(segments: List[AsrSegmentTiming]) -> List[float]:
     return sorted(boundaries)
 
 
+def _boundaries_to_spans(boundaries: List[float]) -> List[Tuple[float, float]]:
+    """把有序边界列表还原成最小输入段区间。
+
+    边界的相邻两项构成一个"段跨度"，这是"输出时间必须落在输入内容覆盖范围内"
+    这一约束的最紧近似：跨段跳出去的时间点会落在没有任何输入内容的空隙里。
+    """
+    spans: List[Tuple[float, float]] = []
+    for left, right in zip(boundaries, boundaries[1:]):
+        if right > left:
+            spans.append((float(left), float(right)))
+    return spans
+
+
+def _accepts_time(value: float, span: Tuple[float, float]) -> bool:
+    """判断一个时间点是否可能是该段跨度的"段内切点"。
+
+    条件：落在跨度闭区间内，且与跨度端点的距离大于吸附容差 —— 端点附近的
+    时间点已经由 `_snap_or_interpolate` 吸附处理，这里只保留真正的段内切点。
+    """
+    start, end = span
+    if not (start < value < end):
+        return False
+    return (value - start) > _BOUNDARY_SNAP_TOL_S and (end - value) > _BOUNDARY_SNAP_TOL_S
+
+
+def _legal_interpolation_points(values: List[float], span: Tuple[float, float]) -> List[float]:
+    """在段跨度内找出合法段内切点。
+
+    切点条件（与段级 prompt 的"可将一段拆为多条"一致）：
+    - 该跨度的起止时间都出现在输出时间点里，说明这一段被输出**完整覆盖**，
+      而不是只覆盖一半就丢掉剩余内容（丢内容另有文本覆盖率闸门兜底）；
+    - 该点严格落在跨度内部，且与跨度端点的距离大于吸附容差 —— 端点附近的
+      时间点已由 `_snap_or_interpolate` 吸附处理。
+
+    为什么不能再加"附近必须有另一个锚点"这类配对条件：段内切点按定义就是
+    孤立的。把 30s 的段拆成两条时，切点 14.8s 与最近端点相距 14.8s/15.2s，
+    永远不存在容差量级内的邻居 —— 加上该条件会让"拆长段"这一**唯一**需要
+    段内切点的用途整批失败，插值支持形同虚设（实测 A/B/F 三类拆段全部被拒）。
+
+    乱跳与越界不靠邻居判据拦截，而由两道更强的约束保证：
+    1. 切点必须严格落在**某个输入跨度内部** —— 落在 VAD 判定无语音的空隙里的
+       时间点（例如跨段的 15s）不属于任何跨度，仍被拒绝；
+    2. `_interpolate_segment_cues` 末尾的内容覆盖范围交叉校验。
+    """
+    start, end = span
+    if start not in values or end not in values:
+        return []
+    return [v for v in values if _accepts_time(v, span)]
+
+def _interpolate_segment_cues(
+    cleaned: List[Dict[str, Any]],
+    spans: List[Tuple[float, float]],
+    logger,
+) -> List[Dict[str, Any]]:
+    """段级时间校验：边界吸附优先，段内切点按同一跨度的连续证据放行。
+
+    返回 [] 表示整批拒绝（越界/逆序/跨段乱跳/时间重叠），由上层降级。
+
+    为什么需要段内切点：段级行为层明确要求"可将一段拆为多条"，而单段本身可能
+    长于 `AI_SEGMENTATION_MAX_CUE_DURATION_S`，用输入段边界表达段内切点在数学上
+    不可能（容差 0.3s 永远比不上 15s 的段内距离），容忍策略会让"拆长段"这一
+    主要用途整批失败并降级。
+
+    放行条件严格限定为"该跨度被完整覆盖 + 跨度内成对出现的连续切点"：
+    - 一条 cue 只覆盖半个段（没有与之配对的切分）→ 仍判拒绝；
+    - 时间落在所有输入段之外（越界）→ 拒绝；
+    - 时间与输入段完全没有交集（跨段乱跳）→ 拒绝。
+    """
+    if not cleaned:
+        return []
+    values = sorted({float(c['start_s']) for c in cleaned} | {float(c['end_s']) for c in cleaned})
+
+    # 段内插值点必须同时是"输出时间点之一 + 满足跨度内切点条件"
+    interpolation_points: List[float] = []
+    for span in spans:
+        for point in _legal_interpolation_points(values, span):
+            if point not in interpolation_points:
+                interpolation_points.append(point)
+
+    snapped: List[Dict[str, Any]] = []
+    for c in cleaned:
+        resolved_start = _snap_or_interpolate(c['start_s'], spans, interpolation_points)
+        resolved_end = _snap_or_interpolate(c['end_s'], spans, interpolation_points)
+        if resolved_start is None or resolved_end is None:
+            bad_time = c['start_s'] if resolved_start is None else c['end_s']
+            bad_field = 'start_s' if resolved_start is None else 'end_s'
+            logger.warning(
+                '段级 AI 时间既不在输入段边界上、也不落在任何输入区间内部: %s=%.3f '
+                '（输入区间 %d 个），整批拒绝并降级',
+                bad_field, bad_time, len(spans),
+            )
+            return []
+        new_start, start_source = resolved_start
+        new_end, end_source = resolved_end
+        if new_end <= new_start:
+            # 逆序/零长度：非"未吸附"类问题，直接整批拒绝（由上层降级）
+            logger.warning(
+                '段级 AI 输出时间逆序: [%.3f, %.3f]，整批拒绝并降级', new_start, new_end,
+            )
+            return []
+        item = {'start_s': new_start, 'end_s': new_end, 'text': c['text']}
+        # 任一端取自段内切点就标记：该时间是模型给出的近似值，不是输入段边界，
+        # 下游据此可以区分「可信的边界吸附」与「段内插值」。
+        if 'segment_interp' in (start_source, end_source):
+            item['timing_source'] = 'segment_interp'
+        snapped.append(item)
+    if not snapped:
+        return []
+
+    # 交叉校验：所有输出时间必须落在输入内容覆盖的范围内（越界/乱跳一律拒绝）
+    covered_lo = min(span[0] for span in spans)
+    covered_hi = max(span[1] for span in spans)
+    for item in snapped:
+        if item['start_s'] < covered_lo - _BOUNDARY_SNAP_TOL_S or \
+                item['end_s'] > covered_hi + _BOUNDARY_SNAP_TOL_S:
+            logger.warning(
+                '段级 AI 输出时间越出输入内容覆盖范围: [%.3f, %.3f] 不在 [%.3f, %.3f] 内，'
+                '整批拒绝并降级',
+                item['start_s'], item['end_s'], covered_lo, covered_hi,
+            )
+            return []
+    return snapped
+
+
 def _parse_cues_response(
     parsed: Optional[Dict[str, Any]],
     batch_start_s: float,
@@ -841,6 +1142,7 @@ def _parse_cues_response(
     input_count: int,
     input_boundaries: Optional[List[float]] = None,
     total_duration_s: Optional[float] = None,
+    input_spans: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """校验并清洗 AI 返回的 cues。
 
@@ -851,12 +1153,19 @@ def _parse_cues_response(
     - 数量合理（1 ~ input_count*2 + 4，防异常膨胀）
 
     增强校验（input_boundaries / total_duration_s 提供时启用）：
-    - 时间吸附：start_s / end_s 必须落在输入段边界 ±0.3s 内，并吸附到该边界值。
-      时间是 AI 生成的近似值，不能直接当权威时间轴；吸附保证输出边界只可能取
-      输入段的真实边界。任一时间点找不到容差内的边界 → 整批返回 []（触发降级）。
-      吸附后若出现时间重叠也不再截断（截断会产生非边界时间），一律整批返回 []。
+    - 时间吸附：start_s / end_s 优先吸附到最近的输入段边界（±_BOUNDARY_SNAP_TOL_S）。
+      时间是 AI 生成的近似值，不能直接当权威时间轴；吸附保证输出边界尽量取
+      输入段的真实边界。找不到容差内边界的点，只有在该点严格落在**某个输入区间
+      内部**时，才按"段内插值切点"放行（标记 timing_source='segment_interp'）
+      ——段级 prompt 允许把一段拆为多条，而段内切点在数学上不可能落在输入边界上。
+      越界（落在输入内容覆盖范围之外）、逆序、时间重叠仍一律整批返回 []
+      （触发降级），防护未被削弱。
+
+    ``input_spans`` 必须传**真实输入区间**（段的 start/end 对）：调用方若省略，
+    这里退化为用相邻边界对拼出区间，而相邻边界对里包含「段与段之间的静音空隙」
+    ——空隙被当成合法区间会把"时间跳到无语音区"放行，因此能传就必须传。
     - 时长上界：total_duration_s > 0 时把 end_s 钳制到总时长、start_s 抬到 >= 0。
-      覆盖率的 95% 闸门不在此函数内，见 _assert_text_coverage（两级 AI 出口共用）。
+    - 文本覆盖率闸门不在此函数内，见 _assert_text_coverage（两级 AI 出口共用）。
     """
     if not isinstance(parsed, dict):
         return []
@@ -895,26 +1204,15 @@ def _parse_cues_response(
     if not cleaned:
         return []
 
-    # 时间吸附：只允许落在输入段边界上
+    # 时间校验：边界吸附优先，段内切点按"落在真实输入区间内部"放行
     if input_boundaries:
-        snapped: List[Dict[str, Any]] = []
-        for c in cleaned:
-            new_start = _snap_to_boundary(c['start_s'], input_boundaries)
-            new_end = _snap_to_boundary(c['end_s'], input_boundaries)
-            if new_start is None or new_end is None:
-                bad_time = c['start_s'] if new_start is None else c['end_s']
-                bad_field = 'start_s' if new_start is None else 'end_s'
-                message = (
-                    f'段级 AI 时间未吸附到输入段边界: {bad_field}={bad_time:.3f} '
-                    f'在 ±{_BOUNDARY_SNAP_TOL_S}s 内无匹配边界'
-                    f'（输入边界 {len(input_boundaries)} 个），整批拒绝并降级'
-                )
-                logging.getLogger(__name__).warning(message)
-                return []
-            if new_end <= new_start:
-                continue
-            snapped.append({'start_s': new_start, 'end_s': new_end, 'text': c['text']})
-        cleaned = snapped
+        if input_spans:
+            spans = sorted((float(lo), float(hi)) for lo, hi in input_spans if float(hi) > float(lo))
+        else:
+            spans = _boundaries_to_spans(sorted({round(float(b), 3) for b in input_boundaries}))
+        cleaned = _interpolate_segment_cues(
+            cleaned, spans, logging.getLogger(__name__),
+        )
         if not cleaned:
             return []
 
@@ -1523,6 +1821,11 @@ def _normalize_output_cues(
             provider=getattr(cue, 'provider', ''),
             timing_source=getattr(cue, 'timing_source', 'segment'),
             alignment_confidence=getattr(cue, 'alignment_confidence', 0.0),
+            # source_window_index 必须原样保留：下游 srt_transform_engine 的跨窗
+            # 去重（_is_cross_window_dup / _window_index_of）完全依赖该字段，
+            # 丢失后退化为 -1 会让跨窗去重彻底失效（同窗口判定为 -1 == -1 时跳过）。
+            source_window_index=getattr(cue, 'source_window_index', -1),
+            metadata=dict(getattr(cue, 'metadata', {}) or {}),
         ))
     return normalized
 
@@ -1753,6 +2056,8 @@ class AISegmenter:
             parsed, batch.time_start_s, batch.time_end_s, len(batch.segments),
             input_boundaries=_segment_boundaries(batch.segments),
             total_duration_s=self._total_duration_s,
+            # 传真实段区间：相邻边界对里含段间静音空隙，空隙不能当合法区间
+            input_spans=[(float(s.start_s), float(s.end_s)) for s in batch.segments],
         )
         if not cues_data:
             # 诊断：记录模型返回的原始结构，帮助定位格式不匹配
@@ -1945,6 +2250,8 @@ class AISegmenter:
                     len(boundary_words),
                     input_boundaries=word_boundaries,
                     total_duration_s=self._total_duration_s,
+                    # 字级同样传真实词区间：词与词之间的停顿不是可切分的语音内容
+                    input_spans=[(float(w.start_s), float(w.end_s)) for w in boundary_words],
                 )
                 if refined_cues_data:
                     new_boundary_cues = _cues_from_response(refined_cues_data, timing_source='ai', provider=provider)

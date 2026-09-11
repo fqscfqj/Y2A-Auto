@@ -92,6 +92,17 @@ _SUBTITLE_JSON_SUFFIX = (
     '若确实无法输出 JSON，则每行只写一条译文，行数必须与输入条数完全相同且顺序一致。'
 )
 
+# 严格补救模式的输出格式：**不留行式降级出口**。
+# 主模式允许「每行一条译文」是最后的兜底；但严格模式存在的意义就是消除漏译，
+# 若仍给出行式出口，模型会退化成无 index 的裸文本清单，而上游 _parse_plain_translation_lines
+# 在条数吻合时直接采信（无 index 校验），需要严格配对时无法证明对齐。
+_SUBTITLE_STRICT_JSON_SUFFIX = (
+    '严格返回 JSON：{"translations":[{"index":0,"translation":"译文1"},{"index":1,"translation":"译文2"}]}。'
+    'index 必须与输入条目编号一一对应，不得缺项、不得合并、不得增项，'
+    '缺任何一条都会被判为整批失败。'
+    '不要输出 Markdown 代码块，不要输出解释，不要用编号清单代替 JSON。'
+)
+
 _METADATA_JSON_SUFFIX = '只返回 JSON：{"title":"","description":""}。'
 _METADATA_DESC_RETRY_JSON_SUFFIX = '只返回 JSON：{"description":""}。'
 
@@ -434,14 +445,18 @@ def get_subtitle_strict_system_prompt(
     user_text: str = "",
     target_language: str = "zh",
 ) -> str:
-    """获取字幕翻译严格补救最终 system prompt（含协议壳和 JSON 后缀）。"""
+    """获取字幕翻译严格补救最终 system prompt（含协议壳和 JSON 后缀）。
+
+    严格模式使用独立的 JSON 后缀（`_SUBTITLE_STRICT_JSON_SUFFIX`）：
+    不放行「每行一条译文」的行式降级，避免模型绕开 index 契约。
+    """
     behavior = get_final_system_prompt(
         "SUBTITLE_TRANSLATE_STRICT",
         mode=mode,
         user_text=user_text,
         target_language=target_language,
     )
-    return f"{behavior}{_SUBTITLE_STRICT_SHARED_RULES}{_SUBTITLE_JSON_SUFFIX}"
+    return f"{behavior}{_SUBTITLE_STRICT_SHARED_RULES}{_SUBTITLE_STRICT_JSON_SUFFIX}"
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +517,9 @@ def get_smart_segment_system_prompt(
     """获取 AI 智能分段最终 system prompt（含协议壳与 JSON 后缀）。
 
     has_word_timestamps=True 使用字级模式（精度高），False 使用段级降级模式。
+    字级模式必须拼上 `_SMART_SEGMENT_WORD_SHARED_RULES`（索引制 JSON 契约 +
+    "不要 Markdown / 不要解释"），否则模型会用「说明 + ```json [...]```」作答，
+    解析失败后整批降级，字级精度静默丢失。
     节奏阈值会渲染进行为层，指导模型遵守最短/最长时长与字符速率上限。
     has_context=True 时注入上下文指令，告知 AI 如何使用已确认的历史 cues。
     """
@@ -518,8 +536,11 @@ def get_smart_segment_system_prompt(
             "max_cps": f"{float(max_cps):.1f}",
         },
     )
+    # 段级模式的行为层已内嵌 cues 结构约束，字级模式则依赖共享协议壳补齐
+    # 索引制 JSON 契约（start_index/end_index 示例 + 禁止 Markdown）。
+    shell = _SMART_SEGMENT_WORD_SHARED_RULES if has_word_timestamps else _SMART_SEGMENT_SHARED_RULES
     context_block = _SMART_SEGMENT_CONTEXT_INSTRUCTIONS if has_context else ''
-    return behavior + context_block
+    return behavior + shell + context_block
 
 
 def get_boundary_refine_system_prompt(
@@ -597,7 +618,7 @@ def get_builtin_prompt_previews() -> Dict[str, Dict[str, str]]:
         if prompt_id == "SUBTITLE_TRANSLATE":
             full_prompt = rendered + _SUBTITLE_SHARED_RULES + _SUBTITLE_JSON_SUFFIX
         elif prompt_id == "SUBTITLE_TRANSLATE_STRICT":
-            full_prompt = rendered + _SUBTITLE_STRICT_SHARED_RULES + _SUBTITLE_JSON_SUFFIX
+            full_prompt = rendered + _SUBTITLE_STRICT_SHARED_RULES + _SUBTITLE_STRICT_JSON_SUFFIX
         elif prompt_id == "METADATA_TRANSLATE":
             full_prompt = rendered + _METADATA_JSON_SUFFIX
         elif prompt_id == "METADATA_DESC_RETRY":

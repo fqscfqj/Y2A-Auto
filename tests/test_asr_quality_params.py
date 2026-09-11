@@ -324,17 +324,67 @@ class WindowFailureAccountingTests(unittest.TestCase):
         results = client.transcribe_windows_concurrent(windows)
         return client, results
 
-    def test_twenty_percent_failures_abort_batch(self):
+    def test_hard_failures_after_abort_include_cancelled_windows(self):
+        """容错耗尽后 ablate 整批时，被取消/未执行的窗口也算失败。
+
+        阈值语义（``max(min(3, n // 4), int(n * 0.15))``）由
+        ``tests/test_asr_failure_stats.py`` 表驱动覆盖；这里只锁定 abort 之后的
+        记账口径：产物里补齐的 ``asr_failed`` stub 必须计入失败占比，否则失败
+        占比会被系统性低估，降级门控拿不到正确的结局。
+        """
+        # 20 个窗口 → 容错阈值 3；max_workers=1 保证串行，abort 时其余任务
+        # 都在队列里，取消必定生效。
+        config = AsrConfig(api_key='', max_workers=1)
+        client = AsrApiClient(config)
+        client._capability_cache.transcription_format = 'verbose_json'
+
+        windows = [
+            (
+                DetectedSpeechWindow(
+                    start_s=float(i),
+                    end_s=float(i) + 1.0,
+                    ownership_start_s=float(i),
+                    ownership_end_s=float(i) + 1.0,
+                ),
+                f'w{i}.wav',
+            )
+            for i in range(20)
+        ]
+
+        completed_calls = {'n': 0}
+
+        def fake_transcribe_window(wav_path, window=None, segment_info=None):
+            completed_calls['n'] += 1
+            return AsrTranscriptionResult(
+                provider='whisper',
+                response_format='',
+                timestamp_mode='none',
+                window=window,
+                failure_token='asr_failed',
+            )
+
+        client.transcribe_window = fake_transcribe_window
+        results = client.transcribe_windows_concurrent(windows)
+
+        self.assertEqual(len(results), 20)
+        # 每个窗口都以失败收场：3 次真实失败 + 17 个被取消窗口补齐的 stub。
+        self.assertEqual(client.last_window_count, 20)
+        self.assertEqual(client.last_failed_count, 20)
+        self.assertAlmostEqual(client.last_failure_ratio, 1.0)
+        # 取消是否来得及生效取决于线程调度，只保证至少执行了容错阈值次数的调用。
+        self.assertGreaterEqual(completed_calls['n'], 3)
+        self.assertTrue(all(not r.ok and r.failure_token == 'asr_failed' for r in results))
+
+    def test_scripted_failures_are_flagged_as_failure_results(self):
+        """abort 路径下所有结果都必须是 asr_failed 且带完整窗口信息。"""
         client, results = self._run(fail_count=4, window_count=20)
 
         self.assertEqual(len(results), 20)
-        # Threshold is max(3, int(20 * 0.15)) == 3, so the batch aborts on the
-        # third observed failure and the remaining windows get failure stubs.
-        self.assertEqual(client.last_window_count, 20)
-        self.assertEqual(client.last_failed_count, 3)
-        self.assertAlmostEqual(client.last_failure_ratio, 3 / 20)
-        self.assertGreaterEqual(client.last_failure_ratio, 0.15)
-        self.assertTrue(any(r.failure_token == 'asr_failed' and not r.ok for r in results))
+        failed = [r for r in results if not r.ok]
+        self.assertTrue(failed)
+        self.assertTrue(all(r.failure_token == 'asr_failed' for r in failed))
+        self.assertTrue(all(r.window is not None for r in results))
+        self.assertGreaterEqual(client.last_failure_ratio, 0.5)
 
     def test_no_failures_report_zero_ratio(self):
         client, results = self._run(fail_count=0, window_count=20)
@@ -346,6 +396,7 @@ class WindowFailureAccountingTests(unittest.TestCase):
         self.assertTrue(all(r.ok for r in results))
 
     def test_empty_batch_resets_counters(self):
+        # 空批次代表这一轮没有可转录窗口，计数器清零并准备下一轮统计。
         client = AsrApiClient(AsrConfig(api_key=''))
         client.last_failure_ratio = 0.9
         client.last_failed_count = 9

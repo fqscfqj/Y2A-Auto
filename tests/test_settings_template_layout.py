@@ -7,6 +7,7 @@
 4. 复选框可关闭性 —— 后端白名单必须覆盖模板里所有开关,
    否则「取消勾选后保存」不会生效(历史上 DOWNLOAD_CLEANUP_ENABLED 即因此失效)
 """
+import math
 import pathlib
 import re
 import unittest
@@ -18,9 +19,24 @@ from app import (
     SETTINGS_CHECKBOX_FIELDS,
     SETTINGS_FLOAT_FIELDS,
     SETTINGS_INT_FIELDS,
-    _settings_fallback_default,
+    SETTINGS_RANGE_GUARDS,
+    _PINNED_SETTINGS_DEFAULTS,
 )
 from modules.config_manager import DEFAULT_CONFIG
+
+
+def _bound_text(value):
+    """把 guard 边界渲染成 HTML 属性里常见的形式（整数不带小数点）。"""
+    numeric = float(value)
+    return str(int(numeric)) if numeric.is_integer() else f'{numeric:g}'
+
+
+def _bound_float(raw):
+    """把 HTML 属性里的 min/max 解析成数值；缺失或非法时返回 None。"""
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 EXPECTED_PANES = [
@@ -616,23 +632,91 @@ class SettingsTemplateLayoutTests(unittest.TestCase):
     # 一旦交叉,app.py 在 import 期就会抛错,本文件根本收集不到,那条测试永远
     # 不可能失败,属于「死测试」。raise 的错误信息里已带上冲突的键名。
 
-    def test_换行上限字段不再被钉死且与DEFAULT_CONFIG一致(self):
+    def test_换行上限字段是真实控件且不再被钉死(self):
         # 历史实现用 hidden 输入把 SUBTITLE_MAX_LINE_LENGTH / SUBTITLE_MAX_LINES
         # 钉死为 999 / 1，与 DEFAULT_CONFIG 的 42 / 2 分叉：从未保存过设置页
         # 的安装用 42/2，保存过一次就变成「永不换行的单行字幕」。
-        # 该分叉已修复：现在是真实控件，回退值统一取 DEFAULT_CONFIG。
+        # 钉死表的语义是「回退值不跟随 DEFAULT_CONFIG」，所以它必须保持为空；
+        # 一旦非空，_settings_fallback_default 就会与页面展示的默认值再次分叉。
+        # （不再断言 fallback == DEFAULT_CONFIG：钉死表为空时那些断言恒真，等于没测。）
+        self.assertEqual(
+            _PINNED_SETTINGS_DEFAULTS, {},
+            '钉死表非空会让部分键的回退值脱离 DEFAULT_CONFIG')
+
+        guarded = {key: (lo, hi) for key, lo, hi in SETTINGS_RANGE_GUARDS}
         for key in ('SUBTITLE_MAX_LINE_LENGTH', 'SUBTITLE_MAX_LINES'):
+            self.assertIn(key, guarded, f'{key} 缺少服务端范围校验')
             self.assertEqual(
-                str(_settings_fallback_default(key)),
-                str(DEFAULT_CONFIG[key]),
-                f'{key} 的回退值必须与 DEFAULT_CONFIG 一致')
-            hidden = self.doc.xpath(
-                f"//form[@id='settings-form']//input[@type='hidden'][@name='{key}']/@value")
-            self.assertEqual(hidden, [], f'{key} 不应再被 hidden 输入钉死')
-            on_page = self.doc.xpath(
-                f"//form[@id='settings-form']//input[@name='{key}']/@value")
-            self.assertEqual(on_page, [str(DEFAULT_CONFIG[key])],
-                             f'{key} 应以真实控件呈现 DEFAULT_CONFIG 的值')
+                self.doc.xpath(
+                    f"//form[@id='settings-form']//input[@type='hidden'][@name='{key}']/@value"),
+                [], f'{key} 不应再被 hidden 输入钉死')
+            controls = self.doc.xpath(
+                f"//form[@id='settings-form']//input[@type='number'][@name='{key}']")
+            self.assertEqual(len(controls), 1, f'{key} 应以唯一的数值控件呈现')
+            # 渲染值来自运行机的 config.json，不能假定它等于默认值（环境差异会误失败）；
+            # 只要求它是可解析的有限数值，说明控件真的渲染出了值而不是空壳。
+            rendered = float(controls[0].get('value'))
+            self.assertTrue(math.isfinite(rendered), f'{key} 渲染值不是有限数值: {rendered}')
+
+    def test_数值控件的min_max与服务端guard边界一致(self):
+        # 页面声明与服务端 guard 出现两套数字时，用户按页面提示填的值仍会被服务端回退
+        # （或反过来：页面拦住了服务端本来允许的值）。同一个键的边界必须是同一个数。
+        controls = {
+            el.get('name'): el
+            for el in self.doc.xpath(
+                "//form[@id='settings-form']//input[@type='number'][@name]")
+        }
+        self.assertTrue(controls, '设置页没有任何数值控件')
+        mismatched = {}
+        for key, guard_min, guard_max in SETTINGS_RANGE_GUARDS:
+            control = controls.get(key)
+            if control is None:
+                # 无控件键（手工提交才可达）由 tests/test_settings_guards.py 的豁免表覆盖
+                continue
+            # 按**数值**比较而不是字符串：`2` 与 `2.0`、`0` 与 `0.0` 是同一个边界，
+            # 字符串比较会把纯粹的字面写法差异报成不一致（假阳性）。
+            declared = (
+                _bound_float(control.get('min')),
+                _bound_float(control.get('max')),
+            )
+            expected = (float(guard_min), float(guard_max))
+            if declared != expected:
+                mismatched[key] = {
+                    '页面': (control.get('min'), control.get('max')),
+                    'guard': (_bound_text(guard_min), _bound_text(guard_max)),
+                }
+        self.assertEqual(
+            mismatched, {},
+            f'数值控件的 min/max 与服务端 guard 边界不一致: {mismatched}')
+
+    def test_JS_toggle依赖的id对在模板中齐全(self):
+        # 模板脚本用 {checkbox, input} 配对驱动「勾选开关 → 启用数值框」，
+        # 一旦 id 或配对关系被改坏，开关会静默失效（数值框永远 disabled，提交不上值）。
+        pairs = re.findall(
+            r"\{\s*checkbox:\s*'([^']+)',\s*input:\s*'([^']+)'\s*\}", self.page)
+        self.assertTrue(pairs, '未在设置页脚本里找到 toggle 配对表')
+        by_id = {el.get('id'): el for el in self.doc.xpath('//*[@id]')}
+        problems = []
+        for checkbox_id, input_id in pairs:
+            checkbox = by_id.get(checkbox_id)
+            number = by_id.get(input_id)
+            if checkbox is None or number is None:
+                problems.append(f'{checkbox_id} / {input_id} 缺少对应元素')
+                continue
+            if (checkbox.get('type') or '').lower() != 'checkbox':
+                problems.append(f'{checkbox_id} 不是复选框')
+            if (number.get('type') or '').lower() != 'number':
+                problems.append(f'{input_id} 不是数值控件')
+            checkbox_name = checkbox.get('name') or ''
+            number_name = number.get('name') or ''
+            if not checkbox_name.endswith('_ENABLED'):
+                problems.append(f'{checkbox_id} 的 name 不以 _ENABLED 结尾: {checkbox_name}')
+                continue
+            base = checkbox_name[:-len('_ENABLED')]
+            if number_name not in (base, f'{base}_S'):
+                problems.append(
+                    f'{checkbox_id}({checkbox_name}) 与 {input_id}({number_name}) 不是同一字段的开关/数值对')
+        self.assertEqual(problems, [], f'toggle 配对回归: {problems}')
 
     def test_模板兜底字面量与DEFAULT_CONFIG一致(self):
         # 模板里的 config.get('KEY', 字面量) 与 DEFAULT_CONFIG 分叉时,

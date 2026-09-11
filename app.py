@@ -808,18 +808,137 @@ if _NUMERIC_WHITELIST_OVERLAP:
 # 统一语义（回退值一律取 DEFAULT_CONFIG）。
 _PINNED_SETTINGS_DEFAULTS = {}
 
+# 数值范围校验表：(键, 下限, 上限)。表里有两类键，都有防御价值：
+# 1. 设置页有数值控件的键 —— 浏览器原生校验只在「值违反控件 min/max」时挡住提交，
+#    而多数控件只写了 min 没写 max（分片窗口、最大片段、语音覆盖率等），
+#    直接 POST、旧标签页或脚本提交都能绕过，服务端必须再拦一次；
+# 2. 设置页没有控件的键（VAD_MIN_SEGMENT_S / WHISPER_* / SUBTITLE_QC_* 等）——
+#    它们没有 UI 入口，但 /settings 用 request.form.to_dict() 接收任意键名，
+#    键集合不受模板限制，同一个 POST 依然能写坏配置
+#    （SUBTITLE_QC_MIN_COVERAGE_RATIO > 1 会让质检覆盖率维度恒失败、字幕永不烧录）。
+# 越界或非法值一律回退 DEFAULT_CONFIG，并汇总成一条用户可见的提示，
+# 见 _format_settings_revert_message —— 不允许「值被改掉却提示保存成功」。
+SETTINGS_RANGE_GUARDS = (
+    ('VAD_MAX_SEGMENT_S', 10.0, 120.0),      # 下限与设置页控件 min=10 对齐
+    ('AUDIO_CHUNK_WINDOW_S', 5.0, 120.0),    # 下限与设置页控件 min=5 对齐
+    ('AUDIO_CHUNK_OVERLAP_S', 0.0, 5.0),
+    ('VAD_MIN_SEGMENT_S', 0.0, 5.0),
+    ('VAD_MERGE_GAP_S', 0.0, 5.0),
+    ('VAD_MAX_SEGMENT_S_FOR_SPLIT', 5.0, 120.0),
+    ('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.0, 1.0),
+    ('SUBTITLE_MAX_LINE_LENGTH', 10.0, 200.0),
+    ('SUBTITLE_MAX_LINES', 1.0, 5.0),
+    ('SUBTITLE_MAX_CUE_DURATION_S', 1.0, 30.0),
+    ('SUBTITLE_MAX_CPS', 5.0, 60.0),
+    ('SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH', 200.0, 20000.0),
+    ('WHISPER_TEMPERATURE', 0.0, 1.0),
+    ('WHISPER_NO_SPEECH_THRESHOLD', 0.0, 1.0),
+    # 质检时间轴阈值：modules/subtitle_qc.py 直接采信这三个键，超出物理含义的值
+    # （覆盖率比值 > 1、负的空档秒数）会让整条质检线恒失败，必须挡在配置层。
+    ('SUBTITLE_QC_MIN_COVERAGE_RATIO', 0.0, 1.0),
+    ('SUBTITLE_QC_MAX_GAP_S', 1.0, 3600.0),
+    ('SUBTITLE_QC_MAX_CPS', 1.0, 200.0),
+    # 烧录字幕外观（倍率型，越界回退默认）
+    ('SUBTITLE_FONT_SIZE_SCALE', 0.5, 2.0),
+    ('SUBTITLE_MARGIN_V_SCALE', 0.5, 2.0),
+    ('SUBTITLE_OUTLINE_SCALE', 0.0, 3.0),
+    ('SUBTITLE_SHADOW_SCALE', 0.0, 3.0),
+    ('SUBTITLE_BACKGROUND_OPACITY', 0.0, 1.0),
+    # 编码质量（manual 模式下的 CRF/CQ/QP）
+    ('VIDEO_QUALITY_VALUE', 0.0, 51.0),
+)
+
+# 回退提示里的中文名称（取自设置页控件文案），仅用于让用户看懂被改了哪一项。
+SETTINGS_GUARD_LABELS = {
+    'VAD_MAX_SEGMENT_S': '最大片段（秒）',
+    'AUDIO_CHUNK_WINDOW_S': '分片窗口（秒）',
+    'AUDIO_CHUNK_OVERLAP_S': '分片重叠（秒）',
+    'VAD_MIN_SEGMENT_S': '最短语音段（秒）',
+    'VAD_MERGE_GAP_S': '语音段合并间隔（秒）',
+    'VAD_MAX_SEGMENT_S_FOR_SPLIT': '切片上限（秒）',
+    'VAD_MIN_SPEECH_COVERAGE_RATIO': '最低语音覆盖率',
+    'SUBTITLE_MAX_LINE_LENGTH': '每行最大字符数',
+    'SUBTITLE_MAX_LINES': '最大行数',
+    'SUBTITLE_MAX_CUE_DURATION_S': '单条字幕最长时长（秒）',
+    'SUBTITLE_MAX_CPS': '字幕最大每秒字符数',
+    'SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH': '翻译单批最大字符数',
+    'WHISPER_TEMPERATURE': 'Whisper 解码温度',
+    'WHISPER_NO_SPEECH_THRESHOLD': 'Whisper 无语音判定阈值',
+    'SUBTITLE_QC_MIN_COVERAGE_RATIO': '质检最低覆盖率',
+    'SUBTITLE_QC_MAX_GAP_S': '质检最大空档（秒）',
+    'SUBTITLE_QC_MAX_CPS': '质检最大每秒字符数',
+    'AI_FAILOVER_TIMEOUT_SECONDS': 'AI 故障转移超时（秒）',
+    'SUBTITLE_QC_TIMEOUT_SECONDS': '字幕质检接口超时（秒）',
+    'SUBTITLE_MAX_LINE_LENGTH_ENABLED': '每行最大字符数开关',
+    'SUBTITLE_MAX_LINES_ENABLED': '最大行数开关',
+    # 烧录字幕外观（倍率型）
+    'SUBTITLE_FONT_SIZE_SCALE': '字幕字号倍率',
+    'SUBTITLE_MARGIN_V_SCALE': '字幕垂直边距倍率',
+    'SUBTITLE_OUTLINE_SCALE': '字幕描边倍率',
+    'SUBTITLE_SHADOW_SCALE': '字幕阴影倍率',
+    'SUBTITLE_BACKGROUND_OPACITY': '字幕背景不透明度',
+    # 编码质量
+    'VIDEO_QUALITY_VALUE': '画质数值（CRF/CQ/QP）',
+}
+
 
 def _settings_fallback_default(field, fallback=1):
     """非法数值的回退值统一取 DEFAULT_CONFIG，避免与页面展示的默认值不一致。
 
-    例外见 _PINNED_SETTINGS_DEFAULTS：少数键在模板中被刻意钉死为固定值，
-    其语义是"不变量"而非"默认值"，不能跟随 DEFAULT_CONFIG 变化。
+    回退值一律来自 DEFAULT_CONFIG（_PINNED_SETTINGS_DEFAULTS 当前为空表，
+    它一旦非空就会让某些键的回退值与 DEFAULT_CONFIG 分叉，历史上 999/1 的
+    字幕换行就是这样写进来的）；DEFAULT_CONFIG 里没有的键才用 fallback 兜底。
     """
     if field in _PINNED_SETTINGS_DEFAULTS:
         return _PINNED_SETTINGS_DEFAULTS[field]
     if field in DEFAULT_CONFIG:
         return DEFAULT_CONFIG[field]
     return fallback
+
+
+def _format_guard_bound(value) -> str:
+    """把 guard 边界格式化成展示文本：整数边界不显示小数点（10 而不是 10.0）。"""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f'{numeric:g}'
+
+
+def _format_guard_range(guard_min, guard_max) -> str:
+    """把 guard 区间格式化成「下限–上限」文本。"""
+    return f'{_format_guard_bound(guard_min)}–{_format_guard_bound(guard_max)}'
+
+
+def _guard_bounds(key):
+    """取 SETTINGS_RANGE_GUARDS 中某键的 (下限, 上限)；未登记时返回 (None, None)。"""
+    for guard_key, guard_min, guard_max in SETTINGS_RANGE_GUARDS:
+        if guard_key == key:
+            return guard_min, guard_max
+    return None, None
+
+
+def _format_settings_revert_message(reverts: list) -> str:
+    """汇总本轮回退项，生成用户可见的提示文本。
+
+    每条包含：中文名（配置键）、提交值、最终生效值、允许范围 / 交叉约束说明。
+    """
+    parts = []
+    for item in reverts:
+        key = str(item.get('key') or '')
+        label = SETTINGS_GUARD_LABELS.get(key, key)
+        prefix = key if label == key else f'{label}（{key}）'
+        text = f'{prefix}：提交 {item.get("submitted")} → 生效 {item.get("applied")}'
+        if item.get('allowed'):
+            text += f'，允许 {item["allowed"]}'
+        if item.get('note'):
+            text += f'；{item["note"]}'
+        parts.append(text)
+    if not parts:
+        return ''
+    return '以下设置项超出允许范围，已回退后再保存：' + '；'.join(parts) + '。'
 
 
 def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | None = None) -> dict:
@@ -844,6 +963,33 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
     try:
         report('saving_config', '正在保存配置', '正在校验并写入设置。')
         form_data.pop('save_operation_id', None)
+
+        # 本轮回退记录：键 / 提交值 / 生效值 / 允许范围。所有「值被改掉」的分支都要登记，
+        # 保存成功后统一追加一条 warning 消息，避免用户只看到「配置已成功保存」。
+        reverts: list = []
+        revert_index: dict = {}
+        guard_keys = {key for key, _, _ in SETTINGS_RANGE_GUARDS}
+
+        def remember_revert(key, submitted, applied, allowed=None, note=''):
+            """登记一次回退；同一键只保留首条提交值，生效值取最后一次。"""
+            item = revert_index.get(key)
+            if item is None:
+                item = {
+                    'key': key,
+                    'submitted': submitted,
+                    'applied': applied,
+                    'allowed': allowed,
+                    'note': note,
+                }
+                revert_index[key] = item
+                reverts.append(item)
+            else:
+                item['applied'] = applied
+                if allowed and not item.get('allowed'):
+                    item['allowed'] = allowed
+                if note and not item.get('note'):
+                    item['note'] = note
+            return item['applied']
 
         new_password = form_data.get('new_password')
         confirm_password = form_data.get('confirm_password')
@@ -873,8 +1019,17 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     logger.debug(f"整数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
                     # AI_FAILOVER_TIMEOUT_SECONDS 必须回退到 8：若落到 1，它会处于合法的
                     # 1–60 区间内，后续范围校验不会再纠正，稍慢的连接会被 1s 误判为宕机。
+                    _submitted_int = form_data[field]
                     form_data[field] = str(_settings_fallback_default(field))
                     logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
+                    # 非数字提交在归一化阶段就被改掉，范围校验根本看不到它，
+                    # 所以对 guard 覆盖的键在这里补一条回退记录。
+                    if field in guard_keys:
+                        remember_revert(
+                            field, _submitted_int, form_data[field],
+                            allowed=_format_guard_range(*_guard_bounds(field)),
+                            note='不是有效数值',
+                        )
 
         # AI_FAILOVER_TIMEOUT_SECONDS 范围校验：设置页声明 1–60 秒。
         # 越界或非法（手工配置 / 直接 POST 负值）回退默认值，
@@ -888,7 +1043,9 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             if _fv is None or _fv < 1 or _fv > 60:
                 _fkey_default = _settings_fallback_default(_fkey)
                 logger.debug(f"{_fkey} 越界或非法，回退默认 {_fkey_default}: {form_data.get(_fkey)}")
+                _submitted_fkey = form_data[_fkey]
                 form_data[_fkey] = str(_fkey_default)
+                remember_revert(_fkey, _submitted_fkey, form_data[_fkey], allowed='1–60')
 
         # SUBTITLE_QC_TIMEOUT_SECONDS 范围校验：设置页声明 10–600 秒。
         # 越界或非法（手工配置 / 直接 POST 负值 / 非数字）回退默认值，
@@ -902,7 +1059,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             if _qc_tv is None or _qc_tv < 10 or _qc_tv > 600:
                 _qc_default = _settings_fallback_default(_qc_timeout_key)
                 logger.debug(f"{_qc_timeout_key} 越界或非法，回退默认 {_qc_default}: {form_data.get(_qc_timeout_key)}")
+                _submitted_qc_timeout = form_data[_qc_timeout_key]
                 form_data[_qc_timeout_key] = str(_qc_default)
+                remember_revert(
+                    _qc_timeout_key, _submitted_qc_timeout, form_data[_qc_timeout_key],
+                    allowed='10–600',
+                )
 
         for field in SETTINGS_FLOAT_FIELDS:
             if field in form_data:
@@ -913,42 +1075,31 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(float(original_value))
                 except (ValueError, TypeError) as e:
                     logger.debug(f"浮点数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
+                    _submitted_float = form_data[field]
                     form_data[field] = str(float(_settings_fallback_default(field, 0.0)))
                     logger.debug(f"浮点字段使用默认值 - field: {field}, value: {form_data[field]}")
+                    if field in guard_keys:
+                        remember_revert(
+                            field, _submitted_float, form_data[field],
+                            allowed=_format_guard_range(*_guard_bounds(field)),
+                            note='不是有效数值',
+                        )
 
-        # 语音识别 / VAD / 字幕关键数值项的服务端范围校验。
-        # 这是唯一有效防线：设置页提交时 event.preventDefault() 会跳过全部 HTML5
-        # 原生校验（min/max 全部失效），只能由服务端拦截越界值。
-        # 越界或非法一律回退 DEFAULT_CONFIG 的默认值。
-        _range_guards = (
-            ('VAD_MAX_SEGMENT_S', 5.0, 120.0),
-            ('AUDIO_CHUNK_WINDOW_S', 3.0, 120.0),
-            ('AUDIO_CHUNK_OVERLAP_S', 0.0, 5.0),
-            ('VAD_MIN_SEGMENT_S', 0.0, 5.0),
-            ('VAD_MERGE_GAP_S', 0.0, 5.0),
-            ('VAD_MAX_SEGMENT_S_FOR_SPLIT', 5.0, 120.0),
-            ('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.0, 1.0),
-            ('SUBTITLE_MAX_LINE_LENGTH', 10.0, 200.0),
-            ('SUBTITLE_MAX_LINES', 1.0, 5.0),
-            ('SUBTITLE_MAX_CUE_DURATION_S', 1.0, 30.0),
-            ('SUBTITLE_MAX_CPS', 5.0, 60.0),
-            ('SUBTITLE_TRANSLATION_MAX_CHARS_PER_BATCH', 200.0, 20000.0),
-            ('WHISPER_TEMPERATURE', 0.0, 1.0),
-            ('WHISPER_NO_SPEECH_THRESHOLD', 0.0, 1.0),
-            # 烧录字幕外观（倍率型，越界回退默认）
-            ('SUBTITLE_FONT_SIZE_SCALE', 0.5, 2.0),
-            ('SUBTITLE_MARGIN_V_SCALE', 0.5, 2.0),
-            ('SUBTITLE_OUTLINE_SCALE', 0.0, 3.0),
-            ('SUBTITLE_SHADOW_SCALE', 0.0, 3.0),
-            ('SUBTITLE_BACKGROUND_OPACITY', 0.0, 1.0),
-            # 编码质量（manual 模式下的 CRF/CQ/QP）
-            ('VIDEO_QUALITY_VALUE', 0.0, 51.0),
-        )
-        for _guard_key, _guard_min, _guard_max in _range_guards:
+        # 表单可达数值键的范围校验 + 无控件数值键的防御性校验（表见 SETTINGS_RANGE_GUARDS）。
+        # 关于前端：settings-form 没有 novalidate，保存按钮是 <button type="submit">，
+        # 浏览器原生约束校验在 submit 事件派发之前执行（所以 event.preventDefault()
+        # 并不会跳过它，有 max 的控件确实拦得住越界值；不要因为这段注释曾经写错就删掉
+        # 模板里的 min/max）。真正的问题是覆盖面：多数控件只声明 min（分片窗口、最大片段、
+        # 语音覆盖率），且原生校验只作用于「有控件的键」——直接 POST / 脚本 / 旧页面提交的
+        # 键根本不在模板里，原生校验无从谈起。所以服务端必须独立拦一遍。
+        # 越界或非法一律回退 DEFAULT_CONFIG 的默认值，并由 remember_revert 记录，
+        # 保存结束后汇总成一条可见的 warning 消息。
+        for _guard_key, _guard_min, _guard_max in SETTINGS_RANGE_GUARDS:
             if _guard_key not in form_data:
                 continue
+            _submitted_guard = form_data[_guard_key]
             try:
-                _guard_value = float(str(form_data[_guard_key]).strip())
+                _guard_value = float(str(_submitted_guard).strip())
             except (ValueError, TypeError):
                 _guard_value = None
             if _guard_value is None or _guard_value != _guard_value or not (_guard_min <= _guard_value <= _guard_max):
@@ -957,6 +1108,75 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     f"{_guard_key} 越界或非法，回退默认 {_guard_default}: {form_data.get(_guard_key)}"
                 )
                 form_data[_guard_key] = str(_guard_default)
+                remember_revert(
+                    _guard_key, _submitted_guard, form_data[_guard_key],
+                    allowed=_format_guard_range(_guard_min, _guard_max),
+                )
+
+        # 交叉约束：分片重叠必须严格小于分片窗口。modules/speech_recognition.py 的
+        # _create_audio_chunks 每片前进 (window - overlap) 秒，overlap >= window 时
+        # 步进 <= 0，分片循环永不终止、ASR 线程挂死（模块侧另有兜底，这里从配置层拦住）。
+        # 钳到 window - 1.0 而不是 window - ε：留 1 秒余量既保证严格正步进，
+        # 也避免步进趋近于 0 时同一段音频被反复切片、ASR 调用量爆炸。
+        _window_key = 'AUDIO_CHUNK_WINDOW_S'
+        _overlap_key = 'AUDIO_CHUNK_OVERLAP_S'
+        if _overlap_key in form_data:
+            # 只提交 overlap 时（脚本提交）拿已存窗口值比较，否则不变量仍会被写坏。
+            _window_raw = form_data.get(_window_key)
+            if _window_raw is None:
+                try:
+                    _window_raw = load_config().get(_window_key)
+                except Exception as exc:  # 读配置失败不应阻断保存
+                    logger.debug(f"读取 {_window_key} 用于交叉校验失败: {exc}")
+                    _window_raw = None
+            try:
+                _window_value = float(str(_window_raw).strip()) if _window_raw is not None else None
+            except (ValueError, TypeError):
+                _window_value = None
+            try:
+                _overlap_value = float(str(form_data[_overlap_key]).strip())
+            except (ValueError, TypeError):
+                _overlap_value = None
+            if (
+                _window_value is not None
+                and _overlap_value is not None
+                and _overlap_value >= _window_value
+            ):
+                _overlap_limit = max(0.0, _window_value - 1.0)
+                _submitted_overlap = form_data[_overlap_key]
+                form_data[_overlap_key] = str(_overlap_limit)
+                remember_revert(
+                    _overlap_key, _submitted_overlap, form_data[_overlap_key],
+                    allowed=f'0–{_format_guard_bound(_overlap_limit)}',
+                    note=f'须小于分片窗口 {_format_guard_bound(_window_value)}',
+                )
+
+        # 旧模板把字幕换行上限钉死为 999/1 且强制两个开关为 on（当时控件是 disabled，
+        # 用户选不出这个组合），配置侧由 migrate_pinned_subtitle_wrap_config 迁回
+        # 42/2/False/False。设置页路径上只有 999 会越界回退，SUBTITLE_MAX_LINES=1 落在
+        # 合法区间会被保留，落盘成 42/1/True/True —— 同一个组合两条路径结果不同。
+        # 这里对同一组合整组回退 DEFAULT_CONFIG，与迁移落点保持一致：该组合只可能来自
+        # 旧模板或异常提交，不是用户真实意图，而 guard 的既有语义就是「非法值回退默认值」。
+        if (
+            'SUBTITLE_MAX_LINE_LENGTH' in revert_index
+            and str(form_data.get('SUBTITLE_MAX_LINES', '')).strip() == '1'
+            and str(form_data.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', '')).strip().lower() in ('on', 'true', '1')
+            and str(form_data.get('SUBTITLE_MAX_LINES_ENABLED', '')).strip().lower() in ('on', 'true', '1')
+        ):
+            # 两个开关回到「未启用」（DEFAULT_CONFIG 中均为 False），行数上限回到默认 2。
+            for _wrap_key, _wrap_is_toggle in (
+                ('SUBTITLE_MAX_LINES', False),
+                ('SUBTITLE_MAX_LINE_LENGTH_ENABLED', True),
+                ('SUBTITLE_MAX_LINES_ENABLED', True),
+            ):
+                _submitted_wrap = form_data.get(_wrap_key)
+                form_data[_wrap_key] = (
+                    False if _wrap_is_toggle else str(_settings_fallback_default(_wrap_key))
+                )
+                remember_revert(
+                    _wrap_key, _submitted_wrap, form_data[_wrap_key],
+                    note='旧模板钉死的字幕换行组合，整组回退为默认值',
+                )
 
         if 'SUBTITLE_FONT_NAME' in form_data:
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
@@ -1072,6 +1292,13 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     'CookieCloud 需要服务地址、UUID、密码三者均非空才能正常同步，'
                     '请补全后保存，或暂时关闭 CookieCloud。'
                 )
+
+        # 值被回退过就必须让用户看见：放在 success 之前，保存本身的成功语义不变
+        # （success=True、仍有「配置已成功保存」），但不再出现「全部成功」的假象。
+        _revert_message = _format_settings_revert_message(reverts)
+        if _revert_message:
+            logger.warning('设置保存时回退了越界值: %s', _revert_message)
+            _append_settings_message(messages, 'warning', _revert_message)
 
         _append_settings_message(messages, 'success', '配置已成功保存')
         final_level = 'warning' if any(msg['category'] in ('warning', 'danger') for msg in messages) else 'success'

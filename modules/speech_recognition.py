@@ -131,6 +131,9 @@ class SpeechRecognitionConfig:
     vad_max_segment_s_for_split: float = 15.0
     vad_refinement_enabled: bool = True
     vad_min_speech_coverage_ratio: float = 0.015
+    # 孤立极短段（合并不进任何相邻窗口的碎片）是否丢弃。该开关为既有 UI 项，
+    # 此前未接入配置对象导致勾选与否行为不变，故在此显式承载。
+    vad_drop_isolated_short: bool = True
     language: str = ''
     prompt: str = ''
     translate: bool = False
@@ -149,6 +152,10 @@ class SpeechRecognitionConfig:
     max_workers: int = 3
     max_subtitle_line_length: int = 42
     max_subtitle_lines: int = 2
+    # 字幕质量硬上限：单条 cue 最长时长与每秒最大字符数。两者是后处理链的
+    # 必要组成，必须随运行时配置变化，不得在导入期被固化成常量。
+    subtitle_max_cue_duration_s: float = 8.0
+    subtitle_max_cps: float = 20.0
     normalize_punctuation: bool = True
     filter_filler_words: bool = False
     subtitle_time_offset_s: float = 0.0
@@ -180,6 +187,9 @@ class SpeechRecognizer:
         self.last_quality_state: str = 'ok'
         self.last_degraded_reasons: List[str] = []
         self._temp_dirs: List[str] = []
+        # 本轮 VAD 命中的实际语音区间。幻觉清洗需要它判定「该 cue 落在静音段」，
+        # 否则静音段重复检测在生产路径上恒不触发。
+        self._last_vad_spans: Tuple[Tuple[float, float], ...] = ()
 
         if config.provider not in ('whisper', 'voxtral'):
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
@@ -200,6 +210,7 @@ class SpeechRecognizer:
                 max_segment_s_for_split=config.vad_max_segment_s_for_split,
                 refinement_enabled=config.vad_refinement_enabled,
                 min_speech_coverage_ratio=config.vad_min_speech_coverage_ratio,
+                drop_isolated_short=config.vad_drop_isolated_short,
             ),
             logger=self.logger,
         )
@@ -250,8 +261,10 @@ class SpeechRecognizer:
                 min_cue_duration_s=config.subtitle_min_cue_duration_s if config.subtitle_min_cue_duration_enabled else 0.6,
                 merge_gap_s=config.subtitle_merge_gap_s if config.subtitle_merge_gap_enabled else 0.3,
                 min_text_length=config.subtitle_min_text_length if config.subtitle_min_text_length_enabled else 2,
-                max_cue_duration_s=_config_float(_DEFAULT_CONFIG, 'SUBTITLE_MAX_CUE_DURATION_S', 8.0),
-                max_chars_per_second=_config_float(_DEFAULT_CONFIG, 'SUBTITLE_MAX_CPS', 20.0),
+                # 字幕质量硬上限从运行时配置对象读取，而非导入期常量，
+                # 否则改 config.json / overrides / 设置页三条路径全部失效。
+                max_cue_duration_s=config.subtitle_max_cue_duration_s,
+                max_chars_per_second=config.subtitle_max_cps,
             ),
             logger=self.logger,
         )
@@ -262,6 +275,7 @@ class SpeechRecognizer:
             self.last_error_message = ''
             self.last_quality_state = 'ok'
             self.last_degraded_reasons = []
+            self._last_vad_spans = ()
 
             if not self._asr.client:
                 self.last_error_message = 'ASR client not initialised'
@@ -289,7 +303,13 @@ class SpeechRecognizer:
                 self.last_error_message = self.last_error_message or 'No subtitles generated'
                 return None
 
-            cue_dicts = self._srt.clean_hallucinations(cues)
+            # 透传 VAD 语音区间：srt_transform 的「静音段重复上一句」判定依赖它，
+            # 此前生产路径恒不传参，该分支永不执行。无 VAD 数据（未启用/失败/全量
+            # fallback）时保持 None，不伪造区间。
+            cue_dicts = self._srt.clean_hallucinations(
+                cues,
+                speech_spans=self._last_vad_spans or None,
+            )
             cue_dicts = self._srt.resolve_overlaps(cue_dicts, total_duration)
             cue_dicts = self._srt.apply_text_processing(cue_dicts)
             cue_dicts = self._srt.finalize_cues(cue_dicts, total_duration)
@@ -380,6 +400,9 @@ class SpeechRecognizer:
         if not windows:
             self.last_warning_message = getattr(self._vad, 'last_failure_reason', 'vad_no_speech')
             return []
+        # 交付给 ASR 之前先固化语音区间：窗口后续会被合并/丢弃，
+        # 而幻觉清洗需要的是「原始 VAD 判定有人声」的时间范围。
+        self._last_vad_spans = self._collect_speech_spans(windows)
         if vad_state == 'partial':
             # 部分分片失败：仍有字幕产出，但覆盖不完整，必须走严格质检。
             self.last_warning_message = (
@@ -492,6 +515,32 @@ class SpeechRecognizer:
             return True
         return total_duration <= max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
 
+    @staticmethod
+    def _collect_speech_spans(
+        windows: List[DetectedSpeechWindow],
+    ) -> Tuple[Tuple[float, float], ...]:
+        """把 VAD 窗口归约为 (start, end) 语音区间元组，供幻觉清洗使用。
+
+        优先采用窗口内的原始语音区间 raw_spans；缺失时退回窗口全长（窗口由 VAD
+        直接派生，末端语义与语音区间一致），避免整段数据缺失。
+        """
+        spans: List[Tuple[float, float]] = []
+        for window in windows or []:
+            for raw in window.raw_spans or []:
+                try:
+                    start_s = float(raw[0])
+                    end_s = float(raw[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if end_s > start_s:
+                    spans.append((start_s, end_s))
+            if not window.raw_spans:
+                start_s = float(window.start_s)
+                end_s = float(window.end_s)
+                if end_s > start_s:
+                    spans.append((start_s, end_s))
+        return tuple(spans)
+
     def _prepare_window_inputs(
         self,
         audio_wav: str,
@@ -566,12 +615,38 @@ class SpeechRecognizer:
         return inputs
 
     def _create_audio_chunks(self, total_duration_s: float) -> List[Tuple[float, float]]:
-        window = max(0.1, float(self.config.chunk_window_s or 15.0))
-        overlap = max(0.0, float(self.config.chunk_overlap_s or 0.0))
+        # 窗口非法（0 / 负数 / 非数值）时回退默认窗口：窗口塌缩会把音频切成
+        # 海量分片，且后续每片都要抽一次音频再跑一轮 ASR。
+        try:
+            window = float(self.config.chunk_window_s)
+        except (TypeError, ValueError):
+            window = 15.0
+        if window <= 0.0:
+            window = 15.0
+        # 硬下限与原始实现一致（0.1s），保证步进永不为零。
+        window = max(0.1, window)
+        try:
+            overlap = float(self.config.chunk_overlap_s)
+        except (TypeError, ValueError):
+            overlap = 0.0
+        overlap = max(0.0, overlap)
         if self.config.api_provider == 'voxtral' and self.config.voxtral_enforce_max_duration:
             max_duration_s = max(1.0, float(self.config.voxtral_max_audio_duration_s or 10800.0))
             margin_s = max(0.0, float(self.config.voxtral_long_audio_margin_s or 0.0))
             window = min(window, max(1.0, max_duration_s - margin_s))
+        # 防御性钳制（与 vad_processor._create_chunks 同口径）：overlap >= window 时
+        # current = end - overlap 不再前进，会造成分片死循环，ASR 线程永不返回、任务卡死。
+        # window=5（设置页控件最小值）配 overlap=5（app.py guard 上限）是一条能通过全部
+        # 既有校验的合法提交，必须在此兜住。
+        clamped_overlap = max(0.0, min(overlap, max(window - 0.01, 0.0)))
+        if clamped_overlap != overlap:
+            self.logger.warning(
+                "AUDIO_CHUNK_OVERLAP_S=%.3f >= chunk window %.3fs, clamped to %.3fs to keep chunking finite",
+                overlap,
+                window,
+                clamped_overlap,
+            )
+        overlap = clamped_overlap
         if total_duration_s <= window:
             return [(0.0, total_duration_s)]
 
@@ -738,7 +813,10 @@ def create_speech_recognizer_from_config(
             vad_max_segment_s=_config_positive_float(app_config, 'VAD_MAX_SEGMENT_S', 15.0),
             vad_max_segment_s_for_split=_config_float(app_config, 'VAD_MAX_SEGMENT_S_FOR_SPLIT', 15.0),
             vad_refinement_enabled=coerce_bool(app_config.get('VAD_REFINEMENT_ENABLED', True)),
-            vad_min_speech_coverage_ratio=_config_float(app_config, 'VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015),
+            # 默认值与 vad_processor.VadConfig 对齐；口径改为「语音时长占比」后
+            # 旧值 0.015 会随之下调一档，见 vad_processor._windows_coverage_ratio。
+            vad_min_speech_coverage_ratio=_config_float(app_config, 'VAD_MIN_SPEECH_COVERAGE_RATIO', 0.01),
+            vad_drop_isolated_short=coerce_bool(app_config.get('VAD_DROP_ISOLATED_SHORT', True)),
             language=language,
             prompt=prompt,
             translate=coerce_bool(app_config.get('WHISPER_TRANSLATE', False)) if not use_voxtral else False,
@@ -773,6 +851,8 @@ def create_speech_recognizer_from_config(
             subtitle_min_text_length_enabled=coerce_bool(app_config.get('SUBTITLE_MIN_TEXT_LENGTH_ENABLED', False)),
             subtitle_max_line_length_enabled=coerce_bool(app_config.get('SUBTITLE_MAX_LINE_LENGTH_ENABLED', False)),
             subtitle_max_lines_enabled=coerce_bool(app_config.get('SUBTITLE_MAX_LINES_ENABLED', False)),
+            subtitle_max_cue_duration_s=_config_float(app_config, 'SUBTITLE_MAX_CUE_DURATION_S', 8.0),
+            subtitle_max_cps=_config_float(app_config, 'SUBTITLE_MAX_CPS', 20.0),
             max_retries=max_retries,
             retry_delay_s=float(app_config.get('WHISPER_RETRY_DELAY_S', 2.0) or 2.0),
             request_timeout_s=timeout_s,

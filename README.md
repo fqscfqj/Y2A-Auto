@@ -339,7 +339,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
   "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
   "OPENAI_THINKING_ENABLED": false,
   "SUBTITLE_TRANSLATION_ENABLED": false,
-  "SUBTITLE_QC_ENABLED": false,
+  "SUBTITLE_QC_ENABLED": true,
   "SPEECH_RECOGNITION_ENABLED": false,
   "SPEECH_RECOGNITION_PROVIDER": "whisper",
   "VAD_ENABLED": true,
@@ -354,18 +354,33 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 
 ## 字幕质检说明
 
-启用 `SUBTITLE_QC_ENABLED: true` 后，系统会对 ASR 生成的源字幕做预检：
+`SUBTITLE_QC_ENABLED` 默认为 `true`：系统会对 ASR 生成的源字幕做预检。
 
 - `SUBTITLE_QC_THRESHOLD`：AI 复核分数下限（0 ~ 1，默认 0.60）
 - `SUBTITLE_QC_SAMPLE_MAX_ITEMS`：AI 抽样条目上限，默认 80
 - `SUBTITLE_QC_MAX_CHARS`：AI 单次送检最大字符数上限，默认 9000
 - `SUBTITLE_QC_MODEL_NAME`：单独指定 QC 模型，留空则复用字幕翻译 / 全局模型
+- `SUBTITLE_QC_TIMELINE_ENABLED`：是否启用时间轴维度判定，默认 `true`
+- `SUBTITLE_QC_MIN_COVERAGE_RATIO`：字幕总时长 / 视频时长的覆盖率下限，默认 `0.15`
+- `SUBTITLE_QC_MAX_GAP_S`：允许的最大连续无字幕间隙（秒），默认 `90`
+- `SUBTITLE_QC_MAX_CPS`：单条字幕最大字符速率（字符/秒），默认 `25`
 
 QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核。
 
 命中署名行、噪声提示、界面操作词、模板化重复句等明显低质量字幕时，会在规则层直接失败，不再进入宽松放行。
 
+时间轴维度（覆盖率 / 间隙 / 语速）会在 ASR 来源退化（`subtitle_quality_state == degraded`）时随严格模式一并参与判定。
+
 可疑样本在 AI 不可用、返回异常或输出不合规时，默认按失败处理。QC 失败时会跳过烧录字幕，但仍保留字幕文件并继续上传原视频，任务最终标记为完成，并显示字幕异常标记。
+
+被判定不合格的 ASR 字幕会被改名为 `*.rejected.txt`（内容保留供人工检查），移出复用范围，避免任务重跑时复用旧字幕而永远拿不到新字幕。平台自带或人工提供的字幕不受此影响。
+
+### 烧录门控开关
+
+- `ASR_FAILURE_BLOCKS_EMBED`（默认 `true`）：ASR/VAD 质量结局为 `failed`（来源不可信）时拒绝烧录该字幕。设为 `false` 恢复旧行为，只放宽「ASR 来源结局」与「质检没跑成」两种拦截，**不会**放过质检给出的明确失败结论 —— 质检结论针对字幕内容本身，与 ASR 来源可靠度是两件事。
+- `SUBTITLE_QC_ENABLED=false`：用户主动放弃质检这道防线。此时不再看历史质检标记，也不再要求 `degraded` 素材通过严格质检（质检关闭时该条件无法满足，若仍拦截就变成「关掉质检反而更严格」）。
+
+「质检不可用」（字幕文件缺失 / 执行异常）与「用户主动关闭质检」是两种不同结局：前者按拒绝处理，后者放行。任务列表中会通过 `qc_unavailable` / `subtitle_qc_rejected` / `asr_failed_block_embed` / `asr_degraded_block_embed` 标注具体原因。
 
 ## 语音识别说明
 

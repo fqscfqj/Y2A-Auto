@@ -24,9 +24,15 @@ _FILLER_PATTERNS = [
     re.compile(r'(?:^|(?<=[.!?,;:]\s))(?:um|uh|er|ah|hmm)\b', re.IGNORECASE),
     # 仅句尾语气词。
     re.compile(r'\b(?:um|uh|er|ah|hmm)(?=\s*[.!?,;:]|$)', re.IGNORECASE),
+    # 句中独立成词的填充词：`so um well I think` 里的 `um` 也应清理。
+    # 用非字母边界而不是 \b，避免把 `mm` 这类纯字母短串误判成词内片段；
+    # 只收录在句中几乎不承载语义的填充词，`er`/`ah` 保持不变以免误删
+    # `weather`/`ahead` 之类的词内片段。
+    re.compile(r'(?<![A-Za-z])(?:um|uh|uhm|erm|h+m?|mm)(?![A-Za-z])', re.IGNORECASE),
     # 中文语气词：只在整条就是短语气、或位于句尾时命中。
-    re.compile(r'^[嗯啊呃哦唔]{1,3}$'),
-    re.compile(r'[嗯啊哦](?=\s*[。！？!?]?\s*$)'),
+    # 用 `+` 而不是 `{1,3}`：`嗯嗯嗯嗯` 这类连续语气词同样应该被整体清理。
+    re.compile(r'^[嗯啊呃哦唔]+$'),
+    re.compile(r'[嗯啊哦呃唔]+(?=\s*[。！？!?]?\s*$)'),
     re.compile(
         r'\b(doo|da|dee|ch|sh|tickle|scratch|tap|click|pop|mouth|sound|noise|'
         r'chew|eat|drink|slurp|gulp|swallow|breath|whisper|lip|smack|tongue)\b',
@@ -763,26 +769,57 @@ class SrtTransformEngine:
         return self._wrap_token_segment(segment, limit)
 
     def _wrap_latin_segment(self, segment: str, limit: int) -> List[str]:
-        """拉丁文本按空格折行，不切断单词；只有单词语义上超长才硬断。"""
+        """拉丁文本按空格折行，不切断单词；只有单个超长词才按边界硬断。
+
+        超长词优先在"字符类别切换处"（字母↔数字、大小写切换、连字符/下划线）
+        断开，避免把 `Supercalifragilisticexpialidocious` 这类无空格长串从中间
+        随机切断；找不到合适断点时才退化为按字符硬切。
+        """
         words = [word for word in _WHITESPACE_RE.split(segment) if word]
         if not words:
             return [segment]
         lines: List[str] = []
         current = ''
         for word in words:
-            if not current:
-                current = word
-            elif len(current) + 1 + len(word) <= limit:
+            if current and len(current) + 1 + len(word) <= limit:
                 current = current + ' ' + word
-            else:
+                continue
+            if current:
                 lines.append(current)
-                current = word
-            while len(current) > limit:
-                lines.append(current[:limit])
-                current = current[limit:]
+                current = ''
+            while len(word) > limit:
+                head = self._find_break_point(word, limit)
+                lines.append(word[:head])
+                word = word[head:]
+            current = word
         if current:
             lines.append(current)
         return lines or [segment]
+
+    @staticmethod
+    def _find_break_point(word: str, limit: int) -> int:
+        """为必须硬断的超长词找一个尽量自然的断点（返回切片位置）。
+
+        只在"切点足够靠后"时采用自然断点（字母↔数字、连字符/下划线/点），
+        否则按 limit 硬切。这样 `ABC12345DEF67890GHI` 不再被切成 `ABC`/`12345`，
+        而纯字母长词仍是等宽硬切（无自然断点可依）。
+
+        返回 1..limit 之间的整数，保证必然前进。
+        """
+        upper = min(limit, len(word))
+        if upper <= 1:
+            return max(1, upper)
+        floor = max(2, int(upper * 0.6))
+        for index in range(upper, floor - 1, -1):
+            prev_char = word[index - 1]
+            char = word[index]
+            if prev_char in '-_./' or char in '-_./':
+                return index
+            if prev_char.isdigit() != char.isdigit():
+                return index
+            if prev_char.islower() and char.isupper():
+                return index
+        return upper
 
     @staticmethod
     def _wrap_tokens(segment: str) -> List[Tuple[str, bool]]:

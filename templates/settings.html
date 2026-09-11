@@ -1232,7 +1232,7 @@
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-min-coverage" class="form-label">最低语音覆盖率</label>
-                                                                                <input type="number" min="0" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) }}" class="form-control">
+                                                                                <input type="number" min="0" max="1" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-12">
@@ -1258,13 +1258,14 @@
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="audio-chunk-window" class="form-label">分片窗口（秒）</label>
-                                                                                <input type="number" min="5" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 15.0) }}" class="form-control">
+                                                                                <input type="number" min="5" max="120" step="0.5" id="audio-chunk-window" name="AUDIO_CHUNK_WINDOW_S" value="{{ config.get('AUDIO_CHUNK_WINDOW_S', 15.0) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="audio-chunk-overlap" class="form-label">分片重叠（秒）</label>
-                                                                                <input type="number" min="0" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) }}" class="form-control">
+                                                                                <input type="number" min="0" max="5" step="0.05" id="audio-chunk-overlap" name="AUDIO_CHUNK_OVERLAP_S" value="{{ config.get('AUDIO_CHUNK_OVERLAP_S', 0.4) }}" class="form-control">
+                                                                                <p class="help-text mb-0">必须小于「分片窗口」，否则分片无法向前推进；服务端会按「窗口 − 1 秒」回退并提示。</p>
                                                                             </div>
                                                                         </div>
                                                                     </div>
@@ -1289,7 +1290,7 @@
                                                                         <div class="col-md-4">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-max-segment" class="form-label">最大片段（秒）</label>
-                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 15.0) }}" min="10" class="form-control">
+                                                                                <input type="number" id="vad-max-segment" name="VAD_MAX_SEGMENT_S" value="{{ config.get('VAD_MAX_SEGMENT_S', 15.0) }}" min="10" max="120" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                     </div>
@@ -1693,7 +1694,7 @@
                                                             <input type="checkbox" name="SUBTITLE_QC_ENABLED" {% if config.get('SUBTITLE_QC_ENABLED', False) %}checked{% endif %}>
                                                             启用 ASR 源字幕质检
                                                         </label>
-                                                        <p class="help-text mb-0">质量优先：质检不通过时不烧录字幕，但保留字幕文件并继续上传原视频（任务仍记为完成）。开关与其调优参数同在本卡片；质检所用模型端点在 <a href="#vtab-ai">AI 服务与端点</a> 分组配置。</p>
+                                                        <p class="help-text mb-0">质量优先：质检不通过时不烧录字幕，但保留字幕文件并继续上传原视频（任务仍记为完成）。关闭质检等于主动放弃这道防线：不再沿用历史质检结论，也不再要求降级素材通过严格质检（避免「关掉质检反而更严格」）；但 ASR 来源结局为失败时仍会拦截，除非同时取消下方的「语音识别异常时禁止烧录字幕」。注意与「质检没跑成」的区别 —— 主动关闭质检按放行处理，质检启用却没跑成（字幕文件缺失或执行异常）按拒绝处理。开关与其调优参数同在本卡片；质检所用模型端点在 <a href="#vtab-ai">AI 服务与端点</a> 分组配置。</p>
                                                     </div>
                                                 </div>
                                                 <div class="settings-field settings-field-switch mt-3">
@@ -1838,7 +1839,7 @@
                                                                     <input type="checkbox" name="ASR_FAILURE_BLOCKS_EMBED" {% if config.get('ASR_FAILURE_BLOCKS_EMBED', True) %}checked{% endif %}>
                                                                     语音识别异常时禁止烧录字幕
                                                                 </label>
-                                                                <div class="form-text">VAD/ASR 判定为失败时，保留字幕文件但拒绝烧进成片，继续上传原视频。</div>
+                                                                <div class="form-text">勾选（默认）：VAD/ASR 结局判定为失败时，保留字幕文件但拒绝烧进成片，继续上传原视频。取消勾选后只放宽两类拦截：「ASR 来源结局」（失败 / 退化）与「质检没跑成」（字幕文件缺失或执行异常）；质检给出的明确失败结论针对字幕文件内容本身，始终生效，不受本开关影响。</div>
                                                             </div>
                                                         </div>
                                                     </div>

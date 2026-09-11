@@ -21,11 +21,64 @@ from modules import task_manager as tm
 class SubtitleEmbedAllowedGateTests(unittest.TestCase):
     """模块级门控函数的六条分支（含逃生口）。"""
 
-    def test_escape_hatch_disables_all_blocking(self):
+    def test_escape_hatch_only_relaxes_asr_quality_outcome(self):
+        """``ASR_FAILURE_BLOCKS_EMBED=False`` 只放宽 ASR 来源结局，不放过质检结论。
+
+        此前该开关在 ``_subtitle_embed_allowed`` 开头直接 ``return True``，
+        把「质检明确否决」也一并放行了 —— 与本文件
+        ``test_qc_failed_always_blocks_preexisting_subtitle`` 声明的
+        「针对具体字幕文件的质检结论必须始终生效」互相矛盾。
+        """
         config = {'ASR_FAILURE_BLOCKS_EMBED': False}
-        self.assertTrue(tm._subtitle_embed_allowed(config, 'failed', True))
+        self.assertTrue(tm._subtitle_embed_allowed(config, 'failed', False))
+        self.assertTrue(tm._subtitle_embed_allowed(config, 'degraded', False))
+        self.assertTrue(tm._subtitle_embed_allowed(config, 'failed', True, qc_cleared=True))
+        # 质检结论不受逃生口影响
+        self.assertFalse(tm._subtitle_embed_allowed(config, 'failed', True))
+        self.assertFalse(tm._subtitle_embed_allowed(config, 'ok', True))
+
+    def test_qc_disabled_relaxes_qc_based_blocking_only(self):
+        """主动关闭质检后，历史 qc_failed 与 degraded 不再拦烧录。
+
+        否则「关掉质检」会比开着更严格：degraded 素材永远等不到那次严格质检，
+        历史 qc_failed 标记也永远清不掉。
+        """
+        config = {'SUBTITLE_QC_ENABLED': False}
+        self.assertTrue(tm._subtitle_embed_allowed(config, 'ok', True))
         self.assertTrue(tm._subtitle_embed_allowed(config, 'degraded', True))
-        self.assertTrue(tm._subtitle_embed_allowed(config, 'failed', True, qc_cleared=False))
+        # failed 是纯粹的「来源不可信」，与质检开关无关，仍然拦截
+        self.assertFalse(tm._subtitle_embed_allowed(config, 'failed', False))
+        # degraded 的语义是「必须通过严格质检才放行」；质检被关闭时该条件无法
+        # 满足，此时必须放行，否则「关掉质检」会比开着更严格（反向回归）。
+        self.assertTrue(tm._subtitle_embed_allowed(config, 'degraded', False))
+
+    def test_block_reason_to_warning_covers_all_reasons(self):
+        """每个门控原因都必须有落库文案，否则任务列表会显示原始英文键名。"""
+        for reason in (
+            'asr_quality_failed',
+            'asr_quality_degraded_without_strict_qc',
+            'subtitle_qc_rejected',
+        ):
+            warning = tm._block_reason_to_warning(reason)
+            self.assertTrue(warning)
+            self.assertEqual(warning, tm.SUBTITLE_BLOCK_WARNING_MESSAGES[reason])
+        # 两类 ASR 结局必须落到不同文案，不能都退化成同一个兜底值
+        self.assertNotEqual(
+            tm._block_reason_to_warning('asr_quality_failed'),
+            tm._block_reason_to_warning('asr_quality_degraded_without_strict_qc'),
+        )
+        self.assertEqual(
+            tm._block_reason_to_warning('unknown_reason'), 'asr_failed_block_embed'
+        )
+
+    def test_block_reasons_lists_every_active_switch(self):
+        """原因列表要能同时表达「来源结局」与「质检结论」两类拦截。"""
+        reasons = tm._subtitle_block_reasons(
+            {}, 'failed', True, qc_cleared=False
+        )
+        self.assertIn('asr_quality_failed', reasons)
+        self.assertIn('subtitle_qc_rejected', reasons)
+        self.assertEqual(tm._subtitle_block_reasons({}, 'ok', False), [])
 
     def test_failed_state_blocks_embed(self):
         self.assertFalse(tm._subtitle_embed_allowed({}, 'failed', False))
@@ -95,8 +148,21 @@ class _TranslateSubtitleHarness(unittest.TestCase):
         recognizer.expected_path = asr_path
         return recognizer
 
+    def _make_translator(self):
+        """构造只写盘、不联网的翻译器桩件。"""
+        translator = MagicMock()
+
+        def fake_translate_file(source, target, progress_callback=None, cancel_event=None):
+            with open(target, 'w', encoding='utf-8') as handle:
+                handle.write('1\n00:00:00,000 --> 00:00:02,000\n你好世界\n')
+            return True
+
+        translator.translate_file.side_effect = fake_translate_file
+        return translator
+
     def run_translate(self, task, config, recognizer, qc_side_effect=None,
-                      translation_enabled=False, embed_enabled=True):
+                      translation_enabled=False, embed_enabled=True, translator=None,
+                      patch_qc=True, qc_returns=True):
         config = dict(config)
         config.setdefault('SPEECH_RECOGNITION_ENABLED', True)
         config['SUBTITLE_TRANSLATION_ENABLED'] = translation_enabled
@@ -106,10 +172,11 @@ class _TranslateSubtitleHarness(unittest.TestCase):
         processor._embed_subtitle_in_video = MagicMock(
             return_value=os.path.join(self.task_dir, 'video_with_subtitle.mp4')
         )
-        if qc_side_effect is not None:
-            processor._run_subtitle_qc = MagicMock(side_effect=qc_side_effect)
-        else:
-            processor._run_subtitle_qc = MagicMock(return_value=True)
+        if patch_qc:
+            if qc_side_effect is not None:
+                processor._run_subtitle_qc = MagicMock(side_effect=qc_side_effect)
+            else:
+                processor._run_subtitle_qc = MagicMock(return_value=qc_returns)
 
         def fake_get_task(task_id):
             self.assertEqual(task_id, self.task_id)
@@ -127,7 +194,9 @@ class _TranslateSubtitleHarness(unittest.TestCase):
                 patch.object(tm, 'get_task', side_effect=fake_get_task), \
                 patch.object(tm, 'update_task', side_effect=fake_update_task), \
                 patch('modules.speech_recognition.create_speech_recognizer_from_config',
-                      return_value=recognizer):
+                      return_value=recognizer), \
+                patch('modules.subtitle_translator.create_translator_from_config',
+                      return_value=translator or self._make_translator()):
             result = processor._translate_subtitle(self.task_id, MagicMock())
 
         return processor, result
@@ -324,14 +393,20 @@ class TranslateSubtitleQualityGateTests(_TranslateSubtitleHarness):
 
         self.assertTrue(result)
         processor._embed_subtitle_in_video.assert_not_called()
-        # 门控拦截不是「拒绝」语义：字幕文件原地保留，且质检失败标记会让
-        # _infer_completed_stages_from_task 拒绝把字幕阶段推断为已完成。
-        self.assertTrue(os.path.exists(asr_path))
+        # 被拦截的 ASR 产物必须移出扫描范围（改名为 .rejected.txt），否则下一轮
+        # os.listdir 会命中它并复用这条不合格字幕，用户重跑永远拿不到新字幕。
+        self.assertFalse(os.path.exists(asr_path))
+        self.assertTrue(os.path.exists(f"{os.path.splitext(asr_path)[0]}.rejected.txt"))
         self.assertNotIn('video_path_local', self.written_keys())
         completed = tm._infer_completed_stages_from_task(task)
         self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE, completed)
 
-    def test_escape_hatch_restores_legacy_embed_for_preexisting_subtitle(self):
+    def test_escape_hatch_does_not_bypass_qc_rejection_for_preexisting_subtitle(self):
+        """逃生口只放宽 ASR 来源结局；明确的质检结论必须仍然生效。
+
+        此前 ``_subtitle_embed_allowed`` 在开关为 False 时直接放行，
+        与 ``test_qc_failed_always_blocks_preexisting_subtitle`` 的契约冲突。
+        """
         subtitle_path = os.path.join(self.task_dir, 'video.en.srt')
         with open(subtitle_path, 'w', encoding='utf-8') as handle:
             handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
@@ -346,7 +421,130 @@ class TranslateSubtitleQualityGateTests(_TranslateSubtitleHarness):
         )
 
         self.assertTrue(result)
+        processor._embed_subtitle_in_video.assert_not_called()
+        self.assertEqual(self.last_value('subtitle_warning_message'), 'subtitle_qc_rejected')
+        # 外部字幕不是 ASR 产物：不该被改名
+        self.assertTrue(os.path.exists(subtitle_path))
+
+    def test_escape_hatch_restores_legacy_embed_when_qc_never_rejected(self):
+        """逃生口在「没有质检失败结论」时确实恢复旧行为。"""
+        subtitle_path = os.path.join(self.task_dir, 'video.en.srt')
+        with open(subtitle_path, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+        task['subtitle_quality_state'] = 'failed'
+        task['subtitle_qc_failed'] = 0
+
+        processor, result = self.run_translate(
+            task, {'ASR_FAILURE_BLOCKS_EMBED': False}, MagicMock(),
+            translation_enabled=False, embed_enabled=True,
+        )
+
+        self.assertTrue(result)
         processor._embed_subtitle_in_video.assert_called_once()
+
+
+class TranslateBranchGateTests(_TranslateSubtitleHarness):
+    """翻译分支的双闸门：复用已有 asr_*.srt 也必须先过质检。
+
+    此前翻译分支只有 ``_embed_guard`` 单闸门，而 ``asr_artifact=False`` 会把
+    质量结局短路成 ``ok``，于是「已有 asr_*.srt + 翻译开启」这条路径既不质检
+    也不受门控，直接把未经质检的字幕烧进成片。
+    """
+
+    def _asr_srt(self):
+        path = os.path.join(self.task_dir, f'asr_{self.task_id}.srt')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
+        return path
+
+    def test_reused_asr_subtitle_must_pass_qc_before_embed(self):
+        asr_path = self._asr_srt()
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+
+        processor, result = self.run_translate(
+            task, {}, MagicMock(), translation_enabled=True, embed_enabled=True,
+            qc_side_effect=[False],
+        )
+
+        self.assertTrue(result)
+        processor._run_subtitle_qc.assert_called_once()
+        self.assertEqual(processor._run_subtitle_qc.call_args.args[1], asr_path)
+        processor._embed_subtitle_in_video.assert_not_called()
+        self.assertEqual(self.last_value('subtitle_warning_message'), 'subtitle_qc_rejected')
+
+    def test_reused_asr_subtitle_with_passing_qc_embeds_translated(self):
+        self._asr_srt()
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+
+        processor, result = self.run_translate(
+            task, {}, MagicMock(), translation_enabled=True, embed_enabled=True,
+            qc_side_effect=[True],
+        )
+
+        self.assertTrue(result)
+        processor._run_subtitle_qc.assert_called_once()
+        processor._embed_subtitle_in_video.assert_called_once()
+        embedded_source = processor._embed_subtitle_in_video.call_args.args[2]
+        self.assertEqual(
+            os.path.basename(embedded_source), f'translated_{self.task_id}.srt'
+        )
+
+    def test_reused_asr_subtitle_blocked_by_gate_is_quarantined(self):
+        """被门控拦截的 ASR 产物必须改名，否则下轮重跑永远复用旧字幕。"""
+        asr_path = self._asr_srt()
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+        task['subtitle_qc_failed'] = 1
+
+        processor, result = self.run_translate(
+            task, {}, MagicMock(), translation_enabled=True, embed_enabled=True,
+        )
+
+        self.assertTrue(result)
+        processor._embed_subtitle_in_video.assert_not_called()
+        self.assertFalse(os.path.exists(asr_path))
+        self.assertTrue(os.path.exists(f"{os.path.splitext(asr_path)[0]}.rejected.txt"))
+        self.assertEqual(self.last_value('subtitle_warning_message'), 'subtitle_qc_rejected')
+
+    def test_qc_disabled_embeds_reused_asr_subtitle_without_quarantine(self):
+        """关闭质检后复用已有 ASR 字幕必须放行 —— 不能比开着质检更严格。
+
+        这里刻意不替换 ``_run_subtitle_qc``，走真实方法验证
+        ``SUBTITLE_QC_ENABLED=False`` 返回 ``SUBTITLE_QC_DISABLED`` 而不是 ``None``。
+        """
+        asr_path = self._asr_srt()
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+        task['subtitle_qc_failed'] = 1
+
+        processor, result = self.run_translate(
+            task, {'SUBTITLE_QC_ENABLED': False}, MagicMock(),
+            translation_enabled=False, embed_enabled=True, patch_qc=False,
+        )
+
+        self.assertTrue(result)
+        processor._embed_subtitle_in_video.assert_called_once()
+        self.assertTrue(os.path.exists(asr_path))
+        self.assertIsNone(self.last_value('subtitle_warning_message'))
+
+    def test_qc_unsupported_reason_is_not_overwritten(self):
+        """质检「没跑成」的归因必须保留 qc_unavailable，不能被兜底文案覆盖。"""
+        self._asr_srt()
+        task = self.base_task(self.task_id)
+        task['video_path_local'] = self.video_path
+
+        processor, result = self.run_translate(
+            task, {}, MagicMock(), translation_enabled=False, embed_enabled=True,
+            qc_side_effect=[None],
+        )
+
+        self.assertTrue(result)
+        processor._embed_subtitle_in_video.assert_not_called()
+        self.assertEqual(self.last_value('subtitle_warning_message'), 'qc_unavailable')
 
 
 class EnsureAsrSubtitleQcGateTests(unittest.TestCase):
@@ -381,25 +579,45 @@ class EnsureAsrSubtitleQcGateTests(unittest.TestCase):
             )
 
     def test_asr_artifact_must_pass_qc(self):
-        allowed, cleared = self._run(self._srt(f'asr_{self.task_id}.srt'), 'ok', True)
+        allowed, cleared, _reason = self._run(self._srt(f'asr_{self.task_id}.srt'), 'ok', True)
         self.assertTrue(allowed)
         self.assertTrue(cleared)
         self.processor._run_subtitle_qc.assert_called_once()
 
     def test_asr_artifact_rejected_quarantines_file(self):
-        allowed, cleared = self._run(self._srt(f'asr_{self.task_id}.srt'), 'ok', False)
+        allowed, cleared, reason = self._run(
+            self._srt(f'asr_{self.task_id}.srt'), 'ok', False
+        )
         self.assertFalse(allowed)
         self.assertFalse(cleared)
+        self.assertEqual(reason, 'subtitle_qc_rejected')
         self.processor._quarantine_rejected_subtitle.assert_called_once()
 
     def test_asr_artifact_with_unavailable_qc_is_rejected(self):
-        allowed, cleared = self._run(self._srt(f'asr_{self.task_id}.srt'), 'ok', None)
+        allowed, cleared, reason = self._run(
+            self._srt(f'asr_{self.task_id}.srt'), 'ok', None
+        )
         self.assertFalse(allowed)
         self.assertFalse(cleared)
+        self.assertEqual(reason, 'qc_unavailable')
+
+    def test_asr_artifact_with_disabled_qc_is_allowed_without_clearing_qc(self):
+        """质检被主动关闭时放行，且不谎称「本次已通过质检」。
+
+        必须与 ``None``（质检启用但没跑成）区分：两者混用会让关闭质检
+        反而拒绝全部 ASR 字幕并改名。
+        """
+        allowed, cleared, reason = self._run(
+            self._srt(f'asr_{self.task_id}.srt'), 'ok', tm.SUBTITLE_QC_DISABLED
+        )
+        self.assertTrue(allowed)
+        self.assertFalse(cleared)
+        self.assertEqual(reason, '')
+        self.processor._quarantine_rejected_subtitle.assert_not_called()
 
     def test_external_subtitle_skips_qc_entirely(self):
         # 外部字幕（平台自带/人工）不是幻觉高风险来源，不应额外增加 AI 调用。
-        allowed, cleared = self._run(self._srt('video.en.srt'), 'ok', False)
+        allowed, cleared, _reason = self._run(self._srt('video.en.srt'), 'ok', False)
         self.assertTrue(allowed)
         self.assertFalse(cleared)
         self.processor._run_subtitle_qc.assert_not_called()
@@ -410,7 +628,7 @@ class EnsureAsrSubtitleQcGateTests(unittest.TestCase):
 
     def test_non_asr_artifact_with_degraded_state_is_still_gated(self):
         # 任务级 degraded 结局说明该任务经历过 ASR，其字幕按 ASR 产物对待。
-        allowed, cleared = self._run(self._srt('video.en.srt'), 'degraded', False)
+        allowed, _cleared, _reason = self._run(self._srt('video.en.srt'), 'degraded', False)
         self.assertFalse(allowed)
 
 
@@ -447,8 +665,11 @@ class RunSubtitleQcTriStateTests(unittest.TestCase):
                 'task-qc', srt_path or self.srt_path, MagicMock()
             )
 
-    def test_disabled_returns_none(self):
-        self.assertIsNone(self._run({'SUBTITLE_QC_ENABLED': False}))
+    def test_disabled_returns_sentinel_not_none(self):
+        """主动关闭质检必须与「质检没跑成」区分开。"""
+        result = self._run({'SUBTITLE_QC_ENABLED': False})
+        self.assertIs(result, tm.SUBTITLE_QC_DISABLED)
+        self.assertIsNotNone(result)
         self.assertEqual(self.updates, [])
 
     def test_missing_file_returns_none(self):
