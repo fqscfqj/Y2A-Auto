@@ -354,16 +354,19 @@ class X265VuiAliasTests(unittest.TestCase):
                 f'{field}={value}',
             )
 
-    def test_colormatrix_rgb_is_not_renamed_for_x265(self):
-        """x265 直接接受 ffmpeg 规范名 rgb，与 x264 需要改写成 gbr 不同。"""
-        params = build_color_vui_params(
-            'cpu', {'colorspace': 'rgb'}, None, 'x265'
-        )
-        self.assertEqual(params, ['-x265-params', 'colormatrix=rgb'])
-        x264_params = build_color_vui_params(
-            'cpu', {'colorspace': 'rgb'}, None, 'x264'
-        )
-        self.assertEqual(x264_params, ['-x264-params', 'colormatrix=gbr'])
+    def test_colormatrix_rgb_is_normalized_to_gbr_for_both_codecs(self):
+        """两个编码器都把 ffmpeg 规范名 rgb 改写成正式枚举名 gbr。
+
+        x265 额外接受 `rgb`（libx265 未文档化的宽松解析），但仍统一走 gbr：
+        各版本 libx265 未必一致，而 gbr 在所有版本都是正式枚举名。
+        """
+        for codec in ('x264', 'x265'):
+            params = build_color_vui_params(
+                'cpu', {'colorspace': 'rgb'}, None, codec
+            )
+            self.assertEqual(
+                params, [f'-{codec}-params', 'colormatrix=gbr'], codec
+            )
 
     def test_hardware_encoder_key_returns_empty_for_x265_too(self):
         for key in ('nvidia', 'intel', 'amd', 'auto', ' '):

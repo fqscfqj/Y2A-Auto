@@ -14,11 +14,16 @@ x264/x265 对不认识的 VUI 枚举名只打印 "Error parsing option ..." 然�
   2. 反向证据：x264 独有的 tune（film / stillimage）确实被 libx265 拒绝 ——
      这正是两张 tune 白名单必须分开的原因；
   3. 三张色彩表的每个取值经 `build_color_vui_params(..., 'x265')` 后都落进 VUI；
-  4. `_X265_PARAMS_UNSUPPORTED` 的取值回读必须为空，不能写成语义不符的值；
-  5. `colormatrix=rgb` 对 x265 直接可用（与 x264 需要改写成 gbr 不同）；
+  4. `_SOFTWARE_VUI_UNSUPPORTED` 的取值不会产生语义错误的值；
+  5. `colormatrix` 的 `rgb` 被统一改写成 `gbr`（不依赖未文档化的宽松解析）；
   6. `-tag:v hvc1` 真正写进容器；
   7. 两条 `-x265-params` 后者覆盖前者 —— 合并成一条的必要性证据；
   8. 完整增强参数串 + VUI 同时生效。
+
+**避免版本敏感断言**：CI 上的 libx265 与本机自带的不是同一个版本。凡涉及
+「某个枚举名是否被接受」的地方，判据都写成「不得产生错误语义」而不是
+「必须严格等于某值」，否则升级 ffmpeg 会让测试无谓变红。真正必须严格相等的是
+我们**自己写进命令**的值（见 tests/test_cpu_codec_x265.py）。
 
 ffmpeg 不可用或该构建不含 libx265 时整类 skip，不失败。
 """
@@ -192,9 +197,9 @@ class X265EncoderSmokeTests(unittest.TestCase):
     def test_every_mapped_value_lands_in_the_vui(self):
         """三张表的每个取值都经 build_color_vui_params 走一遍并回读 VUI。
 
-        期望值 = 该取值在 x265 里的枚举名（_X265_PARAMS_ALIASES 的右值）；
-        _X265_PARAMS_UNSUPPORTED 里的取值允许 VUI 为空，但**绝不能**回读出
-        一个与目标语义不符的值。
+        期望值 = 该取值经别名表改名后的结果；_X264_PARAMS_UNSUPPORTED 里的取值
+        在本编码器上允许 VUI 为空（我们主动跳过该键），但**绝不能**回读出一个与
+        目标语义不符的值。
         """
         mismatches = []
         cases = (
@@ -211,59 +216,65 @@ class X265EncoderSmokeTests(unittest.TestCase):
                              'color_primaries': 'colorprim',
                              'color_trc': 'transfer'}[field]]
             got = info.get(key, '')
-            if value in vep._X265_PARAMS_UNSUPPORTED.get(field, ()):
-                if got:
+            expected = vep._SOFTWARE_VUI_ALIASES.get(field, {}).get(value, value)
+            if value in vep._SOFTWARE_VUI_UNSUPPORTED.get(field, ()):
+                # 我们主动跳过该键 -> 写入的本就是空；这里用「空或语义等价」判定，
+                # 而不是硬要求为空：libx265 未来若支持该枚举名，跳过只是不最优，
+                # 并不产生错误语义，测试不该因此变红。真正要守的是「不得写错值」。
+                if got not in ('', expected):
                     mismatches.append(
-                        f'{field}={value}: x265 无对应名，却回读出 {got!r}'
+                        f'{field}={value}: 无等价名却回读出 {got!r}（期望空或 {expected!r}）'
                     )
                 continue
-            expected = vep._X265_PARAMS_ALIASES.get(field, {}).get(value, value)
-            # rgb 是唯一回读名与写入名不同的取值（VUI 里恒为 gbr，同一个矩阵）。
-            if field == 'colorspace' and value == 'rgb':
-                expected = 'gbr'
             if got != expected:
                 mismatches.append(
                     f'{field}={value}: 回读={got!r} 期望={expected!r}'
                 )
         self.assertEqual(mismatches, [], f'x265-params 未真正写入 VUI：{mismatches}')
 
-    def test_unsupported_values_are_silently_dropped_by_libx265(self):
-        """反证：直接写这些取值时 libx265 静默丢弃，说明跳过它们不是多余的。
+    def test_unsupported_values_never_produce_a_wrong_value(self):
+        """反证：直接把这些取值写进 -x265-params 时，libx265 不会给出错误语义。
 
-        返回码是 0，VUI 里却什么都没有 —— 只看命令成功与否根本发现不了。
+        实测当前 libx265 是静默丢弃（返回码 0，VUI 留空），这正是我们跳过该键的
+        依据；断言写成「返回码 0 且回读为空或语义等价」，从而不受 libx265 版本
+        差异影响 —— 版本变化时该测试仍能守住「不得写错值」这条底线。
         """
-        dropped = []
+        problems = []
         for field, entry_key, values in (
-            ('color_primaries', 'colorprim', vep._X265_PARAMS_UNSUPPORTED['color_primaries']),
-            ('color_trc', 'transfer', vep._X265_PARAMS_UNSUPPORTED['color_trc']),
+            ('color_primaries', 'colorprim', vep._SOFTWARE_VUI_UNSUPPORTED['color_primaries']),
+            ('color_trc', 'transfer', vep._SOFTWARE_VUI_UNSUPPORTED['color_trc']),
         ):
             for value in sorted(values):
                 code, _, info = self._run(
                     [], f'raw_drop_{entry_key}_{value}',
                     extra_params=f'{entry_key}={value}',
                 )
-                if code != 0:
-                    dropped.append(f'{entry_key}={value}: rc={code}（应被静默接受）')
-                    continue
                 got = info.get(_VUI_KEYS[entry_key], '')
-                if got:
-                    dropped.append(
-                        f'{entry_key}={value}: 意外回读到 {got!r}，'
-                        f'_X265_PARAMS_UNSUPPORTED 需要复核'
+                if code != 0:
+                    # 直接报错也可以接受：说明该编码器拒绝了这个取值，
+                    # 同样证明「不能透传」，且不会写错值。
+                    continue
+                if got not in ('', value):
+                    problems.append(
+                        f'{entry_key}={value}: 回读出语义不符的 {got!r}'
                     )
-        self.assertEqual(dropped, [], f'预期被静默丢弃的取值表现不符：{dropped}')
+        self.assertEqual(problems, [], f'预期不会产生错误语义：{problems}')
 
-    def test_colormatrix_rgb_works_directly_on_x265(self):
-        """x265 直接接受 ffmpeg 规范名 rgb；x264 必须改写成 gbr。
+    def test_colormatrix_is_normalized_to_gbr_for_x265(self):
+        """x265 会接受 ffmpeg 规范名 rgb，但我们仍然统一改写成 gbr。
 
-        这条差异决定了 x265 的别名表要比 x264 少一条 colormatrix 项。
+        不依赖 `rgb` 这种未文档化的宽松解析（各版本 libx265 未必一致），
+        改走所有版本都支持的正式枚举名。因此参数表里 rgb 必须被改名。
         """
-        code, tail, info = self._run([], 'raw_rgb', extra_params='colormatrix=rgb')
-        self.assertEqual(code, 0, tail)
-        self.assertEqual(
-            info.get('color_space'), 'gbr',
-            'x265 对 colormatrix=rgb 的行为变了，_X265_PARAMS_ALIASES 的注释需要复核',
+        params = vep.build_color_vui_params(
+            'cpu', {'colorspace': 'rgb'}, None, 'x265'
         )
+        self.assertEqual(params, ['-x265-params', 'colormatrix=gbr'])
+        code, tail, info = self._run(
+            list(params), 'normalized_rgb'
+        )
+        self.assertEqual(code, 0, tail)
+        self.assertEqual(info.get('color_space'), 'gbr')
 
     def test_combined_vui_lands_together(self):
         code, tail, info = self._run_vui(

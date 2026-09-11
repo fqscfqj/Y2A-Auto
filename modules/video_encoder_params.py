@@ -202,7 +202,7 @@ _COLOR_FIELD_WHITELISTS = {
 #   transfer   : gamma22 / gamma28 / log / log_sqrt / iec61966_2_4 /
 #                iec61966_2_1 / bt1361 / smpte428_1 被拒
 #
-# 下表给出等价改名（左边是 ffmpeg 规范名，右边是 x264 枚举名），实测改名后
+# 下表给出等价改名（左边是 ffmpeg 规范名，右边是编码器枚举名），实测改名后
 # VUI 回读与目标语义一致。
 _X264_PARAMS_ALIASES = {
     'colorspace': {
@@ -237,47 +237,27 @@ _X264_PARAMS_UNSUPPORTED = {
 # `-x264-params` 会漏掉 `-x264opts`，导致两处同时给 x264 参数、后写的覆盖先写的。
 _X264_PARAMS_OPTS = ('-x264-params', '-x264opts')
 
-# x265 侧的三张表。取值由仓库自带 ffmpeg（N-123313）在「libx265 + yuv420p」输出
-# 组合下逐个**回读 VUI** 得到（tests/test_x265_smoke.py 锁定同一集合）。
+# ── x265 侧 ────────────────────────────────────────────────────────────────
 #
-# 与 x264 的差异（实测逐条确认）：
+# **x265 复用上面同一对映射表**，理由是实测两者在本次开放的全部色彩取值上一致：
+# 三张白名单共 6+13+15 = 34 个取值，逐个经 -x264-params / -x265-params 回读 VUI
+# 后，两个编码器接受/拒绝的集合完全相同，需要改名的取值也完全相同。
 #
-#   colorprim  : 与 x264 一致 —— smpte428_1 / jedec-p22 / ebu3213 被静默丢弃
-#                （返回码仍为 0，VUI 该字段留空）
-#   transfer   : 与 x264 一致 —— gamma22 / gamma28 / log / log_sqrt /
-#                iec61966_2_4 / iec61966_2_1 / bt1361 / smpte428_1 被静默丢弃
-#   colormatrix: **与 x264 不同** —— x265 同时接受 ffmpeg 规范名 `rgb` 与
-#                x264 的枚举名 `gbr`（两者回读都是 gbr），故此处不需要改名映射
+# 唯一的行为差异是 x265 **额外**接受 ffmpeg 规范名 `rgb`（回读同样得到 gbr），
+# 而 x264 只认 `gbr`。这一条并不构成表差异：这里仍然统一把 rgb 改写成 gbr ——
+# `rgb` 属于 libx265 未文档化的宽松解析，不同版本未必一致，而 `gbr` 在所有版本
+# 都是正式枚举名。标准化成 gbr 后，两个编码器走同一张表，也就不存在「共用表会
+# 让差异被抹掉」的问题：真出现差异时，tests/test_color_metadata_smoke.py 与
+# tests/test_x265_smoke.py 会分别在各自编码器上失败。
 #
-# 所以 x265 的别名表比 x264 少一条 colormatrix 项；直接复用 x264 的表虽结果等价，
-# 但会让映射表的注释与实际不符。
-_X265_PARAMS_ALIASES = {
-    'color_primaries': {
-        'smpte428_1': 'smpte428',
-    },
-    'color_trc': {
-        'log': 'log100',
-        'log_sqrt': 'log316',
-        'iec61966_2_4': 'iec61966-2-4',
-        'iec61966_2_1': 'iec61966-2-1',
-        'bt1361': 'bt1361e',
-        'smpte428_1': 'smpte428',
-    },
-}
-
-# 在 x265 里同样没有任何等价名字的取值。集合与 x264 一致（实测确认），但仍各自
-# 成表：两者的枚举域独立演进，共用一张表会让「改了一边忘了另一边」变成静默丢字段。
-_X265_PARAMS_UNSUPPORTED = {
-    'color_primaries': frozenset(('jedec-p22', 'ebu3213')),
-    'color_trc': frozenset(('gamma22', 'gamma28')),
-}
+# 两张表的引用点分列于 _SOFTWARE_PRIVATE_OPT（选项名不同，这个必须分开）之上。
 
 # x265 私有参数的选项名。**没有** `-x265opts` 这个别名：实测该选项触发
 # "Error splitting the argument list: Option not found"（返回码非 0），
 # 与 x264 的 `-x264opts` 不是一回事，因此只登记一个。
 _X265_PARAMS_OPTS = ('-x265-params',)
 
-# 各软件编码器写私有参数的选项名，以及（选项名表、VUI 映射表）的归属。
+# 各软件编码器写私有参数的选项名；VUI 映射表两者共用（见上面的说明）。
 _SOFTWARE_PRIVATE_OPT = {
     'x264': '-x264-params',
     'x265': '-x265-params',
@@ -286,10 +266,8 @@ _SOFTWARE_PRIVATE_OPTS = {
     'x264': _X264_PARAMS_OPTS,
     'x265': _X265_PARAMS_OPTS,
 }
-_SOFTWARE_VUI_TABLES = {
-    'x264': (_X264_PARAMS_ALIASES, _X264_PARAMS_UNSUPPORTED),
-    'x265': (_X265_PARAMS_ALIASES, _X265_PARAMS_UNSUPPORTED),
-}
+_SOFTWARE_VUI_ALIASES = _X264_PARAMS_ALIASES
+_SOFTWARE_VUI_UNSUPPORTED = _X264_PARAMS_UNSUPPORTED
 
 _TRUE_TOKENS = frozenset(('true', '1', 'yes', 'on'))
 _FALSE_TOKENS = frozenset(('false', '0', 'no', 'off'))
@@ -684,7 +662,8 @@ def _vui_param_pairs(cpu_codec, color_map, custom_params=None):
     tests/test_video_encoder_params.py::X264ColorValueMappingTests 锁定。
     """
     codec = normalize_cpu_codec(cpu_codec)
-    aliases, unsupported = _SOFTWARE_VUI_TABLES[codec]
+    aliases = _SOFTWARE_VUI_ALIASES
+    unsupported = _SOFTWARE_VUI_UNSUPPORTED
     if _custom_params_declare_private_opts(custom_params, _SOFTWARE_PRIVATE_OPTS[codec]):
         return []
 
@@ -737,13 +716,13 @@ def build_color_vui_params(encoder_key, color_map, custom_params=None, cpu_codec
 
         -x264-params colorprim=bt709:transfer=bt709:colormatrix=bt709
 
-    写进去的值必须是**该编码器自己的枚举名**，与三张白名单里的 ffmpeg 规范名
-    不完全一致；别名表负责改名，无等价名的取值直接跳过该键（编码器对未知名只打印
+    写进去的值必须是**编码器自己的枚举名**，与三张白名单里的 ffmpeg 规范名
+    不完全一致；别名表负责改名（x264 与 x265 共用同一张，见 _SOFTWARE_VUI_ALIASES
+    的说明），无等价名的取值直接跳过该键（编码器对未知名只打印
     "Error parsing option" 并**继续返回 0**，静默丢字段，比报错更隐蔽）。
 
     cpu_codec 指定目标编码器（'x264' / 'x265'），默认 'x264'，输出选项名随之改变
-    （-x264-params / -x265-params）。两张 VUI 表并不相同，见
-    _X265_PARAMS_ALIASES 的注释。
+    （-x264-params / -x265-params）。两者当前共用同一套色彩映射表。
 
     **x265 的调用方注意**：x265 没有独立的质量增强选项，增强项与 VUI 必须写进
     同一条 -x265-params（实测两条选项时后者完全覆盖前者）。单独调用本函数再另行
