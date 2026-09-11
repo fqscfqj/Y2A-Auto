@@ -398,6 +398,101 @@ body {
     .settings-card.search-hit { animation: none; }
 }
 
+/* 字段级搜索高亮：比卡片级更精确，用于定位到具体设置项 */
+.settings-field-hit,
+.settings-toggle-field.settings-field-hit,
+.form-group.settings-field-hit {
+    border-radius: 10px;
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.3);
+    background: rgba(13, 110, 253, 0.05);
+    animation: field-hit-pulse 1.2s ease-out 2;
+}
+
+@keyframes field-hit-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(13, 110, 253, 0.5); }
+    100% { box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.3); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-field-hit { animation: none; }
+}
+
+/* 搜索结果面板：字段级命中列表 */
+.settings-search-results {
+    margin-top: 0.5rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.settings-search-result {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.55rem 0.85rem;
+    border: 0;
+    border-bottom: 1px solid #f1f5f9;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+}
+
+.settings-search-result:last-child {
+    border-bottom: 0;
+}
+
+.settings-search-result:hover,
+.settings-search-result:focus-visible,
+.settings-search-result.is-active {
+    background: rgba(13, 110, 253, 0.06);
+}
+
+.settings-search-result.is-active {
+    box-shadow: inset 3px 0 0 #0d6efd;
+}
+
+.settings-search-result-label {
+    font-weight: 600;
+    color: #0f172a;
+    flex: 0 1 auto;
+}
+
+.settings-search-result-path {
+    color: #64748b;
+    font-size: 0.82rem;
+    flex: 1 1 auto;
+}
+
+.settings-search-result mark {
+    background: rgba(245, 158, 11, 0.28);
+    padding: 0 0.1rem;
+    border-radius: 3px;
+}
+
+/* 卡片级重置入口：默认低调，悬停时提示可点 */
+.settings-card-reset {
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #64748b;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 0.32rem 0.55rem;
+    border-radius: 8px;
+    white-space: nowrap;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.settings-card-reset:hover,
+.settings-card-reset:focus-visible {
+    color: #b91c1c;
+    border-color: #fca5a5;
+    background: #fef2f2;
+}
+
 .settings-card {
     border: 1px solid #e2e8f0;
     border-radius: 16px;
@@ -409,7 +504,7 @@ body {
 .settings-card-header {
     padding: 1rem 1.15rem;
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: flex-start;
     gap: 1rem;
     min-height: 82px;
@@ -422,8 +517,10 @@ body {
     color: #0f172a;
 }
 
+/* 标题占满剩余宽度,使状态徽章与「重置」按钮贴靠右侧成组 */
 .settings-card-header > div:first-child {
     min-width: 0;
+    flex: 1 1 auto;
 }
 
 .settings-card-body {

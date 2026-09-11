@@ -63,6 +63,9 @@ site/
 
 tests/*
 !tests/*.py
+# 设置页搜索的 Node + DOM 桩测试夹具(由 tests/test_settings_search_keyboard.py 调用)
+!tests/js/
+!tests/js/*.js
 .uv-cache/
 .uv-python/
 build-tools/Y2A-Auto.spec
