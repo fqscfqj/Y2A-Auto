@@ -220,8 +220,22 @@ class SrtTransformEngine:
                 start_str, end_str = [part.strip() for part in time_line.split('-->')]
             except ValueError:
                 continue
-            start_s = self._srt_time_to_seconds(start_str) + base_offset_s
-            end_s = self._srt_time_to_seconds(end_str) + base_offset_s
+            start_value = self._srt_time_to_seconds(start_str)
+            end_value = self._srt_time_to_seconds(end_str)
+            if start_value is None or end_value is None:
+                # 畸形时间戳不再静默退化为 0.0：把起点搬到 0.0 会**抬高**覆盖率并
+                # 压低 first_cue_start_ratio，即畸形时间戳反而帮助时间轴质检通过。
+                # 这里连同文本一起丢弃并记 warning（与其它丢弃路径同口径，
+                # 不静默丢内容），由人工按日志追查上游时间戳。
+                self.logger.warning(
+                    'Skipping cue with malformed timestamp %r --> %r, text dropped: %r',
+                    start_str,
+                    end_str,
+                    '\n'.join(line.strip() for line in content_lines if line.strip())[:120],
+                )
+                continue
+            start_s = start_value + base_offset_s
+            end_s = end_value + base_offset_s
             if end_s <= start_s:
                 end_s = start_s + _INVALID_TS_FALLBACK_S
             content = '\n'.join(line.strip() for line in content_lines if line.strip())
@@ -1097,15 +1111,30 @@ class SrtTransformEngine:
                 else:
                     # 末条过短：先尝试延长到 min_dur；已到视频末尾延不了时，
                     # 若前面已有可用 cue 就把这句话并进去，避免留下不可读的碎片。
+                    # 并入必须走 ``_absorb_cue_into``：它内含「最长时长 / 最高字速 /
+                    # 合并字数」三道上限复查。此前这里直接
+                    # ``finalized[-1]['end'] = max(prev_end, extended_end)`` 抬高前一条的
+                    # 结束时间，绕过了全部上限 —— 默认配置下能把一条普通字幕钉在
+                    # 屏幕上直到片尾（实测 10.0→600.0s，跨度 590s ≫ 8s 上限）。
                     extended_end = self._clamp_end_within_limits(
                         start, min(total_duration_s, start + min_dur), cue
                     )
                     if extended_end - start >= drop_dur or not finalized:
                         cue['end'] = extended_end
                     else:
-                        finalized[-1]['end'] = max(float(finalized[-1]['end']), extended_end)
-                        finalized[-1]['text'] = _join_texts(str(finalized[-1]['text']), str(cue['text']))
-                        continue
+                        # 并入前一条：把「延长」限制在时长上限内（end_limit_s），
+                        # 这样既不丢这条文本，也不会为了保住它而把前一条钉到片尾。
+                        absorb_end = self._clamp_end_within_limits(
+                            float(finalized[-1]['start']),
+                            max(float(finalized[-1]['end']), extended_end),
+                            finalized[-1],
+                        )
+                        if self._absorb_cue_into(finalized[-1], cue, end_limit_s=absorb_end):
+                            continue
+                        # 前一条已到上限、装不下这段文本：保留这条短 cue，
+                        # 交给下游 cleaned 阶段按同一套上限继续安置
+                        # （并入前一条 → 并入后一条 → 延长自身 → 记 warning 丢弃）。
+                        cue['end'] = extended_end
             finalized.append(cue)
 
         cleaned: List[Dict[str, Any]] = []
@@ -1165,12 +1194,16 @@ class SrtTransformEngine:
         cue: Dict[str, Any],
         prepend: bool = False,
         floor_start_s: float = 0.0,
+        end_limit_s: Optional[float] = None,
     ) -> bool:
         """把过短 cue 的文本并入相邻 cue；邻居装不下时返回 False。
 
         prepend=True 表示并入后一条（文本按时间轴顺序排在前）。并入后的文本同样要过
         「合并最长时长」与「最高字速」两道上限，否则宁可让调用方延长这条 cue，
         也不把文字塞进一条读不完或超宽的字幕。
+
+        ``end_limit_s`` 限制并入后的结束时间上界（末条碎片并入前一条时用它把
+        「延长」限制在时长上限之内，避免为了保住文本而把前一条钉到片尾）。
 
         并入后一条时会把它的起点提前到被吸收 cue 的起点（受 floor_start_s 限制，
         调用方传入「已定稿前一条的末尾 + 最小间隔」）：跨度变大才能同时满足字速上限
@@ -1186,7 +1219,11 @@ class SrtTransformEngine:
         if max_merge_chars > 0 and len(merged_text) > max_merge_chars:
             return False
         start_s = float(target['start'])
-        end_s = max(float(target['end']), float(cue['end']))
+        cue_end = float(cue['end'])
+        if end_limit_s is not None:
+            # 只限制「为了容纳本 cue 而做的延长」：不得缩短邻居自身的结束时间。
+            cue_end = min(cue_end, float(end_limit_s))
+        end_s = max(float(target['end']), cue_end)
         if prepend:
             start_s = max(min(start_s, float(cue['start'])), float(floor_start_s))
         if not self._merge_within_limits(start_s, end_s, merged_text):
@@ -1268,16 +1305,23 @@ class SrtTransformEngine:
         return normalized
 
     @staticmethod
-    def _srt_time_to_seconds(time_str: str) -> float:
+    def _srt_time_to_seconds(time_str: str):
+        """时间戳 → 秒；**畸形时间戳返回 ``None``**（调用方负责跳过并告警）。
+
+        此前畸形输入被静默退化为 ``0.0``，于是「畸形起点」被搬到视频开头：
+        既让时间轴覆盖率虚高（覆盖率是质检放行的依据之一），又让一切内容都
+        挤在 0.0 附近，掩盖了真正的时间戳崩坏。返回 ``None`` 让调用方显式
+        处理，避免用默认值伪造一个看似合法的时间点。
+        """
         if not time_str:
-            return 0.0
+            return None
         try:
             normalized = time_str.strip().replace('.', ',')
             hh, mm, rest = normalized.split(':')
             sec, ms = rest.split(',')
             return int(hh) * 3600 + int(mm) * 60 + int(sec) + int(ms) / 1000.0
         except Exception:
-            return 0.0
+            return None
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:

@@ -1805,17 +1805,31 @@ def _normalize_output_cues(
     total_duration_s: Optional[float] = None,
     logger=None,
 ) -> List[AlignedSubtitleCue]:
-    """出口归一化：丢弃非法 cue → 升序 → 去重叠 → 时长钳制。
+    """出口归一化：吸收非法 cue 的文本 → 升序 → 去重叠 → 时长钳制。
 
     下游 srt_transform_engine.resolve_overlaps 与 _refine_boundaries 都假定输入
     按时间有序且不重叠，而 context_cues 又取 all_cues[-N:] 作为下一批上下文；
     因此这里做统一兜底，避免未排序/重叠的 AI 输出污染上下文和落盘结果。
 
-    丢弃的 cue **必须**记 warning：这是落盘前的最后一道归一化，丢一条就是丢
-    一段字幕内容，静默丢失会让用户只看到字幕莫名缺句而无从排查。
+    被判定「时间戳不可用」的 cue **不丢文本**：它的文本按时间顺序并入相邻的
+    合法 cue（没有前一条时先挂起，随后并入下一条；全批都不可用时落到一条
+    最小长度的兜底 cue）。丢弃与吸收都必须记 warning —— 这是落盘前的最后一道
+    归一化，丢一条就是丢一段字幕内容，静默丢失会让用户只看到字幕莫名缺句而无从
+    排查；而「只记 warning、文本照丢」同样不可接受（实测 4 条输入丢 2 条）。
     """
     discarded = []
+    absorbed_texts: List[str] = []
     cleaned: List[AlignedSubtitleCue] = []
+
+    def _join_texts(left: str, right: str) -> str:
+        left = str(left or '').strip()
+        right = str(right or '').strip()
+        if not left:
+            return right
+        if not right:
+            return left
+        return f"{left} {right}"
+
     for cue in cues or []:
         text = str(getattr(cue, 'text', '') or '').strip()
         if not text:
@@ -1825,6 +1839,7 @@ def _normalize_output_cues(
         end_s = float(cue.end_s)
         if end_s <= start_s:
             discarded.append((f'non_positive_duration:{start_s:.3f}-{end_s:.3f}', cue))
+            absorbed_texts.append(text)
             continue
         cleaned.append(cue)
 
@@ -1847,16 +1862,19 @@ def _normalize_output_cues(
             start_s = previous_end
         if end_s <= start_s:
             discarded.append((f'collapsed_after_clamp:{start_s:.3f}-{end_s:.3f}', cue))
+            absorbed_texts.append(str(cue.text or ''))
             continue
         previous_end = end_s
-        if start_s == float(cue.start_s) and end_s == float(cue.end_s):
-            # 未被修改：复用原对象，避免无谓重建
+        pending_text = ' '.join(absorbed_texts)
+        absorbed_texts.clear()
+        if not pending_text and start_s == float(cue.start_s) and end_s == float(cue.end_s):
+            # 未被修改且没有待吸收文本：复用原对象，避免无谓重建
             normalized.append(cue)
             continue
         normalized.append(AlignedSubtitleCue(
             start_s=start_s,
             end_s=end_s,
-            text=cue.text,
+            text=_join_texts(pending_text, str(cue.text or '')),
             provider=getattr(cue, 'provider', ''),
             timing_source=getattr(cue, 'timing_source', 'segment'),
             alignment_confidence=getattr(cue, 'alignment_confidence', 0.0),
@@ -1867,6 +1885,30 @@ def _normalize_output_cues(
             metadata=dict(getattr(cue, 'metadata', {}) or {}),
         ))
 
+    if absorbed_texts:
+        orphan_text = ' '.join(absorbed_texts)
+        absorbed_texts.clear()
+        if normalized:
+            # 有合法 cue 时挂到最后一条：时间轴仍由真实 cue 承载，
+            # 不新造一条没有依据的时间段。
+            normalized[-1].text = _join_texts(str(normalized[-1].text or ''), orphan_text)
+        else:
+            # 一个合法时间轴都没有：用一条最小长度的 cue 承载全部文本，
+            # 宁可时间不准也不把内容丢掉（并在下面记 warning 说明）。
+            orphan_end = 0.05
+            if limit is not None and limit > 0:
+                orphan_end = min(limit, orphan_end)
+            normalized.append(AlignedSubtitleCue(
+                start_s=0.0,
+                end_s=max(orphan_end, 0.05),
+                text=orphan_text,
+                provider='',
+                timing_source='orphan_text_fallback',
+                alignment_confidence=0.0,
+                source_window_index=-1,
+                metadata={},
+            ))
+
     if discarded and logger is not None:
         try:
             samples = ' | '.join(
@@ -1874,7 +1916,8 @@ def _normalize_output_cues(
                 for reason, cue in discarded[:3]
             )
             logger.warning(
-                "出口归一化丢弃 %d/%d 条 cue（内容随之丢失，请检查上游时间戳）：%s",
+                "出口归一化丢弃 %d/%d 条 cue 的时间戳（文本已并入相邻 cue，未丢失内容，"
+                "请检查上游时间戳）：%s",
                 len(discarded),
                 len(cues or []),
                 samples,

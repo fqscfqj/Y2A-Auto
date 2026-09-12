@@ -143,5 +143,78 @@ class LikelyUntranslatedIntegrationTests(unittest.TestCase):
         self.assertTrue(translator._likely_untranslated('hello world', 'hello world'))
 
 
+class RatioBranchCjkRegressionTests(unittest.TestCase):
+    """R1 回归：比值分支也必须认假名/谚文，「加个标点」不能绕过未译检测。
+
+    缺陷：`d == s` 的快速路径修好之后，模型只要给日文原文加一个句号、删一个
+    逗号或插一个空格，`d != s` 就成立，而比值分支把「汉字」一律计入中文 ——
+    汉字占多数的日文因此算出「中文译文」，日文原文被写进中文字幕并烧录。
+    这些用例的判据必须在**没有** `d == s` 帮助的情况下成立。
+    """
+
+    def _translator(self, target_language='zh'):
+        from unittest.mock import MagicMock
+
+        from modules.subtitle_translator import SubtitleTranslator, TranslationConfig
+
+        translator = SubtitleTranslator.__new__(SubtitleTranslator)
+        translator.config = TranslationConfig(target_language=target_language)
+        translator.logger = MagicMock()
+        translator.task_id = 'unit'
+        return translator
+
+    def test_japanese_echo_with_trailing_period_is_untranslated(self):
+        translator = self._translator('zh')
+        source = '東京駅は新宿駅です'
+        for dst in (
+            '東京駅は新宿駅です。',   # 加了一个句号
+            '東京駅は新宿駅です',      # 去掉逗号（源带逗号）
+            '東京駅 は 新宿駅 です',   # 插入空格
+        ):
+            self.assertTrue(
+                translator._likely_untranslated('東京、' + source, dst), dst)
+
+    def test_kanji_heavy_japanese_echo_is_untranslated(self):
+        """汉字占多数（假名占比低）的日文照抄同样必须被抓住。"""
+        translator = self._translator('zh')
+        self.assertTrue(
+            translator._likely_untranslated(
+                '新宿駅に到着、東京駅を出発', '新宿駅に到着 東京駅を出発'))
+
+    def test_kanji_only_limitation_is_pinned(self):
+        """已知限制：纯汉字文本在「目标是中文」时无法与中文区分。
+
+        汉字码位被中日韩共用，单看文本无从判定它到底是「本来就是中文」还是
+        「日文原文照抄」，因此纯汉字的照抄在 zh 目标下仍被判为已译。这里把该
+        边界钉住，避免将来有人以为它已被覆盖；同时确认目标是**非中文**时
+        同一条文本仍会被拦下（那条路径有语言信号可用）。
+        """
+        translator_zh = self._translator('zh')
+        self.assertFalse(translator_zh._likely_untranslated('新宿駅到着', '新宿駅到着。'))
+        translator_en = self._translator('en')
+        self.assertTrue(translator_en._likely_untranslated('新宿駅到着', '新宿駅到着。'))
+
+    def test_english_source_japanese_output_is_untranslated(self):
+        """源是英文、模型整句返回日文：源里没有假名，靠译文自身占比判定。"""
+        translator = self._translator('zh')
+        self.assertTrue(translator._likely_untranslated('Tokyo tower', '東京タワー'))
+
+    def test_chinese_translation_with_japanese_loanword_is_not_flagged(self):
+        """反向守卫：中文译文里保留一个日文借词不得被判成未译。"""
+        translator = self._translator('zh')
+        self.assertFalse(
+            translator._likely_untranslated('I love anime', '我很喜欢アニメ这部动画'))
+
+    def test_chinese_target_non_chinese_translation_of_hanzi_source(self):
+        """目标是英文却整句返回汉字（含标点差异）→ 未译。"""
+        translator = self._translator('en')
+        self.assertTrue(translator._likely_untranslated('你好，世界', '你好世界。'))
+
+    def test_korean_echo_with_punctuation_change_is_untranslated(self):
+        translator = self._translator('zh')
+        self.assertTrue(
+            translator._likely_untranslated('안녕하세요 여러분', '안녕하세요, 여러분'))
+
+
 if __name__ == '__main__':
     unittest.main()

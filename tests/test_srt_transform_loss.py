@@ -293,5 +293,111 @@ class AbsorbCapacityTests(_LogAssertionTestCase):
         self.assertEqual(_joined_text(finalized), '甲甲乙乙丙丙 丁丁')
 
 
+class TerminalFragmentDurationLimitTests(_LogAssertionTestCase):
+    """R3：末条碎片并入前一条时，不得越过「最长时长」上限。
+
+    缺陷（`08e2a55` 引入、`f4cbf83` 漏掉的那一行）：`finalized[-1]['end'] =
+    max(end, extended_end)` 直接抬高前一条的结束时间，既不过
+    `_clamp_end_within_limits` 也不过 `_merge_within_limits`。默认配置下能把
+    一条普通字幕钉在屏幕上直到片尾（复审实测 10.0 → 600.0s，跨度 590s ≫ 8s 上限；
+    4000 组随机性质测试里「末条贴片尾」这一类 1871 次违约全部出自这里）。
+    """
+
+    def test_terminal_fragment_does_not_pin_previous_cue_to_video_end(self):
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        out = engine.finalize_cues(
+            [{'start': 0.0, 'end': 0.5, 'text': 'alpha bravo'},
+             {'start': 9.97, 'end': 9.99, 'text': 'charlie delta'}],
+            10.0,
+        )
+        for cue in out:
+            span = float(cue['end']) - float(cue['start'])
+            self.assertLessEqual(span, 8.0 + 1e-9, cue)
+        # 文本仍必须保留（不越过上限不等于可以丢字）
+        text = _joined_text(out)
+        self.assertIn('alpha', text)
+        self.assertIn('charlie', text)
+
+    def test_review_reproduction_case_is_capped(self):
+        """复审给的复现输入：10.0→600.0s 的一跳必须不再出现。"""
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        out = engine.finalize_cues(
+            [{'start': 10.0, 'end': 10.2, 'text': 'alpha bravo charlie'},
+             {'start': 599.9, 'end': 599.99, 'text': 'foxtrot tail'}],
+            600.0,
+        )
+        for cue in out:
+            span = float(cue['end']) - float(cue['start'])
+            self.assertLessEqual(span, 8.0 + 1e-9, cue)
+
+    def test_property_no_duration_violation_or_overlap(self):
+        """性质：输入全部合规时，输出既不得超上限、也不得重叠。"""
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        rng = random.Random(20260912)
+        for _ in range(300):
+            total = rng.choice([10.0, 60.0, 600.0])
+            cues = []
+            cursor = 0.0
+            for index in range(rng.randint(1, 5)):
+                start = min(cursor + rng.uniform(0.0, 3.0), max(0.0, total - 0.05))
+                end = min(start + rng.uniform(0.05, 3.0), total)
+                if end <= start:
+                    end = min(total, start + 0.05)
+                cues.append({'start': start, 'end': end, 'text': f'word{index} text'})
+                cursor = end
+            # 末条贴住片尾：这正是此前唯一违约的那条写入点的触发形态
+            tail_start = max(cursor, total - 0.05)
+            if tail_start < total:
+                cues.append({'start': tail_start, 'end': total, 'text': 'tail fragment'})
+            out = engine.finalize_cues(cues, total)
+            for cue in out:
+                span = float(cue['end']) - float(cue['start'])
+                self.assertLessEqual(span, 8.0 + 1e-9, (total, cues, out))
+            for previous, current in zip(out, out[1:]):
+                self.assertGreaterEqual(
+                    float(current['start']), float(previous['end']) - 1e-9,
+                    (total, cues, out))
+
+
+class MalformedTimestampTests(_LogAssertionTestCase):
+    """R4b：畸形时间戳不得静默退化为 0.0。
+
+    把畸形起点搬到 0.0 会让时间轴覆盖率虚高、first_cue_start_ratio 偏低 ——
+    即畸形时间戳反而**帮助**时间轴质检通过（复审实测）。现在连同文本一起
+    跳过并记 warning，由人工按日志追查上游时间戳。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.engine = _engine()
+
+    def test_malformed_start_is_skipped_with_warning(self):
+        srt = (
+            '1\n00:00:01,000 --> 00:00:02,000\nfirst line\n\n'
+            '2\n00:00:0X,000 --> 00:00:04,000\nbroken line\n\n'
+            '3\n00:00:05,000 --> 00:00:06,000\nsecond line\n'
+        )
+        with self.assertLogs(_LOGGER_NAME, level='WARNING') as captured:
+            cues = self.engine.parse_srt(srt)
+        self.assertEqual([cue['text'] for cue in cues], ['first line', 'second line'])
+        self.assertFalse(
+            any(abs(float(cue['start'])) < 1e-9 for cue in cues),
+            '畸形时间戳的 cue 被搬到了 0.0')
+        self.assertIn('broken line', '\n'.join(captured.output))
+
+    def test_helper_returns_none_for_malformed(self):
+        self.assertIsNone(self.engine._srt_time_to_seconds('00:00:0X,000'))
+        self.assertIsNone(self.engine._srt_time_to_seconds(''))
+        self.assertEqual(self.engine._srt_time_to_seconds('00:00:02,500'), 2.5)
+
+    def test_healthy_srt_still_parses(self):
+        srt = ('1\n00:00:01,000 --> 00:00:02,500\nhello\n\n'
+               '2\n00:00:03.000 --> 00:00:04.000\nworld\n')
+        cues = self.engine.parse_srt(srt)
+        self.assertEqual([cue['text'] for cue in cues], ['hello', 'world'])
+        self.assertAlmostEqual(float(cues[0]['start']), 1.0, places=6)
+        self.assertAlmostEqual(float(cues[1]['end']), 4.0, places=6)
+
+
 if __name__ == '__main__':
     unittest.main()
