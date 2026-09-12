@@ -26,6 +26,22 @@ from modules.video_encoder_params import (
     resolve_color_metadata,
 )
 
+
+class _Logger:
+    """最小 logger stub：只记录消息，用于断言「丢弃字段时有提示」。"""
+
+    def __init__(self):
+        self.messages = []
+        self.warnings = []
+
+    def warning(self, message, *args):
+        text = message % args if args else message
+        self.messages.append(str(text))
+        self.warnings.append(str(text))
+
+    def info(self, message, *args):
+        self.messages.append(str(message % args if args else message))
+
 # 1080p 推荐质量 23.5：libx264/-cq 用 float 字符串，QSV/AMF/VAAPI 用 int(round(q))。
 # int(round(23.5)) == 24 —— 与历史 max(0, min(51, int(round(target_quality)))) 一致。
 _Q_1080_INT = '24'
@@ -527,6 +543,41 @@ class ResolveColorMetadataTests(unittest.TestCase):
             resolve_color_metadata('auto', info),
         )
 
+    def test_whitelist_covers_ffmpeg_canonical_names(self):
+        """M-4：ffmpeg 自己的规范名不得被当成「不认识」而静默丢弃。
+
+        `fcc`（colorspace）与 `bt2020-10` / `bt2020-12`（transfer）在
+        libx264 / mpeg4 / libx265 / ffv1 下全部 rc=0，且用
+        `-x264-params colorprim=bt2020:transfer=bt2020-10:colormatrix=fcc`
+        造出的源文件，ffprobe 回读就是这两个名字。
+        """
+        self.assertEqual(
+            resolve_color_metadata('auto', {'color_space': 'fcc'}),
+            ['-colorspace', 'fcc'])
+        self.assertEqual(
+            resolve_color_metadata('auto', {'color_transfer': 'bt2020-10'}),
+            ['-color_trc', 'bt2020-10'])
+        self.assertEqual(
+            resolve_color_metadata('auto', {'color_transfer': 'bt2020-12'}),
+            ['-color_trc', 'bt2020-12'])
+
+    def test_dropped_field_is_logged_not_silent(self):
+        """被丢弃的字段必须留日志：输出的 VUI 少一项，此前一行提示都没有。"""
+        logger = _Logger()
+        resolved = resolve_color_metadata(
+            'auto',
+            {'color_space': 'smpte2085', 'color_transfer': 'bt709'},
+            logger=logger)
+        self.assertEqual(resolved, ['-color_trc', 'bt709'])
+        self.assertTrue(
+            any('color_space=smpte2085' in message for message in logger.messages),
+            logger.messages)
+
+    def test_no_drop_log_when_everything_resolves(self):
+        logger = _Logger()
+        resolve_color_metadata('auto', {'color_space': 'bt709'}, logger=logger)
+        self.assertEqual(logger.warnings, [])
+
 
 class BuildEncoderParamsCpuTests(unittest.TestCase):
     def test_cpu_full_param_list_1080p(self):
@@ -630,17 +681,24 @@ class CpuQualityBoostGateTests(unittest.TestCase):
         off = build_encoder_params('cpu', _ctx(**{'hw_quality_boost': False}))
         self.assertEqual(off, _CPU_1080_BASE)
 
-    def test_hd_preset_path_loses_rc_lookahead_when_boost_off(self):
+    def test_hd_preset_path_follows_preset_lookahead(self):
         # B3 的核心动机：VIDEO_CPU_PRESET_HD 走 veryfast，它存在的理由是
         # 「避免字幕烧录超时」，而 -rc-lookahead 40 会把该 preset 的前瞻从
-        # 默认 10 抬到 40。关闭开关必须能真正甩掉它。
+        # 默认 10 抬到 40。因此 HD 路径**两条分支都不注入** -rc-lookahead：
+        # 关闭增强时它是缺陷（白拿 4 倍前瞻），默认开启时同样与该 preset 的
+        # 初衷相反（此前只在关闭时甩掉，默认行为仍被放大）。
         overrides = {'height': 2160, 'duration_s': 3600}
         on = build_encoder_params('cpu', _ctx(hw_quality_boost=True, **overrides))
         off = build_encoder_params('cpu', _ctx(hw_quality_boost=False, **overrides))
         self.assertEqual(on[on.index('-preset') + 1], 'veryfast')
         self.assertEqual(off[off.index('-preset') + 1], 'veryfast')
-        self.assertEqual(on[on.index('-rc-lookahead') + 1], '40')
+        self.assertNotIn('-rc-lookahead', on)
         self.assertNotIn('-rc-lookahead', off)
+        # 其余三项增强仍受开关控制（HD 路径也要保留可用的质量收益）
+        self.assertIn('-aq-mode', on)
+        self.assertIn('-aq-strength', on)
+        self.assertIn('-psy-rd', on)
+        self.assertIn('-rc-lookahead', build_encoder_params('cpu', _ctx(hw_quality_boost=True)))
 
     def test_boost_toggle_is_symmetric_across_all_encoders(self):
         # CPU 曾是唯一缺失该分支的编码器；这条把五个分支钉在一起。

@@ -929,6 +929,27 @@ def _subtitle_embed_allowed(
     return False
 
 
+def _qc_result_allows_embed(qc_result, config) -> bool:
+    """质检三态 + 逃生口 → 是否允许烧录：三个调用点的**唯一**判定入口。
+
+    - ``True``：本次质检通过 → 放行；
+    - ``SUBTITLE_QC_DISABLED``：用户主动关闭质检 → 放行；
+    - ``None``：质检启用但没跑成（文件缺失 / 执行异常）→ 只有逃生口
+      ``ASR_FAILURE_BLOCKS_EMBED=False`` 打开时才放行；
+    - ``False``：明确的质检失败结论 → 任何情况下都拦截（逃生口不适用）。
+
+    为什么必须收口到一处：此前三个调用点各写一份判定，其中上传前那条路径
+    （``_prepare_subtitle_for_upload``）完全不读逃生口，于是同一份 ``asr_*.srt``
+    会因为「走哪条分支 / 哪个阶段」而得到相反结论 —— README 承诺该开关可放宽
+    「质检没跑成」的拦截，实际上只在部分路径成立。
+    """
+    if qc_result is True or qc_result is SUBTITLE_QC_DISABLED:
+        return True
+    if qc_result is None:
+        return not _as_bool((config or {}).get('ASR_FAILURE_BLOCKS_EMBED', True))
+    return False
+
+
 def _parse_pipeline_checkpoint(raw_value):
     data = _safe_json_loads(raw_value, {})
     if not isinstance(data, dict):
@@ -3653,19 +3674,17 @@ class TaskProcessor:
                         qc_cleared = True
                         qc_failed = False
                     else:
-                        # 逃生口生效时，「质检没跑成」也不应阻断烧录 —— 否则
-                        # ASR_FAILURE_BLOCKS_EMBED=False 依然无法恢复旧行为。
-                        # 但明确的质检失败结论（False）不受逃生口影响。
-                        qc_blocks = qc_result is False or (
-                            qc_result is None and not escape_hatch_active
-                        )
-                        if qc_blocks:
+                        # 逃生口（ASR_FAILURE_BLOCKS_EMBED=False）生效时，「质检没跑成」
+                        # 也不应阻断烧录，但明确的质检失败结论（False）不受它影响。
+                        # 判定统一由 ``_qc_result_allows_embed`` 给出，避免各调用点漂移。
+                        if not _qc_result_allows_embed(qc_result, self.config):
                             reason_text = 'qc_unavailable' if qc_result is None else 'subtitle_qc_rejected'
                             task_logger.warning(
-                                "转录字幕质检未通过（%s, strict=%s）：跳过字幕翻译/烧录，"
+                                "转录字幕质检未通过（%s, strict=%s, escape_hatch=%s）：跳过字幕翻译/烧录，"
                                 "保留字幕文件并继续上传原视频",
                                 reason_text,
                                 strict_qc,
+                                escape_hatch_active,
                             )
                             self._quarantine_rejected_subtitle(asr_subtitle_path, task_logger)
                             update_task(
@@ -3925,19 +3944,25 @@ class TaskProcessor:
             )
             return False
 
-    def _ensure_asr_subtitle_qc(self, task_id, subtitle_file, task_logger, quality_state):
+    def _ensure_asr_subtitle_qc(self, task_id, subtitle_file, task_logger, quality_state, *, force_asr=None):
         """ASR 产物烧录前的质检闸门，返回 ``(allowed, qc_cleared, reason)``。
 
         非 ASR 产物（平台自带 / 人工提供字幕）直接放行且不标记 ``qc_cleared``
         —— 它们不是幻觉与时间轴错位的高风险来源，也不该被 ASR 的历史标记误拦。
-        判定只看文件名（见 ``_is_asr_subtitle_artifact``）；``quality_state``
-        仅用于决定质检的**严格度**，不参与「是否质检」的判定。
+        判定默认只看文件名（见 ``_is_asr_subtitle_artifact``）；``force_asr``
+        用于「译文的来源是 ASR 字幕」这类**名字上继承不到**的情形：译文写入
+        ``translated_*.srt``，不匹配 ``asr_*`` 前缀，若不显式继承来源就会被判为
+        非 ASR 产物而**永远放行**（注释声称「至少让闸门有机会拒绝」，实际恒真）。
+        ``quality_state`` 仅用于决定质检的**严格度**，不参与「是否质检」的判定。
 
         ``reason`` 只在与 ``allowed=False`` 搭配时有意义，供调用方在
         ``subtitle_warning_message`` 中保留**首个**拦截归因（此前外层分支会
         用 ``asr_failed_block_embed`` 覆盖掉这里更精确的原因）。
         """
-        if not _is_asr_subtitle_artifact(task_id, subtitle_file):
+        is_asr_artifact = _is_asr_subtitle_artifact(task_id, subtitle_file)
+        if force_asr is not None:
+            is_asr_artifact = bool(force_asr)
+        if not is_asr_artifact:
             return True, False, ''
         qc_result = self._run_subtitle_qc(
             task_id,
@@ -3952,9 +3977,9 @@ class TaskProcessor:
             # 质检结论，也不该让门控以为「本次已通过质检」）。
             task_logger.info("字幕质检已被配置关闭，ASR 字幕按用户配置放行烧录")
             return True, False, ''
-        if qc_result is None and not _as_bool(self.config.get('ASR_FAILURE_BLOCKS_EMBED', True)):
-            # 逃生口对「质检没跑成」同样生效。本方法被翻译分支复用，而
-            # ``_translate_subtitle`` 内那份 ``escape_hatch_active`` 是函数级
+        if _qc_result_allows_embed(qc_result, self.config):
+            # 逃生口对「质检没跑成」同样生效。本方法被翻译分支与上传前阶段复用，
+            # 而 ``_translate_subtitle`` 内那份 ``escape_hatch_active`` 是函数级
             # 局部变量、覆盖不到这里；若不在本方法内读同一个配置键，同一份
             # asr_*.srt 会因为走哪条分支而得到相反结论（实测两条路径相反）。
             # 明确的质检失败结论（False）仍不受逃生口影响。
@@ -3967,11 +3992,15 @@ class TaskProcessor:
             "ASR 字幕质检未通过（%s）：跳过烧录，保留字幕文件并继续上传原视频",
             reason_text,
         )
-        self._quarantine_rejected_subtitle(subtitle_file, task_logger)
+        # 被拒对象是 ASR 来源的字幕（含 force_asr 继承来的译文），必须移出复用范围：
+        # 留在 task_dir 里会让下一轮扫描直接复用它，用户重跑永远拿不到新字幕。
+        self._quarantine_rejected_subtitle(
+            subtitle_file, task_logger, force=bool(force_asr)
+        )
         update_task(task_id, subtitle_warning_message=reason_text, upload_progress=None)
         return False, False, reason_text
 
-    def _quarantine_rejected_subtitle(self, subtitle_path, task_logger=None) -> str:
+    def _quarantine_rejected_subtitle(self, subtitle_path, task_logger=None, *, force=False) -> str:
         """把被质检/质量门控拒绝的 ASR 字幕移出扫描范围。
 
         为什么必须移动：被拒绝的字幕文件留在 task_dir 里会让下一轮
@@ -3980,14 +4009,17 @@ class TaskProcessor:
         拿不到新字幕。改名为 ``.rejected.txt`` 后内容仍保留供人工检查，但不再
         匹配 ``.srt/.vtt`` 过滤条件，因此既不会被复用也不会被上传。
 
-        **只处理 ASR 产物**：判据在方法内部（只看文件名），而不是依赖每个调用点
+        **默认只处理 ASR 产物**：判据在方法内部（只看文件名），而不是依赖每个调用点
         自己先判定。此前防护只加在 ``_quarantine_if_asr_artifact`` 这层包装上，
         而 ``_ensure_asr_subtitle_qc`` 内部那条路径直接调用本方法，导致平台自带
         字幕 ``video.zh.srt`` 在任务级 ``degraded`` 时被改名成
         ``video.zh.rejected.txt`` —— 破坏用户既有产物，且改名后
         ``subtitle_path_original`` 仍指向已不存在的路径。
+
+        ``force=True`` 仅供「译文由 ASR 源字幕翻译而来」这一处使用：文件名
+        （``translated_*.srt``）继承不到 ``asr_`` 前缀，来源判定由调用方给出。
         """
-        if not _is_asr_subtitle_artifact('', subtitle_path):
+        if not force and not _is_asr_subtitle_artifact('', subtitle_path):
             return ''
         try:
             source = str(subtitle_path or '').strip()
@@ -4013,7 +4045,7 @@ class TaskProcessor:
                     pass
             return ''
 
-    def _mark_subtitle_qc_unavailable(self, task_id, task_logger=None, detail=''):
+    def _mark_subtitle_qc_unavailable(self, task_id, task_logger=None, detail='', blocks=None):
         """把「质检没跑成」显式落库，返回落库成功与否。
 
         为什么必须落库：``_run_subtitle_qc`` 返回 ``None``（字幕文件缺失 /
@@ -4028,15 +4060,30 @@ class TaskProcessor:
 
         落一个显式不可用标记后，``_is_subtitle_stage_rejected`` 与
         ``_subtitle_block_reasons`` 都能看到它，门控在后续阶段保持一致结论。
+
+        ``blocks`` 表示本次「质检不可用」是否按门控拦截烧录（默认取逃生口
+        ``ASR_FAILURE_BLOCKS_EMBED``）。逃生口打开时它**不**拦截，此时不得落
+        ``subtitle_qc_failed=1`` —— 否则同一状态在不同阶段得到相反结论：
+        ``_ensure_asr_subtitle_qc`` 按逃生口放行，而上传前阶段读到库里的
+        ``qc_failed=1`` 又把烧录拦下、并把字幕阶段永久判为「未完成」，
+        用户显式配置的宽松策略失效且每轮重跑都重做 ASR。
         """
+        if blocks is None:
+            blocks = _as_bool(self.config.get('ASR_FAILURE_BLOCKS_EMBED', True))
         try:
-            update_task(
-                task_id,
-                subtitle_qc_failed=1,
-                subtitle_qc_reason='qc_unavailable',
-                subtitle_qc_checked_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                upload_progress=None,
-            )
+            fields = {
+                'subtitle_qc_reason': 'qc_unavailable',
+                'subtitle_qc_checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'upload_progress': None,
+            }
+            if blocks:
+                fields['subtitle_qc_failed'] = 1
+            else:
+                # 只更新「没跑成」这一事实，保留既有结论：逃生口只放宽
+                # 「质检没跑成」，不得顺手把历史上的明确质检失败结论洗白。
+                current = get_task(task_id) or {}
+                fields['subtitle_qc_failed'] = 1 if current.get('subtitle_qc_failed') == 1 else 0
+            update_task(task_id, **fields)
             return True
         except Exception as exc:
             if task_logger is not None:
@@ -4045,6 +4092,26 @@ class TaskProcessor:
                 except Exception:
                     pass
             return False
+
+    def _persist_qc_unavailable(self, task_id, task_logger=None, detail=''):
+        """落库「质检没跑成」标记，并**消费**落库结果。
+
+        ``_mark_subtitle_qc_unavailable`` 的返回值此前被两个调用点直接丢弃：
+        写入失败时它只记一条 warning，于是「结论不落库」的失效链（后续阶段
+        重新读库拿到 ``qc_failed=0`` 而放行复用旧成片）会在 DB 写失败这一情形下
+        原样重现。这里显式消费返回值并留下可排查的告警，不再静默降级。
+        """
+        persisted = self._mark_subtitle_qc_unavailable(task_id, task_logger, detail=detail)
+        if not persisted and task_logger is not None:
+            try:
+                task_logger.warning(
+                    "质检不可用标记未能落库（detail=%s）：后续阶段可能看不到本次"
+                    "拦截结论，若复用既有成片请人工确认其字幕是否合格",
+                    detail or 'n/a',
+                )
+            except Exception:
+                pass
+        return persisted
 
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger, strict: bool = False):
         """对 ASR 生成字幕执行预检，每次都重新计算结果。
@@ -4069,7 +4136,7 @@ class TaskProcessor:
                 task_logger.warning(f"字幕质检不可用：字幕文件缺失 {srt_path}")
             except Exception:
                 pass
-            self._mark_subtitle_qc_unavailable(task_id, task_logger, detail='missing_file')
+            self._persist_qc_unavailable(task_id, task_logger, detail='missing_file')
             return None
 
         try:
@@ -4128,7 +4195,7 @@ class TaskProcessor:
                 task_logger.warning(f"字幕质检执行异常，判定为质检不可用，将不烧录字幕: {e}")
             except Exception:
                 pass
-            self._mark_subtitle_qc_unavailable(task_id, task_logger, detail=f'exception: {e}')
+            self._persist_qc_unavailable(task_id, task_logger, detail=f'exception: {e}')
             return None
 
     def _resolve_qc_total_duration(self, task_id: str, task_logger=None):
@@ -4275,6 +4342,16 @@ class TaskProcessor:
     )
     _ASS_PLAY_RES_X = 1920
     _ASS_PLAY_RES_Y = 1080
+    #: force_style 比生成 ASS 文档多需要的键：生成路径把这些值写进 [V4+ Styles]
+    #: 的 Style 行，而 ASS/SSA 输入路径必须靠 force_style 逐键覆盖源样式。
+    _FORCE_STYLE_APPEARANCE_KEYS = (
+        'PrimaryColour',
+        'OutlineColour',
+        'BackColour',
+        'BorderStyle',
+        'Bold',
+    )
+
     _ASS_STYLE_BASE = {
         'FontSize': 56.0,
         'Outline': 2.0,
@@ -4752,6 +4829,38 @@ class TaskProcessor:
         return stages
 
     @staticmethod
+    def _drop_same_encoder_stage_after_timeout(retry_stages):
+        """超时失败后剔除「关增强、同编码器重试」这一级。
+
+        超时的含义是「这份活在这个编码器上跑不完」，同编码器关增强重试对长视频
+        通常只是把整片时间再花一次（最现实的失败类型反而拿到最差的降级策略）。
+        因此超时只保留「换编码器」的那一级（CPU）。
+        """
+        try:
+            return [str(stage) for stage in (retry_stages or []) if str(stage) != 'hw_no_boost']
+        except Exception:
+            return []
+
+    @staticmethod
+    def _describe_hw_failure(actual_encoder, *, timed_out=False, hw_option_error=False,
+                             hw_error_detected=False, boost_enabled=True, returncode=None):
+        """硬编失败的降级归因，供日志与排查使用（纯函数）。
+
+        返回值是稳定的语义键：``timeout`` / ``option_error`` /
+        ``option_error_no_boost`` / ``device_error`` / ``unknown``。
+
+        ``option_error_no_boost`` 存在的意义：质量增强本来就没开时，
+        「先关闭质量增强后用同一编码器重试」是空动作，照搬那句话会把人带偏。
+        """
+        if timed_out:
+            return 'timeout'
+        if hw_option_error:
+            return 'option_error' if boost_enabled else 'option_error_no_boost'
+        if hw_error_detected:
+            return 'device_error'
+        return 'unknown'
+
+    @staticmethod
     def _finalize_embedded_video_output(temp_output_path, final_output_path):
         """优先原子替换输出文件，失败时回退复制。"""
         try:
@@ -5213,6 +5322,15 @@ class TaskProcessor:
             'MarginV': str(int(round(style['MarginV']))),
             'Alignment': str(style['Alignment']),
         }
+        # 颜色 / 粗体 / 底板必须一并写进 force_style：libass 的 force_style 是
+        # **逐键覆盖**，只给字体与边距的话，ASS/SSA 源字幕的字色、描边色、粗体与
+        # 半透明底板仍旧来自创作者样式 —— 用户改了「字体颜色」画面上毫无变化，
+        # 而日志照样打印「将以 force_style 覆盖源样式」（实测：同一份配置喂 .srt
+        # 是红字、喂 .ass 仍是白字）。取值已由 ``apply_style_overrides`` 算好，
+        # 这里只做搬运，因此默认配置下写入的仍是历史默认值。
+        for key in cls._FORCE_STYLE_APPEARANCE_KEYS:
+            if key in style:
+                force_style[key] = cls._format_ass_number(style[key])
         return style, force_style
 
     @classmethod
@@ -7255,13 +7373,14 @@ class TaskProcessor:
                     color_params = resolve_color_metadata(
                         encoder_settings.get('color_metadata_mode'),
                         stream_info,
+                        logger=task_logger,
                     )
                 except Exception as color_exc:
                     task_logger.debug(f"解析色彩元数据失败，跳过色彩参数: {color_exc}")
                 if color_params:
                     task_logger.info(f"输出色彩元数据: {' '.join(color_params)}")
 
-                def _video_param_ctx(amd_backend=None, cpu_codec_override=None):
+                def _video_param_ctx(amd_backend=None, cpu_codec_override=None, hw_quality_boost=None):
                     """汇总编码上下文，交由 video_encoder_params 统一构造参数。
 
                     cpu_codec_override 用于 x265 -> x264 降级阶段覆盖用户选择；
@@ -7269,6 +7388,12 @@ class TaskProcessor:
                     cpu_codec 同名，避免遮蔽导致「以为读的是配置、其实读的是形参」。
                     color_map 交给 encoder_params，由它把色彩 VUI 与（x265 的）
                     质量增强合并成同一条私有参数选项。
+
+                    ``hw_quality_boost`` 显式传入时覆盖 ``encoder_settings`` 里的值。
+                    降级重试必须走这条覆盖通道，**不能**就地改写 ``encoder_settings``：
+                    那是闭包共享的 dict，改掉之后后面的 CPU 回退阶段读到的就是
+                    「增强已关」，用户明明开着增强，回退后的成片却按关闭增强的
+                    基础参数编码（0a98c26 引入的行为）。
                     """
                     ctx = {
                         'height': input_height,
@@ -7279,7 +7404,11 @@ class TaskProcessor:
                         'cpu_preset': encoder_settings.get('cpu_preset'),
                         'cpu_preset_hd': encoder_settings.get('cpu_preset_hd'),
                         'duration_s': video_duration,
-                        'hw_quality_boost': encoder_settings.get('hw_quality_boost'),
+                        'hw_quality_boost': (
+                            encoder_settings.get('hw_quality_boost')
+                            if hw_quality_boost is None
+                            else hw_quality_boost
+                        ),
                         'hw_quality_level': encoder_settings.get('hw_quality_level'),
                         'cpu_codec': cpu_codec_override or encoder_settings.get('cpu_codec'),
                         'software_tune': encoder_settings.get('software_tune'),
@@ -7293,22 +7422,33 @@ class TaskProcessor:
                 # 针对软编码生成统一参数（libx264 或 libx265，由 VIDEO_CPU_CODEC 决定）。
                 # 色彩 VUI 已由 build_encoder_params 合并在内，调用方不要再另行追加，
                 # 否则 x265 会出现两条 -x265-params 而后者覆盖前者。
-                def build_cpu_params(cpu_codec_override=None):
+                def build_cpu_params(cpu_codec_override=None, hw_quality_boost=None):
                     return build_encoder_params(
-                        'cpu', _video_param_ctx(cpu_codec_override=cpu_codec_override)
+                        'cpu',
+                        _video_param_ctx(
+                            cpu_codec_override=cpu_codec_override,
+                            hw_quality_boost=hw_quality_boost,
+                        ),
                     )
 
-                def build_nvidia_params():
+                def build_nvidia_params(hw_quality_boost=None):
                     """生成 NVIDIA NVENC HEVC 编码参数"""
-                    return build_encoder_params('nvidia', _video_param_ctx())
+                    return build_encoder_params(
+                        'nvidia', _video_param_ctx(hw_quality_boost=hw_quality_boost)
+                    )
 
-                def build_intel_params():
+                def build_intel_params(hw_quality_boost=None):
                     """生成 Intel QSV HEVC 编码参数"""
-                    return build_encoder_params('intel', _video_param_ctx())
+                    return build_encoder_params(
+                        'intel', _video_param_ctx(hw_quality_boost=hw_quality_boost)
+                    )
 
-                def build_amd_params():
+                def build_amd_params(hw_quality_boost=None):
                     """生成 AMD AMF/VAAPI HEVC 编码参数"""
-                    return build_encoder_params('amd', _video_param_ctx(_detect_amd_backend()))
+                    return build_encoder_params(
+                        'amd',
+                        _video_param_ctx(_detect_amd_backend(), hw_quality_boost=hw_quality_boost),
+                    )
 
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
@@ -7491,6 +7631,7 @@ class TaskProcessor:
                     stage_start_time = time.time()
                     stage_last_progress_time = stage_start_time
                     stage_error_messages = []
+                    stage_timed_out = False
 
                     while True:
                         if is_task_cancelled(task_id):
@@ -7505,6 +7646,11 @@ class TaskProcessor:
                         # 检查超时
                         if time.time() - stage_start_time > run_timeout:
                             task_logger.error(f"{stage_suffix}FFmpeg处理超时（{run_timeout//60}分钟），强制终止")
+                            # 标记「这是超时」而不是靠错误文本推断：超时被杀时
+                            # stderr 里没有设备/参数类关键字，按「未知错误」处理会
+                            # 让长视频先按同一硬编器把整片再跑一遍（最现实的失败
+                            # 类型反而拿到最差的降级策略）。
+                            stage_timed_out = True
                             proc.terminate()
                             try:
                                 proc.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
@@ -7580,9 +7726,15 @@ class TaskProcessor:
                                 stage_error_messages.pop(0)
 
                     error_text = '\n'.join(stage_error_messages)
-                    return proc.returncode, error_text, os.path.exists(simple_output)
+                    return proc.returncode, error_text, os.path.exists(simple_output), stage_timed_out
 
-                process_returncode, error_output_full, output_ready = _execute_embed(cmd, timeout)
+                # 超时预算必须从**首次尝试之前**开始计：此前 deadline 在首轮返回
+                # 之后才建立，首轮已消耗的时间没有从预算里扣掉。
+                embed_started_at = time.monotonic()
+                first_stage_budget = max(300.0, float(timeout))
+                process_returncode, error_output_full, output_ready, first_timed_out = _execute_embed(
+                    cmd, first_stage_budget
+                )
 
                 if process_returncode == 0 and output_ready:
                     # 成功：优先原子替换，避免重复复制大文件
@@ -7605,15 +7757,18 @@ class TaskProcessor:
                 )
 
                 def _rebuild_hw_params(boost_enabled):
-                    """按同一硬件编码器重建参数（用于关闭质量增强后的降级重试）。"""
-                    encoder_settings['hw_quality_boost'] = boost_enabled
+                    """按同一硬件编码器重建参数（用于关闭质量增强后的降级重试）。
+
+                    通过 ``hw_quality_boost`` 覆盖通道传值，不改共享 dict ——
+                    就地改写会让后面的 CPU 回退阶段也读到「增强已关」。
+                    """
                     if actual_encoder == 'nvidia':
-                        return build_nvidia_params()
+                        return build_nvidia_params(hw_quality_boost=boost_enabled)
                     if actual_encoder == 'intel':
-                        return build_intel_params()
+                        return build_intel_params(hw_quality_boost=boost_enabled)
                     if actual_encoder == 'amd':
-                        return build_amd_params()
-                    return build_cpu_params()
+                        return build_amd_params(hw_quality_boost=boost_enabled)
+                    return build_cpu_params(hw_quality_boost=boost_enabled)
 
                 # 分级降级：硬编+质量增强失败时，先尝试关闭增强保留硬件加速，
                 # 仍失败才退回 CPU。直接跳 CPU 会让可用 GPU 白白闲置。
@@ -7621,13 +7776,33 @@ class TaskProcessor:
                 # 否则会按同一硬编器把整部视频白跑一遍。
                 hw_error_detected = self._is_known_hw_encoder_error(error_output_full)
                 hw_option_error = self._is_hw_option_error(error_output_full)
+                boost_enabled = bool(encoder_settings.get('hw_quality_boost'))
                 if actual_encoder in ('nvidia', 'intel', 'amd'):
-                    if hw_option_error:
+                    failure_kind = self._describe_hw_failure(
+                        actual_encoder,
+                        timed_out=first_timed_out,
+                        hw_option_error=hw_option_error,
+                        hw_error_detected=hw_error_detected,
+                        boost_enabled=boost_enabled,
+                        returncode=process_returncode,
+                    )
+                    if failure_kind == 'timeout':
+                        task_logger.warning(
+                            f"硬件编码器 {actual_encoder} 处理超时，跳过关增强重试直接回退 CPU 编码"
+                        )
+                    elif failure_kind == 'option_error':
                         task_logger.warning(
                             f"硬件编码器 {actual_encoder} 不接受某个选项，"
                             f"先关闭质量增强后用同一编码器重试"
                         )
-                    elif hw_error_detected:
+                    elif failure_kind == 'option_error_no_boost':
+                        # 质量增强本来就没开，「先关增强重试」是空动作：此前的日志
+                        # 照搬这句话，会把人往错的方向带（关闭后仍会失败）。
+                        task_logger.warning(
+                            f"硬件编码器 {actual_encoder} 不接受某个选项，且质量增强未开启，"
+                            f"直接回退 CPU 编码"
+                        )
+                    elif failure_kind == 'device_error':
                         task_logger.warning(
                             f"硬件编码器 {actual_encoder} 报设备/驱动类错误，"
                             f"关闭质量增强无效，直接回退 CPU 编码"
@@ -7644,11 +7819,14 @@ class TaskProcessor:
                     hw_option_error,
                     cpu_codec,
                 )
+                if first_timed_out:
+                    retry_stages = self._drop_same_encoder_stage_after_timeout(retry_stages)
 
-                # 超时预算按剩余量递减：每个阶段各自 max(300, timeout) 重新计时
-                # 会让多阶段重试拿到数倍于预估的预算，长视频上尤其危险。
-                # x265 降级到 x264 反而更快，沿用原预算即可。
-                overall_deadline = time.monotonic() + max(300.0, float(timeout))
+                # 总预算 = 首次尝试 + 至多一轮完整降级，从首次尝试**之前**开始计。
+                # 单阶段上限为 first_stage_budget，因此最坏总时长 ≈ 2 × 预估；
+                # 此前 deadline 建在首轮返回之后（首轮不计入）且每阶段各自重置，
+                # 最坏可到 3 倍。x265 降级到 x264 反而更快，沿用同一预算即可。
+                overall_deadline = embed_started_at + 2 * first_stage_budget
 
                 for stage in retry_stages:
                     if is_task_cancelled(task_id):
@@ -7686,9 +7864,10 @@ class TaskProcessor:
                         stage_filter = vf_filter
                         stage_color_params = list(color_params)
 
-                    # 每个阶段只拿「总预算减去已用掉的部分」，并用 60s 兜底避免
-                    # 预算耗尽时把阶段压成 0；多阶段合计因此不超过预估总时长。
-                    stage_timeout = int(max(60.0, remaining_s))
+                    # 每个阶段只拿「总预算减去已用掉的部分」，且单阶段不得超过一次
+                    # 完整预算（否则前一级会把 CPU 回退的份额吃光）；用 60s 兜底
+                    # 避免预算耗尽时把阶段压成 0。
+                    stage_timeout = int(max(60.0, min(remaining_s, first_stage_budget)))
 
                     cmd_retry = self._build_embed_ffmpeg_cmd(
                         ffmpeg_bin=ffmpeg_bin,
@@ -7701,7 +7880,7 @@ class TaskProcessor:
                     )
                     task_logger.debug(f"回退FFmpeg命令({stage_label}): {' '.join(cmd_retry)}")
 
-                    retry_returncode, retry_error, retry_ready = _execute_embed(
+                    retry_returncode, retry_error, retry_ready, _stage_timed_out = _execute_embed(
                         cmd_retry, stage_timeout, stage_label
                     )
                     if retry_returncode == 0 and retry_ready:
@@ -8447,12 +8626,17 @@ class TaskProcessor:
                 # 质检对象必须是**源**字幕：``translated_*.srt`` 不匹配
                 # ``asr_*`` 前缀，把它传进质检闸门会被判为「非 ASR 产物」而直接
                 # 放行 —— 译文由 ASR 源字幕翻译而来，源头不合格就没有烧录价值。
-                # 源字幕缺失时退回译文本身，至少让闸门有机会拒绝。
-                qc_target = subtitle_path_original if (
-                    subtitle_path_original and os.path.exists(subtitle_path_original)
-                ) else subtitle_path_translated
+                # 源字幕缺失时退回译文本身，但必须把来源（任务里记录的源字幕路径）
+                # 显式继承过去，否则那条退回分支恒为放行（force_asr 的意义所在）。
+                recorded_original = str(task.get('subtitle_path_original') or '')
+                if subtitle_path_original and os.path.exists(subtitle_path_original):
+                    qc_target = subtitle_path_original
+                    qc_force_asr = None
+                else:
+                    qc_target = subtitle_path_translated
+                    qc_force_asr = _is_asr_subtitle_artifact(task_id, recorded_original)
                 if not self._ensure_asr_subtitle_qc(
-                    task_id, qc_target, task_logger, embed_quality_state
+                    task_id, qc_target, task_logger, embed_quality_state, force_asr=qc_force_asr
                 )[0]:
                     return get_task(task_id)
 
@@ -8585,9 +8769,12 @@ class TaskProcessor:
                                         task_logger,
                                         strict=(quality_state == 'degraded'),
                                     )
-                                    # 质检被用户主动关闭（SUBTITLE_QC_DISABLED）时
-                                    # 按配置放行，不能与「质检没跑成」一样拒烧。
-                                    if qc_result is True or qc_result is SUBTITLE_QC_DISABLED:
+                                    # 质检裁决统一走 ``_qc_result_allows_embed``：
+                                    # 用户主动关闭质检（SUBTITLE_QC_DISABLED）按配置放行；
+                                    # 「质检没跑成」（None）则由逃生口
+                                    # ASR_FAILURE_BLOCKS_EMBED 决定（此前这条路径完全不
+                                    # 读逃生口，与 README 的承诺相反）。
+                                    if _qc_result_allows_embed(qc_result, self.config):
                                         embedded_video_path = self._embed_subtitle_in_video(
                                             task_id, video_path, out_path, task_logger
                                         )

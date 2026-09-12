@@ -357,6 +357,81 @@ class TailGraceTests(_EdgeFixtureMixin, unittest.TestCase):
         self.assertTrue(result.raw_ai['ai_unavailable_strict'])
 
 
+class ShortVideoTailGraceTests(_EdgeFixtureMixin, unittest.TestCase):
+    """N2：片尾容忍带不只有绝对秒数，短视频必须按片长收缩。
+
+    缺陷：容忍带只看绝对秒数（30s），60s 素材最宽可达片长的 25–50%，
+    实测「60s 视频、字幕只到 36.6s（末尾 23.4s 无字幕）」被直接放行。
+    """
+
+    @staticmethod
+    def _cues_ending_at(last_end, total_cues=10):
+        span = last_end / total_cues
+        return [(i * span, i * span + span, SENT.format(i)) for i in range(total_cues)]
+
+    def test_short_video_with_large_tail_gap_is_not_excused(self):
+        result = self.qc(self._cues_ending_at(36.6), 60.0)
+        metrics = result.raw_ai
+        gap = 60.0 - metrics['last_cue_end_seconds']
+        self.assertGreater(gap, qc.TIMELINE_TAIL_GRACE_RATIO * 60.0,
+                           msg='本用例的缺口没有超过比值容忍带，锁定不到目标分支')
+        self.assertLess(gap, qc.TIMELINE_TAIL_GRACE_SECONDS,
+                        msg='本用例的缺口超过了绝对容忍带，锁定不到「比值收紧」这一点')
+        self.assertFalse(qc._tail_within_grace(metrics))
+        self.assertTrue(qc._timeline_materially_deficient(metrics))
+        self.assertFalse(result.passed)
+
+    def test_short_video_grace_boundary_is_the_ratio(self):
+        # 60s 视频：容忍带 = min(30, 25% × 60) = 15s。缺口 15.0s 放行、16.0s 拦截。
+        inside = self.qc(self._cues_ending_at(45.0), 60.0)
+        self.assertTrue(qc._tail_within_grace(inside.raw_ai))
+        self.assertFalse(qc._timeline_materially_deficient(inside.raw_ai))
+        self.assertTrue(inside.passed, inside.reason)
+
+        outside = self.qc(self._cues_ending_at(44.0), 60.0)
+        self.assertFalse(qc._tail_within_grace(outside.raw_ai))
+        self.assertFalse(outside.passed)
+
+    def test_long_video_still_uses_the_absolute_grace(self):
+        """反向守卫：长视频的容忍带仍是 30s（比值上界不会把它放宽）。"""
+        # 600s 视频：比值上界 150s，取小值后仍是绝对容忍带 30s
+        self.assertTrue(qc._tail_within_grace({
+            'total_duration_seconds': 600.0, 'last_cue_end_seconds': 570.0}))
+        self.assertFalse(qc._tail_within_grace({
+            'total_duration_seconds': 600.0, 'last_cue_end_seconds': 569.0}))
+
+
+class MaterialZeroDurationTests(_EdgeFixtureMixin, unittest.TestCase):
+    """N4：零时长 cue 占比落在可疑线与硬失败线之间时，AI 不可用不得放行。
+
+    缺陷：硬失败线是「≥3 条且 ≥25%」，可疑线是 >10%，10%–24% 这一段此前只扣分
+    不拦截 —— 实测 23% 的零时长 cue 仍被放行，那已经是明显的部分崩坏。
+    """
+
+    def test_material_threshold_boundary(self):
+        base = {'timeline_checked': True, 'coverage_ratio': 0.9,
+                'last_cue_end_ratio': 0.95, 'total_duration_seconds': 600.0,
+                'last_cue_end_seconds': 570.0}
+        self.assertTrue(qc._timeline_materially_deficient(
+            dict(base, zero_duration_count=5, zero_duration_ratio=0.23)))
+        self.assertFalse(qc._timeline_materially_deficient(
+            dict(base, zero_duration_count=5, zero_duration_ratio=0.15)))
+        # 条数不足时仍按「偶发」处理（音频块边界重合的常见形态）
+        self.assertFalse(qc._timeline_materially_deficient(
+            dict(base, zero_duration_count=2, zero_duration_ratio=0.23)))
+
+    def test_zero_duration_excess_blocks_without_ai(self):
+        cues = healthy_cues(17, 3.0, 3.2)
+        cues += [(400.0 + i * 3.0, 400.0 + i * 3.0, SENT.format(200 + i)) for i in range(5)]
+        result = self.qc(cues, 480.0)
+        metrics = result.raw_ai
+        self.assertGreaterEqual(metrics['zero_duration_ratio'],
+                                qc.TIMELINE_MATERIAL_ZERO_DURATION_RATIO)
+        self.assertLess(metrics['zero_duration_ratio'], qc.TIMELINE_MAX_ZERO_DURATION_RATIO,
+                        '本用例越过了硬失败线，锁定不到「实质缺陷」这条判据')
+        self.assertFalse(result.passed)
+
+
 class ThresholdContractTests(_EdgeFixtureMixin, unittest.TestCase):
     """取值契约由 test_subtitle_qc_timeline.py 锁定，这里只锁行为语义。"""
 

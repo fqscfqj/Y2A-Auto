@@ -1232,7 +1232,7 @@
                                                                         <div class="col-md-6">
                                                                             <div class="form-group mb-0">
                                                                                 <label for="vad-min-coverage" class="form-label">最低语音覆盖率</label>
-                                                                                <input type="number" min="0" max="1" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.015) }}" class="form-control">
+                                                                                <input type="number" min="0" max="1" step="0.001" id="vad-min-coverage" name="VAD_MIN_SPEECH_COVERAGE_RATIO" value="{{ config.get('VAD_MIN_SPEECH_COVERAGE_RATIO', 0.01) }}" class="form-control">
                                                                             </div>
                                                                         </div>
                                                                         <div class="col-12">
@@ -2156,9 +2156,9 @@
                                                     <div class="col-md-4">
                                                         <label class="checkbox-label">
                                                             <input type="checkbox" name="VIDEO_HW_QUALITY_BOOST" id="video-hw-quality-boost" {% if config.get('VIDEO_HW_QUALITY_BOOST', True) %}checked{% endif %}>
-                                                            启用硬件编码质量增强
+                                                            启用编码质量增强
                                                         </label>
-                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；老 GPU 驱动不支持时报参数错误，可关闭回退基础参数。</p>
+                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；同时作用于硬件编码器与软件 libx264。老 GPU 驱动不支持时报参数错误，可关闭回退基础参数（1440p+ 长视频走 veryfast 时前瞻跟随 preset，不受此项放大）。</p>
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">

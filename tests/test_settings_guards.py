@@ -82,7 +82,7 @@ GUARD_CASES = (
     ('VAD_MIN_SEGMENT_S', '99', 0.8),
     ('VAD_MERGE_GAP_S', '-1', 0.35),
     ('VAD_MAX_SEGMENT_S_FOR_SPLIT', '1', 15.0),
-    ('VAD_MIN_SPEECH_COVERAGE_RATIO', '2', 0.015),
+    ('VAD_MIN_SPEECH_COVERAGE_RATIO', '2', 0.01),
     ('SUBTITLE_MAX_CUE_DURATION_S', '0', 8.0),
     ('SUBTITLE_MAX_CPS', 'inf', 20.0),
     ('SUBTITLE_MAX_CPS', 'nan', 20.0),
