@@ -464,15 +464,20 @@ class ParseIndexRangesTests(unittest.TestCase):
         with self.assertRaises(AISegmentationError):
             _parse_index_ranges(raw, word_count=4)
 
-    def test_gap_in_ranges_filled(self):
-        raw = '[[0, 1], [3, 4]]'  # 缺少 2，应并入前一段
-        result = _parse_index_ranges(raw, word_count=5)
-        self.assertEqual(result, [(0, 4)])
+    # 以下两个用例原先断言 _fill_gap_ranges 会"修复"AI 的非法索引（缺口并入前一段 /
+    # 尾部追加到末尾）。该行为已按审计结论移除：修补会把 [(0,1),(3,4)] 塌缩成
+    # [(0,4)]（遗漏词 2 的内容被静默并入前一条）并把 [(0,1)] 拉成 [(0,3)]，
+    # 用错误的分段掩盖模型返回非法索引的事实。现在缺口/尾部未覆盖一律判非法，
+    # 抛 AISegmentationError 交给上层降级到段级/基线，保证内容完整。
+    def test_gap_in_ranges_rejected(self):
+        raw = '[[0, 1], [3, 4]]'  # 缺少 2 → 违约，必须拒绝
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=5)
 
-    def test_incomplete_coverage_filled(self):
-        raw = '[[0, 1]]'  # 只覆盖 0-1，尾部追加到最后
-        result = _parse_index_ranges(raw, word_count=4)
-        self.assertEqual(result, [(0, 3)])
+    def test_incomplete_coverage_rejected(self):
+        raw = '[[0, 1]]'  # 只覆盖 0-1，尾 2-3 未覆盖 → 违约，必须拒绝
+        with self.assertRaises(AISegmentationError):
+            _parse_index_ranges(raw, word_count=4)
 
     def test_code_fence_wrapped(self):
         raw = '```json\n[[0, 2]]\n```'
@@ -603,13 +608,18 @@ class CuesFromIndexRangesTests(unittest.TestCase):
         self.assertEqual(cues[0].text, 'w0 w1 w2')
         self.assertEqual(cues[1].text, 'w3 w4 w5')
 
-    def test_out_of_bounds_skipped_with_warning(self):
+    # 原用例断言越界范围只 warning + continue（静默丢内容）。已按审计结论改为整批拒绝：
+    # "部分字幕消失"比整批降级更糟，降级至少保证内容完整。空文本区间仍然跳过。
+    def test_out_of_bounds_rejected(self):
         words = [_make_word('hello', 0, 0.5)]
         ranges = [(0, 0), (-1, 0), (0, 5)]
-        logger = MagicMock()
-        cues = _cues_from_index_ranges(ranges, words, 'whisper', logger=logger)
-        self.assertEqual(len(cues), 1)  # 只有 (0,0) 有效
-        self.assertEqual(logger.warning.call_count, 2)  # 两次越界警告
+        with self.assertRaises(AISegmentationError):
+            _cues_from_index_ranges(ranges, words, 'whisper', logger=MagicMock())
+
+    def test_out_of_bounds_end_rejected(self):
+        words = [_make_word('hello', 0, 0.5)]
+        with self.assertRaises(AISegmentationError):
+            _cues_from_index_ranges([(0, 5)], words, 'whisper')
 
     def test_empty_text_skipped(self):
         words = [_make_word('', 0, 0.5)]

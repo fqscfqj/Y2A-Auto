@@ -9,6 +9,7 @@ from .utils import get_app_subdir
 from .speech_pipeline_settings import (
     inject_speech_pipeline_defaults,
     migrate_legacy_speech_pipeline_config,
+    migrate_pinned_subtitle_wrap_config,
 )
 from .prompt_manager import get_default_config_entries as _get_prompt_default_entries
 
@@ -203,18 +204,21 @@ DEFAULT_CONFIG = {
     "VAD_MIN_SEGMENT_S": 0.8,  # 允许略短片段保留独立句边界
     "VAD_MAX_SEGMENT_S_FOR_SPLIT": 15.0,  # 与搜索窗硬上限对齐
     "VAD_REFINEMENT_ENABLED": True,  # 对粗检出的语音窗执行二次边界收敛
-    "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.015,  # 低于该占比时触发宽松VAD重试
+    "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.01,  # 低于该占比时触发宽松VAD重试（按 speech_duration 口径重标定）
     # 转写参数
     "WHISPER_LANGUAGE": "",  # 强制语言（如 en, zh, ja），空=自动检测
     "WHISPER_PROMPT": "",  # 转写提示（引导生成，减少幻觉）
     "WHISPER_TRANSLATE": False,  # 是否翻译为英文
     "WHISPER_MAX_WORKERS": 3,  # 预留（当前顺序处理）
+    # Whisper 解码质量参数（抑制幻觉与时间戳漂移）。这些是 OpenAI Whisper API
+    # 的合法 form 字段，缺失时幻觉与时间戳漂移只能靠后处理猜。
+    "WHISPER_TEMPERATURE": 0.0,
+    "WHISPER_NO_SPEECH_THRESHOLD": 0.6,
+    "WHISPER_CONDITION_ON_PREVIOUS_TEXT": False,
     # 文本后处理
     "SUBTITLE_MAX_LINE_LENGTH": 42,  # 每行最大字符数
     "SUBTITLE_MAX_LINES": 2,  # 每个字幕最多行数
-    "SUBTITLE_NORMALIZE_PUNCTUATION": True,  # 标准化标点
     "SUBTITLE_FILTER_FILLER_WORDS": False,  # 过滤填充词（um, uh等）
-    # 最终字幕后处理（时序与极短片段处理）
     "SUBTITLE_TIME_OFFSET_S": 0.0,  # 全局时间偏移（秒，可为负）
     "SUBTITLE_MIN_CUE_DURATION_S": 0.6,  # 每条字幕最短时长（秒）
     "SUBTITLE_MERGE_GAP_S": 0.3,  # 若相邻间隙不超过该值则合并
@@ -226,6 +230,12 @@ DEFAULT_CONFIG = {
     "SUBTITLE_MIN_TEXT_LENGTH_ENABLED": False,
     "SUBTITLE_MAX_LINE_LENGTH_ENABLED": False,
     "SUBTITLE_MAX_LINES_ENABLED": False,
+    # 字幕质量硬上限：防止「文本干净但节奏崩坏」的合并产物落到成片
+    "SUBTITLE_MAX_CUE_DURATION_S": 8.0,
+    "SUBTITLE_MAX_CPS": 20.0,
+    # ASR/VAD 来源退化（failed）时是否禁止烧录字幕。
+    # True：拒绝烧录、保留字幕文件、继续上传原视频；False：退回旧行为（仅记录警告）。
+    "ASR_FAILURE_BLOCKS_EMBED": True,
     # 重试与回退策略
     "WHISPER_MAX_RETRIES": 3,  # API调用最大重试次数
     "WHISPER_RETRY_DELAY_S": 2.0,  # 重试延迟（秒，指数退避）
@@ -302,6 +312,9 @@ def load_config():
                 logger.info("成功加载配置文件")
 
                 config, migrated_legacy_speech = migrate_legacy_speech_pipeline_config(config)
+                config, migrated_pinned_wrap = migrate_pinned_subtitle_wrap_config(config)
+                if migrated_pinned_wrap:
+                    logger.info("检测到旧模板钉死的字幕换行配置（999/1），已迁移为可换行的默认值")
                 config, removed_keys = _prune_unknown_config_keys(config)
                 
                 # 确保所有默认配置项都存在
@@ -385,6 +398,7 @@ def load_config():
                     or quality_height_changed
                     or session_timeout_changed
                     or migrated_legacy_speech
+                    or migrated_pinned_wrap
                     or removed_unknown_keys
                     or prompt_mode_changed
                 ):
