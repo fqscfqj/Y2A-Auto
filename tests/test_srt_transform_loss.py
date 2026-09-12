@@ -330,6 +330,46 @@ class TerminalFragmentDurationLimitTests(_LogAssertionTestCase):
             span = float(cue['end']) - float(cue['start'])
             self.assertLessEqual(span, 8.0 + 1e-9, cue)
 
+    def test_non_integer_start_fragment_keeps_its_text(self):
+        """起点非整数时，夹到上限的跨度在浮点下会略大于上限（旧实现据此丢字）。
+
+        ``_clamp_end_within_limits`` 产出的是恰好 ``start + max_duration``，而
+        ``(10.41296942654103 + 8.0) - 10.41296942654103 == 8.000000000000002``。
+        ``_merge_within_limits`` 此前用严格大于比较，于是这些**合规**的并入被误拒、
+        末条文本被丢弃（复审实测 241/4000 轮）。旧夹具的起点恰好是 0.0，测不到。
+        """
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        out = engine.finalize_cues(
+            [{'start': 10.41296942654103, 'end': 11.837575596032709, 'text': 'word3 text'},
+             {'start': 599.95, 'end': 600.0, 'text': 'tail frag'}],
+            600.0,
+        )
+        for cue in out:
+            span = float(cue['end']) - float(cue['start'])
+            self.assertLessEqual(span, 8.0 + 1e-9, cue)
+        self.assertIn('tail frag', _joined_text(out))
+
+    def test_cleaned_stage_absorption_respects_the_duration_limit(self):
+        """cleaned 阶段的并入同样要夹「为了容纳碎片而做的延长」。
+
+        前一条 10.0–10.2、末条碎片贴着片尾时，碎片时长落在
+        ``(0.05s, min_dur + 0.01s]`` 这一档会走 ``_absorb_cue_into(cleaned[-1], cue)``
+        —— 该调用此前**没有** ``end_limit_s``，并入后的跨度是「前一条起点 → 片尾」
+        必然越限 → 复查失败 → 文本被丢弃（复审实测 0.07 / 0.09 / 0.2s 全部丢字）。
+        """
+        engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
+        for tail_duration in (0.07, 0.09, 0.2):
+            with self.subTest(tail_duration=tail_duration):
+                out = engine.finalize_cues(
+                    [{'start': 10.0, 'end': 10.2, 'text': 'alpha bravo charlie'},
+                     {'start': 600.0 - tail_duration, 'end': 600.0, 'text': 'foxtrot tail'}],
+                    600.0,
+                )
+                for cue in out:
+                    span = float(cue['end']) - float(cue['start'])
+                    self.assertLessEqual(span, 8.0 + 1e-9, cue)
+                self.assertIn('foxtrot tail', _joined_text(out))
+
     def test_property_no_duration_violation_or_overlap(self):
         """性质：输入全部合规时，输出既不得超上限、也不得重叠。"""
         engine = _engine(max_cue_duration_s=8.0, min_cue_duration_s=0.6)
@@ -358,20 +398,54 @@ class TerminalFragmentDurationLimitTests(_LogAssertionTestCase):
                     float(current['start']), float(previous['end']) - 1e-9,
                     (total, cues, out))
 
+    def test_property_terminal_fragment_text_is_never_dropped(self):
+        """性质（非整数起点）：末条碎片有地方装时必须保住文本。
+
+        只放开时长约束（字速调到不设限），这样随机语料里**唯一**可能拒绝并入的
+        原因就是「时长上限 + 浮点误差」—— 也就是本条回归要盯住的那个机制。
+        起点全部走随机非整数值：夹具取整数会让 ``start + max_duration`` 恰好精确，
+        把浮点缺陷整体掩盖掉。
+        """
+        engine = _engine(
+            max_cue_duration_s=8.0, min_cue_duration_s=0.6, max_chars_per_second=100000.0,
+        )
+        rng = random.Random(20260913)
+        dropped = []
+        for _ in range(400):
+            total = rng.choice([10.0, 60.0, 600.0])
+            cues = []
+            cursor = 0.0
+            for index in range(rng.randint(1, 3)):
+                start = min(cursor + rng.uniform(0.0, 3.0), max(0.0, total - 0.05))
+                end = min(start + rng.uniform(0.5, 3.0), total)
+                if end <= start:
+                    continue
+                cues.append({'start': start, 'end': end, 'text': f'word{index} text'})
+                cursor = end
+            tail_start = max(cursor, total - 0.05)
+            if tail_start < total:
+                cues.append({'start': tail_start, 'end': total, 'text': 'tail fragment'})
+            out = engine.finalize_cues(cues, total)
+            joined = _joined_text(out)
+            missing = [cue['text'] for cue in cues if cue['text'] not in joined]
+            if missing:
+                dropped.append((total, cues, out, missing))
+        self.assertEqual(dropped[:3], [], f'{len(dropped)}/400 轮丢字')
+
 
 class MalformedTimestampTests(_LogAssertionTestCase):
     """R4b：畸形时间戳不得静默退化为 0.0。
 
     把畸形起点搬到 0.0 会让时间轴覆盖率虚高、first_cue_start_ratio 偏低 ——
-    即畸形时间戳反而**帮助**时间轴质检通过（复审实测）。现在连同文本一起
-    跳过并记 warning，由人工按日志追查上游时间戳。
+    即畸形时间戳反而**帮助**时间轴质检通过（复审实测）。现在丢掉的是**时间轴**，
+    文本按同一文件里 R4a 的策略并入相邻 cue 并记 warning，由人工按日志追查上游时间戳。
     """
 
     def setUp(self):
         super().setUp()
         self.engine = _engine()
 
-    def test_malformed_start_is_skipped_with_warning(self):
+    def test_malformed_start_drops_timeline_but_keeps_text_with_warning(self):
         srt = (
             '1\n00:00:01,000 --> 00:00:02,000\nfirst line\n\n'
             '2\n00:00:0X,000 --> 00:00:04,000\nbroken line\n\n'
@@ -379,11 +453,32 @@ class MalformedTimestampTests(_LogAssertionTestCase):
         )
         with self.assertLogs(_LOGGER_NAME, level='WARNING') as captured:
             cues = self.engine.parse_srt(srt)
-        self.assertEqual([cue['text'] for cue in cues], ['first line', 'second line'])
+        self.assertEqual(len(cues), 2)
+        # 文本不丢：并入相邻 cue，且保持时间轴顺序
+        self.assertEqual(cues[0]['text'], 'first line')
+        self.assertEqual(cues[1]['text'], 'broken line\nsecond line')
         self.assertFalse(
             any(abs(float(cue['start'])) < 1e-9 for cue in cues),
             '畸形时间戳的 cue 被搬到了 0.0')
         self.assertIn('broken line', '\n'.join(captured.output))
+
+    def test_trailing_malformed_block_is_absorbed_into_the_previous_cue(self):
+        srt = (
+            '1\n00:00:01,000 --> 00:00:02,000\nfirst line\n\n'
+            '2\n00:00:05,000 --> 00:00:0X,000\ntrailing broken\n'
+        )
+        with self.assertLogs(_LOGGER_NAME, level='WARNING'):
+            cues = self.engine.parse_srt(srt)
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0]['text'], 'first line\ntrailing broken')
+
+    def test_all_malformed_timestamps_drop_text_with_explicit_warning(self):
+        """整份 SRT 时间轴都不可用时不新造 0.0 的 cue（否则又回到 R4b 的缺陷）。"""
+        srt = '1\n00:00:0X,000 --> 00:00:04,000\nonly line\n'
+        with self.assertLogs(_LOGGER_NAME, level='WARNING') as captured:
+            cues = self.engine.parse_srt(srt)
+        self.assertEqual(cues, [])
+        self.assertIn('only line', '\n'.join(captured.output))
 
     def test_helper_returns_none_for_malformed(self):
         self.assertIsNone(self.engine._srt_time_to_seconds('00:00:0X,000'))
