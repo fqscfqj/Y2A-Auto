@@ -259,7 +259,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `SUBTITLE_KEEP_ORIGINAL`：是否保留原始字幕文件
 - `SUBTITLE_MAX_WORKERS`：字幕翻译并发线程数
 
-烧录字幕外观（默认值即历史观感，不配置等于不改变现状）：
+烧录字幕外观（默认值即历史观感；对`.ass`/`.ssa` 源的行为变更见下方说明）：
 
 - `SUBTITLE_FONT_SIZE_SCALE` / `SUBTITLE_MARGIN_V_SCALE`：字号与底部边距倍率，范围 `0.5-2.0`，默认 `1.0`
 - `SUBTITLE_FONT_COLOR` / `SUBTITLE_OUTLINE_COLOR`：字体色与描边色，`#RRGGBB`，默认 `#FFFFFF` / `#000000`
@@ -267,6 +267,14 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `SUBTITLE_SHADOW_ENABLED` / `SUBTITLE_SHADOW_SCALE`：阴影开关与倍率（`0-3`）
 - `SUBTITLE_TEXT_BOLD`：是否粗体，默认 `true`
 - `SUBTITLE_BACKGROUND_ENABLED` / `SUBTITLE_BACKGROUND_COLOR` / `SUBTITLE_BACKGROUND_OPACITY`：半透明底板（`BorderStyle=4`）及其颜色与不透明度（`0-1`）。开启后 libass 会把阴影当作底框外扩，建议同时关闭阴影
+
+> **行为变更（`.ass` / `.ssa` 源素材）**：上述外观配置现在对**所有字幕源统一生效**。
+> 此前上游只把字体与边距写进 `force_style`，字色 / 描边色 / 粗体 / 底板这些键对
+> `.ass` / `.ssa` 源**不生效**（同一份配置喂 `.srt` 是红字、喂 `.ass` 仍是创作者的白字），
+> 现在这些键改为逐键覆盖源样式 —— 也就是说，**素材自带的字色 / 粗体 / 底板样式会被
+> 应用配置覆盖**，未配置时即默认的白字 + 粗体 + 描边（与 SRT 源行为一致）。
+> 升级后若想保留素材自带外观，请把对应配置项显式设置成与素材一致的取值，或改用
+> 自带样式的外部字幕文件而不依赖本功能。
 
 ### 语音识别（ASR）
 

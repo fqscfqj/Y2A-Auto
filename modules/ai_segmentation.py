@@ -21,7 +21,7 @@ import string
 import time
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from .ai_enhancer import _request_json_object, _request_raw_text, get_openai_client
@@ -1811,14 +1811,17 @@ def _normalize_output_cues(
     按时间有序且不重叠，而 context_cues 又取 all_cues[-N:] 作为下一批上下文；
     因此这里做统一兜底，避免未排序/重叠的 AI 输出污染上下文和落盘结果。
 
-    被判定「时间戳不可用」的 cue **不丢文本**：它的文本按时间顺序并入相邻的
-    合法 cue（没有前一条时先挂起，随后并入下一条；全批都不可用时落到一条
-    最小长度的兜底 cue）。丢弃与吸收都必须记 warning —— 这是落盘前的最后一道
+    被判定「时间戳不可用」的 cue **不丢文本**：它的文本按时间顺序并入**时间上
+    最近**的合法 cue（同一条内的先后顺序按时间轴排列）；全批都不可用时落到一条
+    最小长度的兜底 cue。丢弃与吸收都必须记 warning —— 这是落盘前的最后一道
     归一化，丢一条就是丢一段字幕内容，静默丢失会让用户只看到字幕莫名缺句而无从
     排查；而「只记 warning、文本照丢」同样不可接受（实测 4 条输入丢 2 条）。
     """
     discarded = []
-    absorbed_texts: List[str] = []
+    #: 待安置文本：(名义时间点, 文本)。收集阶段只记录来源时间，安置放到最后统一
+    #: 处理 —— 此前在「吸收时刻」就地挂给下一条合法 cue，于是 5.0s 的碎片会被
+    #: 挂到 0–1s 的 cue 上（时间上最远）并造成同条内语序颠倒。
+    absorbed_texts: List[Tuple[float, str]] = []
     cleaned: List[AlignedSubtitleCue] = []
 
     def _join_texts(left: str, right: str) -> str:
@@ -1839,7 +1842,7 @@ def _normalize_output_cues(
         end_s = float(cue.end_s)
         if end_s <= start_s:
             discarded.append((f'non_positive_duration:{start_s:.3f}-{end_s:.3f}', cue))
-            absorbed_texts.append(text)
+            absorbed_texts.append((start_s, text))
             continue
         cleaned.append(cue)
 
@@ -1862,19 +1865,17 @@ def _normalize_output_cues(
             start_s = previous_end
         if end_s <= start_s:
             discarded.append((f'collapsed_after_clamp:{start_s:.3f}-{end_s:.3f}', cue))
-            absorbed_texts.append(str(cue.text or ''))
+            absorbed_texts.append((start_s, str(cue.text or '')))
             continue
         previous_end = end_s
-        pending_text = ' '.join(absorbed_texts)
-        absorbed_texts.clear()
-        if not pending_text and start_s == float(cue.start_s) and end_s == float(cue.end_s):
-            # 未被修改且没有待吸收文本：复用原对象，避免无谓重建
+        if start_s == float(cue.start_s) and end_s == float(cue.end_s):
+            # 未被修改：复用原对象，避免无谓重建
             normalized.append(cue)
             continue
         normalized.append(AlignedSubtitleCue(
             start_s=start_s,
             end_s=end_s,
-            text=_join_texts(pending_text, str(cue.text or '')),
+            text=str(cue.text or ''),
             provider=getattr(cue, 'provider', ''),
             timing_source=getattr(cue, 'timing_source', 'segment'),
             alignment_confidence=getattr(cue, 'alignment_confidence', 0.0),
@@ -1886,15 +1887,29 @@ def _normalize_output_cues(
         ))
 
     if absorbed_texts:
-        orphan_text = ' '.join(absorbed_texts)
-        absorbed_texts.clear()
         if normalized:
-            # 有合法 cue 时挂到最后一条：时间轴仍由真实 cue 承载，
-            # 不新造一条没有依据的时间段。
-            normalized[-1].text = _join_texts(str(normalized[-1].text or ''), orphan_text)
+            # 并入**时间上最近**的合法 cue：碎片发生在目标之前就前置、之后则后置，
+            # 保证同一条字幕内的语序仍与时间轴一致。这里用 ``replace`` 产出新对象，
+            # 不就地改写调用方仍持有的 cue（``all_cues`` / 上下文窗口会继续引用它们）。
+            for position, text in sorted(absorbed_texts, key=lambda item: item[0]):
+                index = min(
+                    range(len(normalized)),
+                    key=lambda i: (
+                        abs(float(normalized[i].start_s) - position),
+                        float(normalized[i].start_s),
+                        i,
+                    ),
+                )
+                target = normalized[index]
+                if position <= float(target.start_s):
+                    merged_text = _join_texts(text, str(target.text or ''))
+                else:
+                    merged_text = _join_texts(str(target.text or ''), text)
+                normalized[index] = replace(target, text=merged_text)
         else:
             # 一个合法时间轴都没有：用一条最小长度的 cue 承载全部文本，
             # 宁可时间不准也不把内容丢掉（并在下面记 warning 说明）。
+            orphan_text = ' '.join(text for _, text in absorbed_texts)
             orphan_end = 0.05
             if limit is not None and limit > 0:
                 orphan_end = min(limit, orphan_end)

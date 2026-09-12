@@ -85,6 +85,13 @@ _WRAP_DISABLED_LINE_LENGTH = 999
 _MIN_GAP_S = 0.01
 _MIN_VISIBLE_DUR_S = 0.05
 _INVALID_TS_FALLBACK_S = 0.5
+#: 时长上限比较的容差。``_clamp_end_within_limits`` 产出的是**恰好**
+#: ``start + max_duration``，而 ``(start + 8.0) - start`` 在很多起点上并不精确
+#: 等于 8.0（例如 ``10.41296942654103`` 得到 ``8.000000000000002``）。若按严格
+#: 大于比较，这些被夹到上限的 cue 会在 ``_merge_within_limits`` 复查时被误拒，
+#: 末条碎片的文本随之被丢弃（实测 241/4000 轮）。容差远小于一毫秒，不影响
+#: 任何真实的上限判定。
+_DURATION_EPSILON = 1e-9
 
 
 def _join_texts(left: str, right: str) -> str:
@@ -201,6 +208,9 @@ class SrtTransformEngine:
             text = '\n'.join(lines[idx:]).strip()
 
         cues: List[Dict[str, Any]] = []
+        #: 畸形时间戳块的文本：并入相邻 cue（与 ``finalize_cues`` /
+        #: ``_normalize_output_cues`` 的「不丢内容」策略同一口径），而不是连文本一起丢。
+        pending_texts: List[str] = []
         for block in _BLOCK_SPLIT_RE.split(text):
             block = block.strip()
             if not block:
@@ -220,27 +230,33 @@ class SrtTransformEngine:
                 start_str, end_str = [part.strip() for part in time_line.split('-->')]
             except ValueError:
                 continue
+            content = '\n'.join(line.strip() for line in content_lines if line.strip())
             start_value = self._srt_time_to_seconds(start_str)
             end_value = self._srt_time_to_seconds(end_str)
             if start_value is None or end_value is None:
                 # 畸形时间戳不再静默退化为 0.0：把起点搬到 0.0 会**抬高**覆盖率并
                 # 压低 first_cue_start_ratio，即畸形时间戳反而帮助时间轴质检通过。
-                # 这里连同文本一起丢弃并记 warning（与其它丢弃路径同口径，
-                # 不静默丢内容），由人工按日志追查上游时间戳。
+                # 时间轴不可用，但文本仍要安置：并入相邻 cue（挂起后并入下一个
+                # 合法块；全部畸形时由下面的兜底处理）。此前这里连文本一起丢掉，
+                # 与同一文件里 R4a「吸收文本、不丢内容」的策略相反。
                 self.logger.warning(
-                    'Skipping cue with malformed timestamp %r --> %r, text dropped: %r',
+                    'Cue with malformed timestamp %r --> %r: timeline dropped, text kept: %r',
                     start_str,
                     end_str,
-                    '\n'.join(line.strip() for line in content_lines if line.strip())[:120],
+                    content[:120],
                 )
+                if content:
+                    pending_texts.append(content)
                 continue
             start_s = start_value + base_offset_s
             end_s = end_value + base_offset_s
             if end_s <= start_s:
                 end_s = start_s + _INVALID_TS_FALLBACK_S
-            content = '\n'.join(line.strip() for line in content_lines if line.strip())
             if not content:
                 continue
+            if pending_texts:
+                content = '\n'.join(pending_texts + [content])
+                pending_texts.clear()
             cues.append({
                 'start': max(0.0, start_s),
                 'end': max(end_s, start_s + _MIN_VISIBLE_DUR_S),
@@ -249,6 +265,18 @@ class SrtTransformEngine:
                 'alignment_confidence': 0.45,
                 'provider': '',
             })
+        if pending_texts:
+            if cues:
+                # 畸形块在末尾：没有后续 cue 可挂，并入最后一条（仍不伪造时间轴）。
+                cues[-1]['text'] = '\n'.join([str(cues[-1]['text'])] + pending_texts)
+            else:
+                # 一个可用时间轴都没有：**不**新造 0.0 的 cue（那正是 R4b 修掉的
+                # 「畸形时间戳抬高覆盖率」），只能丢文本并如实告警。
+                self.logger.warning(
+                    'SRT 全部时间戳均不可用，%d 段文本无法安置已丢弃: %r',
+                    len(pending_texts),
+                    ' | '.join(pending_texts)[:120],
+                )
         return cues
 
     def calibrate_segments(self, segment_results: List[tuple]) -> List[Dict[str, Any]]:
@@ -1148,7 +1176,19 @@ class SrtTransformEngine:
                 # 而这是 speech_recognition 落盘链路的最后一步，下游没有文本覆盖率校验）。
                 # 安置顺序：并入前一条 → 并入后一条 → 延长自身到 min_dur。
                 # 只有三者在时间轴上真的都放不下时才丢弃，并记 warning 带上被丢弃的文本。
-                if cleaned and self._absorb_cue_into(cleaned[-1], cue):
+                # 并入前一条时同样要把「为了容纳本 cue 而做的延长」限制在时长上限内
+                # （``end_limit_s``）：末条碎片的 end 贴着片尾，不夹上限就会得到
+                # 「前一条起点 → 片尾」的越限跨度，进而被 ``_merge_within_limits``
+                # 拒绝、文本被丢弃（实测 0.05s < 时长 ≤ min_dur+0.01s 这一档全部丢字）。
+                if cleaned and self._absorb_cue_into(
+                    cleaned[-1],
+                    cue,
+                    end_limit_s=self._clamp_end_within_limits(
+                        float(cleaned[-1]['start']),
+                        max(float(cleaned[-1]['end']), float(cue['end'])),
+                        cleaned[-1],
+                    ),
+                ):
                     continue
                 next_cue = finalized[idx + 1] if idx + 1 < len(finalized) else None
                 # 并入后一条时起点最多提前到「前一条末尾 + 最小间隔」，否则会造出 overlap。
@@ -1238,10 +1278,15 @@ class SrtTransformEngine:
         return True
 
     def _merge_within_limits(self, start_s: float, end_s: float, text: str) -> bool:
-        """合并后的 cue 必须同时满足「最长时长」与「最高字速」两个上限。"""
+        """合并后的 cue 必须同时满足「最长时长」与「最高字速」两个上限。
+
+        时长比较带 ``_DURATION_EPSILON`` 容差：``_clamp_end_within_limits`` 的
+        结果在浮点下可能比上限大一个 ulp，按严格大于比较会把「刚好夹到上限」的
+        并入判定误拒，进而丢掉末条碎片文本。
+        """
         duration = max(0.0, float(end_s) - float(start_s))
         max_duration = float(self.config.max_cue_duration_s or 0.0)
-        if max_duration > 0.0 and duration > max_duration:
+        if max_duration > 0.0 and duration > max_duration + _DURATION_EPSILON:
             return False
         max_chars_per_second = float(self.config.max_chars_per_second or 0.0)
         if max_chars_per_second > 0.0 and duration > 0.0:

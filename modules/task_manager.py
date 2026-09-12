@@ -808,6 +808,7 @@ def _subtitle_block_reasons(
     *,
     qc_cleared: bool = False,
     qc_enabled=None,
+    qc_reason=None,
 ) -> list:
     """返回烧录拦截原因列表；空列表表示放行。
 
@@ -818,11 +819,23 @@ def _subtitle_block_reasons(
     「关掉质检」的效果对直接调用本函数的代码同样可见，不需要每个调用点
     自己解析开关。
 
+    ``qc_reason`` 是落库的 ``subtitle_qc_reason``（质检结论的归因）。
+    ``qc_unavailable`` 表示「质检**没跑成**」（字幕文件缺失 / 执行异常），它与
+    「质检给出明确失败结论」是两件事，必须分开判定：
+
+    - 「没跑成」只受逃生口 ``ASR_FAILURE_BLOCKS_EMBED`` 约束 —— README 承诺该
+      开关可放宽「质检没跑成」的拦截。此前它被折算成 ``subtitle_qc_failed=1``
+      后与明确失败混在一起，于是**逃生口在跨运行场景下无效**：上一轮按默认配置
+      落库的 ``qc_failed=1`` 会让用户打开逃生口重跑时仍被拦下。
+    - 明确失败结论任何时候都拦截。落库时若已存在明确失败，``subtitle_qc_reason``
+      会保留那条结论的原因（不会被写成 ``qc_unavailable``），因此上面这条规则
+      不会把历史失败洗白。
+
     两个开关的作用域**互不重叠**，缺一不可：
 
     - ``ASR_FAILURE_BLOCKS_EMBED=False``（逃生口）只放宽「ASR 来源结局」
-      （``failed`` / ``degraded``），**不放过**明确的质检失败结论 ——
-      质检结论针对的是字幕文件内容本身，与 ASR 来源可靠度是两件事。
+      （``failed`` / ``degraded``）与「质检没跑成」，**不放过**明确的质检失败
+      结论 —— 质检结论针对的是字幕文件内容本身，与 ASR 来源可靠度是两件事。
     - ``SUBTITLE_QC_ENABLED=False``（``qc_enabled=False``）表示用户主动放弃
       质检这道防线：此时既不再看历史 ``qc_failed``，也不再要求 ``degraded``
       素材必须通过严格质检（否则「关掉质检」会变成「更严格」，与用户意图相反）。
@@ -832,12 +845,17 @@ def _subtitle_block_reasons(
         qc_enabled = _as_bool(config.get('SUBTITLE_QC_ENABLED', True))
     qc_active = bool(qc_enabled)
     state = str(quality_state or '').strip().lower()
+    qc_unavailable = str(qc_reason or '').strip().lower() == 'qc_unavailable'
 
     reasons = []
     if state == 'failed' and asr_blocks:
         reasons.append('asr_quality_failed')
-    if qc_active and _as_bool(qc_failed) and not qc_cleared:
-        reasons.append('subtitle_qc_rejected')
+    if qc_active and not qc_cleared:
+        if qc_unavailable:
+            if asr_blocks:
+                reasons.append('subtitle_qc_rejected')
+        elif _as_bool(qc_failed):
+            reasons.append('subtitle_qc_rejected')
     if state == 'degraded' and asr_blocks and qc_active and not qc_cleared:
         reasons.append('asr_quality_degraded_without_strict_qc')
     return reasons
@@ -894,20 +912,24 @@ def _subtitle_embed_allowed(
     *,
     qc_cleared: bool = False,
     qc_enabled=None,
+    qc_reason=None,
     task_logger=None,
 ) -> bool:
     """统一烧录门控：决定当前字幕是否允许烧进成片。
 
     - ``quality_state == 'failed'``：ASR/VAD 来源不可信，拒绝烧录；
     - ``quality_state == 'degraded'``：字幕来源退化，必须本次通过严格质检才放行；
-    - ``qc_failed`` 为真且本次未通过质检：拒绝烧录。
+    - ``qc_failed`` 为真且本次未通过质检：拒绝烧录；
+    - ``qc_reason == 'qc_unavailable'``：质检没跑成，只受逃生口约束（见
+      ``_subtitle_block_reasons``）。
 
     这是「VAD/ASR 已报错却照样烧录」的修复点：此前 ``asr_warning_message``
     只写不读，告警与烧录决策之间没有任何连接边。
     判定细节与开关作用域见 ``_subtitle_block_reasons``。
     """
     reasons = _subtitle_block_reasons(
-        config, quality_state, qc_failed, qc_cleared=qc_cleared, qc_enabled=qc_enabled
+        config, quality_state, qc_failed,
+        qc_cleared=qc_cleared, qc_enabled=qc_enabled, qc_reason=qc_reason,
     )
     if not reasons:
         return True
@@ -3432,6 +3454,9 @@ class TaskProcessor:
         # 旧标记永久锁死、永远拿不到新字幕；改为在每次烧录前统一裁决。
         embed_quality_state = str(task.get('subtitle_quality_state') or '').strip().lower() or 'ok'
         qc_failed = task.get('subtitle_qc_failed') == 1
+        # 质检结论的归因：「qc_unavailable」表示「没跑成」，门控对它只按逃生口裁决，
+        # 与明确的失败结论分开（见 _subtitle_block_reasons）。
+        qc_reason = task.get('subtitle_qc_reason')
         qc_cleared = False
         # ASR_FAILURE_BLOCKS_EMBED=False 时置真：本轮 ASR 产物按旧行为放行烧录。
         escape_hatch_active = False
@@ -3456,11 +3481,12 @@ class TaskProcessor:
                 state,
                 qc_failed,
                 qc_cleared=qc_cleared,
+                qc_reason=qc_reason,
                 task_logger=task_logger,
             )
             if not allowed and block_reason is None:
                 reasons = _subtitle_block_reasons(
-                    self.config, state, qc_failed, qc_cleared=qc_cleared
+                    self.config, state, qc_failed, qc_cleared=qc_cleared, qc_reason=qc_reason
                 )
                 if reasons:
                     block_reason = reasons[0]
@@ -4068,6 +4094,11 @@ class TaskProcessor:
         ``_ensure_asr_subtitle_qc`` 按逃生口放行，而上传前阶段读到库里的
         ``qc_failed=1`` 又把烧录拦下、并把字幕阶段永久判为「未完成」，
         用户显式配置的宽松策略失效且每轮重跑都重做 ASR。
+
+        落库的 ``subtitle_qc_reason='qc_unavailable'`` 是门控识别「没跑成」的依据
+        （见 ``_subtitle_block_reasons``），因此逃生口打开时**已存在明确失败结论**
+        的记录必须保留原来的原因：把无法归因的历史失败改写成 ``qc_unavailable``
+        会让门控在逃生口下把它当成「没跑成」放过，等于洗白历史失败。
         """
         if blocks is None:
             blocks = _as_bool(self.config.get('ASR_FAILURE_BLOCKS_EMBED', True))
@@ -4083,7 +4114,12 @@ class TaskProcessor:
                 # 只更新「没跑成」这一事实，保留既有结论：逃生口只放宽
                 # 「质检没跑成」，不得顺手把历史上的明确质检失败结论洗白。
                 current = get_task(task_id) or {}
-                fields['subtitle_qc_failed'] = 1 if current.get('subtitle_qc_failed') == 1 else 0
+                prior_failed = current.get('subtitle_qc_failed') == 1
+                fields['subtitle_qc_failed'] = 1 if prior_failed else 0
+                if prior_failed:
+                    # 原因保持原样（可能为空）：门控据此继续拦截，不会把它
+                    # 误当成「没跑成」。
+                    fields.pop('subtitle_qc_reason', None)
             update_task(task_id, **fields)
             return True
         except Exception as exc:
@@ -8638,6 +8674,7 @@ class TaskProcessor:
                 self.config,
                 embed_quality_state,
                 qc_failed,
+                qc_reason=task.get('subtitle_qc_reason'),
                 task_logger=task_logger,
             )
             if embed_blocked:

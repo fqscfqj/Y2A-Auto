@@ -130,7 +130,11 @@ class SpeechRecognitionConfig:
     vad_max_segment_s: float = 15.0
     vad_max_segment_s_for_split: float = 15.0
     vad_refinement_enabled: bool = True
-    vad_min_speech_coverage_ratio: float = 0.015
+    # 默认值与 DEFAULT_CONFIG / speech_pipeline_settings / VadConfig 一致（单一来源）。
+    # 口径改为「语音时长占比」后旧值 0.015 随之下调一档，见
+    # vad_processor._windows_coverage_ratio；此处残留旧值会让「直接构造
+    # SpeechRecognitionConfig()」的路径（含测试）拿到一个与运行期不同的阈值。
+    vad_min_speech_coverage_ratio: float = 0.01
     # 孤立极短段（合并不进任何相邻窗口的碎片）是否丢弃。该开关为既有 UI 项，
     # 此前未接入配置对象导致勾选与否行为不变，故在此显式承载。
     vad_drop_isolated_short: bool = True

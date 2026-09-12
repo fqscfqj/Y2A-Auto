@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
+from collections import Counter
 from threading import Lock
 from modules.task_manager import TaskCancelledError
 from .speech_pipeline_settings import SPEECH_PIPELINE_DEFAULTS, coerce_bool
@@ -64,6 +65,36 @@ _CJK_ONLY_RE = re.compile(r'[\u3400-\u9fff]+')
 _NON_CHINESE_CJK_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\u1100-\u11ff]')
 # 全部 CJK 字符（汉字 + 假名 + 谚文），用于计算「非中文 CJK 占比」。
 _CJK_CHAR_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\u1100-\u11ff\u3400-\u9fff]')
+
+#: 译文 CJK 字符与源文本 CJK 字符的多重集重合度阈值。
+#: 达到该阈值即认为译文「基本是照搬源文本」（复读），低于它则认为是独立生成
+#: 的译文（即使里面保留了假名借词）。取值理由见 ``_cjk_echo_ratio``。
+_CJK_ECHO_RATIO_THRESHOLD = 0.8
+
+
+def _cjk_echo_ratio(source: str, target: str) -> float:
+    """译文里的 CJK 字符有多少是「照搬源文本」的（多重集重合度）。
+
+    汉字码位被中日韩共用，单看译文无法判定其中的汉字属于中文还是日文原文。
+    这里用「重合度」作判据：把译文的 CJK 字符逐个与源文本的 CJK 字符做多重集
+    配对，返回配对成功数占译文 CJK 字符总数的比例。
+
+    - 比例高（≥ ``_CJK_ECHO_RATIO_THRESHOLD``）：译文基本就是源文本的复读，
+      其中的汉字应算作「非中文原文」，判为未译；
+    - 比例低：译文是独立生成的（哪怕保留了「アニメ」这类假名借词），其中的
+      汉字仍应算作中文，不能因为「源里有一个假名」就把整句判成未译 ——
+      误判的后果是把正常译文回退成原文，甚至整份译文被丢弃。
+    """
+    target_chars = _CJK_CHAR_RE.findall(str(target or ''))
+    if not target_chars:
+        return 0.0
+    pool = Counter(_CJK_CHAR_RE.findall(str(source or '')))
+    matched = 0
+    for char in target_chars:
+        if pool.get(char, 0) > 0:
+            pool[char] -= 1
+            matched += 1
+    return matched / len(target_chars)
 
 
 def _compact_compare(text: str) -> str:
@@ -1554,23 +1585,29 @@ class SubtitleTranslator:
             target_lang_known = bool(str(target_language or '').strip())
             target_is_chinese = _is_chinese_target(target_language)
             # 汉字码位被中日韩共用，单看汉字无法判定语种。判定「译文里的汉字算不算
-            # 中文」需要两个信号（缺一不可，见下）：
-            #   1) 源文本本身就是日文 / 韩文（含假名 / 谚文）；
-            #   2) 译文自身以假名 / 谚文为主（占其 CJK 字符 40% 以上）。
-            # 只用 (1) 会让「英文源 → 模型返回日文」漏检；只用 (2) 会把
-            # 「中文译文里保留了一个日文借词（アニメ）」误判成未译。
+            # 中文」需要区分两种场景：
+            #   1) 源文本本身就是日文 / 韩文（含假名 / 谚文）：此时要看译文与源的
+            #      **重合度** —— 只有译文基本是照搬源文本（复读）时才把汉字算作
+            #      非中文。只用「源里有假名」这个全局信号会把「中文译文里保留了
+            #      一个假名借词」（アニメ / トヨタ）整句判成未译，后果是该条被
+            #      回退成原文、甚至整份译文被判「未译残留」丢弃 —— 与本次修复
+            #      的目标形态相反。
+            #   2) 源里没有假名 / 谚文（英文、中文源）：只能看译文自身形态，以
+            #      假名/谚文占其 CJK 字符的比例判定（源是英文而模型整句返回日文）。
             # 修复的缺陷形态：日文原文只被加了一个句号 / 删了一个逗号 / 插了一个空格，
             # ``d == s`` 的快速路径不再命中，若不在这里把汉字判为非中文，
             # 「汉字占多数的日文」就会在下面 0.8 的比值判据下被算成中文译文。
             src_has_foreign_cjk = bool(_NON_CHINESE_CJK_RE.search(s))
+            src_has_cjk = bool(_CJK_CHAR_RE.search(s))
             dst_has_foreign_cjk = bool(_NON_CHINESE_CJK_RE.search(d))
             cjk_is_foreign = False
             if dst_has_foreign_cjk:
                 cjk_total = len(_CJK_CHAR_RE.findall(d))
                 foreign_total = len(_NON_CHINESE_CJK_RE.findall(d))
-                cjk_is_foreign = src_has_foreign_cjk or (
-                    cjk_total > 0 and (foreign_total / cjk_total) >= 0.4
-                )
+                if src_has_foreign_cjk:
+                    cjk_is_foreign = _cjk_echo_ratio(s, d) >= _CJK_ECHO_RATIO_THRESHOLD
+                else:
+                    cjk_is_foreign = cjk_total > 0 and (foreign_total / cjk_total) >= 0.4
             for ch in d:
                 if ch.isspace():
                     continue
@@ -1590,10 +1627,13 @@ class SubtitleTranslator:
                 else:
                     # 忽略标点/符号/表情，不计入分母
                     continue
-            if target_lang_known and not target_is_chinese and chinese > 0 and non_chinese == 0:
-                # 目标语言明确不是中文，译文却全是汉字（无假名 / 谚文混排）：
-                # 这几乎只可能是原文被原样返回。日文 / 韩文因含假名 / 谚文已在
-                # 上面的分母里计为非中文，不会落进本分支。
+            if (target_lang_known and not target_is_chinese and chinese > 0
+                    and non_chinese == 0 and src_has_cjk):
+                # 目标语言明确不是中文、译文却全是汉字（无假名 / 谚文混排），
+                # 且**源文本本身也是 CJK**：这几乎只可能是原文被原样返回。
+                # 日文 / 韩文因含假名 / 谚文已在上面的分母里计为非中文，不会落进本分支。
+                # 源里没有任何 CJK 时不能这样判：目标是日文而源是英文时，
+                # 「東京駅到着」这类纯汉字译文是正常结果（曾据此误判为未译）。
                 return True
             denom = chinese + non_chinese
             if denom == 0:

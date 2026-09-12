@@ -9,6 +9,7 @@
 这些测试不依赖网络、FFmpeg 二进制或 GPU：只验证参数装配，不真正转码。
 """
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -769,6 +770,12 @@ class EmbedRetryWiringTests(unittest.TestCase):
     上一轮复审指出：既有用例全是纯函数静态调用，看不到调用点，因此
     「共享 dict 被就地改写」「预算只在重试阶段计」这两类缺陷不可能被发现。
     这里对调用点自身的不变量做静态守卫（真正的转码路径无法在无 GPU 环境下跑）。
+
+    本类只保留**语义化**的守卫，并统一在「压平空白」后的源码上比对：
+    早期版本直接 `assertIn` 多行字面量（含缩进）与完整预算公式，一次等价重构就会
+    误报 —— 子 PR #145 把总预算改成「首轮 + 各级预算」后正是如此。预算公式本身由
+    ``EmbedTimeoutTests`` / ``EmbedStageBudgetTests`` 的行为用例守护，不需要在
+    调用点重抄一遍。
     """
 
     @classmethod
@@ -778,31 +785,41 @@ class EmbedRetryWiringTests(unittest.TestCase):
             'modules', 'task_manager.py')
         with open(path, encoding='utf-8') as handle:
             cls.source = handle.read()
+        cls.normalized = ' '.join(cls.source.split())
+
+    def _first_execute_embed_call(self) -> int:
+        """返回**调用处** `_execute_embed(` 的位置（跳过它自己的 def）。"""
+        positions = [
+            match.start()
+            for match in re.finditer(r'_execute_embed\(', self.normalized)
+            if not self.normalized[:match.start()].rstrip().endswith('def')
+        ]
+        self.assertTrue(positions, '找不到 _execute_embed 的调用点')
+        return positions[0]
 
     def test_boost_override_does_not_mutate_shared_settings(self):
         self.assertNotIn(
             "encoder_settings['hw_quality_boost'] =", self.source,
             '降级重试仍就地改写共享的 encoder_settings（CPU 回退会丢掉增强）')
-        self.assertIn('hw_quality_boost=boost_enabled', self.source)
+        self.assertIn('hw_quality_boost=boost_enabled', self.normalized)
 
     def test_budget_starts_before_the_first_attempt(self):
-        normalized = ' '.join(self.source.split())
-        first_attempt = self.source.index('_execute_embed(\n                    cmd,')
-        self.assertIn('embed_started_at = time.monotonic()', self.source)
+        """超时预算必须在首次尝试**之前**建立，否则首轮耗时不计入预算。"""
+        first_attempt = self._first_execute_embed_call()
+        started = self.normalized.index('embed_started_at = time.monotonic()')
         self.assertLess(
-            self.source.index('embed_started_at = time.monotonic()'), first_attempt,
+            started, first_attempt,
             '超时预算必须在首次尝试之前建立，否则首轮耗时不计入预算')
         self.assertLess(
-            self.source.index('first_stage_budget = '), first_attempt)
-        # 总预算 = 首轮 + 各降级阶段（每级按其真实编码器估算），从首轮之前开始计
-        self.assertIn('overall_deadline = embed_started_at + first_stage_budget + sum(', normalized)
-        self.assertIn('_embed_stage_budget', normalized)
+            self.normalized.index('first_stage_budget = '), first_attempt)
+        # 每一级的预算按该级真实编码器估算（x265 阶段要拿到 5 倍系数），
+        # 具体公式由 EmbedTimeoutTests / EmbedStageBudgetTests 的行为用例守护。
+        self.assertIn('_embed_stage_budget', self.normalized)
 
     def test_timeout_is_tracked_and_skips_same_encoder_retry(self):
-        normalized = ' '.join(self.source.split())
-        self.assertIn('stage_timed_out', self.source)
-        self.assertIn('first_timed_out = _execute_embed', normalized)
-        self.assertIn('_drop_same_encoder_stage_after_timeout', normalized)
+        self.assertIn('stage_timed_out', self.normalized)
+        self.assertIn('first_timed_out = _execute_embed', self.normalized)
+        self.assertIn('_drop_same_encoder_stage_after_timeout', self.normalized)
 
 
 class TimeoutRetryPolicyTests(unittest.TestCase):
