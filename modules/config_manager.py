@@ -26,6 +26,10 @@ _VIDEO_CPU_PRESETS = (
 )
 _VIDEO_CPU_PRESET_DEFAULT = 'medium'
 _VIDEO_CPU_PRESET_HD_DEFAULT = 'veryfast'
+# CPU 软编码器取值。与 VIDEO_ENCODER（硬件编码器选择器）正交，见
+# modules/video_encoder_params.py 中 _VALID_CPU_CODECS 的说明。
+_VIDEO_CPU_CODECS = ('x264', 'x265')
+_VIDEO_CPU_CODEC_DEFAULT = 'x264'
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -179,6 +183,7 @@ DEFAULT_CONFIG = {
     "STUCK_TASK_CHECK_INTERVAL_SECONDS": 300,  # 自动扫描并恢复卡住任务的时间间隔（秒）
     # 视频转码相关（硬编默认输出 HEVC/H.265，CPU 保持 H.264）
     "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd - 自动检测或指定编码器
+    "VIDEO_CPU_CODEC": _VIDEO_CPU_CODEC_DEFAULT,  # x264/x265 - CPU 软编码时使用的编码器
     "VIDEO_CPU_PRESET": _VIDEO_CPU_PRESET_DEFAULT,  # 常规 CPU/libx264 转码 preset
     "VIDEO_CPU_PRESET_HD": _VIDEO_CPU_PRESET_HD_DEFAULT,  # 1440p+ 且超过 10 分钟时使用
     "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
@@ -292,6 +297,15 @@ def normalize_video_cpu_preset(value, default=_VIDEO_CPU_PRESET_DEFAULT):
     return normalized if normalized in _VIDEO_CPU_PRESETS else fallback
 
 
+def normalize_video_cpu_codec(value, default=_VIDEO_CPU_CODEC_DEFAULT):
+    """归一化 CPU 软编码器；非法值回退默认（x264，即历史行为）。"""
+    fallback = str(default or _VIDEO_CPU_CODEC_DEFAULT).strip().lower()
+    if fallback not in _VIDEO_CPU_CODECS:
+        fallback = _VIDEO_CPU_CODEC_DEFAULT
+    normalized = str(value or fallback).strip().lower()
+    return normalized if normalized in _VIDEO_CPU_CODECS else fallback
+
+
 def normalize_login_session_timeout_minutes(value):
     try:
         normalized = int(str(value).strip())
@@ -366,6 +380,12 @@ def load_config():
                 )
                 cpu_preset_hd_changed = config['VIDEO_CPU_PRESET_HD'] != cpu_preset_hd_before
 
+                cpu_codec_before = config.get('VIDEO_CPU_CODEC')
+                config['VIDEO_CPU_CODEC'] = normalize_video_cpu_codec(
+                    cpu_codec_before, _VIDEO_CPU_CODEC_DEFAULT
+                )
+                cpu_codec_changed = config['VIDEO_CPU_CODEC'] != cpu_codec_before
+
                 upload_target_before = config.get('UPLOAD_TARGET_DEFAULT')
                 upload_target_normalized = str(upload_target_before or 'acfun').strip().lower()
                 if upload_target_normalized not in ('acfun', 'bilibili', 'both'):
@@ -414,6 +434,7 @@ def load_config():
                     or encoder_changed
                     or cpu_preset_changed
                     or cpu_preset_hd_changed
+                    or cpu_codec_changed
                     or upload_target_changed
                     or quality_mode_changed
                     or quality_height_changed
@@ -506,6 +527,10 @@ def update_config(new_config):
             elif key == 'VIDEO_CPU_PRESET_HD':
                 current_config[key] = normalize_video_cpu_preset(
                     new_config[key], _VIDEO_CPU_PRESET_HD_DEFAULT
+                )
+            elif key == 'VIDEO_CPU_CODEC':
+                current_config[key] = normalize_video_cpu_codec(
+                    new_config[key], _VIDEO_CPU_CODEC_DEFAULT
                 )
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()

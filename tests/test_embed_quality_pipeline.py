@@ -16,6 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from modules import task_manager as tm
 from modules.subtitle_style import parse_style_overrides
 from modules.task_manager import TaskProcessor
 from modules.video_encoder_params import (
@@ -293,6 +294,108 @@ class EncoderWiringTests(unittest.TestCase):
         custom = ['-c:v', 'libx264', '-x264-params', 'aq-mode=3']
         self.assertEqual(build_color_vui_params('cpu', color_map, custom), [])
 
+
+class EmbedCommandPrivateParamsTests(unittest.TestCase):
+    """集成层契约：烧录命令里每个私有参数选项**只能出现一次**。
+
+    这是本项目吃过一次亏的地方。实测（FFmpeg N-123313）x265 对同一个
+    `-x265-params` 给两次时，后者**完全覆盖**前者而不是合并：
+
+        -x265-params colorprim=bt709 -x265-params transfer=bt709
+        → color_primaries 丢失，color_transfer=bt709
+
+    返回码仍然是 0，字段静默消失。而 x265 的质量增强项与色彩 VUI 偏偏都要走这个
+    选项（x265 没有 -aq-mode 之类的独立选项），因此「两处各追加一条」的历史写法
+    会稳定地丢掉一半参数且没有任何报错。
+
+    这里断言的是 task_manager 真实产出的命令，而不是 build_encoder_params 的
+    返回值：VUI 合并发生在后者内部，前者若再追加一次就前功尽弃。单测层面看不到
+    这种回归，只有盯住最终命令才发现得了。
+    """
+
+    _COLOR_MAP = {
+        'colorspace': 'bt709',
+        'color_primaries': 'bt709',
+        'color_trc': 'bt709',
+        'color_range': 'tv',
+    }
+
+    def _command_for(self, cpu_codec, custom_params=None, hw_quality_boost=True):
+        from modules.video_encoder_params import (
+            build_encoder_params,
+            resolve_color_metadata,
+        )
+
+        vparams = build_encoder_params('cpu', {
+            'height': 1080, 'gop': 48, 'gop_hevc': 96,
+            'quality_mode': 'auto', 'cpu_preset': 'medium',
+            'duration_s': 300, 'hw_quality_boost': hw_quality_boost,
+            'hw_quality_level': 'quality', 'cpu_codec': cpu_codec,
+            'software_tune': '', 'color_map': self._COLOR_MAP,
+            'custom_params': custom_params,
+        })
+        color_params = resolve_color_metadata('bt709', {})
+        return TaskProcessor._build_embed_ffmpeg_cmd(
+            ffmpeg_bin='ffmpeg', input_video='in.mp4',
+            vf_filter='subtitles=sub.srt', vparams=vparams,
+            aparams=['-c:a', 'copy'], output_video='out.mp4',
+            color_params=color_params,
+        )
+
+    def test_each_private_option_appears_at_most_once(self):
+        for cpu_codec in ('x264', 'x265'):
+            for boosted in (True, False):
+                cmd = self._command_for(cpu_codec, hw_quality_boost=boosted)
+                for option in ('-x264-params', '-x265-params', '-x264opts'):
+                    self.assertLessEqual(
+                        cmd.count(option), 1,
+                        f'{cpu_codec}(boost={boosted}) 的命令里 {option} 出现 '
+                        f'{cmd.count(option)} 次，后者会覆盖前者：{cmd}',
+                    )
+
+    def test_boost_toggle_does_not_duplicate_the_option(self):
+        """关闭增强时 VUI 仍要写入，且仍只占同一条 -x265-params。"""
+        cmd = self._command_for('x265', hw_quality_boost=False)
+        self.assertEqual(cmd.count('-x265-params'), 1)
+        value = cmd[cmd.index('-x265-params') + 1]
+        self.assertIn('colorprim=bt709', value)
+        self.assertNotIn('aq-mode', value)
+
+    def test_x265_command_carries_boost_and_vui_in_one_option(self):
+        cmd = self._command_for('x265')
+        self.assertEqual(cmd.count('-x265-params'), 1)
+        value = cmd[cmd.index('-x265-params') + 1]
+        for expected in ('colorprim=bt709', 'transfer=bt709', 'colormatrix=bt709'):
+            self.assertIn(expected, value)
+        self.assertIn('aq-mode=3', value)
+
+    def test_command_with_custom_params_keeps_a_single_option(self):
+        cmd = self._command_for('x265', custom_params='-c:v libx265 -preset slow')
+        self.assertLessEqual(cmd.count('-x265-params'), 1)
+        self.assertIn('-x265-params', cmd)
+
+    def test_command_declining_private_params_adds_none(self):
+        # 用户自己写了 -x265-params 时不得再追加第二条
+        cmd = self._command_for('x265', custom_params='-c:v libx265 -x265-params aq-mode=3')
+        self.assertEqual(cmd.count('-x265-params'), 1)
+
+    def test_hardware_command_has_no_software_private_params(self):
+        from modules.video_encoder_params import build_encoder_params
+
+        for key in ('nvidia', 'intel', 'amd'):
+            vparams = build_encoder_params(key, {
+                'height': 1080, 'gop': 48, 'gop_hevc': 96, 'duration_s': 300,
+                'cpu_codec': 'x264', 'color_map': self._COLOR_MAP,
+            })
+            cmd = TaskProcessor._build_embed_ffmpeg_cmd(
+                ffmpeg_bin='ffmpeg', input_video='in.mp4',
+                vf_filter='subtitles=sub.srt', vparams=vparams,
+                aparams=['-c:a', 'copy'], output_video='out.mp4',
+                color_params=[],
+            )
+            for option in ('-x264-params', '-x265-params', '-x264opts'):
+                self.assertNotIn(option, cmd, key)
+
     def test_color_vui_empty_maps(self):
         self.assertEqual(build_color_vui_params('cpu', {}, None), [])
         self.assertEqual(build_color_vui_params('cpu', None, None), [])
@@ -442,6 +545,184 @@ class RetryStageTests(unittest.TestCase):
         self.assertFalse(TaskProcessor._is_known_hw_encoder_error(None))
 
 
+class CpuCodecRetryTests(unittest.TestCase):
+    """CPU 软编码器的降级：libx265 不可用时改走 libx264。
+
+    libx265 不一定被编进用户的 FFmpeg（自备构建常见 --disable-libx265）。
+    这条错误既没有 GPU 相关文本，也不属于任何硬件降级分支，若不单独处理，
+    整任务会直接失败 —— 而 libx264 在 --enable-gpl 构建里几乎必然存在。
+    """
+
+    def test_x265_gains_a_libx264_stage(self):
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'cpu', True, True, hw_option_error=False, cpu_codec='x265'),
+            ['cpu_x264'],
+        )
+
+    def test_x264_has_no_further_stage(self):
+        # x264 已是最底层，重跑同一命令必然同样失败
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'cpu', True, True, hw_option_error=False, cpu_codec='x264'),
+            [],
+        )
+
+    def test_default_cpu_codec_keeps_the_old_behaviour(self):
+        """不传 cpu_codec 时与历史一致（默认 x264，无降级阶段）。"""
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages('cpu', True, True), [])
+
+    def test_invalid_cpu_codec_values_fall_back_to_no_retry(self):
+        for bad in (None, '', 'libx265', 'hevc', 265):
+            self.assertEqual(
+                TaskProcessor._resolve_embed_retry_stages(
+                    'cpu', True, True, hw_option_error=False, cpu_codec=bad),
+                [],
+                f'cpu_codec={bad!r}',
+            )
+
+    def test_hardware_stages_include_the_libx264_stage_for_x265(self):
+        """硬编回退到 CPU 时，若 CPU 侧配置的是 x265，必须带上 x265 -> x264 那一级。
+
+        缺陷（M2）：`cpu_x264` 只在 `actual_encoder == 'cpu'` 时才进降级链，
+        而真实场景里降级链被激活的最常见原因恰恰是硬编失败 —— 那条路径上的 CPU
+        阶段用的仍是用户配置的 x265，x265 不可用时没有任何下一级，整任务失败，
+        与 README「缺失时会自动降级为 libx264 并继续烧录」的承诺相反。
+        """
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'nvidia', True, True, hw_option_error=True, cpu_codec='x265'),
+            ['hw_no_boost', 'cpu', 'cpu_x264'],
+        )
+        # x264 已是最底层，不重复自身
+        for codec in ('x264', None, ''):
+            self.assertEqual(
+                TaskProcessor._resolve_embed_retry_stages(
+                    'nvidia', True, True, hw_option_error=True, cpu_codec=codec),
+                ['hw_no_boost', 'cpu'],
+                f'cpu_codec={codec!r}',
+            )
+
+    def test_timeout_drops_same_encoder_stage_but_keeps_cpu_x264(self):
+        """超时后仍要保留 x265 -> x264 这一级（否则长视频只剩一次机会）。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'nvidia', True, False, hw_option_error=False, cpu_codec='x265')
+        self.assertEqual(
+            TaskProcessor._drop_same_encoder_stage_after_timeout(stages),
+            ['cpu', 'cpu_x264'])
+
+    def test_missing_libx265_is_a_recognized_error(self):
+        """该错误文本必须被登记：它决定失败归因与 ``hw_error_detected`` 的取值。
+
+        注意它**不是** x265 -> x264 降级成立的原因：``_resolve_embed_retry_stages``
+        在 ``cpu_codec == 'x265'`` 时**无条件**追加 ``cpu_x264`` 阶段，删掉这条模式
+        降级链也不会变（见 :meth:`test_libx264_stage_does_not_depend_on_this_pattern`）。
+        此前的 docstring 把因果写反了。
+        """
+        for message in ('Unknown encoder "libx265"', "Unknown encoder 'libx265'"):
+            self.assertTrue(
+                TaskProcessor._is_known_hw_encoder_error(message), message
+            )
+
+    def test_libx264_stage_does_not_depend_on_this_pattern(self):
+        """降级链与「模式表里有没有 libx265」无关：靠的是无条件追加。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'cpu', True, False, hw_option_error=False, cpu_codec='x265')
+        self.assertEqual(stages, ['cpu_x264'])
+
+    def test_unrelated_missing_encoder_does_not_trigger_libx264_stage(self):
+        """其它缺失编码器不该被误当成 libx265 的问题。"""
+        self.assertFalse(
+            TaskProcessor._is_known_hw_encoder_error('Unknown encoder "libvpx"')
+        )
+
+
+class EmbedTimeoutTests(unittest.TestCase):
+    """烧录超时估算：x265 路径必须按实测的慢速比例放大预算。
+
+    实测（N-123313，1080p30 20s，带 subtitles 滤镜的真实烧录）：
+    veryfast 下 libx264 1.70s、libx265 8.44s，约 5 倍。若沿用 x264 的预算，
+    长视频会在编码中途被强杀，而 CPU 路径被超时杀掉时连 x265->x264 这一级
+    也来不及走。
+    """
+
+    def test_x264_budget_matches_history(self):
+        # 与重构前的 _estimate_embed_timeout 逐值一致，确认没有回归
+        cases = {
+            None: 3600,      # 无时长信息
+            0: 3600,         # 0 按「无时长」处理
+            100: 1800,       # 300 -> 下限 1800
+            600: 1800,       # 600*3 = 1800，正好压在下限
+            1200: 3600,      # 1200*3 = 3600
+            1800: 3600,      # 边界：>=1800 起改用 *2
+            7200: 10800,     # 7200*2 = 14400 -> 上限 10800
+        }
+        for duration, expected in cases.items():
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration), expected,
+                f'duration={duration!r}',
+            )
+
+    def test_default_cpu_codec_is_the_x264_budget(self):
+        for duration in (None, 0, 600, 1800, 7200):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration),
+                TaskProcessor._estimate_embed_timeout(duration, 'x264'),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_is_larger(self):
+        for duration in (600, 1800, 3600):
+            self.assertGreater(
+                TaskProcessor._estimate_embed_timeout(duration, 'x265'),
+                TaskProcessor._estimate_embed_timeout(duration, 'x264'),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_scales_by_the_measured_factor(self):
+        factor = tm.EMBED_TIMEOUT_X265_FACTOR
+        self.assertGreaterEqual(factor, 5.0, '实测慢约 5 倍，系数不应低于 5')
+        for duration in (600, 1800):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(duration, 'x265'),
+                int(duration * 3 * factor) if duration < 1800
+                else int(duration * 2 * factor),
+                f'duration={duration!r}',
+            )
+
+    def test_x265_budget_has_its_own_ceiling(self):
+        """长视频的 x265 预算必须能超过 x264 的 3 小时上限，否则必然被强杀。"""
+        self.assertGreater(
+            tm.EMBED_TIMEOUT_MAX_SECONDS_X265, tm.EMBED_TIMEOUT_MAX_SECONDS
+        )
+        self.assertEqual(
+            TaskProcessor._estimate_embed_timeout(10 ** 6, 'x265'),
+            tm.EMBED_TIMEOUT_MAX_SECONDS_X265,
+        )
+
+    def test_x264_ceiling_is_unchanged(self):
+        self.assertEqual(
+            TaskProcessor._estimate_embed_timeout(10 ** 6), 10800
+        )
+
+    def test_invalid_cpu_codec_uses_the_x264_budget(self):
+        for bad in (None, '', 'libx265', 'hevc', 265, True):
+            self.assertEqual(
+                TaskProcessor._estimate_embed_timeout(7200, bad), 10800,
+                f'cpu_codec={bad!r}',
+            )
+
+    def test_budget_never_drops_below_the_floor(self):
+        for codec in ('x264', 'x265'):
+            for duration in (1, 10, 60, 300):
+                self.assertGreaterEqual(
+                    TaskProcessor._estimate_embed_timeout(duration, codec),
+                    tm.EMBED_TIMEOUT_MIN_SECONDS,
+                    f'{codec}/{duration}',
+                )
+
+
 class AssSourceAppearanceTests(unittest.TestCase):
     """M-1：ASS/SSA 源的字幕外观配置必须真的写进 force_style。
 
@@ -543,6 +824,9 @@ class EmbedRetryWiringTests(unittest.TestCase):
             '超时预算必须在首次尝试之前建立，否则首轮耗时不计入预算')
         self.assertLess(
             self.normalized.index('first_stage_budget = '), first_attempt)
+        # 每一级的预算按该级真实编码器估算（x265 阶段要拿到 5 倍系数），
+        # 具体公式由 EmbedTimeoutTests / EmbedStageBudgetTests 的行为用例守护。
+        self.assertIn('_embed_stage_budget', self.normalized)
 
     def test_timeout_is_tracked_and_skips_same_encoder_retry(self):
         self.assertIn('stage_timed_out', self.normalized)
@@ -576,6 +860,34 @@ class TimeoutRetryPolicyTests(unittest.TestCase):
         self.assertEqual(
             describe('nvidia', hw_error_detected=True, boost_enabled=True), 'device_error')
         self.assertEqual(describe('nvidia', boost_enabled=True), 'unknown')
+
+
+class EmbedStageBudgetTests(unittest.TestCase):
+    """M2：CPU 回退阶段必须拿到**该阶段编码器**的预算。
+
+    README 承诺「超时预算会按同一倍数放大」，而硬编回退路径此前一律沿用基于
+    x264 算出的 timeout：20 分钟视频的 x265 阶段只拿到 3600s（需要约 18000s），
+    长视频会在编码中途被强杀，连 x265 -> x264 那一级都轮不到。
+    """
+
+    def test_cpu_x265_stage_gets_the_scaled_budget(self):
+        budget = TaskProcessor._embed_stage_budget(1200, 'x265', 'cpu', 3600)
+        self.assertEqual(budget, TaskProcessor._estimate_embed_timeout(1200, 'x265'))
+        self.assertGreater(budget, 3600)
+
+    def test_cpu_x264_stage_uses_the_x264_budget(self):
+        self.assertEqual(
+            TaskProcessor._embed_stage_budget(1200, 'x265', 'cpu_x264', 18000),
+            TaskProcessor._estimate_embed_timeout(1200, 'x264'))
+
+    def test_hw_no_boost_stage_keeps_the_first_budget(self):
+        self.assertEqual(
+            TaskProcessor._embed_stage_budget(1200, 'x265', 'hw_no_boost', 3600), 3600)
+
+    def test_every_stage_budget_has_a_floor(self):
+        for stage in ('cpu', 'cpu_x264', 'hw_no_boost'):
+            self.assertGreaterEqual(
+                TaskProcessor._embed_stage_budget(1, 'x264', stage, 0), 300.0, stage)
 
 
 class AudioParamsTests(unittest.TestCase):

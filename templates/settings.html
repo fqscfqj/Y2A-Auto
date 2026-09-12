@@ -2072,19 +2072,29 @@
                                             </div>
                                             <div class="settings-card-body">
                                                 <div class="row g-3">
-                                                    <div class="col-md-6">
+                                                    <div class="col-md-4">
                                                         <div class="form-group">
                                                             <label for="video-encoder" class="form-label">视频编码器</label>
                                                             <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
                                                                 <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
-                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（libx264）</option>
+                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（软编码）</option>
                                                                 <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA（NVENC）</option>
                                                                 <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel（QSV）</option>
                                                                 <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD（AMF/VAAPI）</option>
                                                             </select>
                                                         </div>
                                                     </div>
-                                                    <div class="col-md-6">
+                                                    <div class="col-md-4">
+                                                        <div class="form-group">
+                                                            <label for="video-cpu-codec" class="form-label">CPU 编码器</label>
+                                                            <select id="video-cpu-codec" name="VIDEO_CPU_CODEC" class="form-select">
+                                                                <option value="x264" {% if config.get('VIDEO_CPU_CODEC', 'x264') == 'x264' %}selected{% endif %}>libx264（H.264）</option>
+                                                                <option value="x265" {% if config.get('VIDEO_CPU_CODEC') == 'x265' %}selected{% endif %}>libx265（H.265/HEVC）</option>
+                                                            </select>
+                                                            <p class="help-text mb-0">仅最终使用 CPU 编码时生效。libx265 输出 HEVC，编码耗时约为 libx264 的 5 倍；体积收益随素材与 preset 变化，不保证更小，建议开启后自行对比。</p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-4">
                                                         <label class="checkbox-label">
                                                             <input type="checkbox" name="VIDEO_CUSTOM_PARAMS_ENABLED" id="video-custom-params-enabled" {% if config.get('VIDEO_CUSTOM_PARAMS_ENABLED', False) %}checked{% endif %}>
                                                             启用自定义转码参数
@@ -2101,7 +2111,7 @@
                                                                 <option value="{{ preset }}" {% if config.get('VIDEO_CPU_PRESET', 'medium') == preset %}selected{% endif %}>{{ preset }}</option>
                                                                 {% endfor %}
                                                             </select>
-                                                            <p class="help-text mb-0">常规 CPU/libx264 字幕烧录使用，默认 medium。</p>
+                                                            <p class="help-text mb-0">常规 CPU 软编码字幕烧录使用（x264 与 x265 共用），默认 medium。</p>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
@@ -2148,7 +2158,7 @@
                                                             <input type="checkbox" name="VIDEO_HW_QUALITY_BOOST" id="video-hw-quality-boost" {% if config.get('VIDEO_HW_QUALITY_BOOST', True) %}checked{% endif %}>
                                                             启用编码质量增强
                                                         </label>
-                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；同时作用于硬件编码器与软件 libx264。老 GPU 驱动不支持时报参数错误，可关闭回退基础参数（1440p+ 长视频走 veryfast 时前瞻跟随 preset，不受此项放大）。</p>
+                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；同时作用于硬件编码器与 CPU 软编码（x264 / x265）。老 GPU 驱动不支持时报参数错误，可关闭回退基础参数（1440p+ 长视频走 veryfast 时前瞻跟随 preset，不受此项放大）。</p>
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">
@@ -2163,8 +2173,9 @@
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">
-                                                            <label for="video-x264-tune" class="form-label">libx264 tune（可留空）</label>
-                                                            <input type="text" id="video-x264-tune" name="VIDEO_X264_TUNE" value="{{ config.get('VIDEO_X264_TUNE', '') }}" class="form-control" placeholder="留空 / film / animation">
+                                                            <label for="video-x264-tune" class="form-label">软编码 tune（可留空）</label>
+                                                            <input type="text" id="video-x264-tune" name="VIDEO_X264_TUNE" value="{{ config.get('VIDEO_X264_TUNE', '') }}" class="form-control" placeholder="x264: film / animation　x265: animation / grain">
+                                                            <p class="help-text mb-0">按 CPU 编码器各自的白名单取值。x265 不支持 film / stillimage，配了会被忽略并记录到任务日志。</p>
                                                         </div>
                                                     </div>
                                                 </div>
