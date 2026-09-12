@@ -238,12 +238,51 @@ class NormalizeOutputCuesTests(unittest.TestCase):
         self.assertIn('kept text', out[0].text)
         self.assertAlmostEqual(out[0].start_s, 1.0, places=6)
 
+    def test_invalid_cue_text_goes_to_the_temporally_nearest_cue(self):
+        """吸收必须选**时间上最近**的合法 cue，且同条内语序与时间轴一致。
+
+        缺陷（收集阶段先挂起、消费阶段给「下一条」）：5.0s 的碎片被挂到 0–1s 的
+        cue 上 —— 时间上最远，且同一条字幕里「后发生的文本排在前」。
+        """
+        cues = [_cue(0, 1, 'alpha'), _cue(2, 3, 'bravo'), _cue(5, 5, 'late-line-5s')]
+        out = _normalize_output_cues(cues, total_duration_s=10.0)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0].text, 'alpha')
+        self.assertEqual(out[1].text, 'bravo late-line-5s')
+        self.assertAlmostEqual(out[1].start_s, 2.0, places=6)
+
+    def test_fragment_before_the_only_valid_cue_is_prepended(self):
+        """碎片在目标之前时前置，保持「文本顺序 = 时间顺序」。"""
+        cues = [_cue(0, 0, 'early'), _cue(5, 6, 'later')]
+        out = _normalize_output_cues(cues, total_duration_s=10.0)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].text, 'early later')
+
+    def test_multiple_fragments_keep_chronological_order(self):
+        cues = [_cue(0, 1, 'A'), _cue(3, 3, 'X-late'), _cue(4, 4, 'Y-later')]
+        out = _normalize_output_cues(cues, total_duration_s=10.0)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].text, 'A X-late Y-later')
+
     def test_absorbed_text_does_not_mutate_caller_objects(self):
-        """归一化不得就地改写调用方传入的 cue（可能被上游继续复用）。"""
+        """归一化不得就地改写调用方传入的 cue（可能被上游继续复用）。
+
+        两条路径都要覆盖：吸收在遍历中发生（下一条合法 cue），以及遍历结束后
+        仍在等待安置的文本落到「最后一条合法 cue」——后者此前用
+        ``normalized[-1].text = ...`` 直接改写了调用方对象（且该对象会被
+        ``all_cues`` / 上下文窗口继续引用）。
+        """
         cues = [_cue(0, 0, 'lost text'), _cue(1, 2, 'kept text')]
         callers = list(cues)
         _normalize_output_cues(cues)
         self.assertEqual(callers[1].text, 'kept text')
+
+        # 末条被 total_duration 钳成零长 → 文本只能落到前一条（可复现的就地改写路径）
+        tail = [_cue(0, 5, 'first-valid'), _cue(10, 12, 'clamped-last')]
+        out = _normalize_output_cues(tail, total_duration_s=10.0)
+        self.assertEqual(tail[0].text, 'first-valid')
+        self.assertIn('clamped-last', out[0].text)
+        self.assertIsNot(out[0], tail[0])
 
     def test_fully_dropped_batch_is_reported_not_silent(self):
         logger = MagicMock()

@@ -1,16 +1,19 @@
 name: CI
 
 "on":
-  # 刻意**不**按 base 分支过滤 `pull_request`。
+  # 刻意**不**按 base 分支过滤 `pull_request`：base 不是 main 的 PR（堆叠 PR 的
+  # 中间层与顶层）也必须一律跑 CI。
   #
-  # 原配置 `branches: [main]` 会让堆叠 PR（stacked PRs）拿不到 CI：中间层与顶层的
-  # base 是下层分支而不是 main。GitHub 的 stack 规则声称「每个 PR 都按其栈底
-  # （main）评估」，但实测对栈的顶层不生效 —— 同一个 stack 里 #142 / #143 都跑到了
-  # CI，而顶层 #145（base=fix/subtitle-burn-quality）从未产生任何 CI 运行，同期只有
-  # 不带分支过滤的动态工作流（CodeQL / Copilot review）跑了。
-  # 去掉过滤器后任何 base 的 PR 都会跑；代价是堆叠时每层各跑一次（见 concurrency）。
+  # 观察到的事实：原配置 `branches: [main]` 只匹配 PR 的 **base 分支**，而堆叠 PR
+  # 的中间层 / 顶层 base 是下层分支；该配置期间栈顶 PR #145（base =
+  # fix/subtitle-burn-quality）没有任何 CI 运行记录，同期只有不带分支过滤的动态
+  # 工作流（CodeQL / Copilot review）跑了。GitHub 文档声称堆叠 PR「每个 PR 都按其
+  # 栈底（main）评估」，与上述观察不一致；运行历史里栈中层的记录无法排除「改动
+  # 前后触发条件不同」这一解释，因此这里只写下可验证的结论：去掉过滤器后任何 base
+  # 的 PR 都会跑，代价是堆叠时每层各跑一次（见 concurrency）。
   pull_request:
-  # 允许对任意分支手动补跑：修复 / 排障时不必再推一个空提交来触发
+  # 允许对任意分支手动补跑：修复 / 排障时不必再推一个空提交来触发。
+  # 注意：`workflow_dispatch` 只在本文件进入默认分支后才出现在 Actions 界面上。
   workflow_dispatch:
   push:
     branches: [main]
@@ -21,7 +24,9 @@ name: CI
 concurrency:
   # github.ref 对 pull_request 事件是 refs/pull/<n>/merge，因此各层 PR 之间不会
   # 互相取消，同一 PR 的连续推送只保留最新一次。
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # 带上 event_name：`workflow_dispatch` 跑在 refs/heads/<branch>，与同分支的
+  # `push` 共用 group 时手动补跑会把正在进行的 push 构建取消掉（对 main 尤其明显）。
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:

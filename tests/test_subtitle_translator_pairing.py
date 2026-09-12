@@ -327,6 +327,47 @@ class ResidualUntranslatedPolicyTests(unittest.TestCase):
         self.assertIn('译文甲', content)
         self.assertIn('bravo', content)  # 未译残留按写盘回退语义输出原文
 
+
+class JapaneseLoanwordAcceptanceTests(unittest.TestCase):
+    """日译中场景的验收后果：保留假名借词的中文译文不得被判成整批未译。
+
+    上一轮的未译判据是「源里有假名」**或**「译文假名占其 CJK 40% 以上」。前半个
+    条件会让「日文源 + 中文译文里保留一个片假名借词」这一正常场景把译文里的所有
+    汉字判成非中文 → `non_cn_ratio` 到 1.0 → 判未译。后果不是日志而是数据：
+    少量残留时该条被回退成**日文原文**写进中文字幕，超过阈值时整份译文被判
+    「未译残留」丢弃（任务上传无字幕）。判据修复后，这里从真实
+    ``_finalize_residual_untranslated_items`` 反向钉住后果本身。
+    """
+
+    def _items(self):
+        sources = [f'これは{i}番目の文です' for i in range(20)]
+        items = _make_items(sources)
+        for position, item in enumerate(items):
+            if position in (2, 7, 13):
+                # 模型在中文译文里保留了假名借词 / 专有名词
+                item.translated_text = f'这是第{position}句アニメ的说明'
+            else:
+                item.translated_text = f'这是第{position}句的译文'
+        return items
+
+    def test_katakana_loanwords_do_not_discard_the_whole_translation(self):
+        translator = _make_translator()
+        items = self._items()
+        self.assertEqual(translator._collect_untranslated_indices(items), [])
+        self.assertTrue(translator._finalize_residual_untranslated_items(items))
+        for item in items:
+            self.assertFalse(item.residual_untranslated, item.source_text)
+            self.assertTrue(item.translated_text, item.source_text)
+
+    def test_kanji_heavy_japanese_echo_is_still_rejected(self):
+        """反向守卫：真正的日文复读仍必须让整批验收失败（不得放宽漏检）。"""
+        translator = _make_translator()
+        sources = [f'新宿駅に到着、東京駅を出発{i}' for i in range(20)]
+        items = _make_items(sources)
+        for item in items:
+            item.translated_text = str(item.source_text).replace('、', ' ')
+        self.assertFalse(translator._finalize_residual_untranslated_items(items))
+
     def test_residue_threshold_helper_respects_policy_flag(self):
         self.assertTrue(_should_fail_translation_residue(100, 1, allow_partial=False))
         self.assertFalse(_should_fail_translation_residue(100, 1, allow_partial=True))

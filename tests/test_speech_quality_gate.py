@@ -1226,6 +1226,130 @@ class QcUnavailablePersistenceTests(unittest.TestCase):
         self.assertTrue(logger.warning.called)
 
 
+class QcUnavailableEscapeHatchAcrossRunsTests(unittest.TestCase):
+    """逃生口对「质检没跑成」必须**跨运行**有效（复审残留：跨运行无效）。
+
+    缺陷：`_mark_subtitle_qc_unavailable` 在逃生口关闭时把「没跑成」折算成
+    ``subtitle_qc_failed=1``，而门控只读这个布尔字段。于是用户按默认配置跑过一轮
+    （库里留下 ``qc_failed=1`` + ``reason='qc_unavailable'``）之后，再打开
+    ``ASR_FAILURE_BLOCKS_EMBED=False`` 重跑，内存判定放行、门控却仍按「明确质检
+    失败」拦下 —— README 承诺该开关可放宽「质检没跑成」的拦截，实际只有全新状态
+    才成立。同时反方向也不自洽：逃生口打开时写入的记录（``qc_failed=0``）在改回
+    严格配置后会被门控读成「质检通过」。
+    """
+
+    HATCH_OFF = {'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': True}
+    HATCH_ON = {'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False}
+    RECORD = {'subtitle_qc_failed': 1, 'subtitle_qc_reason': 'qc_unavailable'}
+
+    def test_recorded_unavailable_still_blocks_while_hatch_is_closed(self):
+        """严格配置下（默认）仍然拦截：修复不得放宽默认行为。"""
+        self.assertEqual(
+            tm._subtitle_block_reasons(
+                self.HATCH_OFF, 'ok', True, qc_reason='qc_unavailable'),
+            ['subtitle_qc_rejected'],
+        )
+        self.assertFalse(tm._subtitle_embed_allowed(
+            self.HATCH_OFF, 'ok', True, qc_reason='qc_unavailable'))
+
+    def test_recorded_unavailable_is_relaxed_once_hatch_is_opened(self):
+        """上一轮按默认配置落库的「没跑成」，打开逃生口重跑必须放行。"""
+        self.assertEqual(
+            tm._subtitle_block_reasons(
+                self.HATCH_ON, 'ok', True, qc_reason='qc_unavailable'),
+            [],
+        )
+        self.assertTrue(tm._subtitle_embed_allowed(
+            self.HATCH_ON, 'ok', True, qc_reason='qc_unavailable'))
+
+    def test_recorded_unavailable_written_under_hatch_blocks_again_when_strict(self):
+        """反方向：逃生口下写入的记录（qc_failed=0）改回严格配置后不得读成「通过」。"""
+        self.assertEqual(
+            tm._subtitle_block_reasons(self.HATCH_OFF, 'ok', False, qc_reason='qc_unavailable'),
+            ['subtitle_qc_rejected'],
+        )
+
+    def test_explicit_qc_failure_is_never_relaxed_by_the_hatch(self):
+        """明确失败结论（非 qc_unavailable）任何情况下都拦截。"""
+        self.assertEqual(
+            tm._subtitle_block_reasons(
+                self.HATCH_ON, 'ok', True, qc_reason='rule_fail:timeline_overlap'),
+            ['subtitle_qc_rejected'],
+        )
+
+    def test_missing_reason_keeps_the_legacy_blocking_behaviour(self):
+        """没有归因字段（旧库行 / 直接调用）时行为与修复前一致。"""
+        self.assertFalse(tm._subtitle_embed_allowed(self.HATCH_ON, 'ok', True))
+        self.assertTrue(tm._subtitle_embed_allowed(self.HATCH_ON, 'ok', False))
+
+    def test_escape_hatch_marker_keeps_an_unattributable_failure(self):
+        """逃生口打开 + 既有失败但无归因：保留失败（不得改写成 qc_unavailable）。
+
+        否则门控会把这条无法归因的历史失败当成「没跑成」放过 —— 正是
+        ``_mark_subtitle_qc_unavailable`` 要避免的「洗白历史失败」。
+        """
+        processor = tm.TaskProcessor({
+            'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False,
+        })
+        updates = {}
+
+        def fake_update_task(task_id, **kwargs):
+            updates.update({k: v for k, v in kwargs.items() if k != 'silent'})
+            return True
+
+        with patch.object(tm, 'update_task', side_effect=fake_update_task), \
+                patch.object(tm, 'get_task',
+                             return_value={'subtitle_qc_failed': 1, 'subtitle_qc_reason': None}):
+            self.assertTrue(processor._mark_subtitle_qc_unavailable('t', MagicMock(), blocks=False))
+
+        self.assertEqual(updates.get('subtitle_qc_failed'), 1)
+        self.assertNotIn('subtitle_qc_reason', updates)
+        self.assertFalse(tm._subtitle_embed_allowed(self.HATCH_ON, 'ok', True))
+
+    def test_escape_hatch_marker_keeps_a_recorded_explicit_failure_reason(self):
+        """逃生口打开 + 既有**明确失败**：原因必须保留，不得被改写成 qc_unavailable。"""
+        processor = tm.TaskProcessor({
+            'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False,
+        })
+        updates = {}
+
+        def fake_update_task(task_id, **kwargs):
+            updates.update({k: v for k, v in kwargs.items() if k != 'silent'})
+            return True
+
+        with patch.object(tm, 'update_task', side_effect=fake_update_task), \
+                patch.object(tm, 'get_task', return_value={
+                    'subtitle_qc_failed': 1,
+                    'subtitle_qc_reason': 'rule_fail:timeline_overlap',
+                }):
+            self.assertTrue(processor._mark_subtitle_qc_unavailable('t', MagicMock(), blocks=False))
+
+        self.assertEqual(updates.get('subtitle_qc_failed'), 1)
+        self.assertNotIn('subtitle_qc_reason', updates)
+        self.assertFalse(tm._subtitle_embed_allowed(
+            self.HATCH_ON, 'ok', True, qc_reason='rule_fail:timeline_overlap'))
+
+    def test_fresh_unavailable_record_under_hatch_is_attributed(self):
+        """全新状态 + 逃生口：落库必须带 qc_unavailable 归因（门控据此裁决）。"""
+        processor = tm.TaskProcessor({
+            'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False,
+        })
+        updates = {}
+
+        def fake_update_task(task_id, **kwargs):
+            updates.update({k: v for k, v in kwargs.items() if k != 'silent'})
+            return True
+
+        with patch.object(tm, 'update_task', side_effect=fake_update_task), \
+                patch.object(tm, 'get_task', return_value={'subtitle_qc_failed': 0}):
+            self.assertTrue(processor._mark_subtitle_qc_unavailable('t', MagicMock(), blocks=False))
+
+        self.assertEqual(updates.get('subtitle_qc_failed'), 0)
+        self.assertEqual(updates.get('subtitle_qc_reason'), 'qc_unavailable')
+        self.assertTrue(tm._subtitle_embed_allowed(self.HATCH_ON, 'ok', False,
+                                                   qc_reason='qc_unavailable'))
+
+
 class TranslatedSubtitleSourceInheritanceTests(unittest.TestCase):
     """N3：译文的来源继承 —— `translated_*.srt` 不能永远放行。
 
