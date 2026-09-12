@@ -4327,6 +4327,16 @@ class TaskProcessor:
     )
     _ASS_PLAY_RES_X = 1920
     _ASS_PLAY_RES_Y = 1080
+    #: force_style 比生成 ASS 文档多需要的键：生成路径把这些值写进 [V4+ Styles]
+    #: 的 Style 行，而 ASS/SSA 输入路径必须靠 force_style 逐键覆盖源样式。
+    _FORCE_STYLE_APPEARANCE_KEYS = (
+        'PrimaryColour',
+        'OutlineColour',
+        'BackColour',
+        'BorderStyle',
+        'Bold',
+    )
+
     _ASS_STYLE_BASE = {
         'FontSize': 56.0,
         'Outline': 2.0,
@@ -4779,6 +4789,38 @@ class TaskProcessor:
                 stages.append('hw_no_boost')
         stages.append('cpu')
         return stages
+
+    @staticmethod
+    def _drop_same_encoder_stage_after_timeout(retry_stages):
+        """超时失败后剔除「关增强、同编码器重试」这一级。
+
+        超时的含义是「这份活在这个编码器上跑不完」，同编码器关增强重试对长视频
+        通常只是把整片时间再花一次（最现实的失败类型反而拿到最差的降级策略）。
+        因此超时只保留「换编码器」的那一级（CPU）。
+        """
+        try:
+            return [str(stage) for stage in (retry_stages or []) if str(stage) != 'hw_no_boost']
+        except Exception:
+            return []
+
+    @staticmethod
+    def _describe_hw_failure(actual_encoder, *, timed_out=False, hw_option_error=False,
+                             hw_error_detected=False, boost_enabled=True, returncode=None):
+        """硬编失败的降级归因，供日志与排查使用（纯函数）。
+
+        返回值是稳定的语义键：``timeout`` / ``option_error`` /
+        ``option_error_no_boost`` / ``device_error`` / ``unknown``。
+
+        ``option_error_no_boost`` 存在的意义：质量增强本来就没开时，
+        「先关闭质量增强后用同一编码器重试」是空动作，照搬那句话会把人带偏。
+        """
+        if timed_out:
+            return 'timeout'
+        if hw_option_error:
+            return 'option_error' if boost_enabled else 'option_error_no_boost'
+        if hw_error_detected:
+            return 'device_error'
+        return 'unknown'
 
     @staticmethod
     def _finalize_embedded_video_output(temp_output_path, final_output_path):
@@ -5242,6 +5284,15 @@ class TaskProcessor:
             'MarginV': str(int(round(style['MarginV']))),
             'Alignment': str(style['Alignment']),
         }
+        # 颜色 / 粗体 / 底板必须一并写进 force_style：libass 的 force_style 是
+        # **逐键覆盖**，只给字体与边距的话，ASS/SSA 源字幕的字色、描边色、粗体与
+        # 半透明底板仍旧来自创作者样式 —— 用户改了「字体颜色」画面上毫无变化，
+        # 而日志照样打印「将以 force_style 覆盖源样式」（实测：同一份配置喂 .srt
+        # 是红字、喂 .ass 仍是白字）。取值已由 ``apply_style_overrides`` 算好，
+        # 这里只做搬运，因此默认配置下写入的仍是历史默认值。
+        for key in cls._FORCE_STYLE_APPEARANCE_KEYS:
+            if key in style:
+                force_style[key] = cls._format_ass_number(style[key])
         return style, force_style
 
     @classmethod
@@ -7268,14 +7319,22 @@ class TaskProcessor:
                     color_params = resolve_color_metadata(
                         encoder_settings.get('color_metadata_mode'),
                         stream_info,
+                        logger=task_logger,
                     )
                 except Exception as color_exc:
                     task_logger.debug(f"解析色彩元数据失败，跳过色彩参数: {color_exc}")
                 if color_params:
                     task_logger.info(f"输出色彩元数据: {' '.join(color_params)}")
 
-                def _video_param_ctx(amd_backend=None):
-                    """汇总编码上下文，交由 video_encoder_params 统一构造参数。"""
+                def _video_param_ctx(amd_backend=None, hw_quality_boost=None):
+                    """汇总编码上下文，交由 video_encoder_params 统一构造参数。
+
+                    ``hw_quality_boost`` 显式传入时覆盖 ``encoder_settings`` 里的值。
+                    降级重试必须走这条覆盖通道，**不能**就地改写 ``encoder_settings``：
+                    那是闭包共享的 dict，改掉之后后面的 CPU 回退阶段读到的就是
+                    「增强已关」，用户明明开着增强，回退后的成片却按关闭增强的
+                    基础参数编码（0a98c26 引入的行为）。
+                    """
                     ctx = {
                         'height': input_height,
                         'gop': gop,
@@ -7285,7 +7344,11 @@ class TaskProcessor:
                         'cpu_preset': encoder_settings.get('cpu_preset'),
                         'cpu_preset_hd': encoder_settings.get('cpu_preset_hd'),
                         'duration_s': video_duration,
-                        'hw_quality_boost': encoder_settings.get('hw_quality_boost'),
+                        'hw_quality_boost': (
+                            encoder_settings.get('hw_quality_boost')
+                            if hw_quality_boost is None
+                            else hw_quality_boost
+                        ),
                         'hw_quality_level': encoder_settings.get('hw_quality_level'),
                         'x264_tune': encoder_settings.get('x264_tune'),
                         'custom_params': custom_video_params,
@@ -7295,20 +7358,29 @@ class TaskProcessor:
                     return ctx
 
                 # 针对软编码生成统一参数 (libx264)
-                def build_cpu_params():
-                    return build_encoder_params('cpu', _video_param_ctx())
+                def build_cpu_params(hw_quality_boost=None):
+                    return build_encoder_params(
+                        'cpu', _video_param_ctx(hw_quality_boost=hw_quality_boost)
+                    )
 
-                def build_nvidia_params():
+                def build_nvidia_params(hw_quality_boost=None):
                     """生成 NVIDIA NVENC HEVC 编码参数"""
-                    return build_encoder_params('nvidia', _video_param_ctx())
+                    return build_encoder_params(
+                        'nvidia', _video_param_ctx(hw_quality_boost=hw_quality_boost)
+                    )
 
-                def build_intel_params():
+                def build_intel_params(hw_quality_boost=None):
                     """生成 Intel QSV HEVC 编码参数"""
-                    return build_encoder_params('intel', _video_param_ctx())
+                    return build_encoder_params(
+                        'intel', _video_param_ctx(hw_quality_boost=hw_quality_boost)
+                    )
 
-                def build_amd_params():
+                def build_amd_params(hw_quality_boost=None):
                     """生成 AMD AMF/VAAPI HEVC 编码参数"""
-                    return build_encoder_params('amd', _video_param_ctx(_detect_amd_backend()))
+                    return build_encoder_params(
+                        'amd',
+                        _video_param_ctx(_detect_amd_backend(), hw_quality_boost=hw_quality_boost),
+                    )
 
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
@@ -7494,6 +7566,7 @@ class TaskProcessor:
                     stage_start_time = time.time()
                     stage_last_progress_time = stage_start_time
                     stage_error_messages = []
+                    stage_timed_out = False
 
                     while True:
                         if is_task_cancelled(task_id):
@@ -7508,6 +7581,11 @@ class TaskProcessor:
                         # 检查超时
                         if time.time() - stage_start_time > run_timeout:
                             task_logger.error(f"{stage_suffix}FFmpeg处理超时（{run_timeout//60}分钟），强制终止")
+                            # 标记「这是超时」而不是靠错误文本推断：超时被杀时
+                            # stderr 里没有设备/参数类关键字，按「未知错误」处理会
+                            # 让长视频先按同一硬编器把整片再跑一遍（最现实的失败
+                            # 类型反而拿到最差的降级策略）。
+                            stage_timed_out = True
                             proc.terminate()
                             try:
                                 proc.wait(timeout=PROCESS_TERMINATE_WAIT_SECONDS)
@@ -7583,9 +7661,15 @@ class TaskProcessor:
                                 stage_error_messages.pop(0)
 
                     error_text = '\n'.join(stage_error_messages)
-                    return proc.returncode, error_text, os.path.exists(simple_output)
+                    return proc.returncode, error_text, os.path.exists(simple_output), stage_timed_out
 
-                process_returncode, error_output_full, output_ready = _execute_embed(cmd, timeout)
+                # 超时预算必须从**首次尝试之前**开始计：此前 deadline 在首轮返回
+                # 之后才建立，首轮已消耗的时间没有从预算里扣掉。
+                embed_started_at = time.monotonic()
+                first_stage_budget = max(300.0, float(timeout))
+                process_returncode, error_output_full, output_ready, first_timed_out = _execute_embed(
+                    cmd, first_stage_budget
+                )
 
                 if process_returncode == 0 and output_ready:
                     # 成功：优先原子替换，避免重复复制大文件
@@ -7608,15 +7692,18 @@ class TaskProcessor:
                 )
 
                 def _rebuild_hw_params(boost_enabled):
-                    """按同一硬件编码器重建参数（用于关闭质量增强后的降级重试）。"""
-                    encoder_settings['hw_quality_boost'] = boost_enabled
+                    """按同一硬件编码器重建参数（用于关闭质量增强后的降级重试）。
+
+                    通过 ``hw_quality_boost`` 覆盖通道传值，不改共享 dict ——
+                    就地改写会让后面的 CPU 回退阶段也读到「增强已关」。
+                    """
                     if actual_encoder == 'nvidia':
-                        return build_nvidia_params()
+                        return build_nvidia_params(hw_quality_boost=boost_enabled)
                     if actual_encoder == 'intel':
-                        return build_intel_params()
+                        return build_intel_params(hw_quality_boost=boost_enabled)
                     if actual_encoder == 'amd':
-                        return build_amd_params()
-                    return build_cpu_params()
+                        return build_amd_params(hw_quality_boost=boost_enabled)
+                    return build_cpu_params(hw_quality_boost=boost_enabled)
 
                 # 分级降级：硬编+质量增强失败时，先尝试关闭增强保留硬件加速，
                 # 仍失败才退回 CPU。直接跳 CPU 会让可用 GPU 白白闲置。
@@ -7624,13 +7711,33 @@ class TaskProcessor:
                 # 否则会按同一硬编器把整部视频白跑一遍。
                 hw_error_detected = self._is_known_hw_encoder_error(error_output_full)
                 hw_option_error = self._is_hw_option_error(error_output_full)
+                boost_enabled = bool(encoder_settings.get('hw_quality_boost'))
                 if actual_encoder in ('nvidia', 'intel', 'amd'):
-                    if hw_option_error:
+                    failure_kind = self._describe_hw_failure(
+                        actual_encoder,
+                        timed_out=first_timed_out,
+                        hw_option_error=hw_option_error,
+                        hw_error_detected=hw_error_detected,
+                        boost_enabled=boost_enabled,
+                        returncode=process_returncode,
+                    )
+                    if failure_kind == 'timeout':
+                        task_logger.warning(
+                            f"硬件编码器 {actual_encoder} 处理超时，跳过关增强重试直接回退 CPU 编码"
+                        )
+                    elif failure_kind == 'option_error':
                         task_logger.warning(
                             f"硬件编码器 {actual_encoder} 不接受某个选项，"
                             f"先关闭质量增强后用同一编码器重试"
                         )
-                    elif hw_error_detected:
+                    elif failure_kind == 'option_error_no_boost':
+                        # 质量增强本来就没开，「先关增强重试」是空动作：此前的日志
+                        # 照搬这句话，会把人往错的方向带（关闭后仍会失败）。
+                        task_logger.warning(
+                            f"硬件编码器 {actual_encoder} 不接受某个选项，且质量增强未开启，"
+                            f"直接回退 CPU 编码"
+                        )
+                    elif failure_kind == 'device_error':
                         task_logger.warning(
                             f"硬件编码器 {actual_encoder} 报设备/驱动类错误，"
                             f"关闭质量增强无效，直接回退 CPU 编码"
@@ -7646,10 +7753,14 @@ class TaskProcessor:
                     hw_error_detected,
                     hw_option_error,
                 )
+                if first_timed_out:
+                    retry_stages = self._drop_same_encoder_stage_after_timeout(retry_stages)
 
-                # 超时预算按剩余量递减：每个阶段各自 max(300, timeout) 重新计时
-                # 会让多阶段重试拿到数倍于预估的预算，长视频上尤其危险。
-                overall_deadline = time.monotonic() + max(300.0, float(timeout))
+                # 总预算 = 首次尝试 + 至多一轮完整降级，从首次尝试**之前**开始计。
+                # 单阶段上限为 first_stage_budget，因此最坏总时长 ≈ 2 × 预估；
+                # 此前 deadline 建在首轮返回之后（首轮不计入）且每阶段各自重置，
+                # 最坏可到 3 倍。
+                overall_deadline = embed_started_at + 2 * first_stage_budget
 
                 for stage in retry_stages:
                     if is_task_cancelled(task_id):
@@ -7677,9 +7788,10 @@ class TaskProcessor:
                         stage_filter = vf_filter
                         stage_color_params = _color_params_for('cpu')
 
-                    # 每个阶段只拿「总预算减去已用掉的部分」，并用 60s 兜底避免
-                    # 预算耗尽时把阶段压成 0；多阶段合计因此不超过预估总时长。
-                    stage_timeout = int(max(60.0, remaining_s))
+                    # 每个阶段只拿「总预算减去已用掉的部分」，且单阶段不得超过一次
+                    # 完整预算（否则前一级会把 CPU 回退的份额吃光）；用 60s 兜底
+                    # 避免预算耗尽时把阶段压成 0。
+                    stage_timeout = int(max(60.0, min(remaining_s, first_stage_budget)))
 
                     cmd_retry = self._build_embed_ffmpeg_cmd(
                         ffmpeg_bin=ffmpeg_bin,
@@ -7692,7 +7804,7 @@ class TaskProcessor:
                     )
                     task_logger.debug(f"回退FFmpeg命令({stage_label}): {' '.join(cmd_retry)}")
 
-                    retry_returncode, retry_error, retry_ready = _execute_embed(
+                    retry_returncode, retry_error, retry_ready, _stage_timed_out = _execute_embed(
                         cmd_retry, stage_timeout, stage_label
                     )
                     if retry_returncode == 0 and retry_ready:

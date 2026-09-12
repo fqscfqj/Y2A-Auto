@@ -441,6 +441,126 @@ class RetryStageTests(unittest.TestCase):
         self.assertFalse(TaskProcessor._is_known_hw_encoder_error(None))
 
 
+class AssSourceAppearanceTests(unittest.TestCase):
+    """M-1：ASS/SSA 源的字幕外观配置必须真的写进 force_style。
+
+    缺陷：`_build_subtitle_style_description` 只输出 FontName/FontSize/Outline/
+    Shadow/Margin*/Alignment —— libass 的 force_style 是逐键覆盖，源字幕的字色、
+    描边色、粗体与半透明底板仍来自创作者样式。用户改了「字体颜色」画面上毫无变化，
+    而日志照样打印「将以 force_style 覆盖源样式」（实测同一份配置喂 .srt 是红字、
+    喂 .ass 仍是白字）。
+    """
+
+    def _force_style(self, config):
+        return TaskProcessor._build_subtitle_force_style(
+            'Noto Sans CJK SC', 1920, 1080, parse_style_overrides(config))
+
+    def test_font_color_reaches_force_style(self):
+        forced = self._force_style({'SUBTITLE_FONT_COLOR': '#FF0000'})
+        # ASS 颜色是 BGR + 反相 alpha：#FF0000 -> &H000000FF
+        self.assertIn('PrimaryColour=&H000000FF', forced)
+
+    def test_outline_color_and_bold_reach_force_style(self):
+        forced = self._force_style({
+            'SUBTITLE_OUTLINE_COLOR': '#00FF00',
+            'SUBTITLE_TEXT_BOLD': False,
+        })
+        self.assertIn('OutlineColour=', forced)
+        self.assertIn('Bold=0', forced)
+
+    def test_background_box_reaches_force_style(self):
+        forced = self._force_style({
+            'SUBTITLE_BACKGROUND_ENABLED': True,
+            'SUBTITLE_BACKGROUND_COLOR': '#000000',
+            'SUBTITLE_BACKGROUND_OPACITY': 0.5,
+        })
+        self.assertIn('BorderStyle=4', forced)
+        self.assertIn('BackColour=', forced)
+
+    def test_defaults_keep_historical_values(self):
+        """反向守卫：全默认配置下写入的仍是历史默认值，不改变既有观感。"""
+        forced = self._force_style({})
+        self.assertIn('PrimaryColour=&H00FFFFFF', forced)
+        self.assertIn('OutlineColour=&HB2000000', forced)
+        self.assertIn('Bold=1', forced)
+        self.assertIn('BorderStyle=1', forced)
+
+    def test_ass_document_builder_still_reads_the_same_keys(self):
+        """生成 ASS 文档的路径从同一个描述里取键，不得因新增键而改变取值。"""
+        style, force_style = TaskProcessor._build_subtitle_style_description(
+            'Arial', 1920, 1080, parse_style_overrides({'SUBTITLE_FONT_COLOR': '#FF0000'}))
+        self.assertEqual(force_style['PrimaryColour'], '&H000000FF')
+        self.assertEqual(style['PrimaryColour'], '&H000000FF')
+        self.assertEqual(force_style['FontSize'], TaskProcessor._format_ass_number(style['FontSize']))
+
+
+class EmbedRetryWiringTests(unittest.TestCase):
+    """M-2/M-3/M-6：降级重试的调用点不变量。
+
+    上一轮复审指出：既有用例全是纯函数静态调用，看不到调用点，因此
+    「共享 dict 被就地改写」「预算只在重试阶段计」这两类缺陷不可能被发现。
+    这里对调用点自身的不变量做静态守卫（真正的转码路径无法在无 GPU 环境下跑）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'modules', 'task_manager.py')
+        with open(path, encoding='utf-8') as handle:
+            cls.source = handle.read()
+
+    def test_boost_override_does_not_mutate_shared_settings(self):
+        self.assertNotIn(
+            "encoder_settings['hw_quality_boost'] =", self.source,
+            '降级重试仍就地改写共享的 encoder_settings（CPU 回退会丢掉增强）')
+        self.assertIn('hw_quality_boost=boost_enabled', self.source)
+
+    def test_budget_starts_before_the_first_attempt(self):
+        first_attempt = self.source.index('_execute_embed(\n                    cmd,')
+        self.assertIn('embed_started_at = time.monotonic()', self.source)
+        self.assertLess(
+            self.source.index('embed_started_at = time.monotonic()'), first_attempt,
+            '超时预算必须在首次尝试之前建立，否则首轮耗时不计入预算')
+        self.assertLess(
+            self.source.index('first_stage_budget = '), first_attempt)
+        self.assertIn('overall_deadline = embed_started_at + 2 * first_stage_budget', self.source)
+
+    def test_timeout_is_tracked_and_skips_same_encoder_retry(self):
+        normalized = ' '.join(self.source.split())
+        self.assertIn('stage_timed_out', self.source)
+        self.assertIn('first_timed_out = _execute_embed', normalized)
+        self.assertIn('_drop_same_encoder_stage_after_timeout', normalized)
+
+
+class TimeoutRetryPolicyTests(unittest.TestCase):
+    """M-3：超时后的降级策略与失败归因（纯函数，可独立验证）。"""
+
+    def test_timeout_drops_same_encoder_retry(self):
+        self.assertEqual(
+            TaskProcessor._drop_same_encoder_stage_after_timeout(['hw_no_boost', 'cpu']),
+            ['cpu'])
+        self.assertEqual(
+            TaskProcessor._drop_same_encoder_stage_after_timeout(['cpu']), ['cpu'])
+        self.assertEqual(TaskProcessor._drop_same_encoder_stage_after_timeout(None), [])
+        self.assertEqual(TaskProcessor._drop_same_encoder_stage_after_timeout([]), [])
+
+    def test_failure_kinds_are_distinguished(self):
+        describe = TaskProcessor._describe_hw_failure
+        self.assertEqual(
+            describe('nvidia', timed_out=True, hw_option_error=True, boost_enabled=True),
+            'timeout')
+        self.assertEqual(
+            describe('nvidia', hw_option_error=True, boost_enabled=True), 'option_error')
+        # 质量增强本来就没开时，「先关增强重试」是空动作，必须走另一条文案
+        self.assertEqual(
+            describe('nvidia', hw_option_error=True, boost_enabled=False),
+            'option_error_no_boost')
+        self.assertEqual(
+            describe('nvidia', hw_error_detected=True, boost_enabled=True), 'device_error')
+        self.assertEqual(describe('nvidia', boost_enabled=True), 'unknown')
+
+
 class AudioParamsTests(unittest.TestCase):
     def test_aac_is_copied(self):
         params = TaskProcessor._build_audio_transcode_params({'codec_name': 'aac'})

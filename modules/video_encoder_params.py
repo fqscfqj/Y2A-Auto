@@ -104,12 +104,18 @@ _VAAPI_BOOST_PARAMS = ['-blbrc', '1']
 # x264 高质量调参（独立一等选项，非 -x264-params）。
 # 这四项与硬件编码器的增强项一样属于「质量增强」，统一受 hw_quality_boost
 # 总开关控制：关闭时回到与基线逐字一致的基础参数（见 _build_cpu）。
-_X264_QUALITY_PARAMS = [
+#
+# 拆成两组是因为 rc-lookahead 在 HD preset 路径上必须**跟随 preset**：
+# `-preset veryfast` 的 x264 默认 rc_lookahead=10，固定写 40 会把它抬 4 倍，
+# 而 VIDEO_CPU_PRESET_HD（1440p+ 且 >10 分钟）存在的唯一理由正是避免烧录超时 ——
+# 默认配置下与初衷相反。因此该项只在非 HD 路径注入。
+_X264_AQ_PARAMS = [
     '-aq-mode', '3',
     '-aq-strength', '0.8',
     '-psy-rd', '1.0:0.0',
-    '-rc-lookahead', '40',
 ]
+_X264_LOOKAHEAD_PARAMS = ['-rc-lookahead', '40']
+_X264_QUALITY_PARAMS = _X264_AQ_PARAMS + _X264_LOOKAHEAD_PARAMS
 
 _VAAPI_DEVICE = '/dev/dri/renderD128'
 
@@ -127,7 +133,7 @@ _VAAPI_DEVICE = '/dev/dri/renderD128'
 # （取值在 AVCOL 枚举里有定义，但与 yuv420p 转换不兼容）—— 两类都会让转码失败，
 # 因此都不得进表。
 _COLORSPACE_VALUES = frozenset((
-    'bt709', 'bt470bg', 'smpte170m', 'smpte240m', 'bt2020nc', 'rgb',
+    'bt709', 'bt470bg', 'smpte170m', 'smpte240m', 'bt2020nc', 'rgb', 'fcc',
 ))
 _PRIMARIES_VALUES = frozenset((
     'bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film',
@@ -138,6 +144,10 @@ _TRC_VALUES = frozenset((
     'bt709', 'gamma22', 'gamma28', 'smpte170m', 'smpte240m', 'linear',
     'log', 'log_sqrt', 'iec61966_2_4', 'bt1361', 'iec61966_2_1',
     'smpte2084', 'smpte428', 'smpte428_1', 'arib-std-b67',
+    # ffmpeg 自己的规范名，ffprobe 也会实际产出（用
+    # `-x264-params transfer=bt2020-10` 造出的源文件回读即 color_transfer=bt2020-10）。
+    # 此前不在表内 → 被静默丢弃，源素材带这两个标记时 VUI 少一项。
+    'bt2020-10', 'bt2020-12',
 ))
 _COLOR_RANGE_ALIASES = {'tv': 'tv', 'limited': 'tv', 'pc': 'pc', 'full': 'pc'}
 _SKIPPED_COLOR_TOKENS = frozenset(('', 'unknown', 'unspecified', 'reserved', 'n/a'))
@@ -460,12 +470,16 @@ def _normalize_color_token(value):
     return '' if token in _SKIPPED_COLOR_TOKENS else token
 
 
-def normalize_color_metadata(mode, source_color_info):
+def normalize_color_metadata(mode, source_color_info, logger=None):
     """解析色彩元数据，返回规范化映射 dict。
 
     键固定为 colorspace / color_primaries / color_trc / color_range，只包含可识别
     且非 unknown 的项（缺失的键不出现）。mode='off' 一律返回 {}，mode='bt709'
     返回强制 bt709 四项，mode='auto' 从 source_color_info 透传。
+
+    ``logger`` 非空时，对「源素材给了值但不在白名单内」的字段记一条 warning：
+    这类字段会被静默丢弃（输出的码流 VUI 少一项，播放器只能猜色域），
+    此前连一行日志都没有，排查时看不到任何线索。
     """
     normalized_mode = _normalize_choice(mode, _VALID_COLOR_MODES, 'auto')
 
@@ -498,10 +512,29 @@ def normalize_color_metadata(mode, source_color_info):
     if color_range in _COLOR_RANGE_ALIASES:
         resolved['color_range'] = _COLOR_RANGE_ALIASES[color_range]
 
+    if logger is not None:
+        dropped = []
+        for resolved_key, source_key, table in (
+            ('colorspace', 'color_space', _COLORSPACE_VALUES),
+            ('color_primaries', 'color_primaries', _PRIMARIES_VALUES),
+            ('color_trc', 'color_transfer', _TRC_VALUES),
+        ):
+            raw = _normalize_color_token(info.get(source_key))
+            if raw and raw not in table and resolved_key not in resolved:
+                dropped.append(f'{source_key}={raw}')
+        if dropped:
+            try:
+                logger.warning(
+                    "源素材色彩字段不在白名单内，已跳过（输出码流 VUI 会缺少该项）: %s",
+                    ', '.join(dropped),
+                )
+            except Exception:
+                pass
+
     return resolved
 
 
-def resolve_color_metadata(mode, source_color_info):
+def resolve_color_metadata(mode, source_color_info, logger=None):
     """解析要写入输出文件的色彩元数据，返回 list[str]（可直接展开进 ffmpeg 命令）。
 
     mode='off' -> []；mode='bt709' -> 强制 bt709 + tv 范围；mode='auto' ->
@@ -515,7 +548,7 @@ def resolve_color_metadata(mode, source_color_info):
     会据此写入码流 VUI；但 libx264/libx265 只转发 colorspace，会**静默忽略**
     color_primaries/color_trc，软件编码路径必须再配合 build_color_vui_params。
     """
-    resolved = normalize_color_metadata(mode, source_color_info)
+    resolved = normalize_color_metadata(mode, source_color_info, logger=logger)
     params = []
     for option, key in (
         ('-colorspace', 'colorspace'),
@@ -643,20 +676,24 @@ def _build_cpu(settings):
     NVENC/QSV/AMF/VAAPI 的增强项一样，受 hw_quality_boost 总开关控制：关闭时
     回到与基线（origin/main 的 build_cpu_params）逐字一致的基础参数。
 
-    为什么关闭开关必须真的去掉这四项（实测 N-123313 + libx264）：
+    为什么关闭开关必须真的去掉这几项（实测 N-123313 + libx264）：
 
     - `-preset veryfast`（VIDEO_CPU_PRESET_HD 路径）下 x264 默认 rc_lookahead=10，
       `-rc-lookahead 40` 会把它抬到 40；而该 preset 存在的理由正是「1440p+ 长视频
       避免字幕烧录超时」，前瞻翻 4 倍与初衷相反 —— 用户关掉增强时应当能甩掉它。
     - `-preset medium` 下 rc_lookahead 默认已是 40，新增项不改变该值，
       所以这项影响只在 veryfast 路径可见；aq-mode=3 两条路径都生效。
+
+    因此 HD preset 路径**不注入** `-rc-lookahead`（跟随 preset 自身默认值），
+    只保留 aq/psy 三项增强；其余路径保持四项（medium 下写 40 等于默认值，无副作用）。
     """
     preset = settings['cpu_preset']
-    if (
+    hd_preset_path = (
         settings['height'] >= _HD_PRESET_MIN_HEIGHT
         and settings['duration_s'] is not None
         and settings['duration_s'] > _HD_PRESET_MIN_DURATION_S
-    ):
+    )
+    if hd_preset_path:
         preset = settings['cpu_preset_hd']
 
     params = ['-c:v', 'libx264', '-preset', preset]
@@ -671,7 +708,9 @@ def _build_cpu(settings):
         '-pix_fmt', 'yuv420p',
     ]
     if settings['hw_quality_boost']:
-        params += list(_X264_QUALITY_PARAMS)
+        params += list(_X264_AQ_PARAMS)
+        if not hd_preset_path:
+            params += list(_X264_LOOKAHEAD_PARAMS)
     return params
 
 

@@ -22,6 +22,7 @@ ffmpeg 不可用时整类 skip，不失败。
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,40 @@ def _ffmpeg_usable():
                               timeout=15).returncode == 0
     except Exception:
         return False
+
+
+def _ffmpeg_enum_names(option):
+    """从 `ffmpeg -h full` 枚举某个 AVOption 的**全部**取值名。
+
+    上一轮的反向证据只硬编码了几个「必须被拒」的值，因此 `fcc` / `bt2020-10` /
+    `bt2020-12` 这类「ffmpeg 收、我们没收」的取值天然抓不到；这条路径把
+    ffmpeg 自己声明的取值集合枚举出来，再逐个实测，缺失会被抓成红灯。
+
+    解析约定（N-123313 实测格式）：选项行形如
+    `  -colorspace        <int>   ...`，随后的取值行缩进 5 空格。
+    """
+    if not FFMPEG:
+        return set()
+    try:
+        proc = subprocess.run([FFMPEG, '-hide_banner', '-h', 'full'],
+                              capture_output=True, timeout=120)
+    except Exception:
+        return set()
+    names = set()
+    capturing = False
+    pattern = re.compile(r'^-%s\s+<int>' % re.escape(option))
+    for line in proc.stdout.decode('utf-8', 'replace').splitlines():
+        stripped = line.strip()
+        if pattern.match(stripped):
+            capturing = True
+            continue
+        if not capturing:
+            continue
+        if not line.startswith('     '):
+            break
+        if stripped:
+            names.add(stripped.split()[0])
+    return names
 
 
 def _probe_vui(path):
@@ -136,19 +171,54 @@ class ColorMetadataSmokeTests(unittest.TestCase):
     def test_values_outside_the_tables_are_actually_rejected(self):
         # 反向证据：白名单不是「什么都收」的摆设。这些取值在 ffmpeg 侧不可用，
         # 正是原缺陷把三者合表时漏出去的取值。
+        # 注意不要把「拼错的名字」当反向证据：`bt2020_10` 只是错拼，
+        # 规范名是 `bt2020-10`（已在表内），拿它当反例会让人误以为表已完备。
         for option, value in (
             ('-colorspace', 'bt2020'),
             ('-colorspace', 'film'),
             ('-colorspace', 'bt2020c'),
+            ('-colorspace', 'ycgco'),
             ('-color_primaries', 'bt2020nc'),
             ('-color_primaries', 'ycgco'),
-            ('-color_trc', 'bt2020_10'),
-            ('-color_trc', 'bt2020_12'),
+            ('-color_trc', 'smpte2085'),
         ):
             code, _, _ = self._run([option, value], f'reject_{value}')
             self.assertNotEqual(
                 code, 0, f'{option} {value} 竟然被 ffmpeg 接受了，白名单需要复核'
             )
+
+    def test_whitelist_covers_every_value_we_can_actually_emit(self):
+        """完备性：ffmpeg 收下且能回读 VUI 的取值，白名单必须收录。
+
+        缺一个就是一条静默丢元数据的路径（用户看到输出的色域少一项，日志里什么
+        都没有）。断言与 ffmpeg 版本耦合是**刻意**的：换 ffmpeg 后新出现的可用
+        取值需要连同白名单一起更新，而不是被静默忽略。
+
+        ffmpeg 自己的别名（如 `bt2020_ncl` -> 回读 `bt2020nc`）不算缺失：我们写入
+        的一直是规范名，语义与别名一致。
+        """
+        skipped = {'unknown', 'reserved', 'unspecified', 'n/a'}
+        for option, table in (
+            ('colorspace', vep._COLORSPACE_VALUES),
+            ('color_primaries', vep._PRIMARIES_VALUES),
+            ('color_trc', vep._TRC_VALUES),
+        ):
+            names = _ffmpeg_enum_names(option)
+            self.assertTrue(names, f'未能从 ffmpeg -h full 解析出 -{option} 的取值集合')
+            missing = []
+            for name in sorted(names):
+                if name in table or name in skipped:
+                    continue
+                code, _tail, vui = self._run(['-' + option, name], f'complete_{option}_{name}')
+                if code != 0 or not any(vui.values()):
+                    continue
+                canonical = str(vui.get(_VUI_KEYS[option]) or '').strip()
+                if canonical and canonical in table:
+                    continue
+                missing.append(f'-{option} {name} -> {vui}')
+            self.assertEqual(
+                missing, [],
+                f'ffmpeg 接受且能写入 VUI，但白名单未收录（会静默丢元数据）：{missing}')
 
     def test_colorspace_round_trips_through_the_generic_option(self):
         """`-colorspace` 会被 libx264 转发进 VUI，回读必须与写入值语义一致。
