@@ -225,7 +225,7 @@ DEFAULT_CONFIG = {
     "VAD_MIN_SEGMENT_S": 0.8,  # 允许略短片段保留独立句边界
     "VAD_MAX_SEGMENT_S_FOR_SPLIT": 15.0,  # 与搜索窗硬上限对齐
     "VAD_REFINEMENT_ENABLED": True,  # 对粗检出的语音窗执行二次边界收敛
-    "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.015,  # 低于该占比时触发宽松VAD重试
+    "VAD_MIN_SPEECH_COVERAGE_RATIO": 0.01,  # 低于该占比时触发宽松VAD重试（按 speech_duration 口径重标定）
     # 转写参数
     "WHISPER_LANGUAGE": "",  # 强制语言（如 en, zh, ja），空=自动检测
     "WHISPER_PROMPT": "",  # 转写提示（引导生成，减少幻觉）

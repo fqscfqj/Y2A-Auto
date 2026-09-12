@@ -1099,5 +1099,206 @@ class StuckTaskResetClearsQualityStateTests(unittest.TestCase):
         self.assertTrue(conn.closed)
 
 
+class QcResultDecisionPointTests(unittest.TestCase):
+    """R2：三态 + 逃生口的判定必须只有一处实现。
+
+    缺陷：三个调用点各写一份判定。上传前那条路径（`_prepare_subtitle_for_upload`
+    的 `qc_result is True or qc_result is SUBTITLE_QC_DISABLED`）完全不读逃生口，
+    于是同一份 `asr_*.srt` 因为「走哪条分支 / 哪个阶段」得到相反结论 ——
+    README 承诺 `ASR_FAILURE_BLOCKS_EMBED=False` 可放宽「质检没跑成」的拦截，
+    实际只在一部分路径成立。
+    """
+
+    def test_helper_truth_table(self):
+        hatch_on = {'ASR_FAILURE_BLOCKS_EMBED': True}
+        hatch_off = {'ASR_FAILURE_BLOCKS_EMBED': False}
+        self.assertTrue(tm._qc_result_allows_embed(True, hatch_on))
+        self.assertTrue(tm._qc_result_allows_embed(tm.SUBTITLE_QC_DISABLED, hatch_on))
+        # 质检没跑成：默认拦截，逃生口打开才放行
+        self.assertFalse(tm._qc_result_allows_embed(None, hatch_on))
+        self.assertTrue(tm._qc_result_allows_embed(None, hatch_off))
+        # 明确的失败结论不受逃生口影响
+        self.assertFalse(tm._qc_result_allows_embed(False, hatch_off))
+        self.assertFalse(tm._qc_result_allows_embed(False, hatch_on))
+        # 配置缺失时按「拦截」处理，不能因为读不到键就静默放行
+        self.assertFalse(tm._qc_result_allows_embed(None, {}))
+
+    def test_escape_hatch_config_is_the_only_source_of_truth(self):
+        """逃生口只看配置：上层局部变量 `escape_hatch_active` 不再是判据。
+
+        `_translate_subtitle` 里的那份局部变量只在「结局为 failed」时置真，
+        若它参与判定，则「结局 ok + 质检没跑成 + 逃生口打开」在两个阶段会得到
+        相反结论。
+        """
+        config = {'ASR_FAILURE_BLOCKS_EMBED': False}
+        self.assertTrue(tm._qc_result_allows_embed(None, config))
+
+    def test_no_call_site_reimplements_the_decision(self):
+        """静态守卫：不允许再出现各写一份的三态判定。
+
+        只允许 ``_qc_result_allows_embed`` 自身出现三态比较；三个调用点都必须
+        调它。这里用计数而不是逐个 grep，避免把整份源码打进失败信息。
+        """
+        source = open(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'modules', 'task_manager.py'), encoding='utf-8').read()
+        inline_idiom = source.count('qc_result is True or qc_result is SUBTITLE_QC_DISABLED')
+        helper_calls = source.count('_qc_result_allows_embed(')
+        self.assertTrue(
+            inline_idiom <= 1,
+            f'仍有 {inline_idiom} 处绕过统一判定的三态比较（只允许判定函数自身那 1 处）')
+        self.assertTrue(
+            helper_calls >= 4,
+            f'统一判定只被引用 {helper_calls} 次（期望 1 处定义 + 3 个调用点）')
+
+
+class QcUnavailablePersistenceTests(unittest.TestCase):
+    """N1：逃生口放行的结论必须与落库状态一致。
+
+    缺陷：`_run_subtitle_qc` 在返回 None 之前无条件写 `subtitle_qc_failed=1`；
+    随后 `_ensure_asr_subtitle_qc` 在逃生口打开时返回「放行」。同一次判定在内存里
+    是放行、在库里是硬失败，于是上传前阶段读库又把烧录拦下，并把字幕阶段永久
+    判为未完成 —— 用户显式配置的宽松策略失效且每轮重跑都重做 ASR。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='y2a-qc-unavail-persist-')
+        self.task_id = 'task-qc-persist'
+        self.processor = tm.TaskProcessor({})
+        self.updates = {}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _srt(self):
+        path = os.path.join(self.tmpdir, f'asr_{self.task_id}.srt')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
+        return path
+
+    def _run(self, config, stored_task=None):
+        self.processor.config = dict(config)
+        self.processor._get_video_duration = MagicMock(return_value=None)
+
+        def fake_update_task(task_id, **kwargs):
+            self.updates.update({k: v for k, v in kwargs.items() if k != 'silent'})
+            return True
+
+        with patch.object(tm, 'update_task', side_effect=fake_update_task), \
+                patch.object(tm, 'get_task', return_value=stored_task or {'video_path_local': ''}), \
+                patch('modules.subtitle_qc.run_subtitle_qc', side_effect=RuntimeError('boom')):
+            return self.processor._run_subtitle_qc(self.task_id, self._srt(), MagicMock())
+
+    def test_default_hatch_blocks_and_persists_failed(self):
+        result = self._run({'SUBTITLE_QC_ENABLED': True})
+        self.assertIsNone(result)
+        self.assertEqual(self.updates.get('subtitle_qc_failed'), 1)
+        self.assertEqual(self.updates.get('subtitle_qc_reason'), 'qc_unavailable')
+
+    def test_escape_hatch_does_not_persist_a_contradicting_failure(self):
+        """逃生口打开时不得落 `qc_failed=1`：否则后续阶段与本次放行结论矛盾。"""
+        result = self._run({'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False})
+        self.assertIsNone(result)
+        self.assertEqual(self.updates.get('subtitle_qc_failed'), 0)
+        self.assertEqual(self.updates.get('subtitle_qc_reason'), 'qc_unavailable')
+        # 同一状态下（放行 + 库里 qc_failed=0）后续阶段的门控也必须放行
+        self.assertTrue(tm._subtitle_embed_allowed(
+            {'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False}, 'ok', False))
+        self.assertFalse(tm._is_subtitle_stage_rejected({'subtitle_qc_failed': 0}))
+
+    def test_escape_hatch_does_not_launder_an_existing_failure(self):
+        """逃生口只放宽「质检没跑成」，不得把历史的明确失败结论洗白。"""
+        result = self._run(
+            {'SUBTITLE_QC_ENABLED': True, 'ASR_FAILURE_BLOCKS_EMBED': False},
+            stored_task={'video_path_local': '', 'subtitle_qc_failed': 1},
+        )
+        self.assertIsNone(result)
+        self.assertEqual(self.updates.get('subtitle_qc_failed'), 1,
+                         '既有质检失败结论被本次「没跑成」洗白了')
+
+    def test_persist_failure_is_consumed_not_silently_dropped(self):
+        """落库失败必须留下可见告警（B-a 的失效链在 DB 写失败时会原样重现）。"""
+        processor = tm.TaskProcessor({})
+        logger = MagicMock()
+        with patch.object(processor, '_mark_subtitle_qc_unavailable', return_value=False):
+            persisted = processor._persist_qc_unavailable('t', logger, detail='missing_file')
+        self.assertFalse(persisted)
+        self.assertTrue(logger.warning.called)
+
+
+class TranslatedSubtitleSourceInheritanceTests(unittest.TestCase):
+    """N3：译文的来源继承 —— `translated_*.srt` 不能永远放行。
+
+    缺陷：质检对象退回译文时，`translated_*.srt` 不匹配 `asr_*` 前缀，
+    闸门判定「非 ASR 产物」直接放行，注释声称的「至少让闸门有机会拒绝」恒不成立。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='y2a-translated-source-')
+        self.task_id = 'task-translated-source'
+        self.processor = tm.TaskProcessor({})
+        self.quarantined = []
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _srt(self, name):
+        path = os.path.join(self.tmpdir, name)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\nhello world\n')
+        return path
+
+    def _gate(self, subtitle_path, qc_result, force_asr=None):
+        self.processor._run_subtitle_qc = MagicMock(return_value=qc_result)
+
+        def fake_quarantine(path, logger=None, **kwargs):
+            self.quarantined.append((path, kwargs.get('force')))
+            return 'x.rejected.txt'
+
+        self.processor._quarantine_rejected_subtitle = MagicMock(side_effect=fake_quarantine)
+        with patch.object(tm, 'update_task', return_value=True):
+            return self.processor._ensure_asr_subtitle_qc(
+                self.task_id, subtitle_path, MagicMock(), 'ok', force_asr=force_asr
+            )
+
+    def test_asr_derived_translation_is_actually_gated(self):
+        path = self._srt('translated_task.source.srt')
+        allowed, cleared, reason = self._gate(path, False, force_asr=True)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, 'subtitle_qc_rejected')
+        self.processor._run_subtitle_qc.assert_called_once()
+        self.assertEqual(self.quarantined, [(path, True)])
+
+    def test_asr_derived_translation_without_qc_result_blocks_by_default(self):
+        allowed, _cleared, reason = self._gate(
+            self._srt('translated_task.source.srt'), None, force_asr=True)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, 'qc_unavailable')
+
+    def test_external_translation_is_not_gated(self):
+        """反向守卫：外部字幕翻译出来的译文仍不受 ASR 质量结局约束。"""
+        path = self._srt('translated_video.en.srt')
+        allowed, cleared, _reason = self._gate(path, False, force_asr=False)
+        self.assertTrue(allowed)
+        self.assertFalse(cleared)
+        self.processor._run_subtitle_qc.assert_not_called()
+        self.assertEqual(self.quarantined, [])
+
+    def test_force_quarantine_renames_derived_translation(self):
+        """继承来源的译文被拒后必须移出复用范围，否则下轮继续复用它。"""
+        self.processor.config = {}
+        path = self._srt('translated_task.source.srt')
+        target = self.processor._quarantine_rejected_subtitle(path, MagicMock(), force=True)
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(target.endswith('.rejected.txt'))
+        self.assertTrue(os.path.exists(target))
+
+    def test_without_force_external_file_is_left_alone(self):
+        self.processor.config = {}
+        path = self._srt('video.zh.srt')
+        self.assertEqual(self.processor._quarantine_rejected_subtitle(path, MagicMock()), '')
+        self.assertTrue(os.path.exists(path))
+
+
 if __name__ == '__main__':
     unittest.main()

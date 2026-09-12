@@ -3,6 +3,7 @@
 
 import os
 import re
+import unicodedata
 import json
 import time
 import logging
@@ -61,6 +62,18 @@ _CJK_ONLY_RE = re.compile(r'[\u3400-\u9fff]+')
 # 非中文的 CJK 文字体系：日文假名（平假名/片假名）、韩文谚文与字母。
 # 汉字码位被中日韩共用，无法单靠汉字判断语种，但假名/谚文是明确的「非中文」信号。
 _NON_CHINESE_CJK_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\u1100-\u11ff]')
+# 全部 CJK 字符（汉字 + 假名 + 谚文），用于计算「非中文 CJK 占比」。
+_CJK_CHAR_RE = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af\u1100-\u11ff\u3400-\u9fff]')
+
+
+def _compact_compare(text: str) -> str:
+    """比较用归一化：去掉空白 / 标点 / 符号，并做 NFKC 与大小写折叠。
+
+    用于识别「只改了标点或空格」的伪翻译：CJK 文本里给原文加一个句号、
+    删一个逗号或插一个空格，就能绕过 ``d == s`` 这条快速路径。
+    """
+    normalized = unicodedata.normalize('NFKC', str(text or ''))
+    return re.sub(r'[\s\W_]+', '', normalized, flags=re.UNICODE).casefold()
 
 
 def _is_chinese_target(target_language) -> bool:
@@ -1529,16 +1542,45 @@ class SubtitleTranslator:
                 # 若目标语言是中文但结果与原文一致，多半未翻译；
                 # 但不可译条目（URL/型号/纯数字/专有名词）保留原文是正确行为。
                 return not _is_preservable_verbatim(d, target_language)
+            if _compact_compare(d) == _compact_compare(s):
+                # 只改了标点 / 空格 / 宽窄（"東京駅です" → "東京駅です。"、
+                # "東京、新宿" → "東京 新宿"）不算翻译。CJK 汉字占多数的句子
+                # 尤其容易用这种「伪改动」绕过上面那条精确相等的快速路径，
+                # 于是日文原文被算成中文译文、写进中文字幕并烧录。
+                return not _is_preservable_verbatim(d, target_language)
             # 计算非中文比例（仅中文汉字 vs 英数）
             chinese = 0
             non_chinese = 0
+            target_lang_known = bool(str(target_language or '').strip())
+            target_is_chinese = _is_chinese_target(target_language)
+            # 汉字码位被中日韩共用，单看汉字无法判定语种。判定「译文里的汉字算不算
+            # 中文」需要两个信号（缺一不可，见下）：
+            #   1) 源文本本身就是日文 / 韩文（含假名 / 谚文）；
+            #   2) 译文自身以假名 / 谚文为主（占其 CJK 字符 40% 以上）。
+            # 只用 (1) 会让「英文源 → 模型返回日文」漏检；只用 (2) 会把
+            # 「中文译文里保留了一个日文借词（アニメ）」误判成未译。
+            # 修复的缺陷形态：日文原文只被加了一个句号 / 删了一个逗号 / 插了一个空格，
+            # ``d == s`` 的快速路径不再命中，若不在这里把汉字判为非中文，
+            # 「汉字占多数的日文」就会在下面 0.8 的比值判据下被算成中文译文。
+            src_has_foreign_cjk = bool(_NON_CHINESE_CJK_RE.search(s))
+            dst_has_foreign_cjk = bool(_NON_CHINESE_CJK_RE.search(d))
+            cjk_is_foreign = False
+            if dst_has_foreign_cjk:
+                cjk_total = len(_CJK_CHAR_RE.findall(d))
+                foreign_total = len(_NON_CHINESE_CJK_RE.findall(d))
+                cjk_is_foreign = src_has_foreign_cjk or (
+                    cjk_total > 0 and (foreign_total / cjk_total) >= 0.4
+                )
             for ch in d:
                 if ch.isspace():
                     continue
                 # 中文汉字范围
                 code = ord(ch)
                 if 0x4E00 <= code <= 0x9FFF:
-                    chinese += 1
+                    if cjk_is_foreign:
+                        non_chinese += 1
+                    else:
+                        chinese += 1
                 elif re.match(r"[A-Za-z0-9]", ch):
                     non_chinese += 1
                 elif _NON_CHINESE_CJK_RE.match(ch):
@@ -1548,6 +1590,11 @@ class SubtitleTranslator:
                 else:
                     # 忽略标点/符号/表情，不计入分母
                     continue
+            if target_lang_known and not target_is_chinese and chinese > 0 and non_chinese == 0:
+                # 目标语言明确不是中文，译文却全是汉字（无假名 / 谚文混排）：
+                # 这几乎只可能是原文被原样返回。日文 / 韩文因含假名 / 谚文已在
+                # 上面的分母里计为非中文，不会落进本分支。
+                return True
             denom = chinese + non_chinese
             if denom == 0:
                 return False

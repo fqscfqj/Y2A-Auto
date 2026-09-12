@@ -199,10 +199,14 @@ class NormalizeOutputCuesTests(unittest.TestCase):
         for i in range(1, len(out)):
             self.assertGreaterEqual(out[i].start_s, out[i - 1].end_s)
 
-    def test_fully_swallowed_cue_dropped(self):
-        cues = [_cue(0, 5, 'a'), _cue(2, 3, 'b')]  # b 完全落在 a 内
+    def test_fully_swallowed_cue_text_is_absorbed_not_lost(self):
+        # b 完全落在 a 内 -> 时间轴不可用，但**文本不得丢失**：并入相邻 cue。
+        cues = [_cue(0, 5, 'a'), _cue(2, 3, 'b')]
         out = _normalize_output_cues(cues)
-        self.assertEqual([c.text for c in out], ['a'])
+        self.assertEqual(len(out), 1)
+        self.assertIn('a', out[0].text)
+        self.assertIn('b', out[0].text)
+        self.assertLessEqual(out[0].end_s, 5.0)
 
     def test_out_of_range_clamped(self):
         cues = [_cue(-5, 100, 'a')]
@@ -216,9 +220,37 @@ class NormalizeOutputCuesTests(unittest.TestCase):
         out = _normalize_output_cues(cues, total_duration_s=10.0)
         self.assertEqual([c.text for c in out], ['a'])
 
-    def test_invalid_duration_dropped(self):
+    def test_invalid_duration_keeps_text_in_fallback_cue(self):
+        # 全部 cue 时间轴都不可用 -> 输出一条兜底 cue 承载文本，而不是整批丢内容。
         cues = [_cue(0, 0, 'zero'), _cue(1, 0.5, 'inverted')]
-        self.assertEqual(_normalize_output_cues(cues), [])
+        out = _normalize_output_cues(cues)
+        self.assertEqual(len(out), 1)
+        self.assertIn('zero', out[0].text)
+        self.assertIn('inverted', out[0].text)
+        self.assertEqual(out[0].timing_source, 'orphan_text_fallback')
+
+    def test_invalid_cue_text_is_absorbed_into_next_valid_cue(self):
+        """时间戳不可用的 cue 的文本必须并入下一条，而不是连文本一起丢掉。"""
+        cues = [_cue(0, 0, 'lost text'), _cue(1, 2, 'kept text')]
+        out = _normalize_output_cues(cues)
+        self.assertEqual(len(out), 1)
+        self.assertIn('lost text', out[0].text)
+        self.assertIn('kept text', out[0].text)
+        self.assertAlmostEqual(out[0].start_s, 1.0, places=6)
+
+    def test_absorbed_text_does_not_mutate_caller_objects(self):
+        """归一化不得就地改写调用方传入的 cue（可能被上游继续复用）。"""
+        cues = [_cue(0, 0, 'lost text'), _cue(1, 2, 'kept text')]
+        callers = list(cues)
+        _normalize_output_cues(cues)
+        self.assertEqual(callers[1].text, 'kept text')
+
+    def test_fully_dropped_batch_is_reported_not_silent(self):
+        logger = MagicMock()
+        cues = [_cue(0, 0, 'only text')]
+        out = _normalize_output_cues(cues, logger=logger)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(logger.warning.called)
 
     def test_confidence_preserved(self):
         cues = [_cue(0, 1, 'a', timing_source='ai', alignment_confidence=0.9)]

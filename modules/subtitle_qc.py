@@ -71,7 +71,18 @@ TIMELINE_EXTREME_DEGENERATE_RATIO = 0.25
 # 片尾留白容忍带：结束卡 / 黑屏 / 静音吃掉末尾十几秒是常态，
 # 因此「末条提前结束」只有在**绝对秒数**也超出该容忍带时才视为可疑。
 # 50 分钟以上的视频若末条只到 83%，600s 的缺口远超 30s，仍会被抓住。
+#
+# 但只看绝对秒数对短视频等于失效：60s 素材的容忍带最宽可达片长的 25–50%，
+# 实测「60s 视频、字幕只到 36.6s（末尾 23.4s 无字幕）」被直接放行。
+# 因此再加一条**相对**上界，取两者较小值。
 TIMELINE_TAIL_GRACE_SECONDS = 30.0
+# 片尾留白最多容忍片长的该比例（10 分钟素材 → 30s 绝对带先命中；
+# 1 分钟素材 → 15s，末尾 23s 的大段缺失不再被容忍）。
+TIMELINE_TAIL_GRACE_RATIO = 0.25
+# 零时长 cue 占比达到该值时视为**实质缺陷**（AI 不可用时也拒绝烧录）。
+# 硬失败线（0.25）之下留出的这段区间此前「可疑但可放行」，实测 23% 的零时长
+# cue 仍被放行 —— 那已经是明显的部分崩坏，不只是音频块边界重合。
+TIMELINE_MATERIAL_ZERO_DURATION_RATIO = 0.20
 
 
 def _pipeline_timeline_default(key: str, fallback: float) -> float:
@@ -605,19 +616,24 @@ def _build_item_stats(
 def _tail_within_grace(metrics: Dict[str, Any]) -> bool:
     """末条结束位置距视频结尾是否在容忍带内（片尾黑屏/静音/结束卡的常态留白）。
 
+    容忍带取「绝对秒数」与「片长比例」的较小值：只用绝对秒数会让短视频的
+    容忍带相对片长过宽（60s 素材末尾 23s 无字幕也会被当作良性留白）。
+
     没有总时长或末条位置时返回 False（无法证明是良性留白，按可疑处理）。
     """
     duration = float(metrics.get('total_duration_seconds', 0.0) or 0.0)
     last_cue_end = metrics.get('last_cue_end_seconds')
     if duration <= 0 or last_cue_end is None:
         return False
-    return (duration - float(last_cue_end)) <= TIMELINE_TAIL_GRACE_SECONDS
+    grace = min(TIMELINE_TAIL_GRACE_SECONDS, TIMELINE_TAIL_GRACE_RATIO * duration)
+    return (duration - float(last_cue_end)) <= grace
 
 
 def _timeline_materially_deficient(metrics: Dict[str, Any]) -> bool:
-    """时间轴是否存在**实质缺陷**：覆盖率严重不足，或末条明显提前结束。
+    """时间轴是否存在**实质缺陷**：覆盖率严重不足、末条明显提前结束，
+    或零时长 cue 已达明显部分崩坏的规模。
 
-    只有这两类信号才禁止在 AI 不可用时放行 —— 它们是时间轴维度真正要抓的目标
+    只有这几类信号才禁止在 AI 不可用时放行 —— 它们是时间轴维度真正要抓的目标
     （VAD 中途崩坏、字幕只覆盖前段）。其余可疑信号（轻微重叠 / 语速异常 /
     空档偏大 / 文本维度软信号）在规则分达到高置信线时允许放行，避免良性字幕
     仅因「末条没压到最后 85%」而在未配置 AI 时永远无法烧录。
@@ -629,7 +645,18 @@ def _timeline_materially_deficient(metrics: Dict[str, Any]) -> bool:
         return True
     last_end_ratio = metrics.get('last_cue_end_ratio')
     if last_end_ratio is not None and float(last_end_ratio) < TIMELINE_SUSPICIOUS_LAST_CUE_END_RATIO:
-        return not _tail_within_grace(metrics)
+        if not _tail_within_grace(metrics):
+            return True
+    # 零时长 cue 占比落在「可疑线（0.10）与硬失败线（0.25）之间」时，若已达到
+    # 明显部分崩坏的规模，同样禁止在 AI 不可用时放行：实测 23% 的零时长 cue
+    # 在旧判据下 rule_score 仍够高而直接烧录。
+    zero_duration_count = int(metrics.get('zero_duration_count', 0) or 0)
+    zero_duration_ratio = float(metrics.get('zero_duration_ratio', 0.0) or 0.0)
+    if (
+        zero_duration_count >= TIMELINE_MIN_ZERO_DURATION_COUNT
+        and zero_duration_ratio >= TIMELINE_MATERIAL_ZERO_DURATION_RATIO
+    ):
+        return True
     return False
 
 
