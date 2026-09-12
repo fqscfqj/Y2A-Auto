@@ -223,6 +223,12 @@ python app.py
 - `FFMPEG_LOCATION`：自定义 FFmpeg 路径
 - `FFMPEG_AUTO_DOWNLOAD`：Windows 缺失时自动下载 FFmpeg，默认 `true`
 
+> **FFmpeg 版本要求：≥ 5.1。** 字幕烧录使用 `-fps_mode cfr` 控制帧率模式，
+> 该选项在 FFmpeg 5.1 才引入（5.0 及更早只认已弃用的 `-vsync`）。仓库自带的
+> 与自动下载的 FFmpeg（BtbN latest）都远高于该版本；但若通过 `FFMPEG_LOCATION`
+> 指向 5.0 或更早的旧版本，软件编码路径会因 `Unrecognized option 'fps_mode'`
+> 直接失败（非硬件编码器没有降级重试，任务会直接报错）。
+
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
@@ -242,12 +248,29 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED`：下载 YouTube 自动生成字幕，默认 `false`
 - `SUBTITLE_SOURCE_LANGUAGE`：源语言，默认 `auto`
 - `SUBTITLE_TARGET_LANGUAGE`：目标语言，默认 `zh`
-- `SUBTITLE_FONT_NAME`：烧录字幕字体名，默认 `SourceHanSansHWSC-VF.otf`
+- `SUBTITLE_FONT_NAME`：烧录字幕字体名，默认 `NotoSansCJKsc-Regular.otf`
 - `SUBTITLE_BATCH_SIZE`：翻译批次大小
 - `SUBTITLE_MAX_RETRIES` / `SUBTITLE_RETRY_DELAY`：翻译重试策略
 - `SUBTITLE_EMBED_IN_VIDEO`：是否将字幕嵌入视频
 - `SUBTITLE_KEEP_ORIGINAL`：是否保留原始字幕文件
 - `SUBTITLE_MAX_WORKERS`：字幕翻译并发线程数
+
+烧录字幕外观（默认值即历史观感；对`.ass`/`.ssa` 源的行为变更见下方说明）：
+
+- `SUBTITLE_FONT_SIZE_SCALE` / `SUBTITLE_MARGIN_V_SCALE`：字号与底部边距倍率，范围 `0.5-2.0`，默认 `1.0`
+- `SUBTITLE_FONT_COLOR` / `SUBTITLE_OUTLINE_COLOR`：字体色与描边色，`#RRGGBB`，默认 `#FFFFFF` / `#000000`
+- `SUBTITLE_OUTLINE_ENABLED` / `SUBTITLE_OUTLINE_SCALE`：描边开关与粗细倍率（`0-3`）
+- `SUBTITLE_SHADOW_ENABLED` / `SUBTITLE_SHADOW_SCALE`：阴影开关与倍率（`0-3`）
+- `SUBTITLE_TEXT_BOLD`：是否粗体，默认 `true`
+- `SUBTITLE_BACKGROUND_ENABLED` / `SUBTITLE_BACKGROUND_COLOR` / `SUBTITLE_BACKGROUND_OPACITY`：半透明底板（`BorderStyle=4`）及其颜色与不透明度（`0-1`）。开启后 libass 会把阴影当作底框外扩，建议同时关闭阴影
+
+> **行为变更（`.ass` / `.ssa` 源素材）**：上述外观配置现在对**所有字幕源统一生效**。
+> 此前上游只把字体与边距写进 `force_style`，字色 / 描边色 / 粗体 / 底板这些键对
+> `.ass` / `.ssa` 源**不生效**（同一份配置喂 `.srt` 是红字、喂 `.ass` 仍是创作者的白字），
+> 现在这些键改为逐键覆盖源样式 —— 也就是说，**素材自带的字色 / 粗体 / 底板样式会被
+> 应用配置覆盖**，未配置时即默认的白字 + 粗体 + 描边（与 SRT 源行为一致）。
+> 升级后若想保留素材自带外观，请把对应配置项显式设置成与素材一致的取值，或改用
+> 自带样式的外部字幕文件而不依赖本功能。
 
 ### 语音识别（ASR）
 
@@ -265,7 +288,13 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `VIDEO_ENCODER`：`auto` / `cpu` / `nvidia` / `intel` / `amd`
 - `VIDEO_CPU_PRESET`：常规 CPU/libx264 转码 preset，默认 `medium`
 - `VIDEO_CPU_PRESET_HD`：1440p+ 且超过 10 分钟时使用的 preset，默认 `veryfast`
-- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数
+- `VIDEO_QUALITY_MODE`：`auto`（按分辨率推荐）或 `manual`（使用 `VIDEO_QUALITY_VALUE`），默认 `auto`
+- `VIDEO_QUALITY_VALUE`：固定质量值 CRF/CQ/QP，范围 `0-51`，越小质量越高。自动模式的推荐值为 4K `22.5` / 1440p `23` / 1080p `23.5` / 720p `24.5`
+- `VIDEO_HW_QUALITY_BOOST`：编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。它同时作用于硬件编码器与软件 `libx264`（`-aq-mode 3 -aq-strength 0.8 -psy-rd 1.0:0.0`，非 HD preset 路径再加 `-rc-lookahead 40`）；1440p+ 长视频走 `VERYFAST` 档时前瞻跟随 preset 自身默认值，不被放大。老 GPU 驱动不认识这些参数时可关闭，命令会回到基础参数并自动重试
+- `VIDEO_HW_QUALITY_LEVEL`：`fast` / `balanced` / `quality`，映射到各硬件编码器的速度档，默认 `quality`
+- `VIDEO_COLOR_METADATA_MODE`：`auto`（透传源流色彩信息）/ `bt709`（强制）/ `off`（不写入），默认 `auto`。不写入时播放器会按默认色域解释，可能偏色
+- `VIDEO_X264_TUNE`：libx264 `-tune` 取值（如 `film` / `animation`），留空则不传
+- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数（启用后完全覆盖内置编码参数与色彩参数）
 - `MAX_CONCURRENT_TASKS`：最大并发任务数，默认 `2`
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
 - `LOG_CLEANUP_ENABLED` / `LOG_CLEANUP_HOURS` / `LOG_CLEANUP_INTERVAL`

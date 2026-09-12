@@ -31,6 +31,14 @@ def _bound_text(value):
     return str(int(numeric)) if numeric.is_integer() else f'{numeric:g}'
 
 
+def _bound_float(raw):
+    """把 HTML 属性里的 min/max 解析成数值；缺失或非法时返回 None。"""
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 EXPECTED_PANES = [
     'vtab-publish',
     'vtab-accounts',
@@ -186,9 +194,15 @@ FIELD_TAB_MAP = {
     'VAD_SILERO_THRESHOLD': 'vtab-asr',
     'VIDEO_CPU_PRESET': 'vtab-media',
     'VIDEO_CPU_PRESET_HD': 'vtab-media',
+    'VIDEO_COLOR_METADATA_MODE': 'vtab-media',
     'VIDEO_CUSTOM_PARAMS': 'vtab-media',
     'VIDEO_CUSTOM_PARAMS_ENABLED': 'vtab-media',
     'VIDEO_ENCODER': 'vtab-media',
+    'VIDEO_HW_QUALITY_BOOST': 'vtab-media',
+    'VIDEO_HW_QUALITY_LEVEL': 'vtab-media',
+    'VIDEO_QUALITY_MODE': 'vtab-media',
+    'VIDEO_QUALITY_VALUE': 'vtab-media',
+    'VIDEO_X264_TUNE': 'vtab-media',
     'VOXTRAL_API_KEY': 'vtab-asr',
     'VOXTRAL_BASE_URL': 'vtab-asr',
     'VOXTRAL_CONTEXT_BIAS': 'vtab-asr',
@@ -337,6 +351,18 @@ ALL_FIELD_NAMES = frozenset([
     'SUBTITLE_OPENAI_MODEL_NAME',
     'SUBTITLE_OPENAI_THINKING_ENABLED',
     'SUBTITLE_PREFER_SINGLE_LINE',
+    'SUBTITLE_BACKGROUND_COLOR',
+    'SUBTITLE_BACKGROUND_ENABLED',
+    'SUBTITLE_BACKGROUND_OPACITY',
+    'SUBTITLE_FONT_COLOR',
+    'SUBTITLE_FONT_SIZE_SCALE',
+    'SUBTITLE_MARGIN_V_SCALE',
+    'SUBTITLE_OUTLINE_COLOR',
+    'SUBTITLE_OUTLINE_ENABLED',
+    'SUBTITLE_OUTLINE_SCALE',
+    'SUBTITLE_SHADOW_ENABLED',
+    'SUBTITLE_SHADOW_SCALE',
+    'SUBTITLE_TEXT_BOLD',
     'SUBTITLE_QC_API_KEY',
     'SUBTITLE_QC_BASE_URL',
     'SUBTITLE_QC_ENABLED',
@@ -374,9 +400,15 @@ ALL_FIELD_NAMES = frozenset([
     'VAD_SILERO_THRESHOLD',
     'VIDEO_CPU_PRESET',
     'VIDEO_CPU_PRESET_HD',
+    'VIDEO_COLOR_METADATA_MODE',
     'VIDEO_CUSTOM_PARAMS',
     'VIDEO_CUSTOM_PARAMS_ENABLED',
     'VIDEO_ENCODER',
+    'VIDEO_HW_QUALITY_BOOST',
+    'VIDEO_HW_QUALITY_LEVEL',
+    'VIDEO_QUALITY_MODE',
+    'VIDEO_QUALITY_VALUE',
+    'VIDEO_X264_TUNE',
     'VOXTRAL_API_KEY',
     'VOXTRAL_BASE_URL',
     'VOXTRAL_CONTEXT_BIAS',
@@ -641,10 +673,18 @@ class SettingsTemplateLayoutTests(unittest.TestCase):
             if control is None:
                 # 无控件键（手工提交才可达）由 tests/test_settings_guards.py 的豁免表覆盖
                 continue
-            declared = (control.get('min'), control.get('max'))
-            expected = (_bound_text(guard_min), _bound_text(guard_max))
+            # 按**数值**比较而不是字符串：`2` 与 `2.0`、`0` 与 `0.0` 是同一个边界，
+            # 字符串比较会把纯粹的字面写法差异报成不一致（假阳性）。
+            declared = (
+                _bound_float(control.get('min')),
+                _bound_float(control.get('max')),
+            )
+            expected = (float(guard_min), float(guard_max))
             if declared != expected:
-                mismatched[key] = {'页面': declared, 'guard': expected}
+                mismatched[key] = {
+                    '页面': (control.get('min'), control.get('max')),
+                    'guard': (_bound_text(guard_min), _bound_text(guard_max)),
+                }
         self.assertEqual(
             mismatched, {},
             f'数值控件的 min/max 与服务端 guard 边界不一致: {mismatched}')

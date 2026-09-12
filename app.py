@@ -24,6 +24,7 @@ from modules.youtube_handler import extract_video_urls_from_playlist
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config, DEFAULT_CONFIG
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
+from modules.subtitle_style import normalize_hex_color
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
@@ -743,6 +744,8 @@ SETTINGS_CHECKBOX_FIELDS = list(dict.fromkeys([
     'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
     'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
     'SUBTITLE_QC_ENABLED',
+    'SUBTITLE_TEXT_BOLD', 'SUBTITLE_OUTLINE_ENABLED', 'SUBTITLE_SHADOW_ENABLED',
+    'SUBTITLE_BACKGROUND_ENABLED', 'VIDEO_HW_QUALITY_BOOST',
     'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
     'VIDEO_CUSTOM_PARAMS_ENABLED',
     'VOXTRAL_DIARIZE', 'VOXTRAL_ENFORCE_MAX_DURATION',
@@ -784,6 +787,9 @@ SETTINGS_FLOAT_FIELDS = list(dict.fromkeys([
     'SUBTITLE_QC_THRESHOLD',
     'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
     'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT',
+    'SUBTITLE_FONT_SIZE_SCALE', 'SUBTITLE_MARGIN_V_SCALE',
+    'SUBTITLE_OUTLINE_SCALE', 'SUBTITLE_SHADOW_SCALE',
+    'SUBTITLE_BACKGROUND_OPACITY', 'VIDEO_QUALITY_VALUE',
 ] + list(SPEECH_PIPELINE_FLOAT_FIELDS)))
 
 # 同一个键不得同时出现在整数与浮点白名单里：整数分支先执行，会把 "15.5"
@@ -832,6 +838,14 @@ SETTINGS_RANGE_GUARDS = (
     ('SUBTITLE_QC_MIN_COVERAGE_RATIO', 0.0, 1.0),
     ('SUBTITLE_QC_MAX_GAP_S', 1.0, 3600.0),
     ('SUBTITLE_QC_MAX_CPS', 1.0, 200.0),
+    # 烧录字幕外观（倍率型，越界回退默认）
+    ('SUBTITLE_FONT_SIZE_SCALE', 0.5, 2.0),
+    ('SUBTITLE_MARGIN_V_SCALE', 0.5, 2.0),
+    ('SUBTITLE_OUTLINE_SCALE', 0.0, 3.0),
+    ('SUBTITLE_SHADOW_SCALE', 0.0, 3.0),
+    ('SUBTITLE_BACKGROUND_OPACITY', 0.0, 1.0),
+    # 编码质量（manual 模式下的 CRF/CQ/QP）
+    ('VIDEO_QUALITY_VALUE', 0.0, 51.0),
 )
 
 # 回退提示里的中文名称（取自设置页控件文案），仅用于让用户看懂被改了哪一项。
@@ -857,6 +871,14 @@ SETTINGS_GUARD_LABELS = {
     'SUBTITLE_QC_TIMEOUT_SECONDS': '字幕质检接口超时（秒）',
     'SUBTITLE_MAX_LINE_LENGTH_ENABLED': '每行最大字符数开关',
     'SUBTITLE_MAX_LINES_ENABLED': '最大行数开关',
+    # 烧录字幕外观（倍率型）
+    'SUBTITLE_FONT_SIZE_SCALE': '字幕字号倍率',
+    'SUBTITLE_MARGIN_V_SCALE': '字幕垂直边距倍率',
+    'SUBTITLE_OUTLINE_SCALE': '字幕描边倍率',
+    'SUBTITLE_SHADOW_SCALE': '字幕阴影倍率',
+    'SUBTITLE_BACKGROUND_OPACITY': '字幕背景不透明度',
+    # 编码质量
+    'VIDEO_QUALITY_VALUE': '画质数值（CRF/CQ/QP）',
 }
 
 
@@ -1172,6 +1194,33 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
 
         if 'SUBTITLE_FONT_NAME' in form_data:
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
+
+        # 枚举型外观/编码配置：非法值回退默认，避免脏值进入配置文件
+        _enum_guards = (
+            ('VIDEO_QUALITY_MODE', ('auto', 'manual')),
+            ('VIDEO_HW_QUALITY_LEVEL', ('fast', 'balanced', 'quality')),
+            ('VIDEO_COLOR_METADATA_MODE', ('auto', 'bt709', 'off')),
+        )
+        for _enum_key, _enum_allowed in _enum_guards:
+            if _enum_key not in form_data:
+                continue
+            _enum_value = str(form_data[_enum_key] or '').strip().lower()
+            if _enum_value not in _enum_allowed:
+                _enum_value = str(_settings_fallback_default(_enum_key)).strip().lower()
+                logger.debug(f"{_enum_key} 非法值，回退默认 {_enum_value}")
+            form_data[_enum_key] = _enum_value
+
+        # 颜色字段统一成 #RRGGBB，非法值回退默认
+        for _color_key in (
+            'SUBTITLE_FONT_COLOR',
+            'SUBTITLE_OUTLINE_COLOR',
+            'SUBTITLE_BACKGROUND_COLOR',
+        ):
+            if _color_key not in form_data:
+                continue
+            form_data[_color_key] = normalize_hex_color(
+                form_data[_color_key], str(_settings_fallback_default(_color_key))
+            )
 
         _persist_settings_uploads(form_data, uploads)
         updated_config = update_config(form_data)
