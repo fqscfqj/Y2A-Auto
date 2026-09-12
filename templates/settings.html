@@ -2111,7 +2111,7 @@
                                                                 <option value="{{ preset }}" {% if config.get('VIDEO_CPU_PRESET', 'medium') == preset %}selected{% endif %}>{{ preset }}</option>
                                                                 {% endfor %}
                                                             </select>
-                                                            <p class="help-text mb-0">常规 CPU/libx264 字幕烧录使用，默认 medium。</p>
+                                                            <p class="help-text mb-0">常规 CPU 软编码字幕烧录使用（x264 与 x265 共用），默认 medium。</p>
                                                         </div>
                                                     </div>
                                                     <div class="col-md-6">
@@ -2158,7 +2158,7 @@
                                                             <input type="checkbox" name="VIDEO_HW_QUALITY_BOOST" id="video-hw-quality-boost" {% if config.get('VIDEO_HW_QUALITY_BOOST', True) %}checked{% endif %}>
                                                             启用编码质量增强
                                                         </label>
-                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；同时作用于硬件编码器与软件 libx264。老 GPU 驱动不支持时报参数错误，可关闭回退基础参数（1440p+ 长视频走 veryfast 时前瞻跟随 preset，不受此项放大）。</p>
+                                                        <p class="help-text mb-0">开启自适应量化、前瞻、多遍分析等；同时作用于硬件编码器与 CPU 软编码（x264 / x265）。老 GPU 驱动不支持时报参数错误，可关闭回退基础参数（1440p+ 长视频走 veryfast 时前瞻跟随 preset，不受此项放大）。</p>
                                                     </div>
                                                     <div class="col-md-4">
                                                         <div class="form-group">

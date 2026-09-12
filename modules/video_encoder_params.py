@@ -43,6 +43,7 @@ libvpl / amf / vaapi）实测确认：
 """
 
 import math
+import re
 import shlex
 
 # 按视频高度推荐的固定质量值（CRF/CQ/QP，越小质量越高），须与历史 get_recommended_quality 一致。
@@ -209,11 +210,44 @@ _COLOR_RANGE_ALIASES = {'tv': 'tv', 'limited': 'tv', 'pc': 'pc', 'full': 'pc'}
 _SKIPPED_COLOR_TOKENS = frozenset(('', 'unknown', 'unspecified', 'reserved', 'n/a'))
 
 # 字段 -> 合法取值表。resolve_color_metadata / build_color_vui_params 共用，
-# 保证「校验用的集合」与「实际写入的值」永远来自同一处。
+# 保证「校验用的集合」与「实际写入的值」永远来自同一处。三张表收的都是
+# **写侧**（`-colorspace` / `-color_primaries` / `-color_trc`）名字，因此
+# ffprobe 读回来的名字要先过 _COLOR_READ_TO_WRITE_ALIASES 才能进这里。
 _COLOR_FIELD_WHITELISTS = {
     'colorspace': _COLORSPACE_VALUES,
     'color_primaries': _PRIMARIES_VALUES,
     'color_trc': _TRC_VALUES,
+}
+
+# ffprobe **读侧**命名 -> ffmpeg 通用输出选项的**写侧**命名。
+#
+# 量的是同一件事，名字却在同一个 ffmpeg 构建里不一致：ffprobe 按 AVCOL_* 枚举名
+# 打印（color_transfer 会给 bt470m / bt470bg / log100 / log316 / iec61966-2-4 /
+# bt1361e / iec61966-2-1，color_space 会给 gbr），而 `-color_trc` / `-colorspace`
+# 收的是 ffmpeg 选项表里的名字（gamma22 / gamma28 / log / log_sqrt /
+# iec61966_2_4 / bt1361 / iec61966_2_1 / rgb）。
+#
+# 缺陷（复审实测，两个 ffprobe 版本一致）：本函数此前拿**读侧**名字直接比对
+# **写侧**白名单，于是这些取值在真实源素材上整条被丢掉（只留一条 warning），
+# 输出的 VUI 少一项 —— 正是本模块要消灭的「静默丢元数据」。把读名加进白名单
+# 也不行：`-color_trc bt470bg` / `-colorspace gbr` 会被 ffmpeg 直接拒绝（rc=-22）。
+#
+# 两个方向的映射串起来即可：读名 →(这里)→ 写名 →(_X264_PARAMS_ALIASES)→
+# 编码器私有枚举名。color_primaries 两侧命名一致，无需映射（smpte428 /
+# jedec-p22 / ebu3213 在 read 侧就是这个写法，白名单已包含）。
+_COLOR_READ_TO_WRITE_ALIASES = {
+    'colorspace': {
+        'gbr': 'rgb',
+    },
+    'color_trc': {
+        'bt470m': 'gamma22',
+        'bt470bg': 'gamma28',
+        'log100': 'log',
+        'log316': 'log_sqrt',
+        'iec61966-2-4': 'iec61966_2_4',
+        'bt1361e': 'bt1361',
+        'iec61966-2-1': 'iec61966_2_1',
+    },
 }
 
 # 三张表里被 ffmpeg 通用选项（-colorspace/-color_primaries/-color_trc）接受的值，
@@ -298,6 +332,13 @@ _SOFTWARE_PRIVATE_OPTS = {
     'x264': _X264_PARAMS_OPTS,
     'x265': _X265_PARAMS_OPTS,
 }
+# 两个编码器的私有参数选项名合集：判断「用户是否自己写了私有参数」时与编码器无关
+# （用户可能给 x264 命令写了 -x265-params，那条参数会被静默忽略，但仍属用户配置）。
+_SOFTWARE_PRIVATE_OPTS_ALL = tuple(_X264_PARAMS_OPTS) + tuple(_X265_PARAMS_OPTS)
+# 私有参数里的色彩 VUI 键名（x264/x265 共用同一套键名）。
+_VUI_PARAM_KEYS = ('colorprim', 'transfer', 'colormatrix')
+# HEVC 在 MP4/MKV 里的兼容标签（Safari / QuickTime 系播放器的识别前提）。
+_HEVC_MP4_TAG = 'hvc1'
 _SOFTWARE_VUI_ALIASES = _X264_PARAMS_ALIASES
 _SOFTWARE_VUI_UNSUPPORTED = _X264_PARAMS_UNSUPPORTED
 
@@ -602,6 +643,14 @@ def _normalize_color_token(value):
     return '' if token in _SKIPPED_COLOR_TOKENS else token
 
 
+def _read_side_token(value, field):
+    """把 ffprobe 读回来的取值折算成 ffmpeg 写侧命名（见 _COLOR_READ_TO_WRITE_ALIASES）。"""
+    token = _normalize_color_token(value)
+    if not token:
+        return ''
+    return _COLOR_READ_TO_WRITE_ALIASES.get(field, {}).get(token, token)
+
+
 def normalize_color_metadata(mode, source_color_info, logger=None):
     """解析色彩元数据，返回规范化映射 dict。
 
@@ -609,8 +658,13 @@ def normalize_color_metadata(mode, source_color_info, logger=None):
     且非 unknown 的项（缺失的键不出现）。mode='off' 一律返回 {}，mode='bt709'
     返回强制 bt709 四项，mode='auto' 从 source_color_info 透传。
 
-    ``logger`` 非空时，对「源素材给了值但不在白名单内」的字段记一条 warning：
-    这类字段会被静默丢弃（输出的码流 VUI 少一项，播放器只能猜色域），
+    ``source_color_info`` 来自 ffprobe，其命名与 ffmpeg 写侧选项并不一致，因此
+    入口先做一次字段相关的**读名 → 写名**归一化，再过写侧白名单；否则
+    `gbr` / `bt470m` / `log100` / `iec61966-2-4` 这类真实源素材取值会被整条丢掉，
+    输出的 VUI 少一项（只有一条 warning，用户不可见）。
+
+    ``logger`` 非空时，对「源素材给了值但（归一化后）仍不在白名单内」的字段记一条
+    warning：这类字段会被静默丢弃（输出的码流 VUI 少一项，播放器只能猜色域），
     此前连一行日志都没有，排查时看不到任何线索。
     """
     normalized_mode = _normalize_choice(mode, _VALID_COLOR_MODES, 'auto')
@@ -628,15 +682,15 @@ def normalize_color_metadata(mode, source_color_info, logger=None):
     info = source_color_info if isinstance(source_color_info, dict) else {}
     resolved = {}
 
-    space = _normalize_color_token(info.get('color_space'))
+    space = _read_side_token(info.get('color_space'), 'colorspace')
     if space in _COLORSPACE_VALUES:
         resolved['colorspace'] = space
 
-    primaries = _normalize_color_token(info.get('color_primaries'))
+    primaries = _read_side_token(info.get('color_primaries'), 'color_primaries')
     if primaries in _PRIMARIES_VALUES:
         resolved['color_primaries'] = primaries
 
-    trc = _normalize_color_token(info.get('color_transfer'))
+    trc = _read_side_token(info.get('color_transfer'), 'color_trc')
     if trc in _TRC_VALUES:
         resolved['color_trc'] = trc
 
@@ -646,13 +700,13 @@ def normalize_color_metadata(mode, source_color_info, logger=None):
 
     if logger is not None:
         dropped = []
-        for resolved_key, source_key, table in (
-            ('colorspace', 'color_space', _COLORSPACE_VALUES),
-            ('color_primaries', 'color_primaries', _PRIMARIES_VALUES),
-            ('color_trc', 'color_transfer', _TRC_VALUES),
+        for resolved_key, source_key, table, field in (
+            ('colorspace', 'color_space', _COLORSPACE_VALUES, 'colorspace'),
+            ('color_primaries', 'color_primaries', _PRIMARIES_VALUES, 'color_primaries'),
+            ('color_trc', 'color_transfer', _TRC_VALUES, 'color_trc'),
         ):
             raw = _normalize_color_token(info.get(source_key))
-            if raw and raw not in table and resolved_key not in resolved:
+            if raw and _read_side_token(raw, field) not in table and resolved_key not in resolved:
                 dropped.append(f'{source_key}={raw}')
         if dropped:
             try:
@@ -695,6 +749,15 @@ def resolve_color_metadata(mode, source_color_info, logger=None):
 
 # 自定义参数里可能用来指定视频编码器的选项名（含 stream specifier 形式）。
 _VIDEO_CODEC_OPTIONS = ('-c:v', '-codec:v', '-vcodec', '-c', '-codec')
+# 带 stream specifier 的写法必须一并识别：`-c:v:0` / `-codec:v:1` / `-c:0`。
+# 此前只匹配「整 token 相等」与 `opt=value` 两种精确形，于是 `-c:v:0 libx264`
+# 落进「用户没指定编码器」分支，模块补的 `-c:v libx265` 反而生效并**覆盖**用户的
+# 显式选择（ffmpeg 对同组选项取最后匹配），且没有任何日志提示。
+#
+# 只接受视频流相关的 specifier：`v`（可带后续限定，如 `v:0`）或流序号 0。
+# `-c:a` / `-c:s` / `-c:1` 这些是音频/字幕流的选项，误判成「用户接管了视频编码器」
+# 会让 VIDEO_CPU_CODEC 被静默忽略（模块不再补 -c:v），因此必须排除。
+_VIDEO_CODEC_OPTION_RE = re.compile(r'^-(?:c|codec|vcodec)(?::v[\w.:-]*|:0)?$')
 # 软件编码器名 -> 内部 codec key。
 _SOFTWARE_ENCODER_CODECS = {
     'libx264': 'x264',
@@ -705,6 +768,23 @@ _CPU_CODEC_ENCODER_NAMES = {
     'x264': 'libx264',
     'x265': 'libx265',
 }
+
+
+def _video_codec_option_of(token):
+    """token 是「指定视频编码器」的选项时返回该选项名（小写），否则返回 ''。
+
+    接受 `-c` / `-codec` / `-vcodec` / `-c:v` / `-codec:v` 以及带 stream specifier
+    的 `-c:v:0` / `-codec:v:1` / `-c:0`；`-c:v=libx265` 这类连写形式按选项部分
+    匹配（ffmpeg 本身不接受它，但历史测试固化了该输入，识别出来比误判成
+    「用户没指定」要安全）。
+    """
+    text = str(token or '').strip().lower()
+    if not text:
+        return ''
+    option = text.split('=', 1)[0]
+    if _VIDEO_CODEC_OPTION_RE.match(option):
+        return option
+    return ''
 
 
 def custom_params_video_encoder(custom_params):
@@ -720,11 +800,13 @@ def custom_params_video_encoder(custom_params):
     except Exception:
         return ''
     for index, token in enumerate(normalized):
-        for option in _VIDEO_CODEC_OPTIONS:
-            if token == option and index + 1 < len(normalized):
-                return normalized[index + 1]
-            if token.startswith(option + '='):
-                return token[len(option) + 1:]
+        option = _video_codec_option_of(token)
+        if not option:
+            continue
+        if token == option and index + 1 < len(normalized):
+            return normalized[index + 1]
+        if token.startswith(option + '='):
+            return token[len(option) + 1:]
     return ''
 
 
@@ -735,11 +817,7 @@ def custom_params_declare_video_codec(custom_params):
         normalized = [str(token).strip().lower() for token in tokens]
     except Exception:
         return False
-    for token in normalized:
-        for option in _VIDEO_CODEC_OPTIONS:
-            if token == option or token.startswith(option + '='):
-                return True
-    return False
+    return any(_video_codec_option_of(token) for token in normalized)
 
 
 def _custom_params_declare_private_opts(custom_params, opts):
@@ -810,6 +888,40 @@ def _private_param_option(cpu_codec, pairs):
     ]
 
 
+def custom_params_private_vui_state(custom_params):
+    """用户自定义参数里私有参数选项（`-x264-params` / `-x265-params`）与色彩 VUI 的关系。
+
+    返回三态字符串，供调用方如实记录日志（此前只看「vparams 里有没有 -x26?-params」
+    就打印「软件编码私有参数: …」，用户自带 `-x265-params log-level=error` 时那条 info
+    看起来等同于「色彩 VUI 已写入」，实际两项都没写）：
+
+    - ``'none'``：用户没写私有参数选项 → 模块自己的补写（若有）在起作用；
+    - ``'vui'``：用户写了且值里含 ``colorprim`` / ``transfer`` / ``colormatrix``；
+    - ``'no_vui'``：用户写了但值里没有色彩键 → 模块**不覆盖**用户配置，
+      本次没有补写色彩 VUI，调用方必须告警而不是回显成「已写入」。
+    """
+    tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
+    try:
+        normalized = [str(token).strip().lower() for token in tokens]
+    except Exception:
+        return 'none'
+    for index, token in enumerate(normalized):
+        for option in _SOFTWARE_PRIVATE_OPTS_ALL:
+            if token == option and index + 1 < len(normalized):
+                value = normalized[index + 1]
+            elif token.startswith(option + '='):
+                value = token[len(option) + 1:]
+            else:
+                continue
+            keys = {
+                entry.split('=', 1)[0].strip()
+                for entry in value.replace(':', ',').split(',')
+                if entry.strip()
+            }
+            return 'vui' if keys & set(_VUI_PARAM_KEYS) else 'no_vui'
+    return 'none'
+
+
 def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map):
     """自定义参数分支要追加的尾部参数（编码器补齐 + 私有 VUI 补写）。
 
@@ -826,6 +938,12 @@ def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map)
     因此：未指定 `-c:v` 时按配置补齐编码器（与内置分支同语义）；用户自己指定了
     视频编码器时尊重用户选择，按其编码器决定要不要补私有参数；识别不出编码器名
     （例如 `-c:v copy`）时不追加，避免把选项写进一条与编码器不匹配的命令。
+
+    「同语义」还包含容器侧的收尾项：补齐 libx265 时同时写 `-tag:v hvc1`。HEVC 在
+    MP4/MKV 里的默认标签是 `hev1`，Safari / QuickTime 系播放器可能不识别，而内置
+    分支一直写 `hvc1`（见 _build_cpu_x265）—— 不补这一项会让「配置 x265 + 自定义
+    参数」这条路径产出播放器兼容性更差的文件。仅在我们**自己补了 -c:v** 时才写：
+    用户自带 `-c:v` 时容器选项由其自行掌控，模块不去干预。
     """
     codec = normalize_cpu_codec(configured_cpu_codec)
     tail = []
@@ -834,6 +952,9 @@ def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map)
         declared = _CPU_CODEC_ENCODER_NAMES[codec]
         tail += ['-c:v', declared]
         codec = _SOFTWARE_ENCODER_CODECS[declared]
+        if codec == 'x265':
+            # 与内置分支一致：HEVC 用 hvc1 标签（Safari / QuickTime 识别前提）。
+            tail += ['-tag:v', _HEVC_MP4_TAG]
     else:
         codec = _SOFTWARE_ENCODER_CODECS.get(declared, '')
     if not codec:
@@ -969,7 +1090,9 @@ def _build_cpu_x264(settings, vui_pairs=()):
 
     四项 x264 质量增强（-aq-mode/-aq-strength/-psy-rd/-rc-lookahead）与
     NVENC/QSV/AMF/VAAPI 的增强项一样，受 hw_quality_boost 总开关控制：关闭时
-    回到与基线（origin/main 的 build_cpu_params）逐字一致的基础参数。
+    回到基线（origin/main 的 build_cpu_params）的基础参数 —— 「逐字一致」只在
+    忽略 `-vsync cfr` → `-fps_mode cfr` 这次改名时成立（该改名早于本 PR，
+    README 已声明需要 FFmpeg ≥5.1）。
 
     为什么关闭开关必须真的去掉这几项（实测 N-123313 + libx264）：
 

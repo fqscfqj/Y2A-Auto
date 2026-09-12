@@ -295,7 +295,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `VIDEO_CPU_PRESET_HD`：1440p+ 且超过 10 分钟时使用的 preset，默认 `veryfast`
 - `VIDEO_QUALITY_MODE`：`auto`（按分辨率推荐）或 `manual`（使用 `VIDEO_QUALITY_VALUE`），默认 `auto`
 - `VIDEO_QUALITY_VALUE`：固定质量值 CRF/CQ/QP，范围 `0-51`，越小质量越高。自动模式的推荐值为 4K `22.5` / 1440p `23` / 1080p `23.5` / 720p `24.5`
-- `VIDEO_HW_QUALITY_BOOST`：编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。它同时作用于硬件编码器与软件编码器（x264：`-aq-mode 3 -aq-strength 0.8 -psy-rd 1.0:0.0`，非 HD preset 路径再加 `-rc-lookahead 40`；x265：见下）；1440p+ 长视频走 `VERYFAST` 档时前瞻跟随 preset 自身默认值，不被放大。老 GPU 驱动不认识这些参数时可关闭，命令会回到基础参数并自动重试
+- `VIDEO_HW_QUALITY_BOOST`：编码质量增强总开关（自适应量化、前瞻、多遍分析等），默认 `true`。它同时作用于硬件编码器与软件编码器：x264 写 `-aq-mode 3 -aq-strength 0.8 -psy-rd 1.0:0.0`，非 HD preset 路径再加 `-rc-lookahead 40`；x265 只写 `aq-mode=3`，非 HD preset 路径再加 `rc-lookahead=40`（`psy-rd` / `aq-strength` / `psy-rdoq` **不写**，即保持 x265 自身的默认值 2.00 / 1.0 / 1.00 —— 照抄 x264 的数值在 x265 上等于把这些心理视觉优化砍半，与「质量增强」相反）。1440p+ 长视频走 `VERYFAST` 档时前瞻跟随 preset 自身默认值，不被放大。老 GPU 驱动不认识这些参数时可关闭，命令会回到基础参数并自动重试
 - `VIDEO_HW_QUALITY_LEVEL`：`fast` / `balanced` / `quality`，映射到各硬件编码器的速度档，默认 `quality`
 - `VIDEO_COLOR_METADATA_MODE`：`auto`（透传源流色彩信息）/ `bt709`（强制）/ `off`（不写入），默认 `auto`。不写入时播放器会按默认色域解释，可能偏色
 - `VIDEO_X264_TUNE`：软编码 `-tune` 取值（如 `film` / `animation`），留空则不传。取值按 `VIDEO_CPU_CODEC` 各自的白名单校验：`film` 与 `stillimage` 只对 x264 合法，切到 x265 时会被忽略并写入任务日志

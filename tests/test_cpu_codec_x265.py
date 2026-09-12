@@ -379,7 +379,13 @@ class X265VuiAliasTests(unittest.TestCase):
             )
 
     def test_gamma_transfers_are_renamed_for_x265_too(self):
-        """gamma22 / gamma28 有等价枚举名，x265 侧同样改名写入而不是跳过。"""
+        """gamma22 / gamma28 有等价枚举名，x265 侧同样改名写入而不是跳过。
+
+        这里的输入是**写侧**名字（`-color_trc` 接受的取值）。真实源素材经 ffprobe
+        读回来的名字是 `bt470m` / `bt470bg`，由 `normalize_color_metadata` 的
+        读名→写名归一化折算成这两个输入 —— 那条链路见
+        tests/test_color_metadata_smoke.py::ColorReadNameRoundTripTests。
+        """
         self.assertEqual(
             build_color_vui_params('cpu', {'color_trc': 'gamma22'}, None, 'x265'),
             ['-x265-params', 'transfer=bt470m'])

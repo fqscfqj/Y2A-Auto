@@ -156,6 +156,33 @@ class X265EncoderSmokeTests(unittest.TestCase):
         self.assertEqual(code, 0, tail)
         self.assertEqual(info.get('codec_tag_string'), 'hvc1')
 
+    def test_custom_params_path_fills_the_hvc1_tag_end_to_end(self):
+        """Minor-N-B：配置 x265 + 自定义参数（没写 -c:v）的产物必须带 hvc1 标签。
+
+        `_custom_params_software_tail` 此前只补 `-c:v libx265`，容器标签因此退化成
+        `hev1`（内置分支一直写 hvc1）；这条路径的产物在 Safari / QuickTime 系
+        播放器上可能不被识别，而模块自己的 docstring 把 hvc1 称为识别前提。
+        这里真的跑一遍 `build_encoder_params` 拼出的命令片段并回读容器标签。
+        """
+        ctx = {
+            'height': 1080,
+            'duration_s': None,
+            'cpu_codec': 'x265',
+            'cpu_preset': 'ultrafast',
+            'hw_quality_boost': False,
+            'custom_params': ['-preset', 'ultrafast', '-crf', '28'],
+            'color_map': {'colorspace': 'bt709', 'color_primaries': 'bt709',
+                          'color_trc': 'bt709'},
+        }
+        params = vep.build_encoder_params('cpu', ctx)
+        self.assertIn('-tag:v', params)
+        code, tail, info = self._run(params, 'custom_tail', encode_args=[])
+        self.assertEqual(code, 0, tail)
+        self.assertEqual(info.get('codec_name'), 'hevc')
+        self.assertEqual(info.get('codec_tag_string'), 'hvc1')
+        self.assertEqual(info.get('color_primaries'), 'bt709')
+        self.assertEqual(info.get('color_transfer'), 'bt709')
+
     # --- tune 白名单 ------------------------------------------------------
 
     def test_every_x265_tune_is_accepted(self):

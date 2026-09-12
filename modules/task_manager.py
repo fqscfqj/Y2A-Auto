@@ -35,6 +35,7 @@ from .video_encoder_params import (
     normalize_color_metadata,
     normalize_cpu_codec,
     custom_params_declare_video_codec,
+    custom_params_private_vui_state,
     parse_encoder_config,
     recommend_quality,
     resolve_color_metadata,
@@ -7620,7 +7621,19 @@ class TaskProcessor:
                         _vui_token in ('-x264-params', '-x265-params')
                         and _vui_index + 1 < len(vparams)
                     ):
-                        task_logger.info(f"软件编码私有参数: {_vui_token} {vparams[_vui_index + 1]}")
+                        if custom_params_private_vui_state(custom_video_params) == 'no_vui':
+                            # 用户自带 -x26?-params 但里面没有色彩键：模块不覆盖用户
+                            # 配置，因此本次**没有**补写色彩 VUI。此前这里照样打印
+                            # 「软件编码私有参数: …」，看起来等同于「VUI 已写入」，
+                            # 用户只能从画面偏色去猜。
+                            task_logger.warning(
+                                "自定义视频参数里的 %s 未包含色彩键（colorprim/transfer/"
+                                "colormatrix）：本次不覆盖用户配置，输出码流未补写原色与"
+                                "传递特性",
+                                _vui_token,
+                            )
+                        else:
+                            task_logger.info(f"软件编码私有参数: {_vui_token} {vparams[_vui_index + 1]}")
                         break
                 else:
                     if (
@@ -7923,6 +7936,20 @@ class TaskProcessor:
                 overall_deadline = embed_started_at + first_stage_budget + sum(
                     _stage_budget(stage) for stage in retry_stages
                 )
+                # 最坏挂起时长在日志里可见：新增 cpu_x264 一级后 20 分钟素材的
+                # 总预算可达 8 小时（x265 的 CPU 阶段单级就是 5 倍），卡住的 ffmpeg
+                # 光看日志无法判断上限，排查时只能猜。这里记一条 info。
+                if retry_stages:
+                    task_logger.info(
+                        "降级重试预算：首轮 %d 分钟 + %s = 最坏总时长约 %d 分钟（%s）",
+                        int(first_stage_budget // 60),
+                        ' + '.join(
+                            f'{stage} {int(_stage_budget(stage) // 60)} 分钟'
+                            for stage in retry_stages
+                        ),
+                        int((overall_deadline - embed_started_at) // 60),
+                        '/'.join(retry_stages),
+                    )
 
                 for stage in retry_stages:
                     if is_task_cancelled(task_id):

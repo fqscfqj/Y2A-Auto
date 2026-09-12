@@ -613,11 +613,23 @@ class CpuCodecRetryTests(unittest.TestCase):
             ['cpu', 'cpu_x264'])
 
     def test_missing_libx265_is_a_recognized_error(self):
-        """未登记时该错误文本会落在「未知错误」里，拿不到任何降级阶段。"""
+        """该错误文本必须被登记：它决定失败归因与 ``hw_error_detected`` 的取值。
+
+        注意它**不是** x265 -> x264 降级成立的原因：``_resolve_embed_retry_stages``
+        在 ``cpu_codec == 'x265'`` 时**无条件**追加 ``cpu_x264`` 阶段，删掉这条模式
+        降级链也不会变（见 :meth:`test_libx264_stage_does_not_depend_on_this_pattern`）。
+        此前的 docstring 把因果写反了。
+        """
         for message in ('Unknown encoder "libx265"', "Unknown encoder 'libx265'"):
             self.assertTrue(
                 TaskProcessor._is_known_hw_encoder_error(message), message
             )
+
+    def test_libx264_stage_does_not_depend_on_this_pattern(self):
+        """降级链与「模式表里有没有 libx265」无关：靠的是无条件追加。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'cpu', True, False, hw_option_error=False, cpu_codec='x265')
+        self.assertEqual(stages, ['cpu_x264'])
 
     def test_unrelated_missing_encoder_does_not_trigger_libx264_stage(self):
         """其它缺失编码器不该被误当成 libx265 的问题。"""
