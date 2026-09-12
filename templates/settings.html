@@ -2077,7 +2077,7 @@
                                                             <label for="video-encoder" class="form-label">视频编码器</label>
                                                             <select id="video-encoder" name="VIDEO_ENCODER" class="form-select">
                                                                 <option value="auto" {% if config.get('VIDEO_ENCODER', 'auto') == 'auto' %}selected{% endif %}>自动检测</option>
-                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（libx264）</option>
+                                                                <option value="cpu" {% if config.get('VIDEO_ENCODER') == 'cpu' %}selected{% endif %}>CPU（软编码）</option>
                                                                 <option value="nvidia" {% if config.get('VIDEO_ENCODER') == 'nvidia' %}selected{% endif %}>NVIDIA（NVENC）</option>
                                                                 <option value="intel" {% if config.get('VIDEO_ENCODER') == 'intel' %}selected{% endif %}>Intel（QSV）</option>
                                                                 <option value="amd" {% if config.get('VIDEO_ENCODER') == 'amd' %}selected{% endif %}>AMD（AMF/VAAPI）</option>

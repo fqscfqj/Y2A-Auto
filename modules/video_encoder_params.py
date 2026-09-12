@@ -149,12 +149,27 @@ _X264_QUALITY_PARAMS = _X264_AQ_PARAMS + _X264_LOOKAHEAD_PARAMS
 #    为空），分成两条会静默丢字段。
 # 2. x264 的 psy-rd 写作 "1.0:0.0"（rd:rdoq 两个子参数），但 -x265-params 用
 #    冒号分隔键值对，照搬会切碎参数串（实测 psnr 编码直接失败，返回码非 0）。
-#    x265 有独立的 psy-rdoq 键，因此这里拆成两项，语义与 x264 写法等价。
+#
+# 取值按 **x265 自己的默认值**标定，不再照抄 x264 的数字（实测 x265
+# `[info]` 配置行）：
+#
+#   | 键          | x265 veryfast | x265 medium | 本模块 |
+#   | rc-lookahead| 15            | 20          | 40（仅非 HD 路径） |
+#   | aq-mode     | 2             | 2           | 3      |
+#   | aq-strength | 1.0           | 1.0         | 不写（保持默认） |
+#   | psy-rd      | 2.00          | 2.00        | 不写（保持默认） |
+#   | psy-rdoq    | 1.00          | 1.00        | 不写（保持默认） |
+#
+# 此前照抄 x264 的 `psy-rd=1.0` + `psy-rdoq=0.0` —— 在 x265 上是把心理视觉优化
+# **砍半并关掉 rdoq**，与「质量增强」的语义相反，而且默认开启。未经 SSIM/VMAF
+# 验证的数值不该反向调低，因此改为不写这三项（等于 x265 默认）。
 _X265_QUALITY_PAIRS = (
     ('aq-mode', '3'),
-    ('aq-strength', '0.8'),
-    ('psy-rd', '1.0'),
-    ('psy-rdoq', '0.0'),
+)
+# 前瞻只在非 HD preset 路径放大：VIDEO_CPU_PRESET_HD（veryfast）存在的理由是
+# 让长视频的字幕烧录不至于超时，而 x265 在 veryfast 下默认前瞻只有 15，写 40 会
+# 翻 2.7 倍，与该 preset 的初衷相反（x264 侧同理，见 _build_cpu_x264）。
+_X265_LOOKAHEAD_PAIRS = (
     ('rc-lookahead', '40'),
 )
 
@@ -231,15 +246,22 @@ _X264_PARAMS_ALIASES = {
         # ffmpeg 的 bt1361 对应 x264 的 bt1361e。
         'bt1361': 'bt1361e',
         'smpte428_1': 'smpte428',
+        # gamma22 / gamma28 在 H.264 VUI 里没有叫这个名字的枚举，但语义有等价项：
+        # gamma22 = BT.470 System M（bt470m）、gamma28 = BT.470 System B/G（bt470bg）。
+        # 实测两个编码器都接受 `transfer=bt470m` 并回读 bt470m，因此改名而不是跳过
+        # —— 跳过会让源素材的 transfer 彻底丢失且没有任何提示。
+        'gamma22': 'bt470m',
+        'gamma28': 'bt470bg',
     },
 }
 
 # 在 x264 里没有任何等价名字的取值：跳过该键，绝不回退到错误语义的值。
-# gamma22/gamma28 在 H.264 VUI 里没有独立编码，x264 未暴露对应枚举名；
-# jedec-p22/ebu3213 只存在于 ffmpeg 的 AVColorPrimaries 枚举，x264 colorprim 无对应项。
+# jedec-p22/ebu3213 只存在于 ffmpeg 的 AVColorPrimaries 枚举，x264 colorprim 无
+# 对应项。color_trc 侧已无此类取值（gamma22/gamma28 改名为 bt470m/bt470bg，见上），
+# 保留空集合是为了让「哪些字段可能有跳过」这件事在表里可见。
 _X264_PARAMS_UNSUPPORTED = {
     'color_primaries': frozenset(('jedec-p22', 'ebu3213')),
-    'color_trc': frozenset(('gamma22', 'gamma28')),
+    'color_trc': frozenset(),
 }
 
 # libx264 接受 x264 私有参数的两种选项名（`-x264opts` 是 `-x264-params` 的历史别名）。
@@ -671,6 +693,55 @@ def resolve_color_metadata(mode, source_color_info, logger=None):
     return params
 
 
+# 自定义参数里可能用来指定视频编码器的选项名（含 stream specifier 形式）。
+_VIDEO_CODEC_OPTIONS = ('-c:v', '-codec:v', '-vcodec', '-c', '-codec')
+# 软件编码器名 -> 内部 codec key。
+_SOFTWARE_ENCODER_CODECS = {
+    'libx264': 'x264',
+    'libx265': 'x265',
+}
+# 内部 codec key -> ffmpeg 编码器名。
+_CPU_CODEC_ENCODER_NAMES = {
+    'x264': 'libx264',
+    'x265': 'libx265',
+}
+
+
+def custom_params_video_encoder(custom_params):
+    """取用户自定义参数里显式指定的视频编码器名；未指定时返回 ''。
+
+    公开给调用方用于日志：用户接管编码器选择时，配置的 ``VIDEO_CPU_CODEC``
+    不生效、色彩 VUI 也不一定补写，任务日志必须说清楚 —— 否则日志看起来像
+    「私有参数已写入」，实际那条命令里根本没有对应编码器。
+    """
+    tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
+    try:
+        normalized = [str(token).strip().lower() for token in tokens]
+    except Exception:
+        return ''
+    for index, token in enumerate(normalized):
+        for option in _VIDEO_CODEC_OPTIONS:
+            if token == option and index + 1 < len(normalized):
+                return normalized[index + 1]
+            if token.startswith(option + '='):
+                return token[len(option) + 1:]
+    return ''
+
+
+def custom_params_declare_video_codec(custom_params):
+    """用户自定义参数里是否出现了指定视频编码器的选项（含识别不出编码器名的情况）。"""
+    tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
+    try:
+        normalized = [str(token).strip().lower() for token in tokens]
+    except Exception:
+        return False
+    for token in normalized:
+        for option in _VIDEO_CODEC_OPTIONS:
+            if token == option or token.startswith(option + '='):
+                return True
+    return False
+
+
 def _custom_params_declare_private_opts(custom_params, opts):
     """自定义参数里是否已经出现某个私有参数选项（含 `-opt=value` 连写形式）。"""
     tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
@@ -737,6 +808,40 @@ def _private_param_option(cpu_codec, pairs):
         _SOFTWARE_PRIVATE_OPT[codec],
         ':'.join(f'{key}={value}' for key, value in pairs),
     ]
+
+
+def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map):
+    """自定义参数分支要追加的尾部参数（编码器补齐 + 私有 VUI 补写）。
+
+    这里必须处理一个「配置被静默忽略」的陷阱：用户自定义参数通常只写
+    `-crf 18 -preset slow` 这类调参（设置页 placeholder 提示要写 `-c:v`，但很多人
+    不写）。此时 ffmpeg 取**容器默认编码器**（mp4 -> libx264）：
+
+    - 配置 `VIDEO_CPU_CODEC=x265` 会被静默忽略，用户实际拿到 H.264；
+    - 我们追加的 `-x265-params` 在这条命令里同样被静默忽略（返回码仍为 0），
+      而任务日志会打印「软件编码私有参数: -x265-params …」，看起来像写入成功；
+    - 软件编码路径的通用 `-color_primaries` / `-color_trc` 本来就被丢弃，于是被
+      忽略的 VUI 补写让原色与传递特性彻底丢失。
+
+    因此：未指定 `-c:v` 时按配置补齐编码器（与内置分支同语义）；用户自己指定了
+    视频编码器时尊重用户选择，按其编码器决定要不要补私有参数；识别不出编码器名
+    （例如 `-c:v copy`）时不追加，避免把选项写进一条与编码器不匹配的命令。
+    """
+    codec = normalize_cpu_codec(configured_cpu_codec)
+    tail = []
+    declared = custom_params_video_encoder(custom_params)
+    if not custom_params_declare_video_codec(custom_params):
+        declared = _CPU_CODEC_ENCODER_NAMES[codec]
+        tail += ['-c:v', declared]
+        codec = _SOFTWARE_ENCODER_CODECS[declared]
+    else:
+        codec = _SOFTWARE_ENCODER_CODECS.get(declared, '')
+    if not codec:
+        # 用户接管了编码器选择，但我们识别不出它是不是 libx264/libx265
+        # （copy / 硬件编码器 / 别名……）：不写任何私有参数，避免静默无效的参数。
+        return tail
+    tail += _private_param_option(codec, _vui_param_pairs(codec, color_map, custom_params))
+    return tail
 
 
 def build_color_vui_params(encoder_key, color_map, custom_params=None, cpu_codec=None):
@@ -935,7 +1040,11 @@ def _build_cpu_x265(settings, vui_pairs=()):
         '-pix_fmt', 'yuv420p',
         '-tag:v', 'hvc1',
     ]
-    pairs = list(_X265_QUALITY_PAIRS) if settings['hw_quality_boost'] else []
+    pairs = []
+    if settings['hw_quality_boost']:
+        pairs += list(_X265_QUALITY_PAIRS)
+        if not _hd_preset_path(settings):
+            pairs += list(_X265_LOOKAHEAD_PAIRS)
     pairs += list(vui_pairs)
     params += _private_param_option('x265', pairs)
     return params
@@ -1071,9 +1180,8 @@ def build_encoder_params(encoder_key, ctx):
     if custom_params:
         params = list(custom_params)
         if key == 'cpu':
-            params += _private_param_option(
-                settings['cpu_codec'],
-                _vui_param_pairs(settings['cpu_codec'], color_map, custom_params),
+            params += _custom_params_software_tail(
+                custom_params, settings['cpu_codec'], color_map
             )
         return params
 

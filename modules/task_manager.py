@@ -34,6 +34,7 @@ from .video_encoder_params import (
     format_quality_value,
     normalize_color_metadata,
     normalize_cpu_codec,
+    custom_params_declare_video_codec,
     parse_encoder_config,
     recommend_quality,
     resolve_color_metadata,
@@ -4239,8 +4240,11 @@ class TaskProcessor:
     
     _KNOWN_HW_ENCODER_ERROR_PATTERNS = (
         # 软件编码器：libx265 不一定被编进用户的 FFmpeg（自备构建常见
-        # --disable-libx265）。此时没有任何 GPU 相关的错误文本，若不登记，
-        # 失败会既不属于已知错误、也拿不到任何降级阶段，整任务直接失败。
+        # --disable-libx265）。登记它是为了让这条错误被识别为「已知编码器错误」
+        # （日志归因、hw_error_detected 的判定都读它）。
+        # 注意：libx265 缺失时的实际降级能力**不**依赖这条模式 —— CPU 路径的
+        # 降级级由 `_resolve_embed_retry_stages` 在 encoder == 'cpu' 时无条件返回，
+        # 把它从这里删掉，`cpu`/`x265` 的降级链完全不变（有测试锁定这一点）。
         'Unknown encoder "libx265"',
         "Unknown encoder 'libx265'",
         # NVENC (NVIDIA)
@@ -4717,6 +4721,14 @@ class TaskProcessor:
         libx265 实测比同 preset 的 libx264 慢约 5 倍，沿用 x264 的预算会让长视频
         在编码中途被强杀；而且首轮就把 overall_deadline 用完时，后续降级阶段会被
         「预算已耗尽」直接跳过 —— 连 x265 -> x264 那一级都轮不到。
+
+        **下限同为 5 倍**（这是有意为之）：10 分钟素材的 x265 预算是 9000s 而不是
+        1800s。取向保守 —— 宁可让卡住的 ffmpeg 多等，也不要在编码中途杀掉一个本来
+        能跑完的任务。
+
+        ``cpu_codec`` 只描述**这个阶段实际使用的**软编码器：硬编回退到 CPU 时，
+        调用点必须先按 CPU 阶段的编码器再算一次（见 _embed_subtitle_in_video 的
+        _stage_budget），否则 x265 阶段会拿到 x264 的预算。
         """
         if video_duration:
             rate = 3 if video_duration < 1800 else 2
@@ -4804,11 +4816,17 @@ class TaskProcessor:
         用户的 FFmpeg，切换实现时也可能带上不被接受的参数，而 libx264 在
         --enable-gpl 构建里几乎是必然存在的。x264 已是最底层，没有更下一级。
 
+        **硬编回退到 CPU 时同样要带上这一级**：真实场景里降级链被激活的最常见原因
+        就是硬编失败，而那条路径上的 CPU 阶段用的仍是用户配置的 x265 —— 若 x265
+        不可用，此前没有任何下一级，整任务失败（与 README 承诺的「缺失时会自动
+        降级为 libx264 并继续烧录」相反）。
+
         返回 'hw_no_boost' / 'cpu' / 'cpu_x264' 组成的列表，按执行顺序排列。
         """
         encoder = str(actual_encoder or '').strip().lower()
+        codec = normalize_cpu_codec(cpu_codec)
         if encoder not in ('nvidia', 'intel', 'amd'):
-            if encoder == 'cpu' and normalize_cpu_codec(cpu_codec) == 'x265':
+            if encoder == 'cpu' and codec == 'x265':
                 return ['cpu_x264']
             return []
         stages = []
@@ -4826,7 +4844,28 @@ class TaskProcessor:
             if worth_disabling_boost:
                 stages.append('hw_no_boost')
         stages.append('cpu')
+        if codec == 'x265':
+            stages.append('cpu_x264')
         return stages
+
+    @classmethod
+    def _embed_stage_budget(cls, video_duration, cpu_codec, stage, first_stage_budget):
+        """某个降级阶段按其**实际编码器**估算的预算（秒）。
+
+        硬编回退到 CPU 时，如果这一级要跑 libx265，就必须拿到 x265 的预算（实测慢
+        约 5 倍），否则长视频会在编码中途被强杀，连 x265 -> x264 那一级都轮不到
+        （M2 的另一半：README 承诺「超时预算会按同一倍数放大」，而该路径此前沿用
+        x264 预算）。``cpu_x264`` 阶段反而更快，用 x264 预算即可。
+        """
+        if stage == 'cpu':
+            codec = cpu_codec
+        elif stage == 'cpu_x264':
+            codec = 'x264'
+        else:
+            # 同编码器关增强重试：沿用首轮预算（调用点已自带 300s 下限，这里再兜一次
+            # 让本函数的返回值恒有下限，便于独立校验）。
+            return max(300.0, float(first_stage_budget))
+        return max(300.0, float(cls._estimate_embed_timeout(video_duration, codec)))
 
     @staticmethod
     def _drop_same_encoder_stage_after_timeout(retry_stages):
@@ -4834,7 +4873,7 @@ class TaskProcessor:
 
         超时的含义是「这份活在这个编码器上跑不完」，同编码器关增强重试对长视频
         通常只是把整片时间再花一次（最现实的失败类型反而拿到最差的降级策略）。
-        因此超时只保留「换编码器」的那一级（CPU）。
+        因此超时只保留「换编码器」的那几级（CPU / cpu_x264）。
         """
         try:
             return [str(stage) for stage in (retry_stages or []) if str(stage) != 'hw_no_boost']
@@ -7547,6 +7586,18 @@ class TaskProcessor:
                     ):
                         task_logger.info(f"软件编码私有参数: {_vui_token} {vparams[_vui_index + 1]}")
                         break
+                else:
+                    if (
+                        actual_encoder == 'cpu'
+                        and custom_params_declare_video_codec(custom_video_params)
+                    ):
+                        # 用户在不透明参数里接管了编码器选择：VIDEO_CPU_CODEC 不生效，
+                        # 色彩 VUI 也按识别结果决定是否补写。不说明的话，日志看起来
+                        # 像「私有参数没写」等于「没有可写的东西」。
+                        task_logger.warning(
+                            "自定义视频参数已指定编码器：VIDEO_CPU_CODEC 不生效；"
+                            "仅在能识别为 libx264/libx265 时才补写色彩 VUI 私有参数"
+                        )
 
                 main_color_params = list(color_params)
 
@@ -7822,11 +7873,20 @@ class TaskProcessor:
                 if first_timed_out:
                     retry_stages = self._drop_same_encoder_stage_after_timeout(retry_stages)
 
-                # 总预算 = 首次尝试 + 至多一轮完整降级，从首次尝试**之前**开始计。
-                # 单阶段上限为 first_stage_budget，因此最坏总时长 ≈ 2 × 预估；
-                # 此前 deadline 建在首轮返回之后（首轮不计入）且每阶段各自重置，
-                # 最坏可到 3 倍。x265 降级到 x264 反而更快，沿用同一预算即可。
-                overall_deadline = embed_started_at + 2 * first_stage_budget
+                # 总预算 = 首轮尝试 + 各降级阶段各自的合理预算（从首轮**之前**开始
+                # 计）。单阶段上限取该阶段编码器的估算，因此 libx265 阶段拿到的是
+                # 放大后的 5 倍预算，而不会挤掉首轮的时间；阶段数由
+                # _resolve_embed_retry_stages 固定（至多 3 级），总时长有界。
+                # 此前 deadline 建在首轮返回之后（首轮不计入），且 CPU 回退阶段
+                # 一律沿用 x264 预算 —— 长视频会在 x265 编码中途被强杀。
+                def _stage_budget(stage):
+                    return self._embed_stage_budget(
+                        video_duration, cpu_codec, stage, first_stage_budget
+                    )
+
+                overall_deadline = embed_started_at + first_stage_budget + sum(
+                    _stage_budget(stage) for stage in retry_stages
+                )
 
                 for stage in retry_stages:
                     if is_task_cancelled(task_id):
@@ -7864,10 +7924,12 @@ class TaskProcessor:
                         stage_filter = vf_filter
                         stage_color_params = list(color_params)
 
-                    # 每个阶段只拿「总预算减去已用掉的部分」，且单阶段不得超过一次
-                    # 完整预算（否则前一级会把 CPU 回退的份额吃光）；用 60s 兜底
-                    # 避免预算耗尽时把阶段压成 0。
-                    stage_timeout = int(max(60.0, min(remaining_s, first_stage_budget)))
+                    # 每个阶段只拿「总预算减去已用掉的部分」，且单阶段不得超过**该
+                    # 阶段自身编码器**的合理预算（否则硬编回退到 libx265 时会拿到
+                    # x264 的预算，长视频在编码中途被杀，连 x265 -> x264 那一级都
+                    # 轮不到）；用 60s 兜底避免预算耗尽时把阶段压成 0。
+                    stage_budget = _stage_budget(stage)
+                    stage_timeout = int(max(60.0, min(remaining_s, stage_budget)))
 
                     cmd_retry = self._build_embed_ffmpeg_cmd(
                         ffmpeg_bin=ffmpeg_bin,

@@ -291,7 +291,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `VIDEO_HW_QUALITY_LEVEL`：`fast` / `balanced` / `quality`，映射到各硬件编码器的速度档，默认 `quality`
 - `VIDEO_COLOR_METADATA_MODE`：`auto`（透传源流色彩信息）/ `bt709`（强制）/ `off`（不写入），默认 `auto`。不写入时播放器会按默认色域解释，可能偏色
 - `VIDEO_X264_TUNE`：软编码 `-tune` 取值（如 `film` / `animation`），留空则不传。取值按 `VIDEO_CPU_CODEC` 各自的白名单校验：`film` 与 `stillimage` 只对 x264 合法，切到 x265 时会被忽略并写入任务日志
-- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数（启用后完全覆盖内置编码参数与色彩参数）
+- `VIDEO_CUSTOM_PARAMS_ENABLED` / `VIDEO_CUSTOM_PARAMS`：自定义 FFmpeg 参数（启用后完全覆盖内置编码参数与色彩参数）。若自定义参数里没有写 `-c:v`，系统会按 `VIDEO_CPU_CODEC` 补上 `-c:v libx264` / `-c:v libx265` —— 否则 ffmpeg 会取容器默认编码器（mp4 为 libx264），`VIDEO_CPU_CODEC` 被静默忽略、色彩 VUI 补写也一并失效；若你自己写了 `-c:v`，则以你指定的编码器为准（识别为 libx264 / libx265 时才补写色彩 VUI，并在任务日志中说明）
 - `MAX_CONCURRENT_TASKS`：最大并发任务数，默认 `2`
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
 - `LOG_CLEANUP_ENABLED` / `LOG_CLEANUP_HOURS` / `LOG_CLEANUP_INTERVAL`
@@ -439,7 +439,7 @@ QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核�
   - AMD（Windows）：`hevc_amf`
   - AMD（Linux）：`hevc_vaapi`
 - 如果 HEVC 硬编不可用或转码失败，会自动回退到 CPU 软编码（按 `VIDEO_CPU_CODEC` 选择编码器）
-- 如果 CPU 编码器选了 `x265` 但当前 FFmpeg 不含 `libx265`，或 `libx265` 不接受某个参数，会自动降级为 `libx264` 重试
+- 如果 CPU 编码器选了 `x265` 但当前 FFmpeg 不含 `libx265`，或 `libx265` 不接受某个参数，会自动降级为 `libx264` 重试。硬件编码失败回退到 CPU 时同样保留这一级：硬编回退的 CPU 阶段仍用你配置的 `x265`，因此仍需要 `x265 -> x264` 这条兜底；该阶段的超时预算也按其真实编码器（`x265` 为 5 倍）计算，而不是沿用 `x264` 的预算
 
 ### Docker GPU 示例
 

@@ -1057,6 +1057,81 @@ class CustomParamsOverrideTests(unittest.TestCase):
         self.assertNotEqual(params, ['  '])
 
 
+class CustomParamsCodecSelectionTests(unittest.TestCase):
+    """M1：自定义参数没写 `-c:v` 时，VIDEO_CPU_CODEC 会被静默忽略。
+
+    实测：`-- cpu_codec=x265 custom='-crf 18 -preset slow'` 时 ffmpeg 取容器默认
+    编码器（mp4 -> libx264），`rc=0` 但产物是 h264；同时我们追加的 `-x265-params`
+    在这条命令里被静默忽略，而任务日志会打印「软件编码私有参数: -x265-params …」。
+    又因为软件编码路径的通用 -color_primaries/-color_trc 本来就被丢弃，被忽略的
+    VUI 补写让原色与传递特性彻底丢失。
+    """
+
+    _COLOR_MAP = {'colorspace': 'bt709', 'color_primaries': 'bt709', 'color_trc': 'bt709'}
+
+    def test_missing_codec_is_filled_from_the_config(self):
+        params = build_encoder_params('cpu', _ctx(
+            cpu_codec='x265',
+            custom_params=['-crf', '18', '-preset', 'slow'],
+            color_map=self._COLOR_MAP))
+        self.assertEqual(params[:4], ['-crf', '18', '-preset', 'slow'])
+        index = params.index('-c:v')
+        self.assertEqual(params[index + 1], 'libx265')
+        self.assertIn('-x265-params', params)
+
+    def test_missing_codec_keeps_x264_as_x264(self):
+        params = build_encoder_params('cpu', _ctx(
+            custom_params=['-crf', '18'], color_map=self._COLOR_MAP))
+        index = params.index('-c:v')
+        self.assertEqual(params[index + 1], 'libx264')
+        self.assertIn('-x264-params', params)
+        self.assertNotIn('-x265-params', params)
+
+    def test_explicit_codec_wins_over_the_config(self):
+        """用户显式写了 -c:v libx264、而配置是 x265：尊重用户，且私有参数按 x264 走。"""
+        params = build_encoder_params('cpu', _ctx(
+            cpu_codec='x265',
+            custom_params=['-c:v', 'libx264', '-crf', '18'],
+            color_map=self._COLOR_MAP))
+        self.assertEqual(params[:3], ['-c:v', 'libx264', '-crf'])
+        self.assertIn('-x264-params', params)
+        self.assertNotIn('-x265-params', params)
+
+    def test_unrecognized_codec_gets_no_private_params(self):
+        """识别不出编码器时不写私有参数，而不是写一条一定被忽略的选项。"""
+        for value in ('copy', 'hevc_nvenc', 'libvpx-vp9'):
+            params = build_encoder_params('cpu', _ctx(
+                cpu_codec='x265',
+                custom_params=['-c:v', value],
+                color_map=self._COLOR_MAP))
+            self.assertNotIn('-x265-params', params, value)
+            self.assertNotIn('-x264-params', params, value)
+
+    def test_user_declared_private_opts_are_not_duplicated(self):
+        params = build_encoder_params('cpu', _ctx(
+            cpu_codec='x265',
+            custom_params=['-crf', '18', '-x265-params', 'aq-mode=5'],
+            color_map=self._COLOR_MAP))
+        self.assertEqual(params.count('-x265-params'), 1)
+        self.assertEqual(params[params.index('-x265-params') + 1], 'aq-mode=5')
+
+    def test_helper_reports_whether_the_user_took_over_the_encoder(self):
+        from modules.video_encoder_params import (
+            custom_params_declare_video_codec,
+            custom_params_video_encoder,
+        )
+        self.assertFalse(custom_params_declare_video_codec(['-crf', '18']))
+        self.assertTrue(custom_params_declare_video_codec(['-c:v', 'libx265']))
+        self.assertTrue(custom_params_declare_video_codec(['-c:v=libx265']))
+        self.assertEqual(custom_params_video_encoder(['-c:v', 'libx265']), 'libx265')
+        self.assertEqual(custom_params_video_encoder(['-codec:v=libx265']), 'libx265')
+        self.assertEqual(custom_params_video_encoder(['-crf', '18']), '')
+        # 非法输入不得抛异常（模块契约）
+        for bad in (None, 123, 'libx265', [None], [object()]):
+            custom_params_declare_video_codec(bad)
+            custom_params_video_encoder(bad)
+
+
 class X264ParamsConflictTests(unittest.TestCase):
     """m2：色彩 VUI 补写必须让位给用户已显式指定的 x264 私有参数。"""
 
@@ -1231,16 +1306,14 @@ class X264ColorValueMappingTests(unittest.TestCase):
             )
 
     def test_values_without_x264_equivalent_are_skipped(self):
-        # x264 的 colorprim 没有 jedec-p22 / ebu3213，transfer 没有 gamma22 / gamma28；
-        # 跳过该键，其余键照常输出，绝不回退到语义不同的值。
+        # x264 的 colorprim 没有 jedec-p22 / ebu3213；跳过该键，其余键照常输出，
+        # 绝不回退到语义不同的值。
         self.assertEqual(
             build_color_vui_params('cpu', {'color_primaries': 'jedec-p22'}), []
         )
         self.assertEqual(
             build_color_vui_params('cpu', {'color_primaries': 'ebu3213'}), []
         )
-        self.assertEqual(build_color_vui_params('cpu', {'color_trc': 'gamma22'}), [])
-        self.assertEqual(build_color_vui_params('cpu', {'color_trc': 'gamma28'}), [])
         self.assertEqual(
             build_color_vui_params(
                 'cpu',
@@ -1249,6 +1322,21 @@ class X264ColorValueMappingTests(unittest.TestCase):
             ),
             ['-x264-params', 'transfer=bt709:colormatrix=bt709'],
         )
+
+    def test_gamma_transfers_are_renamed_not_dropped(self):
+        """gamma22 / gamma28 有等价枚举名，必须改名写入而不是跳过。
+
+        跳过会让源素材的 transfer 彻底丢失且没有任何提示；实测两个编码器都接受
+        `transfer=bt470m` / `transfer=bt470bg` 并回读同一值。
+        """
+        self.assertEqual(
+            build_color_vui_params('cpu', {'color_trc': 'gamma22'}),
+            ['-x264-params', 'transfer=bt470m'])
+        self.assertEqual(
+            build_color_vui_params('cpu', {'color_trc': 'gamma28'}),
+            ['-x264-params', 'transfer=bt470bg'])
+        from modules import video_encoder_params as vep
+        self.assertEqual(vep._SOFTWARE_VUI_UNSUPPORTED['color_trc'], frozenset())
 
     def test_same_named_values_pass_through_unmapped(self):
         entries = []

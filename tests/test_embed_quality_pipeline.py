@@ -581,15 +581,35 @@ class CpuCodecRetryTests(unittest.TestCase):
                 f'cpu_codec={bad!r}',
             )
 
-    def test_hardware_stages_are_unaffected_by_cpu_codec(self):
-        """传入 cpu_codec 不得改变硬件编码器的降级链。"""
-        for codec in ('x264', 'x265', None):
+    def test_hardware_stages_include_the_libx264_stage_for_x265(self):
+        """硬编回退到 CPU 时，若 CPU 侧配置的是 x265，必须带上 x265 -> x264 那一级。
+
+        缺陷（M2）：`cpu_x264` 只在 `actual_encoder == 'cpu'` 时才进降级链，
+        而真实场景里降级链被激活的最常见原因恰恰是硬编失败 —— 那条路径上的 CPU
+        阶段用的仍是用户配置的 x265，x265 不可用时没有任何下一级，整任务失败，
+        与 README「缺失时会自动降级为 libx264 并继续烧录」的承诺相反。
+        """
+        self.assertEqual(
+            TaskProcessor._resolve_embed_retry_stages(
+                'nvidia', True, True, hw_option_error=True, cpu_codec='x265'),
+            ['hw_no_boost', 'cpu', 'cpu_x264'],
+        )
+        # x264 已是最底层，不重复自身
+        for codec in ('x264', None, ''):
             self.assertEqual(
                 TaskProcessor._resolve_embed_retry_stages(
                     'nvidia', True, True, hw_option_error=True, cpu_codec=codec),
                 ['hw_no_boost', 'cpu'],
                 f'cpu_codec={codec!r}',
             )
+
+    def test_timeout_drops_same_encoder_stage_but_keeps_cpu_x264(self):
+        """超时后仍要保留 x265 -> x264 这一级（否则长视频只剩一次机会）。"""
+        stages = TaskProcessor._resolve_embed_retry_stages(
+            'nvidia', True, False, hw_option_error=False, cpu_codec='x265')
+        self.assertEqual(
+            TaskProcessor._drop_same_encoder_stage_after_timeout(stages),
+            ['cpu', 'cpu_x264'])
 
     def test_missing_libx265_is_a_recognized_error(self):
         """未登记时该错误文本会落在「未知错误」里，拿不到任何降级阶段。"""
@@ -766,6 +786,7 @@ class EmbedRetryWiringTests(unittest.TestCase):
         self.assertIn('hw_quality_boost=boost_enabled', self.source)
 
     def test_budget_starts_before_the_first_attempt(self):
+        normalized = ' '.join(self.source.split())
         first_attempt = self.source.index('_execute_embed(\n                    cmd,')
         self.assertIn('embed_started_at = time.monotonic()', self.source)
         self.assertLess(
@@ -773,7 +794,9 @@ class EmbedRetryWiringTests(unittest.TestCase):
             '超时预算必须在首次尝试之前建立，否则首轮耗时不计入预算')
         self.assertLess(
             self.source.index('first_stage_budget = '), first_attempt)
-        self.assertIn('overall_deadline = embed_started_at + 2 * first_stage_budget', self.source)
+        # 总预算 = 首轮 + 各降级阶段（每级按其真实编码器估算），从首轮之前开始计
+        self.assertIn('overall_deadline = embed_started_at + first_stage_budget + sum(', normalized)
+        self.assertIn('_embed_stage_budget', normalized)
 
     def test_timeout_is_tracked_and_skips_same_encoder_retry(self):
         normalized = ' '.join(self.source.split())
@@ -808,6 +831,34 @@ class TimeoutRetryPolicyTests(unittest.TestCase):
         self.assertEqual(
             describe('nvidia', hw_error_detected=True, boost_enabled=True), 'device_error')
         self.assertEqual(describe('nvidia', boost_enabled=True), 'unknown')
+
+
+class EmbedStageBudgetTests(unittest.TestCase):
+    """M2：CPU 回退阶段必须拿到**该阶段编码器**的预算。
+
+    README 承诺「超时预算会按同一倍数放大」，而硬编回退路径此前一律沿用基于
+    x264 算出的 timeout：20 分钟视频的 x265 阶段只拿到 3600s（需要约 18000s），
+    长视频会在编码中途被强杀，连 x265 -> x264 那一级都轮不到。
+    """
+
+    def test_cpu_x265_stage_gets_the_scaled_budget(self):
+        budget = TaskProcessor._embed_stage_budget(1200, 'x265', 'cpu', 3600)
+        self.assertEqual(budget, TaskProcessor._estimate_embed_timeout(1200, 'x265'))
+        self.assertGreater(budget, 3600)
+
+    def test_cpu_x264_stage_uses_the_x264_budget(self):
+        self.assertEqual(
+            TaskProcessor._embed_stage_budget(1200, 'x265', 'cpu_x264', 18000),
+            TaskProcessor._estimate_embed_timeout(1200, 'x264'))
+
+    def test_hw_no_boost_stage_keeps_the_first_budget(self):
+        self.assertEqual(
+            TaskProcessor._embed_stage_budget(1200, 'x265', 'hw_no_boost', 3600), 3600)
+
+    def test_every_stage_budget_has_a_floor(self):
+        for stage in ('cpu', 'cpu_x264', 'hw_no_boost'):
+            self.assertGreaterEqual(
+                TaskProcessor._embed_stage_budget(1, 'x264', stage, 0), 300.0, stage)
 
 
 class AudioParamsTests(unittest.TestCase):

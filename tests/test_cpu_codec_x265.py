@@ -208,9 +208,20 @@ class X265QualityBoostTests(unittest.TestCase):
     def test_boost_on_emits_the_enhancement_keys(self):
         value = _private_value(build_encoder_params('cpu', _ctx()))
         self.assertEqual(len(value), 1, 'x265 的私有参数必须只有一条')
-        for key in ('aq-mode=3', 'aq-strength=0.8', 'psy-rd=1.0',
-                    'psy-rdoq=0.0', 'rc-lookahead=40'):
-            self.assertIn(key, value[0])
+        self.assertIn('aq-mode=3', value[0])
+        self.assertIn('rc-lookahead=40', value[0])
+
+    def test_boost_values_are_calibrated_against_x265_itself(self):
+        """取值按 x265 自己的默认值标定，不照抄 x264 的数字。
+
+        x265 实测默认：psy-rd=2.00、psy-rdoq=1.00、aq-strength=1.0、aq-mode=2。
+        照抄 x264 的 `psy-rd=1.0` + `psy-rdoq=0.0` 等于把心理视觉优化砍半并关掉
+        rdoq —— 与「质量增强」语义相反，而且默认开启；未做 SSIM/VMAF 验证的数值
+        不该反向调低，因此这三项改为不写（等于 x265 默认）。
+        """
+        value = _private_value(build_encoder_params('cpu', _ctx()))[0]
+        for key in ('psy-rd', 'psy-rdoq', 'aq-strength'):
+            self.assertNotIn(f'{key}=', value, f'{key} 不应被显式写入（保持 x265 默认）')
 
     def test_boost_off_emits_no_private_params_at_all(self):
         params = build_encoder_params(
@@ -225,12 +236,27 @@ class X265QualityBoostTests(unittest.TestCase):
         self.assertNotEqual(on, off)
         self.assertEqual(off[0:2], ['-c:v', 'libx265'])
 
-    def test_psy_rd_is_split_so_the_colon_separator_is_not_corrupted(self):
-        """x264 的 psy-rd 写作 '1.0:0.0'，照搬进 -x265-params 会切碎参数串。"""
+    def test_no_value_contains_the_colon_separator(self):
+        """x264 的 psy-rd 写作 '1.0:0.0'，照搬进 -x265-params 会切碎参数串。
+
+        现在不再写入 psy-rd，但这条判据仍要守住：-x265-params 的每个取值里都不能
+        出现冒号，否则那条参数串会被切成两半（实测编码直接失败，返回码非 0）。
+        """
         value = _private_value(build_encoder_params('cpu', _ctx()))[0]
         self.assertNotIn('psy-rd=1.0:0.0', value)
-        self.assertIn('psy-rd=1.0', value)
-        self.assertIn('psy-rdoq=0.0', value)
+        for key, item_value in (pair.split('=', 1) for pair in value.split(':') if '=' in pair):
+            self.assertNotIn(':', item_value, f'{key} 的取值含冒号，会切碎参数串')
+
+    def test_hd_preset_path_does_not_raise_lookahead_for_x265(self):
+        """HD preset（veryfast）路径不放大前瞻：x265 默认只有 15，写 40 会翻 2.7 倍。
+
+        该 preset 存在的理由正是让长视频的烧录不至于超时，放大前瞻与初衷相反
+        （x264 侧同一处理，见 _build_cpu_x264）。
+        """
+        value = _private_value(build_encoder_params(
+            'cpu', _ctx(height=2160, duration_s=3600)))[0]
+        self.assertNotIn('rc-lookahead', value)
+        self.assertIn('aq-mode=3', value)
 
     def test_every_pair_has_exactly_one_equals_sign(self):
         """参数串里每个冒号分段都必须是一个完整 key=value。"""
@@ -346,13 +372,20 @@ class X265VuiAliasTests(unittest.TestCase):
 
     def test_values_without_an_x265_equivalent_are_skipped(self):
         for field, value in (('color_primaries', 'jedec-p22'),
-                             ('color_primaries', 'ebu3213'),
-                             ('color_trc', 'gamma22'),
-                             ('color_trc', 'gamma28')):
+                             ('color_primaries', 'ebu3213')):
             self.assertEqual(
                 build_color_vui_params('cpu', {field: value}, None, 'x265'), [],
                 f'{field}={value}',
             )
+
+    def test_gamma_transfers_are_renamed_for_x265_too(self):
+        """gamma22 / gamma28 有等价枚举名，x265 侧同样改名写入而不是跳过。"""
+        self.assertEqual(
+            build_color_vui_params('cpu', {'color_trc': 'gamma22'}, None, 'x265'),
+            ['-x265-params', 'transfer=bt470m'])
+        self.assertEqual(
+            build_color_vui_params('cpu', {'color_trc': 'gamma28'}, None, 'x265'),
+            ['-x265-params', 'transfer=bt470bg'])
 
     def test_colormatrix_rgb_is_normalized_to_gbr_for_both_codecs(self):
         """两个编码器都把 ffmpeg 规范名 rgb 改写成正式枚举名 gbr。
