@@ -1,8 +1,17 @@
 name: CI
 
 "on":
+  # 刻意**不**按 base 分支过滤 `pull_request`。
+  #
+  # 原配置 `branches: [main]` 会让堆叠 PR（stacked PRs）拿不到 CI：中间层与顶层的
+  # base 是下层分支而不是 main。GitHub 的 stack 规则声称「每个 PR 都按其栈底
+  # （main）评估」，但实测对栈的顶层不生效 —— 同一个 stack 里 #142 / #143 都跑到了
+  # CI，而顶层 #145（base=fix/subtitle-burn-quality）从未产生任何 CI 运行，同期只有
+  # 不带分支过滤的动态工作流（CodeQL / Copilot review）跑了。
+  # 去掉过滤器后任何 base 的 PR 都会跑；代价是堆叠时每层各跑一次（见 concurrency）。
   pull_request:
-    branches: [main]
+  # 允许对任意分支手动补跑：修复 / 排障时不必再推一个空提交来触发
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -10,6 +19,8 @@ name: CI
       - 'docs/**'
 
 concurrency:
+  # github.ref 对 pull_request 事件是 refs/pull/<n>/merge，因此各层 PR 之间不会
+  # 互相取消，同一 PR 的连续推送只保留最新一次。
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
