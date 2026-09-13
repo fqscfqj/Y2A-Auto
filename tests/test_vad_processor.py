@@ -16,7 +16,10 @@ class VadProcessorTests(unittest.TestCase):
         self.assertEqual(config.max_segment_s_for_split, 15.0)
 
     def test_isolated_short_segment_does_not_span_long_silence(self):
-        processor = VadProcessor(VadConfig())
+        # 本用例的意图是「不得跨越长静音强行合并」；0.3s 孤立段在默认
+        # drop_isolated_short=True 下会被丢弃（见 test_vad_quality_guards），
+        # 故显式关闭丢弃以保留原有断言意图。
+        processor = VadProcessor(VadConfig(drop_isolated_short=False))
 
         result = processor._apply_constraints(
             [(0.0, 1.0), (10.0, 10.3)],
@@ -26,7 +29,8 @@ class VadProcessorTests(unittest.TestCase):
         self.assertEqual(result, [(0.0, 1.0), (10.0, 10.3)])
 
     def test_leading_short_segment_does_not_expand_distant_next_segment(self):
-        processor = VadProcessor(VadConfig())
+        # 同上：关闭孤立极短段丢弃，验证「不扩展远端下一段」的既有意图。
+        processor = VadProcessor(VadConfig(drop_isolated_short=False))
 
         result = processor._apply_constraints(
             [(0.0, 0.3), (10.0, 11.0)],
