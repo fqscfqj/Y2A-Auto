@@ -275,5 +275,119 @@ class RatioBranchCjkRegressionTests(unittest.TestCase):
             translator._likely_untranslated('안녕하세요 여러분', '안녕하세요, 여러분'))
 
 
+class SourceLanguageParaphraseReturnTests(unittest.TestCase):
+    """R5 回归：模型「把源文改写/清洗一遍」的返回也必须判未译。
+
+    缺陷（上一轮修 Blocker-1 时新引入的边界）：判据改成「译文与源的 CJK 重合度
+    >= 0.8 才算复读」之后，**没有翻译、只是把日文改写了**的输出整体逃逸 ——
+    它既不是逐字照抄（``d == s`` 快速路径不命中），重合度又落在 0.6–0.79。
+
+    文件级后果与 Blocker-1 同级：一份字幕里每行都是改写型返回时，
+    ``_collect_untranslated_indices`` 返回空 → 整批验收「通过」→ 日文原文被
+    当成中文译文写盘并烧录。
+
+    修法：源含假名/谚文时并联第二个信号 —— 译文里的**平假名**个数
+    （``_HIRAGANA_RETURN_MIN_COUNT``）。平假名在中文译文里几乎不出现，
+    而日文助词/助动词必然把它们带出来；片假名借词（アニメ / トヨタ）不计入，
+    因此上一轮那批假阳性不会被重新判死。韩文不需要这个信号：纯谚文译文里没有
+    汉字，非中文占比天然是 1.0，既有的比值分支已经覆盖（见下面的韩文用例）。
+    """
+
+    def _translator(self, target_language='zh'):
+        from unittest.mock import MagicMock
+
+        from modules.subtitle_translator import SubtitleTranslator, TranslationConfig
+
+        translator = SubtitleTranslator.__new__(SubtitleTranslator)
+        translator.config = TranslationConfig(target_language=target_language)
+        translator.logger = MagicMock()
+        translator.task_id = 'unit'
+        return translator
+
+    def test_japanese_paraphrase_returns_are_flagged(self):
+        """复核报告的 12 条日文改写型语料（重合度 0.62–0.79，此前全部漏检）。"""
+        translator = self._translator('zh')
+        cases = (
+            ('今日はいい天気ですね', '本日は晴天ですね', '换同义词'),
+            ('明日の会議は10時からです', '明日の会議は10時からになります', '同义改写'),
+            ('ありがとうございました', 'ありがとうございます', '时态改写'),
+            ('これはとても面白いアニメです', 'これはとても面白いアニメだ', '句尾改写'),
+            ('彼は東京に住んでいます', '彼は東京に住んでいる', '时态改写'),
+            ('えーと、あの、今日は晴れですね', '今日は晴れですね', 'ASR 清洗'),
+            ('これは、えっと、問題ないです', 'これは問題ないです', 'ASR 清洗'),
+            ('新宿駅に到着しました', '新宿駅に着きました', '换动词'),
+            ('ここで少し休みましょう', 'ここで少し休憩しましょう', '换名词'),
+            ('電車が遅れているようです', '電車が遅延しているようです', '换动词'),
+            ('子供たちが公園で遊んでいます', '子どもたちが公園で遊んでいます', '换汉字写法'),
+            ('とても美味しかったです', '大変美味しかったです', '换程度副词'),
+        )
+        for source, dst, why in cases:
+            with self.subTest(why=why):
+                self.assertTrue(
+                    translator._likely_untranslated(source, dst), (source, dst))
+
+    def test_korean_paraphrase_returns_are_flagged(self):
+        """韩文改写型返回同样不得逃逸（由既有比值分支覆盖，不是本轮新信号）。
+
+        纯谚文译文里没有汉字，``non_chinese`` 占比天然是 1.0，所以韩文这条路径
+        在本轮修复前后都成立 —— 这个用例钉住的是行为，不是本轮的新信号。
+        反向守卫见下一条：中文译文里留两个韩文词不得被判未译。
+        """
+        translator = self._translator('zh')
+        for source, dst in (
+            ('감사합니다', '고맙습니다'),
+            ('오늘은 날씨가 좋네요', '오늘 날씨 좋습니다'),
+        ):
+            with self.subTest(dst=dst):
+                self.assertTrue(
+                    translator._likely_untranslated(source, dst), (source, dst))
+
+    def test_chinese_translation_keeping_korean_words_is_not_flagged(self):
+        """反向守卫：本轮的平假名判据**不认谚文**，中文译文里的韩文词必须放行。
+
+        如果这里改数「平假名 + 谚文」，这条正常译文会被判未译 —— 这正是把
+        计数范围限制在平假名的原因之一。
+        """
+        translator = self._translator('zh')
+        self.assertFalse(
+            translator._likely_untranslated('안녕하세요 여러분', '大家好 안녕'))
+
+    def test_katakana_loanword_in_chinese_translation_is_still_not_flagged(self):
+        """新信号只数平假名/谚文，片假名借词的中文译文必须继续放行。"""
+        translator = self._translator('zh')
+        for source, dst in (
+            ('アニメが好きです', '我喜欢アニメ，非常有趣'),
+            ('トヨタの車', 'トヨタ的车真不错'),
+            ('アニメを見る', '看アニメ'),
+            ('すみません、トヨタの車はどこですか', '请问丰田的车在哪里'),
+        ):
+            with self.subTest(dst=dst):
+                self.assertFalse(
+                    translator._likely_untranslated(source, dst), (source, dst))
+
+    def test_single_hiragana_particle_is_below_the_threshold(self):
+        """阈值边界：1 个平假名不足以判定 —— 中文文案里偶见「の」作装饰。
+
+        与用例无关的既有放行样本（`看アニメ`）在中文里补一个「の」后，
+        译文里仍只有 1 个平假名，因此不得被判成未译。
+        """
+        translator = self._translator('zh')
+        self.assertFalse(
+            translator._likely_untranslated('アニメを見る', '看アニメの作品'))
+
+    def test_hiragana_loanword_in_chinese_translation_is_a_documented_boundary(self):
+        """已知代价边界（本轮取舍）：中文译文里保留**平假名**借词会被判未译。
+
+        平假名在中文译文里几乎不出现，因此「保留平假名借词」与「模型返回日文」
+        在本判据下同形，无法用字符信号区分（与 `_HIRAGANA_RETURN_MIN_COUNT`
+        的注释一致）。取舍理由：这条边界被判未译只会让该条走补翻并回退原文，
+        而放过它会让整类「模型把日文改写一遍」的返回被写进中文字幕并烧录 ——
+        两个方向的代价不对等。这里把它钉住，避免被误当成已覆盖的场景。
+        """
+        translator = self._translator('zh')
+        self.assertTrue(
+            translator._likely_untranslated('この猫はかわいいですね', '这只猫真かわいい'))
+
+
 if __name__ == '__main__':
     unittest.main()

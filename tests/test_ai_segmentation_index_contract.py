@@ -251,6 +251,31 @@ class NormalizeOutputCuesTests(unittest.TestCase):
         self.assertEqual(out[1].text, 'bravo late-line-5s')
         self.assertAlmostEqual(out[1].start_s, 2.0, places=6)
 
+    def test_absorption_target_is_not_the_last_valid_cue(self):
+        """夹具必须让「最近」与「第一条 / 最后一条」给出**不同**答案。
+
+        上一条用例里碎片（5.0s）的最近合法 cue 恰好就是最后一条（2–3s），
+        因此「按 start 最近」「第一条」「最后一条」三种写法都能通过 —— 反向变异
+        实测：把选择逻辑改成 ``len(normalized) - 1``（最后一条）或「按 end_s 最近」，
+        46 个用例仍全绿，说明那条不变量并没有被真正守住。
+
+        这里的合法 cue 是 0–0.5 / 4–20 / 30–31，碎片落在 6.0s：
+        - 按 start 最近 → 4–20（距离 2）；按「第一条」→ 0–0.5；按「最后一条」→ 30–31；
+        - 按 end_s 最近 → 0–0.5（距离 5.5，比 4–20 的 14 更近）。
+        只有「按 start 最近」这一种写法能让下面的断言全部成立。
+        """
+        cues = [
+            _cue(0, 0.5, 'alpha'),
+            _cue(4, 20, 'bravo'),
+            _cue(30, 31, 'charlie'),
+            _cue(6, 6, 'frag-6s'),
+        ]
+        out = _normalize_output_cues(cues, total_duration_s=40.0)
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[0].text, 'alpha')
+        self.assertEqual(out[1].text, 'bravo frag-6s')
+        self.assertEqual(out[2].text, 'charlie')
+
     def test_fragment_before_the_only_valid_cue_is_prepended(self):
         """碎片在目标之前时前置，保持「文本顺序 = 时间顺序」。"""
         cues = [_cue(0, 0, 'early'), _cue(5, 6, 'later')]

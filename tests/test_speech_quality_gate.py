@@ -1030,6 +1030,170 @@ class CheckpointSubtitleStageTests(unittest.TestCase):
         self.assertEqual(first, second)
 
 
+class CheckpointGateConsistencyTests(unittest.TestCase):
+    """R5-3：checkpoint 的「字幕阶段是否被拒」必须与烧录门控**同口径**。
+
+    缺陷：门控修好之后（逃生口打开时 ``qc_unavailable`` 放行烧录），
+    ``_is_subtitle_stage_rejected`` 仍只看 ``subtitle_qc_failed`` /
+    ``quality_state`` / ``warning_message``，于是同一份落库状态给出两个相反结论 ——
+
+    - 门控 ``_subtitle_embed_allowed(...)`` = 放行（烧录正常执行）；
+    - ``_get_completed_stages`` 每轮都剔除 ``translate_subtitle`` →
+      「跳过字幕处理（checkpoint 已完成）」永远不成立 → **每轮重跑都重做 ASR**。
+
+    这些用例把「门控结论」与「checkpoint 结论」成对断言：只改一边就会红。
+    """
+
+    HATCH_OPEN = {'ASR_FAILURE_BLOCKS_EMBED': False, 'SUBTITLE_QC_ENABLED': True}
+    STRICT = {'ASR_FAILURE_BLOCKS_EMBED': True, 'SUBTITLE_QC_ENABLED': True}
+    QC_OFF = {'ASR_FAILURE_BLOCKS_EMBED': True, 'SUBTITLE_QC_ENABLED': False}
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='y2a-ckpt-gate-')
+        self.translated = os.path.join(self.tmpdir, 'video.zh.srt')
+        with open(self.translated, 'w', encoding='utf-8') as handle:
+            handle.write('1\n00:00:00,000 --> 00:00:02,000\n你好\n')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _task(self, **overrides):
+        task = {
+            'id': 'task-ckpt-gate',
+            'subtitle_path_original': self.translated,
+            'subtitle_path_translated': self.translated,
+            'status': tm.TASK_STATES['DOWNLOADED'],
+        }
+        task.update(overrides)
+        return task
+
+    def test_hatch_open_keeps_the_subtitle_stage_completed(self):
+        """逃生口打开 + 质检没跑成：门控放行 ⇒ 字幕阶段不得再被判为未完成。"""
+        task = self._task(
+            subtitle_qc_failed=1,
+            subtitle_qc_reason='qc_unavailable',
+            subtitle_warning_message='qc_unavailable',
+        )
+        self.assertTrue(tm._subtitle_embed_allowed(
+            self.HATCH_OPEN, 'ok', True, qc_reason='qc_unavailable'))
+        self.assertFalse(tm._is_subtitle_stage_rejected(task, self.HATCH_OPEN))
+        self.assertIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                      tm._get_completed_stages(task, self.HATCH_OPEN))
+
+    def test_hatch_closed_still_discards_the_subtitle_stage(self):
+        """反向守卫：门控拦截时字幕阶段仍必须被剔除（否则重跑永远拿不到新字幕）。"""
+        task = self._task(
+            subtitle_qc_failed=1,
+            subtitle_qc_reason='qc_unavailable',
+            subtitle_warning_message='qc_unavailable',
+        )
+        self.assertFalse(tm._subtitle_embed_allowed(
+            self.STRICT, 'ok', True, qc_reason='qc_unavailable'))
+        self.assertTrue(tm._is_subtitle_stage_rejected(task, self.STRICT))
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                         tm._get_completed_stages(task, self.STRICT))
+
+    def test_hatch_open_does_not_relax_an_explicit_qc_failure(self):
+        """逃生口只放宽「没跑成」，明确失败在任何配置下都拦截并剔除阶段。"""
+        task = self._task(
+            subtitle_qc_failed=1,
+            subtitle_qc_reason='timeline_coverage_low',
+            subtitle_warning_message='subtitle_qc_rejected',
+        )
+        self.assertFalse(tm._subtitle_embed_allowed(
+            self.HATCH_OPEN, 'ok', True, qc_reason='timeline_coverage_low'))
+        self.assertTrue(tm._is_subtitle_stage_rejected(task, self.HATCH_OPEN))
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                         tm._get_completed_stages(task, self.HATCH_OPEN))
+
+    def test_qc_disabled_keeps_the_subtitle_stage(self):
+        """关掉质检 = 用户主动放弃这道防线：历史 ``qc_failed`` 不再剔除阶段。"""
+        task = self._task(subtitle_qc_failed=1)
+        self.assertTrue(tm._subtitle_embed_allowed(self.QC_OFF, 'ok', True))
+        self.assertFalse(tm._is_subtitle_stage_rejected(task, self.QC_OFF))
+        self.assertIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                      tm._get_completed_stages(task, self.QC_OFF))
+
+    def test_failed_quality_state_is_kept_under_the_hatch_but_not_without_it(self):
+        """ASR 质量结局 failed 同样与门控同口径（逃生口的既定语义）。"""
+        task = self._task(subtitle_quality_state='failed')
+        self.assertFalse(tm._is_subtitle_stage_rejected(task, self.HATCH_OPEN))
+        self.assertIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                      tm._get_completed_stages(task, self.HATCH_OPEN))
+        self.assertTrue(tm._is_subtitle_stage_rejected(task, self.STRICT))
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                         tm._get_completed_stages(task, self.STRICT))
+
+    def test_task_without_config_falls_back_to_the_conservative_ruling(self):
+        """配置未知时（模块级调用）仍按任务字段保守剔除 —— 不给调用方加必填参数。
+
+        方向必须是「宁可多跑一轮字幕阶段」：把被拒字幕当成已完成会永久跳过.
+        """
+        task = self._task(
+            subtitle_qc_failed=1,
+            subtitle_qc_reason='qc_unavailable',
+            subtitle_warning_message='qc_unavailable',
+        )
+        self.assertTrue(tm._is_subtitle_stage_rejected(task))
+        self.assertNotIn(tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+                         tm._get_completed_stages(task))
+
+    def test_gate_and_checkpoint_agree_across_the_state_matrix(self):
+        """矩阵断言：门控放行 ⇔ checkpoint 不剔除，任何一格不一致即失败。"""
+        configs = (self.STRICT, self.HATCH_OPEN, self.QC_OFF)
+        scenarios = (
+            ('ok', 0, None),
+            ('ok', 1, None),
+            ('ok', 1, 'qc_unavailable'),
+            ('ok', 1, 'timeline_coverage_low'),
+            ('failed', 0, None),
+            ('failed', 1, 'qc_unavailable'),
+            ('degraded', 0, None),
+            ('degraded', 1, None),
+        )
+        for config in configs:
+            for state, qc_failed, reason in scenarios:
+                with self.subTest(config=config, state=state,
+                                  qc_failed=qc_failed, reason=reason):
+                    task = self._task(
+                        subtitle_quality_state=state,
+                        subtitle_qc_failed=qc_failed,
+                        subtitle_qc_reason=reason,
+                    )
+                    allowed = tm._subtitle_embed_allowed(
+                        config, state, qc_failed == 1, qc_reason=reason)
+                    rejected = tm._is_subtitle_stage_rejected(task, config)
+                    self.assertEqual(allowed, not rejected)
+                    self.assertEqual(
+                        rejected,
+                        tm.PIPELINE_STAGE_TRANSLATE_SUBTITLE
+                        not in tm._get_completed_stages(task, config))
+
+    def test_upload_prep_burn_does_not_depend_on_the_subtitle_checkpoint(self):
+        """静态守卫：上传前烧录不得依赖 checkpoint / 字幕阶段判定。
+
+        上面那条修法的**前提**是「跳过字幕阶段」不会连带跳过烧录：
+        ``process_task`` 命中「跳过字幕处理（checkpoint 已完成）」时不再调用
+        ``_translate_subtitle``（烧录也在里面），因此上传前阶段必须按门控**独立**
+        决定补做烧录。若有人让 `_prepare_subtitle_for_upload` 也去读 checkpoint /
+        ``_is_subtitle_stage_rejected``，逃生口下的重跑就会产出**没有字幕的成片**
+        —— 那比多跑一轮 ASR 严重得多。
+        """
+        source_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'modules', 'task_manager.py')
+        with open(source_path, encoding='utf-8') as handle:
+            source = handle.read()
+        start = source.index('def _prepare_subtitle_for_upload')
+        # 取到下一个同级方法的定义为止（类内方法缩进为 4 个空格）
+        end = source.index('\n    def ', start + 1)
+        body = source[start:end]
+        for forbidden in ('_get_completed_stages', '_is_subtitle_stage_rejected'):
+            self.assertNotIn(
+                forbidden, body,
+                f'上传前烧录阶段不应依赖 checkpoint 判定（出现 {forbidden}）')
+
+
 class _FakeCursor:
     def __init__(self, rows):
         self._rows = rows
