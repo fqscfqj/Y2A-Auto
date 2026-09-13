@@ -380,13 +380,71 @@ class SourceLanguageParaphraseReturnTests(unittest.TestCase):
 
         平假名在中文译文里几乎不出现，因此「保留平假名借词」与「模型返回日文」
         在本判据下同形，无法用字符信号区分（与 `_HIRAGANA_RETURN_MIN_COUNT`
-        的注释一致）。取舍理由：这条边界被判未译只会让该条走补翻并回退原文，
-        而放过它会让整类「模型把日文改写一遍」的返回被写进中文字幕并烧录 ——
-        两个方向的代价不对等。这里把它钉住，避免被误当成已覆盖的场景。
+        的注释一致）。取舍理由：放过它会让整类「模型把日文改写一遍」的返回被写进
+        中文字幕并烧录 —— 两个方向的代价不对等。
+
+        代价的**实测口径**（复审第六轮，勿低估）：9 条「正常中文译文里保留平假名
+        借词」的语料里 6 条被判未译（5 条由本判据、1 条由既有的比值分支）；而且
+        后果不止那一行 —— 残留 > 3 条且 > 15% 时**整份译文被丢弃**，ja→zh 场景下
+        「回退原文」本身就是把日文原文写进中文字幕。文件级后果由下一条用例钉住。
         """
         translator = self._translator('zh')
         self.assertTrue(
             translator._likely_untranslated('この猫はかわいいですね', '这只猫真かわいい'))
+
+    def test_hiragana_loanword_lines_can_discard_the_whole_translation(self):
+        """代价边界（量化）：平假名借词的误判是「文件级」风险，不只是那一行。
+
+        `_finalize_residual_untranslated_items` 的容忍阈值是「残留 <= 3 条
+        **且** <= 15%」：
+
+        - 20 行里有 4 行只是「译文保留了平假名借词」（4 > 3 且 20% > 15%）
+          → 返回 False ⇒ **整份译文被丢弃**；
+        - 同样语料只误判 1 行时 → 放行，该行标记 `residual_untranslated` 且
+          `translated_text` 置空 ⇒ 写盘阶段**回退原文**（ja→zh 场景下即把日文
+          原文写进中文字幕，与本次修复要消灭的形态同源）。
+
+        这就是 `_HIRAGANA_RETURN_MIN_COUNT` 注释里说的「代价」：判据方向不改成
+        更宽松的版本（实测两条替代规则都会重新打开漏检），但后果必须写清、钉住。
+        """
+        from modules.subtitle_translator import SubtitleItem
+
+        def _translator():
+            translator = self._translator('zh')
+            translator.config.allow_partial = False
+            return translator
+
+        def _items(loanword_lines):
+            items = []
+            for i in range(20 - loanword_lines):
+                item = SubtitleItem(
+                    index=i + 1, start_time='00:00:00,000', end_time='00:00:01,000',
+                    source_text=f'これは{i}番目の文です')
+                item.translated_text = f'这是第{i}句的正常中文译文'
+                items.append(item)
+            for j in range(loanword_lines):
+                item = SubtitleItem(
+                    index=20 - loanword_lines + j + 1,
+                    start_time='00:00:00,000', end_time='00:00:01,000',
+                    source_text='この猫はかわいいですね')
+                item.translated_text = '这只猫真かわいい'
+                items.append(item)
+            return items
+
+        # 4/20：超过容忍阈值 → 整份译文被丢弃
+        many = _items(4)
+        translator = _translator()
+        self.assertEqual(len(translator._collect_untranslated_indices(many)), 4)
+        self.assertFalse(
+            translator._finalize_residual_untranslated_items(many),
+            '4/20 行误判应当触发整批失败（这正是这条边界的文件级代价）')
+
+        # 1/20：阈值内 → 放行，但该行被标记并回退原文
+        one = _items(1)
+        translator = _translator()
+        self.assertTrue(translator._finalize_residual_untranslated_items(one))
+        self.assertTrue(one[-1].residual_untranslated)
+        self.assertEqual(one[-1].translated_text, '')
 
 
 if __name__ == '__main__':
