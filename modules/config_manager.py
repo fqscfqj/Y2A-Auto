@@ -147,6 +147,21 @@ DEFAULT_CONFIG = {
     "SUBTITLE_KEEP_ORIGINAL": True,  # 是否保留原始字幕文件
     "SUBTITLE_MAX_WORKERS": 2,  # 字幕翻译最大并发线程数
 
+    # 烧录字幕外观（ASS 样式叠加层，默认全部为「不改变现有观感」）
+    # 字号/边距的基准值仍由分辨率自适应算法插值得出，这里只做倍率与覆盖。
+    "SUBTITLE_FONT_SIZE_SCALE": 1.0,     # 字号倍率 0.5-2.0
+    "SUBTITLE_MARGIN_V_SCALE": 1.0,      # 底部边距倍率 0.5-2.0
+    "SUBTITLE_FONT_COLOR": "#FFFFFF",    # 字色 #RRGGBB
+    "SUBTITLE_OUTLINE_COLOR": "#000000", # 描边色 #RRGGBB（透明度固定为半透明，保持现状观感）
+    "SUBTITLE_OUTLINE_ENABLED": True,    # 关闭后描边为 0
+    "SUBTITLE_OUTLINE_SCALE": 1.0,       # 描边粗细倍率 0.0-3.0
+    "SUBTITLE_SHADOW_ENABLED": True,     # 关闭后阴影为 0
+    "SUBTITLE_SHADOW_SCALE": 1.0,        # 阴影倍率 0.0-3.0
+    "SUBTITLE_TEXT_BOLD": True,          # 粗体
+    "SUBTITLE_BACKGROUND_ENABLED": False,  # 启用后使用 BorderStyle=4 半透明底板
+    "SUBTITLE_BACKGROUND_COLOR": "#000000",
+    "SUBTITLE_BACKGROUND_OPACITY": 0.5,  # 底板不透明度 0.0-1.0
+
     # ASR 源字幕预检（可选）
     "SUBTITLE_QC_ENABLED": True,  # 质量优先：失败则不烧录字幕，但保留字幕文件并继续上传原视频（任务最终仍为 completed）
     "SUBTITLE_QC_PROVIDER": "openai",  # openai / none
@@ -168,6 +183,12 @@ DEFAULT_CONFIG = {
     "VIDEO_CPU_PRESET_HD": _VIDEO_CPU_PRESET_HD_DEFAULT,  # 1440p+ 且超过 10 分钟时使用
     "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
     "VIDEO_CUSTOM_PARAMS": "",  # 自定义 FFmpeg 视频编码参数（启用自定义参数时使用）
+    "VIDEO_QUALITY_MODE": "auto",  # auto（按分辨率推荐）/ manual（使用 VIDEO_QUALITY_VALUE）
+    "VIDEO_QUALITY_VALUE": 23.5,  # 固定质量值 CRF/CQ/QP，越小质量越高，范围 0-51
+    "VIDEO_HW_QUALITY_BOOST": True,  # 硬件编码质量增强（AQ/lookahead/multipass 等），老 GPU 不支持时可关闭
+    "VIDEO_HW_QUALITY_LEVEL": "quality",  # fast/balanced/quality，映射到各硬件编码器的速度档
+    "VIDEO_COLOR_METADATA_MODE": "auto",  # auto（透传源色彩元数据）/ bt709（强制）/ off（不写入）
+    "VIDEO_X264_TUNE": "",  # libx264 -tune 取值，留空不传（可选 film/animation/grain 等）
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
