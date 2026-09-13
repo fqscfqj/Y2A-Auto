@@ -372,5 +372,158 @@ class X264ColorVuiSmokeTests(unittest.TestCase):
         self.assertEqual(vui.get('color_transfer'), 'bt709')
 
 
+@unittest.skipUnless(_ffmpeg_usable(), 'ffmpeg 不可用，跳过色彩元数据冒烟测试')
+class ColorReadNameRoundTripTests(unittest.TestCase):
+    """Major-N-A：以 **ffprobe 真实输出**为输入的端到端回环。
+
+    三张白名单收的是**写侧**名字（`-colorspace` / `-color_primaries` / `-color_trc`
+    接受的取值），而 `normalize_color_metadata` 的输入来自 ffprobe —— 它按 AVCOL_*
+    枚举名打印（`bt470m` / `bt470bg` / `log100` / `log316` / `iec61966-2-4` /
+    `bt1361e` / `iec61966-2-1` / `gbr`）。两者在同一个 ffmpeg 构建里就不一致，
+    因此这些真实源素材取值会在白名单之前被整条丢掉（只留一条 warning，用户不可见）。
+
+    这里对每个取值真的造源 → 真的 ffprobe 回读 → 把 resolve + build_color_vui_params
+    的产物真的写进输出并回读。只断言函数返回值会漏掉另一半问题：把读名直接当写名用
+    （`-color_trc bt470bg` / `-colorspace gbr`）会被 ffmpeg 以 rc=-22 拒绝。
+    """
+
+    #: (造源用的 x264 私有参数, 回读字段, 期望回读值)
+    SOURCE_CASES = (
+        ('colorprim=bt470m:transfer=bt470m:colormatrix=bt470bg', 'color_transfer', 'bt470m'),
+        ('colorprim=bt470bg:transfer=bt470bg:colormatrix=bt470bg', 'color_transfer', 'bt470bg'),
+        ('transfer=log100', 'color_transfer', 'log100'),
+        ('transfer=log316', 'color_transfer', 'log316'),
+        ('transfer=iec61966-2-4', 'color_transfer', 'iec61966-2-4'),
+        ('transfer=bt1361e', 'color_transfer', 'bt1361e'),
+        ('transfer=iec61966-2-1', 'color_transfer', 'iec61966-2-1'),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.mkdtemp(prefix='vep_color_readnames_')
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._tmpdir, ignore_errors=True)
+
+    def _encode(self, source, extra, tag):
+        output = os.path.join(self._tmpdir, f'{tag}.mkv')
+        if os.path.exists(output):
+            os.remove(output)
+        proc = subprocess.run(
+            [FFMPEG, '-hide_banner', '-nostdin', '-loglevel', 'error', '-i', source]
+            + extra + _COMMON_OUT + ['-y', output],
+            capture_output=True, timeout=120,
+        )
+        stderr = proc.stderr.decode('utf-8', 'replace').strip()
+        tail = stderr.splitlines()[-1] if stderr else ''
+        return proc.returncode, tail, output
+
+    def _make_source(self, x264_params=None, generic=None, tag='src'):
+        output = os.path.join(self._tmpdir, f'{tag}.mkv')
+        if os.path.exists(output):
+            os.remove(output)
+        extra = (['-x264-params', x264_params] if x264_params else []) + list(generic or [])
+        proc = subprocess.run(
+            [FFMPEG, '-hide_banner', '-nostdin', '-loglevel', 'error']
+            + _PROBE_INPUT + _COMMON_OUT + extra + ['-y', output],
+            capture_output=True, timeout=120,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            proc.stderr.decode('utf-8', 'replace').strip()[:200])
+        return output
+
+    def _round_trip(self, source, key, expected, tag):
+        """源 → ffprobe → normalize/resolve → 写进输出 → 回读。返回错误描述或 ''。"""
+        info = _probe_vui(source)
+        if str(info.get(key) or '') != expected:
+            # 夹具没造出目标字段：断言自证，避免用例恒真。
+            return f'{tag}: 造源失败，ffprobe={info}'
+        resolved = vep.resolve_color_metadata('auto', info)
+        vui = vep.build_color_vui_params('cpu', vep.normalize_color_metadata('auto', info))
+        # 必须显式断言通用选项里**有**这一项：只比对回读值会漏检 —— 重编码时
+        # ffmpeg 会从输入流继承色彩属性，字段被白名单丢掉后回读依然是原值。
+        option = {'color_space': '-colorspace',
+                  'color_primaries': '-color_primaries',
+                  'color_transfer': '-color_trc'}[key]
+        if option not in resolved:
+            return (f'{tag}: 读侧命名 {expected!r} 被白名单丢弃，'
+                    f'resolve 未输出 {option}（info={info}）')
+        code, tail, output = self._encode(
+            source, resolved + vui, f'out_{tag}')
+        if code != 0:
+            return f'{tag}: 写出失败 rc={code} {tail[:120]}（resolve={resolved} vui={vui}）'
+        back = _probe_vui(output)
+        if str(back.get(key) or '') != expected:
+            return (f'{tag}: 回读={back.get(key)!r} 期望={expected!r}'
+                    f'（resolve={resolved} vui={vui}）')
+        return ''
+
+    def test_read_side_names_survive_to_the_output_vui(self):
+        mismatches = []
+        for params, key, expected in self.SOURCE_CASES:
+            tag = f'{key}_{expected}'
+            source = self._make_source(x264_params=params, tag=f'src_{tag}')
+            problem = self._round_trip(source, key, expected, tag)
+            if problem:
+                mismatches.append(problem)
+        self.assertEqual(
+            mismatches, [],
+            f'ffprobe 读侧命名未通过白名单（字段被静默丢弃）：{mismatches}')
+
+    def test_read_side_gbr_matrix_survives(self):
+        """ffprobe 对 rgb 矩阵回读 `gbr`：此前整个 colorspace 被丢掉。"""
+        source = self._make_source(generic=['-colorspace', 'rgb'], tag='src_gbr')
+        problem = self._round_trip(source, 'color_space', 'gbr', 'gbr')
+        self.assertEqual(problem, '', problem)
+
+    def test_fixtures_really_produce_the_read_side_names(self):
+        """自证：上面那些用例的源素材确实让 ffprobe 回读出 AVCOL_* 名字。"""
+        seen = set()
+        for params, key, expected in self.SOURCE_CASES:
+            source = self._make_source(x264_params=params, tag=f'probe_{key}_{expected}')
+            seen.add(str(_probe_vui(source).get(key) or ''))
+        self.assertIn('bt470m', seen)
+        self.assertIn('bt470bg', seen)
+        self.assertIn('log100', seen)
+        self.assertIn('iec61966-2-1', seen)
+
+    def test_every_value_we_emit_is_readable_back_through_the_whitelist(self):
+        """完备性（**读**方向）：我们能写出去的取值，ffprobe 回读后必须仍被白名单接受。
+
+        既有的完备性用例方向是「写」侧（从 `ffmpeg -h full` 枚举可写名），结构性抓不到
+        这条缺口：一个取值在两侧可能同名（`fcc` / `bt2020-10`），也可能不同名
+        （`rgb`/`gbr`、`gamma22`/`bt470m`、`log`/`log100`）。后者一旦漏掉映射，
+        真实源素材的该字段就会被静默丢弃 —— 只有这条「写出去 → 读回来 → 再过白名单」
+        的回环能发现。
+        """
+        problems = []
+        for field, probe_key, table in (
+            ('colorspace', 'color_space', vep._COLORSPACE_VALUES),
+            ('color_primaries', 'color_primaries', vep._PRIMARIES_VALUES),
+            ('color_trc', 'color_transfer', vep._TRC_VALUES),
+        ):
+            for value in sorted(table):
+                extra = vep.build_color_vui_params('cpu', {field: value})
+                if not extra:
+                    # 该取值在这个编码器里没有等价枚举名（_X264_PARAMS_UNSUPPORTED）：
+                    # 源素材不会带上它，不参与本回环。
+                    continue
+                source = self._make_source(
+                    x264_params=extra[1], tag=f'roundtrip_{field}_{value}')
+                read_back = str(_probe_vui(source).get(probe_key) or '')
+                if not read_back:
+                    problems.append(f'{field}={value}: 源素材未回读到该字段')
+                    continue
+                if vep._read_side_token(read_back, field) not in table:
+                    problems.append(
+                        f'{field}={value} -> ffprobe {read_back!r}：'
+                        f'读取时不在白名单，字段会被静默丢弃')
+        self.assertEqual(
+            problems, [],
+            f'写出去的值回读后不被白名单接受（缺读名→写名映射）：{problems}')
+
+
 if __name__ == '__main__':
     unittest.main()
