@@ -52,6 +52,15 @@ from .notifications import (
     NotificationEvent,
     emit_notification_event,
 )
+from .tag_presets import (
+    BILIBILI_TAG_LIMIT,
+    PLATFORM_ACFUN,
+    PLATFORM_BILIBILI,
+    is_preset_tags_effective,
+    merge_tags,
+    parse_preset_tags,
+    resolve_upload_tags,
+)
 import subprocess
 from typing import Any, Dict
 from werkzeug.security import safe_join
@@ -2880,7 +2889,10 @@ class TaskProcessor:
                         return
                 _raise_if_cancelled(task_id, task_logger)
 
-            if self.config.get('GENERATE_TAGS', True):
+            # 预设标签生效时也要跑这一阶段：关闭「自动生成标签」但启用预设时，
+            # 该阶段负责把预设标签落到任务上（任务卡展示、分区推荐上下文、checkpoint
+            # 与上传路径口径一致），此时函数内部不会调用标签 AI。
+            if self.config.get('GENERATE_TAGS', True) or is_preset_tags_effective(self.config):
                 if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
                     task_logger.info("跳过标签生成（checkpoint已完成）")
                 else:
@@ -8332,25 +8344,61 @@ class TaskProcessor:
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
-        if self.config.get('GENERATE_TAGS', True) and (title or description):
-            tags = generate_acfun_tags(
-                title, 
-                description, 
-                openai_config=openai_config,
-                task_id=task_id
-            )
-            # 限制标签数量不超过6个
-            if tags:
-                tags = tags[:6]
-                update_task(task_id, tags_generated=json.dumps(tags, ensure_ascii=False))
+        # 预设标签（Issue #139）：启用且非空时，预设排在任务已有标签之前，
+        # AI 只补齐剩余名额（落盘上限取 bilibili 的 12，AcFun 上传时再截到 6）。
+        preset_tags = parse_preset_tags(self.config.get('PRESET_TAGS', ''))
+        preset_effective = is_preset_tags_effective(self.config)
+
+        if not preset_effective:
+            # 预设未生效：完全保留既有行为（AI 6 标签 / 失败或禁用写空列表）
+            if self.config.get('GENERATE_TAGS', True) and (title or description):
+                tags = generate_acfun_tags(
+                    title, 
+                    description, 
+                    openai_config=openai_config,
+                    task_id=task_id
+                )
+                # 限制标签数量不超过6个
+                if tags:
+                    tags = tags[:6]
+                    update_task(task_id, tags_generated=json.dumps(tags, ensure_ascii=False))
+                else:
+                    task_logger.warning("标签生成失败")
+                    update_task(task_id, tags_generated=json.dumps([], ensure_ascii=False))
             else:
-                task_logger.warning("标签生成失败")
+                task_logger.warning("标签生成已禁用或缺少必要信息")
                 update_task(task_id, tags_generated=json.dumps([], ensure_ascii=False))
+
+            task_logger.info(f"标签生成完成: {task.get('tags_generated', '[]')}")
+            return True
+
+        existing_tags = _normalize_tags_list(task.get('tags_generated'))
+        ai_tags = []
+        if self.config.get('GENERATE_TAGS', True):
+            if title or description:
+                raw_tags = generate_acfun_tags(
+                    title,
+                    description,
+                    openai_config=openai_config,
+                    task_id=task_id,
+                    avoid_tags=preset_tags,
+                ) or []
+                ai_tags = [str(tag).strip() for tag in raw_tags if str(tag or '').strip()]
+            else:
+                task_logger.warning("缺少标题和简介，跳过 AI 标签补齐（仅使用预设标签）")
         else:
-            task_logger.warning("标签生成已禁用或缺少必要信息")
-            update_task(task_id, tags_generated=json.dumps([], ensure_ascii=False))
-            
-        task_logger.info(f"标签生成完成: {task.get('tags_generated', '[]')}")
+            task_logger.info("自动生成标签已禁用，仅使用预设标签")
+
+        merged_tags = merge_tags(
+            preset_tags,
+            existing_tags + ai_tags,
+            limit=BILIBILI_TAG_LIMIT,
+        )
+        update_task(task_id, tags_generated=json.dumps(merged_tags, ensure_ascii=False))
+        task_logger.info(
+            f"预设标签生效：预设 {len(preset_tags)} 个 / AI 补齐 {len(ai_tags)} 个"
+            f" -> {json.dumps(merged_tags, ensure_ascii=False)}"
+        )
         return True
     
     def _recommend_partition(self, task_id, task_logger):
@@ -9104,10 +9152,24 @@ class TaskProcessor:
             return bool(title_text or description_text)
 
         tags = _normalize_tags_list(task.get('tags_generated'))
-        if self.config.get('GENERATE_TAGS', True) and not tags:
+        # 预设标签生效时同样要走标签阶段：即便「自动生成标签」关闭，也要把预设标签
+        # 落到任务上（与 run_task 的阶段门控同口径）。这里只在标签为空时补跑，
+        # 避免每次强制上传都重新调用标签 AI（已有标签的任务在上传路径仍会合并预设）。
+        preset_effective = is_preset_tags_effective(self.config)
+        if (self.config.get('GENERATE_TAGS', True) or preset_effective) and not tags:
             if _has_usable_text(task):
                 task_logger.info("强制上传前检测到标签为空，继续执行标签生成阶段")
                 self._generate_tags(task_id, task_logger)
+                task = get_task(task_id) or task
+                completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
+            elif preset_effective:
+                preset_only = parse_preset_tags(self.config.get('PRESET_TAGS', ''))
+                task_logger.warning("强制上传前标签缺失且缺少标题和简介，改为只写入预设标签")
+                update_task(
+                    task_id,
+                    tags_generated=json.dumps(preset_only, ensure_ascii=False),
+                    silent=True,
+                )
                 task = get_task(task_id) or task
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
             else:
@@ -9284,8 +9346,13 @@ class TaskProcessor:
         # 重新设置状态为上传中（字幕翻译可能已在上述步骤执行）
         update_task(task_id, status=TASK_STATES['UPLOADING'])
 
-        # 解析标签
-        tags = _normalize_tags_list(task.get('tags_generated') if task else None)
+        # 解析标签（预设标签生效时：预设在前，其余标签紧随，并按 AcFun 上限截断）
+        tags = resolve_upload_tags(
+            self.config,
+            task.get('tags_generated') if task else None,
+            PLATFORM_ACFUN,
+            logger_obj=task_logger,
+        )
         
         # 获取元数据
         metadata_path = task.get('metadata_json_path_local', '') if task else ''
@@ -9502,7 +9569,13 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['UPLOADING'], upload_progress='0.0%')
 
         tags = []
-        tags = _normalize_tags_list(task.get('tags_generated') if task else None)
+        # 解析标签（预设标签生效时：预设在前，其余标签紧随，并按 bilibili 上限截断）
+        tags = resolve_upload_tags(
+            self.config,
+            task.get('tags_generated') if task else None,
+            PLATFORM_BILIBILI,
+            logger_obj=task_logger,
+        )
 
         metadata_path = task.get('metadata_json_path_local', '') if task else ''
         original_url = task.get('youtube_url', '') if task else ''

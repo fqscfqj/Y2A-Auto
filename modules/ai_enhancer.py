@@ -1167,7 +1167,7 @@ def translate_video_metadata(
         final_result["error_message"] = _build_metadata_failure_message(final_result["failed_fields"])
         return final_result
 
-def generate_acfun_tags(title, description, openai_config=None, task_id=None):
+def generate_acfun_tags(title, description, openai_config=None, task_id=None, avoid_tags=None):
     """
     使用OpenAI生成AcFun风格的标签
     
@@ -1176,6 +1176,7 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         description (str): 视频描述
         openai_config (dict): OpenAI配置信息，包含api_key, base_url, model_name等
         task_id (str, optional): 任务ID，用于日志记录
+        avoid_tags (list, optional): 已由人工预设占用的标签，提示模型不要重复并在解析后过滤
         
     Returns:
         list: 标签列表，出错时返回空列表
@@ -1203,14 +1204,36 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
         client = get_openai_client(openai_config)
         model_name = openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
         start_time = time.time()
+
+        # 预设标签（Issue #139）：预设已占用这些标签，禁止模型重复或近似复用。
+        # 同时把截断到 10 字的形式一并纳入比对集合：上传给 AcFun 前每个标签都会被
+        # 截断到 10 字，若只比对原文，12 字的预设标签与模型返回的 10 字版本仍会撞车。
+        avoid_list = []
+        for raw_avoid in (avoid_tags or []):
+            avoid_tag = _normalize_whitespace(safe_str(raw_avoid)).strip()
+            if avoid_tag and avoid_tag not in avoid_list:
+                avoid_list.append(avoid_tag)
+        avoid_set = set()
+        for avoid_tag in avoid_list:
+            avoid_set.add(avoid_tag.lower())
+            avoid_set.add(avoid_tag[:10].lower())
+
+        system_prompt = (
+            "你是视频标签生成器。基于标题和简介输出 6 个简体中文标签。"
+            "标签必须短、去重、无序号、无解释。"
+            '只返回 JSON：{"tags":["","","","","",""]}。'
+        )
+        if avoid_list:
+            system_prompt += (
+                "以下标签已被人工预设占用，禁止重复或近似复用："
+                + "、".join(avoid_list) + "。"
+            )
+            logger.info(f"标签生成已排除预设标签: {avoid_list}")
+
         parsed = _request_json_object(
             client=client,
             model_name=model_name,
-            system_prompt=(
-                "你是视频标签生成器。基于标题和简介输出 6 个简体中文标签。"
-                "标签必须短、去重、无序号、无解释。"
-                '只返回 JSON：{"tags":["","","","","",""]}。'
-            ),
+            system_prompt=system_prompt,
             payload={
                 "title": title,
                 "description": description[:200],
@@ -1236,7 +1259,7 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None):
                 continue
             tag = tag[:10]
             lowered = tag.lower()
-            if lowered in seen:
+            if lowered in seen or lowered in avoid_set:
                 continue
             seen.add(lowered)
             normalized_tags.append(tag)

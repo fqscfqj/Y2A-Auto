@@ -35,6 +35,10 @@ from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_FLOAT_FIELDS,
     SPEECH_PIPELINE_INT_FIELDS,
 )
+from modules.tag_presets import (
+    is_preset_tags_enabled,
+    normalize_preset_tags_config,
+)
 from modules.cookiecloud import (
     CookieCloudError,
     sync_cookiecloud_to_youtube_file,
@@ -731,6 +735,7 @@ SETTINGS_CHECKBOX_FIELDS = list(dict.fromkeys([
     'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
     'UPLOAD_APPEND_REPOST_NOTICE', 'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD',
     'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION',
+    'PRESET_TAGS_ENABLED',
     'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
     'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
     'LOG_CLEANUP_ENABLED', 'DOWNLOAD_CLEANUP_ENABLED',
@@ -1221,6 +1226,21 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             form_data[_color_key] = normalize_hex_color(
                 form_data[_color_key], str(_settings_fallback_default(_color_key))
             )
+
+        # 预设标签（Issue #139）：统一成「每行一个」后落盘，使重复保存幂等；
+        # 超量（>12）只保留前 12 个、超长（>20 字）保留原文，两者的后果都由
+        # normalize_preset_tags_config 返回用户可见的 warning，不做静默丢弃。
+        if 'PRESET_TAGS' in form_data:
+            _preset_text, _preset_warnings = normalize_preset_tags_config(form_data.get('PRESET_TAGS'))
+            form_data['PRESET_TAGS'] = _preset_text
+            for _preset_warning in _preset_warnings:
+                _append_settings_message(messages, 'warning', _preset_warning)
+            # 勾选启用但解析后为空时，行为等同未启用，必须让用户知道
+            if not _preset_text and is_preset_tags_enabled(form_data):
+                _append_settings_message(
+                    messages, 'warning',
+                    '已勾选「使用预设标签」但没有填写任何标签，当前等同于未启用。'
+                )
 
         _persist_settings_uploads(form_data, uploads)
         updated_config = update_config(form_data)
