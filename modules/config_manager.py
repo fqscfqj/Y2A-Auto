@@ -40,6 +40,11 @@ DEFAULT_CONFIG = {
     "DELETE_DOWNLOAD_FILES_AFTER_UPLOAD": False, # 上传全部成功后是否立即删除任务下载文件
     "GENERATE_TAGS": False,
     "YOUTUBE_UPLOADER_AS_FIRST_TAG": False,
+    # 预设标签（Issue #139）：启用后人工预设的标签排在任务标签之前，AI 只补齐剩余名额；
+    # 一份预设同时服务 AcFun 与 bilibili，落平台时按各平台上限截断
+    # （见 modules/tag_presets.py）。PRESET_TAGS 每行一个，也接受逗号/顿号/分号分隔。
+    "PRESET_TAGS_ENABLED": False,
+    "PRESET_TAGS": "",
     "RECOMMEND_PARTITION": False,
     "RECOMMEND_PARTITION_WITH_COVER": False,
     "CONTENT_MODERATION_ENABLED": False,
