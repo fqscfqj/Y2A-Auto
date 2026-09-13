@@ -809,6 +809,18 @@ class EmbedRetryWiringTests(unittest.TestCase):
         self.assertTrue(positions, '找不到 _execute_embed 的调用点')
         return positions[0]
 
+    def _position_of(self, pattern: str, *, description: str) -> int:
+        """在压平空白后的源码里定位一段写法。
+
+        用 ``re.search`` 而不是 ``str.index``：定位失败时应当给出**可读的断言失败**
+        （说明缺了哪段写法），而不是抛 ``ValueError: substring not found`` —— 后者
+        在等价重构（例如把赋值写成跨行表达式）下会变成一条与断言意图无关的报错。
+        """
+        match = re.search(pattern, self.normalized)
+        if not match:
+            self.fail(f'在源码里找不到{description}（pattern={pattern!r}）')
+        return match.start()
+
     def test_boost_override_does_not_mutate_shared_settings(self):
         self.assertNotIn(
             "encoder_settings['hw_quality_boost'] =", self.source,
@@ -818,12 +830,15 @@ class EmbedRetryWiringTests(unittest.TestCase):
     def test_budget_starts_before_the_first_attempt(self):
         """超时预算必须在首次尝试**之前**建立，否则首轮耗时不计入预算。"""
         first_attempt = self._first_execute_embed_call()
-        started = self.normalized.index('embed_started_at = time.monotonic()')
+        started = self._position_of(
+            r'embed_started_at\s*=\s*time\.monotonic\(\)',
+            description='超时预算起点 `embed_started_at = time.monotonic()`')
         self.assertLess(
             started, first_attempt,
             '超时预算必须在首次尝试之前建立，否则首轮耗时不计入预算')
-        self.assertLess(
-            self.normalized.index('first_stage_budget = '), first_attempt)
+        first_budget = self._position_of(
+            r'first_stage_budget\s*=', description='首轮预算 `first_stage_budget = `')
+        self.assertLess(first_budget, first_attempt)
         # 每一级的预算按该级真实编码器估算（x265 阶段要拿到 5 倍系数），
         # 具体公式由 EmbedTimeoutTests / EmbedStageBudgetTests 的行为用例守护。
         self.assertIn('_embed_stage_budget', self.normalized)

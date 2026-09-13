@@ -259,7 +259,7 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 - `SUBTITLE_KEEP_ORIGINAL`：是否保留原始字幕文件
 - `SUBTITLE_MAX_WORKERS`：字幕翻译并发线程数
 
-烧录字幕外观（默认值即历史观感；对`.ass`/`.ssa` 源的行为变更见下方说明）：
+烧录字幕外观（默认值即历史观感；对 `.ass`/`.ssa` 源的行为变更见下方说明）：
 
 - `SUBTITLE_FONT_SIZE_SCALE` / `SUBTITLE_MARGIN_V_SCALE`：字号与底部边距倍率，范围 `0.5-2.0`，默认 `1.0`
 - `SUBTITLE_FONT_COLOR` / `SUBTITLE_OUTLINE_COLOR`：字体色与描边色，`#RRGGBB`，默认 `#FFFFFF` / `#000000`

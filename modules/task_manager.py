@@ -884,10 +884,49 @@ def _block_reason_to_warning(reason) -> str:
 SUBTITLE_BLOCK_WARNING_VALUES = frozenset(SUBTITLE_BLOCK_WARNING_MESSAGES.values())
 
 
-def _is_subtitle_stage_rejected(task) -> bool:
+def _is_subtitle_stage_rejected(task, config=None) -> bool:
     """字幕阶段是否被质量门控拒绝（因此不该被 checkpoint 标为已完成）。
 
-    判定必须覆盖三类信号，缺一不可：
+    判定必须与**烧录门控本身**同口径，否则同一份落库状态会得到两个相反结论，
+    后果是用户看得见的那种自相矛盾（R5-3）：
+
+    - 门控（``_subtitle_embed_allowed``）在逃生口 ``ASR_FAILURE_BLOCKS_EMBED=False``
+      打开时放行 ``qc_unavailable``（质检没跑成）；
+    - 而这里若只看 ``subtitle_qc_failed`` / ``quality_state`` / ``warning_message``，
+      同一份 ``{qc_failed:1, reason:'qc_unavailable'}`` 仍被判「被拒」→
+      ``_get_completed_stages`` 每轮都剔除 ``translate_subtitle`` →
+      入口处的「跳过字幕处理（checkpoint 已完成）」永远不成立 →
+      **每轮重跑都重做 ASR**。这正是 ``_mark_subtitle_qc_unavailable`` 的
+      docstring 说要消除的行为，逃生口等于只做了一半。
+
+    因此：``config`` 可用时直接复用门控裁决（``not _subtitle_embed_allowed(...)``），
+    门控放行即视为「字幕阶段没有被拒」。``config`` 未知时（例如模块级工具函数在
+    没有配置的上下文里调用）退回只按任务字段判定的保守口径：宁可多跑一轮字幕
+    阶段，也不把「被拒绝的字幕」当成已完成而永久跳过。
+
+    注意「跳过字幕阶段」不会连带丢掉烧录：上传前阶段
+    （``_prepare_subtitle_for_upload``）按同一门控独立裁决、并会在需要时补做烧录
+    （「检测到已存在翻译字幕，仅补做烧录」），因此本判定放行换来的是
+    「不重跑 ASR」而不是「成片没有字幕」。
+    """
+    if not task:
+        return False
+    if config is None:
+        return _subtitle_rejection_recorded_on_task(task)
+    return not _subtitle_embed_allowed(
+        config,
+        task.get('subtitle_quality_state'),
+        task.get('subtitle_qc_failed'),
+        # qc_reason 必须一并传入：``qc_unavailable``（质检没跑成）与「明确的质检
+        # 失败结论」在门控里是两件事，逃生口只放宽前者。
+        qc_reason=task.get('subtitle_qc_reason'),
+    )
+
+
+def _subtitle_rejection_recorded_on_task(task) -> bool:
+    """仅凭任务字段判断「字幕阶段被拦过」（配置未知时的保守判定）。
+
+    覆盖三类信号，缺一不可：
 
     - ``subtitle_qc_failed == 1``：质检给出了明确失败结论；
     - ``subtitle_quality_state == 'failed'``：ASR/VAD 来源不可信；
@@ -991,7 +1030,13 @@ def _parse_pipeline_checkpoint(raw_value):
     }
 
 
-def _infer_completed_stages_from_task(task):
+def _infer_completed_stages_from_task(task, config=None):
+    """从任务字段推断已完成阶段（checkpoint 之外的兜底来源）。
+
+    ``config`` 只影响字幕阶段的判定：它会被传给 ``_is_subtitle_stage_rejected``
+    用于与烧录门控同口径（逃生口 / 质检开关）。为 ``None`` 时退回保守口径，
+    不给调用方新增必填参数。
+    """
     if not task:
         return set()
 
@@ -1032,7 +1077,9 @@ def _infer_completed_stages_from_task(task):
     # 字幕：译文路径存在才无条件认定完成。若被质量门控拒绝（质检失败 / 质检不可用
     # / ASR 质量结局 failed），不得把字幕阶段推断为已完成 —— 否则任务重跑会被
     # checkpoint 永久跳过，既拿不到新字幕，也无法重新质检。
-    subtitle_rejected = _is_subtitle_stage_rejected(task)
+    # 判定与烧录门控同口径：逃生口打开时「质检没跑成」不再算被拒（门控会放行烧录），
+    # 否则用户每轮重跑都会重做 ASR（见 _is_subtitle_stage_rejected）。
+    subtitle_rejected = _is_subtitle_stage_rejected(task, config)
     subtitle_keys = (
         ('subtitle_path_translated',)
         if subtitle_rejected
@@ -1052,17 +1099,20 @@ def _infer_completed_stages_from_task(task):
     return completed
 
 
-def _get_completed_stages(task):
+def _get_completed_stages(task, config=None):
     cp = _parse_pipeline_checkpoint(task.get(PIPELINE_CHECKPOINT_FIELD) if task else None)
     completed = set(cp.get('completed', []) or [])
-    completed |= _infer_completed_stages_from_task(task)
+    completed |= _infer_completed_stages_from_task(task, config)
     # 差集修正：checkpoint 只能做并集，而 ``_infer_completed_stages_from_task``
     # 只能**加**阶段、无法移除 checkpoint 里已有的项。于是「上一轮已写入
     # translate_subtitle、本轮被门控拒绝」的任务仍会带着该阶段被判定完成，
     # 用户即便修好配置重跑也只会打印「跳过字幕处理（checkpoint 已完成）」。
     # 这里显式剔除；调用方会把本函数结果写回 checkpoint，因此 DB 里的陈旧项
     # 也会随之被清理，不需要额外的迁移。
-    if _is_subtitle_stage_rejected(task):
+    # ``config`` 必须一路传下去：剔除判定与烧录门控同口径（见
+    # ``_is_subtitle_stage_rejected``），否则逃生口打开时会出现「门控放行烧录、
+    # checkpoint 却每轮把字幕阶段判为未完成」的自相矛盾。
+    if _is_subtitle_stage_rejected(task, config):
         completed.discard(PIPELINE_STAGE_TRANSLATE_SUBTITLE)
     return completed
 
@@ -2058,8 +2108,12 @@ def _get_task_download_dir_real(task_id):
     return task_dir_real
 
 
-def _is_upload_stage_failure(task):
-    """判断失败任务是否更适合直接重试上传，而不是重跑处理流水线。"""
+def _is_upload_stage_failure(task, config=None):
+    """判断失败任务是否更适合直接重试上传，而不是重跑处理流水线。
+
+    ``config`` 透传给 ``_get_completed_stages``，使字幕阶段是否算完成与烧录门控
+    保持同一口径（见 ``_is_subtitle_stage_rejected``）。
+    """
     if not task:
         return False
 
@@ -2079,7 +2133,7 @@ def _is_upload_stage_failure(task):
     if any(marker in error_text for marker in upload_markers):
         return True
 
-    completed = _get_completed_stages(task)
+    completed = _get_completed_stages(task, config)
     return PIPELINE_STAGE_DOWNLOAD_VIDEO in completed and PIPELINE_STAGE_TRANSLATE_SUBTITLE in completed
 
 
@@ -2133,7 +2187,7 @@ def retry_failed_tasks(config=None):
             )
             continue
 
-        if _is_upload_stage_failure(task):
+        if _is_upload_stage_failure(task, config):
             update_task(
                 task_id,
                 silent=True,
@@ -2743,7 +2797,7 @@ class TaskProcessor:
 
             _raise_if_cancelled(task_id, task_logger)
             # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
-            completed_stages = _get_completed_stages(task)
+            completed_stages = _get_completed_stages(task, getattr(self, 'config', None))
             # 将推断结果写回checkpoint（幂等），使后续重启更稳定
             try:
                 _persist_pipeline_checkpoint(task_id, completed_stages)
@@ -4087,7 +4141,8 @@ class TaskProcessor:
         「质检未通过、已跳过烧录」，上传的成片却带着那条被拒字幕。
 
         落一个显式不可用标记后，``_is_subtitle_stage_rejected`` 与
-        ``_subtitle_block_reasons`` 都能看到它，门控在后续阶段保持一致结论。
+        ``_subtitle_block_reasons`` 都能看到它，门控在后续阶段保持一致结论
+        （checkpoint 侧同样按门控同口径裁决，见 ``_is_subtitle_stage_rejected``）。
 
         ``blocks`` 表示本次「质检不可用」是否按门控拦截烧录（默认取逃生口
         ``ASR_FAILURE_BLOCKS_EMBED``）。逃生口打开时它**不**拦截，此时不得落
@@ -9017,7 +9072,7 @@ class TaskProcessor:
             return None
 
         from modules.utils import safe_str
-        completed_stages = _get_completed_stages(task)
+        completed_stages = _get_completed_stages(task, getattr(self, 'config', None))
 
         def _has_usable_text(current_task):
             title_text = safe_str(current_task.get('video_title_translated') or current_task.get('video_title_original'))

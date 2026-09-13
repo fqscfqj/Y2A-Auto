@@ -112,6 +112,37 @@ class SpeechRecognitionConfigTests(unittest.TestCase):
         self.assertEqual(recognizer.config.vad_threshold, 0.55)
         self.assertEqual(recognizer.config.vad_min_speech_ms, 300)
 
+    def test_default_speech_coverage_ratio_matches_the_single_source_of_truth(self):
+        """默认值必须与 VadConfig 一致，且**不经过 app_config 注入**这条路径。
+
+        残留缺陷（R5-4）：`SpeechRecognitionConfig.vad_min_speech_coverage_ratio`
+        曾是旧值 0.015，而别的默认值来源都是 0.01。已有的
+        ``test_speech_pipeline_wiring`` 断言走的是 app_config 注入路径，
+        覆盖不到「直接构造 SpeechRecognitionConfig()」—— 而那正是修复的动机；
+        把它改回 0.015，相关测试文件 85 个用例仍全绿（反向变异实测）。
+        """
+        from modules.speech_recognition import SpeechRecognitionConfig
+        from modules.vad_processor import VadConfig
+
+        self.assertAlmostEqual(
+            SpeechRecognitionConfig().vad_min_speech_coverage_ratio, 0.01, places=6)
+        self.assertAlmostEqual(
+            SpeechRecognitionConfig().vad_min_speech_coverage_ratio,
+            VadConfig().min_speech_coverage_ratio,
+            places=6,
+        )
+
+    def test_default_speech_coverage_ratio_reaches_the_vad_config(self):
+        """默认配置下运行期 VAD 拿到的阈值同样是 0.01（构造路径到运行期的连线）。"""
+        from modules.speech_recognition import create_speech_recognizer_from_config
+
+        recognizer = create_speech_recognizer_from_config(
+            {'SPEECH_RECOGNITION_ENABLED': True}, task_id='unit-test-vad-default-coverage')
+        self.assertIsNotNone(recognizer)
+        self.assertAlmostEqual(recognizer.config.vad_min_speech_coverage_ratio, 0.01, places=6)
+        self.assertAlmostEqual(
+            recognizer._vad.config.min_speech_coverage_ratio, 0.01, places=6)
+
 
 if __name__ == '__main__':
     unittest.main()
