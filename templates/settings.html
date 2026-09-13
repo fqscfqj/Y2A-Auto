@@ -262,8 +262,8 @@
                                                         <input type="checkbox" name="PRESET_TAGS_ENABLED" {% if config.get('PRESET_TAGS_ENABLED', False) %}checked{% endif %}>
                                                         使用预设标签（优先于 AI 生成结果）
                                                     </label>
-                                                    <textarea id="preset-tags" name="PRESET_TAGS" rows="3" class="form-control mt-2" placeholder="每行一个标签，也支持逗号 / 顿号分隔，例如：&#10;ASMR&#10;搬运&#10;助眠">{{ config.get('PRESET_TAGS', '') }}</textarea>
-                                                    <p class="help-text mt-2 mb-0">预设标签排在最前：开启「自动生成标签」时 AI 只补齐剩余名额，关闭时只上传预设标签。AcFun 只上传前 6 个（每个标签约 10 字），bilibili 最多 12 个（每个标签 20 字）。与「固定分区」类似，本项对所有任务生效，优先级高于单条任务自己生成或手改的标签；任务自身的标签仍会按顺序保留在上限之内。</p>
+                                                    <textarea id="preset-tags" name="PRESET_TAGS" rows="3" class="form-control mt-2" maxlength="3000" placeholder="每行一个标签，也支持逗号 / 顿号分隔，例如：&#10;ASMR&#10;搬运&#10;助眠">{{ config.get('PRESET_TAGS', '') }}</textarea>
+                                                    <p class="help-text mt-2 mb-0">预设标签排在最前：开启「自动生成标签」时 AI 只补齐剩余名额，关闭时只上传预设标签。AcFun 只上传前 6 个（每个标签约 10 字），bilibili 最多 12 个（每个标签 20 字）。与「固定分区」类似，本项对所有任务生效，优先级高于单条任务自己生成或手改的标签；任务自身的标签仍会按顺序保留在上限之内。注意：从预设里删掉某个标签不会自动从已跑过标签生成的任务上移除它，需要时请在任务编辑页手工删除。</p>
                                                 </div>
                                                 <div class="mt-3">
                                                     <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#advancedOverviewPublishing" aria-expanded="false" aria-controls="advancedOverviewPublishing">

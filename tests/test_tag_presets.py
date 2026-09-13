@@ -116,8 +116,15 @@ class MergeTagsTests(unittest.TestCase):
     def test_单标签按上限截断(self):
         # 先 trim 再截断：'  abcdef  ' -> 'abcdef' -> 'abc'
         self.assertEqual(
-            tp.merge_tags(['  abcdef  ', 'ab'], [], limit=6, tag_max_len=3),
+            tp.merge_tags(['  abcdef  ', 'ab'], [], limit=6, preset_max_len=3),
             ['abc', 'ab'],
+        )
+
+    def test_字数上限只作用于预设标签(self):
+        # extra（任务自身标签）不受预设字数上限影响
+        self.assertEqual(
+            tp.merge_tags(['预设超过三个字'], ['任务自带标签超过三个字'], limit=6, preset_max_len=3),
+            ['预设超', '任务自带标签超过三个字'],
         )
 
     def test_单个字符串入参不会被按字符拆开(self):
@@ -193,6 +200,20 @@ class ResolveUploadTagsTests(unittest.TestCase):
             ['ASMR', '游戏'],
         )
 
+    def test_任务自身标签不因预设开关被截断(self):
+        # PR #147 复审 P3-1：同一个手工标签的上传内容不能因为「预设开关」而改变，
+        # 因此 AcFun 的 10 字上限只作用于预设标签
+        long_manual = '任务自带标签超过十个字'
+        raw = '["%s", "短标签"]' % long_manual
+        with_preset = tp.resolve_upload_tags(
+            {'PRESET_TAGS_ENABLED': True, 'PRESET_TAGS': 'P1'}, raw, tp.PLATFORM_ACFUN
+        )
+        without_preset = tp.resolve_upload_tags(
+            {'PRESET_TAGS_ENABLED': False}, raw, tp.PLATFORM_ACFUN
+        )
+        self.assertEqual(with_preset, ['P1'] + without_preset)
+        self.assertIn(long_manual, with_preset)
+
     def test_日志失败不影响返回结果(self):
         class _BrokenLogger:
             def warning(self, *_args, **_kwargs):
@@ -203,6 +224,47 @@ class ResolveUploadTagsTests(unittest.TestCase):
             tp.resolve_upload_tags(config, '[]', 'acfun', logger_obj=_BrokenLogger()),
             ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
         )
+
+
+class NormalizeParityTests(unittest.TestCase):
+    """「关闭即零变化」的跨实现等价断言（PR #147 复审 P3-2）。
+
+    两侧各自硬编码期望值时，任何一侧改动都不会互相报警；这里直接拿
+    ``task_manager._normalize_tags_list`` 作为基准比对，让漂移当场变成红灯。
+    """
+
+    def test_未生效路径与task_manager的规范化等价(self):
+        from modules import task_manager as tm
+
+        cases = (
+            None,
+            '',
+            'not-json',
+            '[]',
+            '{}',
+            '{"a": 1}',
+            '[1, 2]',
+            '["a", "", null, "a", 123]',
+            ['a', 'a'],
+            ['  a  ', None, ''],
+            '["中文标签", " 空格 "]',
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    tp.resolve_upload_tags(
+                        {'PRESET_TAGS_ENABLED': False}, raw, tp.PLATFORM_ACFUN
+                    ),
+                    tm._normalize_tags_list(raw),
+                )
+
+    def test_未生效路径不限数量也不截断(self):
+        from modules import task_manager as tm
+
+        raw = '[' + ', '.join(f'"标签{i}"' for i in range(20)) + ']'
+        resolved = tp.resolve_upload_tags({'PRESET_TAGS_ENABLED': False}, raw, 'acfun')
+        self.assertEqual(resolved, tm._normalize_tags_list(raw))
+        self.assertEqual(len(resolved), 20)
 
 
 if __name__ == '__main__':

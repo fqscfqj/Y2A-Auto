@@ -269,6 +269,75 @@ class UploadPathTagResolutionTests(unittest.TestCase):
             ['预1', '预2', '预3'] + [f'AI{i}' for i in range(1, 10)],
         )
 
+    def test_双平台且上传者首标签时bilibili不会丢掉AI标签(self):
+        # PR #147 复审 P2-2：AcFun 分支回写 tags_generated 时若写「已按 AcFun 截断」
+        # 的列表，both 场景下 bilibili 会从库里重新读标签，平台上限内本可保留的标签
+        # 会被连带丢掉。
+        metadata_path = os.path.join(self.temp_dir.name, 'meta.json')
+        with open(metadata_path, 'w', encoding='utf-8') as stream:
+            json.dump(
+                {
+                    'webpage_url': 'https://www.youtube.com/watch?v=abc',
+                    'uploader': 'UP主',
+                    'upload_date': '20260101',
+                },
+                stream,
+                ensure_ascii=False,
+            )
+        task = {
+            'id': 'task-upload-tags',
+            'upload_target': 'both',
+            'youtube_url': 'https://www.youtube.com/watch?v=abc',
+            'video_path_local': self.video_path,
+            'cover_path_local': self.cover_path,
+            'video_title_translated': '标题',
+            'description_translated': '简介',
+            'tags_generated': json.dumps(
+                ['预1', '预2', '预3', '预4', '预5', '预6', 'AI1', 'AI2', 'AI3', 'AI4', 'AI5', 'AI6'],
+                ensure_ascii=False,
+            ),
+            'selected_partition_id_acfun': '1001',
+            'selected_partition_id_bilibili': '2001',
+            'metadata_json_path_local': metadata_path,
+        }
+        config = {
+            'ACFUN_COOKIES_PATH': self.cookie_path,
+            'BILIBILI_COOKIES_PATH': self.cookie_path,
+            'PRESET_TAGS_ENABLED': True,
+            'PRESET_TAGS': '预1\n预2\n预3\n预4\n预5\n预6',
+            'YOUTUBE_UPLOADER_AS_FIRST_TAG': True,
+        }
+
+        acfun_kwargs = self._run_upload(
+            '_do_upload_to_acfun',
+            task,
+            config,
+            _FakeAcfunUploader,
+            'modules.acfun_uploader.AcfunUploader',
+        )
+        # AcFun 侧仍按自己的 6 个上限上传（上传者占首格）
+        self.assertEqual(acfun_kwargs['tags'], ['UP主', '预1', '预2', '预3', '预4', '预5'])
+        # 回写不能是「按 AcFun 截断」的结果，否则 AI 标签在库里就没了
+        self.assertEqual(
+            json.loads(task['tags_generated']),
+            ['UP主', '预1', '预2', '预3', '预4', '预5', '预6', 'AI1', 'AI2', 'AI3', 'AI4', 'AI5'],
+        )
+
+        bilibili_kwargs = self._run_upload(
+            '_do_upload_to_bilibili',
+            task,
+            config,
+            _FakeBilibiliUploader,
+            'modules.bilibili_uploader.BilibiliUploader',
+            is_bilibili=True,
+        )
+        # 上传者首标签是既有选项的契约（上传者占首格），预设紧随其后，
+        # 关键是被 AcFun 上限挤掉的 AI 标签在 bilibili 侧仍然存在
+        self.assertEqual(
+            bilibili_kwargs['tags'],
+            ['UP主', '预1', '预2', '预3', '预4', '预5', '预6', 'AI1', 'AI2', 'AI3', 'AI4', 'AI5'],
+        )
+
     def test_预设未生效时上传标签与改动前一致(self):
         task = {
             'id': 'task-upload-tags',

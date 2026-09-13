@@ -207,8 +207,9 @@ def is_preset_tags_effective(config: Any) -> bool:
 
 
 def _platform_limits(platform: Any) -> Tuple[str, int, Optional[int]]:
-    """返回 ``(规范化平台名, 数量上限, 单标签字数上限)``。
+    """返回 ``(规范化平台名, 标签数量上限, 预设标签字数上限)``。
 
+    字数上限只用于预设标签（任务自身标签由上传器/历史行为决定，不因预设开关而变）。
     未知/缺省平台按 AcFun 处理，与 ``task_manager._get_effective_metadata_limits``
     的保守口径一致（无法确定平台时按更严格的限制执行）。
     """
@@ -224,36 +225,41 @@ def _merge_tags_report(
     extra: Any,
     *,
     limit: int,
-    tag_max_len: Optional[int] = None,
+    preset_max_len: Optional[int] = None,
 ) -> Tuple[List[str], int, int]:
     """合并标签并返回 ``(结果, 因超量被丢弃数, 被截断数)``。
 
-    顺序为 ``preset + extra``；trim → 去空 → （可选）单标签截断 → 小写去重 → 截到 ``limit``。
+    顺序为 ``preset + extra``；trim → 去空 → （仅预设）单标签截断 → 小写去重 → 截到 ``limit``。
     重复项不计入「丢弃数」（预设与任务标签重叠是常态，也正是本函数幂等的来源）。
+
+    ``preset_max_len`` **只作用于预设标签**：任务自身标签（AI 生成或人工手改）一律原样
+    保留。否则同一个手工标签会因为「预设开关」这个与它无关的配置改变上传内容 ——
+    例如 AcFun 在预设关闭时原样上传 12 字的手工标签，开启预设后却被截到 10 字。
     """
     merged: List[str] = []
     seen = set()
     dropped = 0
     truncated = 0
 
-    for item in list(_iter_tags(preset)) + list(_iter_tags(extra)):
-        tag = str(item or '').strip()
-        if not tag:
-            continue
-        if tag_max_len and len(tag) > tag_max_len:
-            tag = tag[:tag_max_len].strip()
+    for is_preset, items in ((True, _iter_tags(preset)), (False, _iter_tags(extra))):
+        for item in items:
+            tag = str(item or '').strip()
             if not tag:
+                continue
+            if is_preset and preset_max_len and len(tag) > preset_max_len:
+                tag = tag[:preset_max_len].strip()
+                if not tag:
+                    dropped += 1
+                    continue
+                truncated += 1
+            key = tag.lower()
+            if key in seen:
+                continue
+            if limit and len(merged) >= limit:
                 dropped += 1
                 continue
-            truncated += 1
-        key = tag.lower()
-        if key in seen:
-            continue
-        if limit and len(merged) >= limit:
-            dropped += 1
-            continue
-        seen.add(key)
-        merged.append(tag)
+            seen.add(key)
+            merged.append(tag)
 
     return merged, dropped, truncated
 
@@ -263,11 +269,14 @@ def merge_tags(
     extra: Any,
     *,
     limit: int,
-    tag_max_len: Optional[int] = None,
+    preset_max_len: Optional[int] = None,
 ) -> List[str]:
-    """预设在前、其余标签在后的去重合并（上限与单标签截断可选）。"""
+    """预设在前、其余标签在后的去重合并。
+
+    ``preset_max_len`` 只截断预设标签，``extra``（任务自身标签）原样保留。
+    """
     merged, _dropped, _truncated = _merge_tags_report(
-        preset, extra, limit=limit, tag_max_len=tag_max_len
+        preset, extra, limit=limit, preset_max_len=preset_max_len
     )
     return merged
 
@@ -276,7 +285,7 @@ def _log_resolution(
     logger_obj: Any,
     platform_key: str,
     limit: int,
-    tag_max_len: Optional[int],
+    preset_max_len: Optional[int],
     dropped: int,
     truncated: int,
 ) -> None:
@@ -291,7 +300,7 @@ def _log_resolution(
             )
         if truncated:
             logger_obj.warning(
-                f"预设标签：{truncated} 个标签超过 {label} 的单标签 {tag_max_len} 字上限，已截断"
+                f"预设标签：{truncated} 个预设标签超过 {label} 的单标签 {preset_max_len} 字上限，已截断"
             )
     except Exception:  # 日志失败绝不能影响上传
         pass
@@ -307,9 +316,10 @@ def resolve_upload_tags(
 
     - 预设未生效：仅把任务标签规范化后**原样返回**（顺序、长度都不动），
       保证 ``PRESET_TAGS_ENABLED`` 关闭时与改动前行为一致；
-    - 预设生效：预设在前 + 任务标签在后，去重后按平台上限截断（含单标签字数截断）。
+    - 预设生效：预设在前 + 任务标签在后，去重后按平台上限截断；
+      单标签字数截断**只作用于预设标签**，任务自身标签原样保留。
     """
-    platform_key, limit, tag_max_len = _platform_limits(platform)
+    platform_key, limit, preset_max_len = _platform_limits(platform)
     existing = _normalize_task_tags(task_tags)
 
     if not is_preset_tags_effective(config):
@@ -317,7 +327,7 @@ def resolve_upload_tags(
 
     preset = parse_preset_tags(config.get('PRESET_TAGS', ''))
     merged, dropped, truncated = _merge_tags_report(
-        preset, existing, limit=limit, tag_max_len=tag_max_len
+        preset, existing, limit=limit, preset_max_len=preset_max_len
     )
-    _log_resolution(logger_obj, platform_key, limit, tag_max_len, dropped, truncated)
+    _log_resolution(logger_obj, platform_key, limit, preset_max_len, dropped, truncated)
     return merged

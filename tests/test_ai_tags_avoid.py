@@ -49,6 +49,17 @@ class GenerateAcfunTagsAvoidTests(unittest.TestCase):
 
         self.assertEqual(tags[0], '新1')
 
+    def test_超长预设拼进提示词时按二十字收口(self):
+        # 预设允许保留超长原文（设置页只告警不裁剪），但拼进 system prompt 时按
+        # bilibili 的单标签上限收口，避免超长文本白占提示额度
+        long_preset = 'x' * 40
+        tags, request_json = _run_generate_tags({'tags': ['新1']}, avoid_tags=[long_preset])
+
+        system_prompt = request_json.call_args.kwargs.get('system_prompt', '')
+        self.assertIn('x' * 20, system_prompt)
+        self.assertNotIn('x' * 21, system_prompt)
+        self.assertEqual(tags[0], '新1')
+
     def test_列表长度不足六时保持补空行为(self):
         tags, _request_json = _run_generate_tags({'tags': ['新1', '新2']}, avoid_tags=['预设A'])
         self.assertEqual(tags, ['新1', '新2', '', '', '', ''])

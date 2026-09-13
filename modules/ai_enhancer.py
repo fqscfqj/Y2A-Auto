@@ -1208,6 +1208,9 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None, av
         # 预设标签（Issue #139）：预设已占用这些标签，禁止模型重复或近似复用。
         # 同时把截断到 10 字的形式一并纳入比对集合：上传给 AcFun 前每个标签都会被
         # 截断到 10 字，若只比对原文，12 字的预设标签与模型返回的 10 字版本仍会撞车。
+        # 拼进提示词时按 bilibili 的单标签上限（20 字）收口：预设本身允许保留超长原文
+        # （设置页只告警不裁剪），但超长文本拼进 system prompt 没有意义，只会白白占额度。
+        _avoid_prompt_max_len = 20
         avoid_list = []
         for raw_avoid in (avoid_tags or []):
             avoid_tag = _normalize_whitespace(safe_str(raw_avoid)).strip()
@@ -1217,18 +1220,19 @@ def generate_acfun_tags(title, description, openai_config=None, task_id=None, av
         for avoid_tag in avoid_list:
             avoid_set.add(avoid_tag.lower())
             avoid_set.add(avoid_tag[:10].lower())
+        prompt_avoid_list = [tag[:_avoid_prompt_max_len] for tag in avoid_list]
 
         system_prompt = (
             "你是视频标签生成器。基于标题和简介输出 6 个简体中文标签。"
             "标签必须短、去重、无序号、无解释。"
             '只返回 JSON：{"tags":["","","","","",""]}。'
         )
-        if avoid_list:
+        if prompt_avoid_list:
             system_prompt += (
                 "以下标签已被人工预设占用，禁止重复或近似复用："
-                + "、".join(avoid_list) + "。"
+                + "、".join(prompt_avoid_list) + "。"
             )
-            logger.info(f"标签生成已排除预设标签: {avoid_list}")
+            logger.info(f"标签生成已排除预设标签: {prompt_avoid_list}")
 
         parsed = _request_json_object(
             client=client,

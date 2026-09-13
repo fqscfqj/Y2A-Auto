@@ -9384,11 +9384,28 @@ class TaskProcessor:
                     if tag_value.lower() == normalized_uploader:
                         continue
                     cleaned_tags.append(tag_value)
-                tags = [uploader_tag] + cleaned_tags
-                if len(tags) > 6:
-                    tags = tags[:6]
+                # 传给 AcFun 的列表必须按 AcFun 上限截断，但**回写不能用这份截断结果**：
+                # both 场景下 bilibili 之后会从库里重新读标签（_upload_to_target 固定
+                # AcFun → bilibili 顺序），写回 6 个会把平台上限内本可保留的标签一并丢掉
+                # （PR #147 复审 P2-2）。因此回写按 bilibili 上限重新解析一次原始标签，
+                # 只在本次上传参数上应用 AcFun 上限。
+                upload_tags = [uploader_tag] + cleaned_tags
+                tags = upload_tags[:6]
                 try:
-                    update_task(task_id, tags_generated=json.dumps(tags, ensure_ascii=False))
+                    persist_base = resolve_upload_tags(
+                        self.config,
+                        task.get('tags_generated') if task else None,
+                        PLATFORM_BILIBILI,
+                    )
+                    persisted_tags = [uploader_tag] + [
+                        safe_str(tag).strip()
+                        for tag in persist_base
+                        if safe_str(tag).strip() and safe_str(tag).strip().lower() != normalized_uploader
+                    ]
+                    update_task(
+                        task_id,
+                        tags_generated=json.dumps(persisted_tags[:BILIBILI_TAG_LIMIT], ensure_ascii=False),
+                    )
                 except Exception:
                     pass
         
@@ -9568,7 +9585,6 @@ class TaskProcessor:
 
         update_task(task_id, status=TASK_STATES['UPLOADING'], upload_progress='0.0%')
 
-        tags = []
         # 解析标签（预设标签生效时：预设在前，其余标签紧随，并按 bilibili 上限截断）
         tags = resolve_upload_tags(
             self.config,
