@@ -192,6 +192,17 @@ _VAAPI_DEVICE = '/dev/dri/renderD128'
 _COLORSPACE_VALUES = frozenset((
     'bt709', 'bt470bg', 'smpte170m', 'smpte240m', 'bt2020nc', 'rgb', 'fcc',
 ))
+# 刻意**不**收另外 6 个 ffprobe 会打印的 colorspace 读名：ycgco / bt2020c /
+# smpte2085 / ictcp / chroma-derived-nc / chroma-derived-cl（ffprobe 会把最后
+# 一个截断打印成 `chroma-derived-c`）。复审实测（N-123313）：这些名字确实是
+# `-colorspace` 的合法写侧名，但**只在输入本身已是该色彩空间时**才成立 ——
+# 同一个选项施于普通 yuv420p 输入会 `rc != 0`（Nothing was written into output
+# file），也就是**直接失败**而不是退回默认值。而本表用于「按源取值透传」，
+# 源与写入值天然一致，理论上安全，但烧录链中间还有 subtitles / scale / format
+# 等滤镜，是否会改变中间色彩空间未验证。因此维持「丢弃 + warning」的现状
+# （ffmpeg 本身会把输入色彩属性继承到输出，实测三组编码回读一致），**不要**
+# 只因为它们出现在 ffprobe 输出里就加进本表。另外 `chroma-derived-cl` 的读名
+# 被截断，按名字根本写不进去（Undefined constant），只有数值 13 可用。
 _PRIMARIES_VALUES = frozenset((
     'bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film',
     'bt2020', 'smpte428', 'smpte428_1', 'smpte431', 'smpte432',
@@ -293,6 +304,12 @@ _X264_PARAMS_ALIASES = {
 # jedec-p22/ebu3213 只存在于 ffmpeg 的 AVColorPrimaries 枚举，x264 colorprim 无
 # 对应项。color_trc 侧已无此类取值（gamma22/gamma28 改名为 bt470m/bt470bg，见上），
 # 保留空集合是为了让「哪些字段可能有跳过」这件事在表里可见。
+#
+# 注意这里的跳过是**静默**的（_vui_param_pairs 拿不到 logger），因此凡是「写进
+# 去的色彩字段回读应与源一致」这类断言，适用范围都要排除 jedec-p22 / ebu3213
+# 这两个 primaries 取值：`-color_primaries` 通用选项保留了它们（通用选项在本构建
+# 上对 libx264/libx265/libaom/libsvtav1/libvpx 全部被静默忽略，只有 -colorspace
+# 会被转发），而私有参数这一层又写不进去 —— 实际 VUI 里 primaries 会缺失。
 _X264_PARAMS_UNSUPPORTED = {
     'color_primaries': frozenset(('jedec-p22', 'ebu3213')),
     'color_trc': frozenset(),
@@ -704,6 +721,9 @@ def normalize_color_metadata(mode, source_color_info, logger=None):
             ('colorspace', 'color_space', _COLORSPACE_VALUES, 'colorspace'),
             ('color_primaries', 'color_primaries', _PRIMARIES_VALUES, 'color_primaries'),
             ('color_trc', 'color_transfer', _TRC_VALUES, 'color_trc'),
+            # color_range 此前不在告警循环里：非法取值被静默丢弃且**一行日志都没有**，
+            # 与另外三项不对称（合法取值 tv/pc/full/limited 走的仍是别名表）。
+            ('color_range', 'color_range', _COLOR_RANGE_ALIASES, 'color_range'),
         ):
             raw = _normalize_color_token(info.get(source_key))
             if raw and _read_side_token(raw, field) not in table and resolved_key not in resolved:
@@ -888,7 +908,7 @@ def _private_param_option(cpu_codec, pairs):
     ]
 
 
-def custom_params_private_vui_state(custom_params):
+def custom_params_private_vui_state(custom_params, cpu_codec=None):
     """用户自定义参数里私有参数选项（`-x264-params` / `-x265-params`）与色彩 VUI 的关系。
 
     返回三态字符串，供调用方如实记录日志（此前只看「vparams 里有没有 -x26?-params」
@@ -899,14 +919,26 @@ def custom_params_private_vui_state(custom_params):
     - ``'vui'``：用户写了且值里含 ``colorprim`` / ``transfer`` / ``colormatrix``；
     - ``'no_vui'``：用户写了但值里没有色彩键 → 模块**不覆盖**用户配置，
       本次没有补写色彩 VUI，调用方必须告警而不是回显成「已写入」。
+
+    ``cpu_codec`` 指定「当前这条命令实际使用的软件编码器」（``'x264'`` / ``'x265'``）。
+    给了它，就**只认那个编码器的选项名** —— 判据必须与 ``_vui_param_pairs`` 里
+    「让位给用户」的判据（``_custom_params_declare_private_opts(..., _SOFTWARE_PRIVATE_OPTS[codec])``）
+    一致。此前本函数固定用两个编码器的**并集**，于是用户给 x265 命令写了
+    `-x264-params log-level=error`（常见成因：切换 `VIDEO_CPU_CODEC` 后忘了删旧自定义
+    参数）时两者结论相反：模块补写了 `-x265-params colorprim=…`，本函数却报
+    ``'no_vui'``，日志会说反（R5-1）。``cpu_codec=None`` 时保持并集口径
+    （既有诊断调用方与「不知道用哪个编码器」的场景）。
     """
     tokens = custom_params if isinstance(custom_params, (list, tuple)) else []
     try:
         normalized = [str(token).strip().lower() for token in tokens]
     except Exception:
         return 'none'
+    options = _SOFTWARE_PRIVATE_OPTS_ALL
+    if cpu_codec is not None:
+        options = _SOFTWARE_PRIVATE_OPTS[normalize_cpu_codec(cpu_codec)]
     for index, token in enumerate(normalized):
-        for option in _SOFTWARE_PRIVATE_OPTS_ALL:
+        for option in options:
             if token == option and index + 1 < len(normalized):
                 value = normalized[index + 1]
             elif token.startswith(option + '='):
@@ -920,6 +952,94 @@ def custom_params_private_vui_state(custom_params):
             }
             return 'vui' if keys & set(_VUI_PARAM_KEYS) else 'no_vui'
     return 'none'
+
+
+def private_param_option_name(cpu_codec):
+    """编码器 key → 私有参数选项名（``'x265'`` → ``'-x265-params'``）。
+
+    供调用方在日志/诊断里如实回显「用的是哪条私有参数」时使用，避免各处硬编字符串。
+    非法取值按默认编码器（x264）处理，与 :func:`normalize_cpu_codec` 一致。
+    """
+    return _SOFTWARE_PRIVATE_OPT[normalize_cpu_codec(cpu_codec)]
+
+
+def custom_params_software_vui_option(custom_params, configured_cpu_codec, color_map):
+    """软件编码 + 自定义参数分支里，模块**实际写入**色彩 VUI 的私有参数选项。
+
+    返回 ``(option, codec)``：``option`` 是 ``'-x264-params'`` / ``'-x265-params'``，
+    ``codec`` 是 ``'x264'`` / ``'x265'``；本次没有写入色彩 VUI 时返回 ``('', '')``。
+
+    为什么需要它：调用方（任务日志）此前是**扫描 argv 里的第一个 ``-x26?-params``
+    token** 来判断「我们写了哪条」，而 ``build_encoder_params`` 会先原样铺开用户的
+    自定义参数 —— 用户给另一个编码器写了私有参数时，扫到的第一条不是我们写的那条，
+    于是日志按错误的编码器口径判定，说反（R5-1）。这里把「最终用了哪个编码器、
+    有没有真的写入」的判据收口到与 ``_custom_params_software_tail`` /
+    ``_vui_param_pairs`` 完全相同的推导上，调用方不需要再猜。
+    """
+    option, codec, _reason = custom_params_vui_report(
+        custom_params, configured_cpu_codec, color_map
+    )
+    return option, codec
+
+
+def _custom_params_effective_codec(custom_params, configured_cpu_codec):
+    """自定义参数分支里最终生效的软件编码器 key（识别不出时为 ``''``）。
+
+    未指定 `-c:v` 时按配置补齐编码器；用户自己指定了视频编码器时尊重用户选择，
+    只有能识别成 libx264/libx265 才算软件编码器（`-c:v copy` / 硬件编码器 / 别名
+    一律返回 ``''``）。``_custom_params_software_tail`` 与 ``custom_params_vui_report``
+    共用这一处推导，避免两边各写一份而分叉。
+    """
+    if not custom_params_declare_video_codec(custom_params):
+        return normalize_cpu_codec(configured_cpu_codec)
+    declared = custom_params_video_encoder(custom_params)
+    return _SOFTWARE_ENCODER_CODECS.get(declared, '')
+
+
+def custom_params_vui_report(custom_params, configured_cpu_codec, color_map):
+    """自定义参数 + 软件编码路径下，色彩 VUI 的最终落点（供日志如实归因）。
+
+    返回 ``(option, codec, reason)``：
+
+    - ``option`` / ``codec``：模块**实际写入**色彩 VUI 的私有参数选项名与其编码器；
+      没有写入时为 ``('', '')``（``codec`` 也可能非空，表示「本来该用哪个编码器，
+      但这次让位给了用户/没有可写字段」）；
+    - ``reason``：取值见下面五个常量，调用方按它选日志文案，不需要再解析 argv。
+
+    这是 R5-1 的修法：三态判定（``custom_params_private_vui_state``）与「模块写了
+    哪条私有参数」必须用**同一个编码器口径**，否则用户给另一个编码器写了私有参数
+    （切换 ``VIDEO_CPU_CODEC`` 后忘了删旧参数）时，两处结论相反、日志说反。
+    """
+    user_owns_codec = custom_params_declare_video_codec(custom_params)
+    codec = _custom_params_effective_codec(custom_params, configured_cpu_codec)
+    if not codec:
+        # 用户接管了编码器选择，但识别不出它是不是 libx264/libx265：模块不写私有参数
+        return '', '', VUI_REPORT_USER_OWNS_CODEC
+    state = custom_params_private_vui_state(custom_params, cpu_codec=codec)
+    option = _SOFTWARE_PRIVATE_OPT[codec]
+    if _vui_param_pairs(codec, color_map, custom_params):
+        # 用户没写该编码器的私有参数（或没写色彩键以外的冲突项）→ 模块写入 VUI
+        return option, codec, VUI_REPORT_WRITTEN
+    if state == 'no_vui':
+        # 用户自己写了该编码器的私有参数且没有色彩键：模块让位，本次没有补写
+        return '', codec, VUI_REPORT_USER_NO_VUI
+    if state == 'vui':
+        # 用户自己写了色彩键：VUI 由用户的参数提供
+        return '', codec, VUI_REPORT_USER_VUI
+    # 没有可写的色彩字段（color_map 为空）且用户也没写私有参数
+    return '', codec, VUI_REPORT_NOTHING
+
+
+#: ``custom_params_vui_report`` 的 reason 取值：模块本次写入了色彩 VUI。
+VUI_REPORT_WRITTEN = 'written'
+#: 用户自带的私有参数里有色彩键 → VUI 由用户参数提供，模块让位。
+VUI_REPORT_USER_VUI = 'user_vui'
+#: 用户自带的私有参数里没有色彩键 → 模块让位，本次**没有**补写色彩 VUI（必须告警）。
+VUI_REPORT_USER_NO_VUI = 'user_no_vui'
+#: 用户接管了编码器选择且识别不出是不是 libx264/libx265 → 模块不写私有参数。
+VUI_REPORT_USER_OWNS_CODEC = 'user_owns_codec'
+#: 没有可写的色彩字段（color_map 为空）→ 无事可做。
+VUI_REPORT_NOTHING = 'nothing_to_write'
 
 
 def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map):
@@ -956,7 +1076,7 @@ def _custom_params_software_tail(custom_params, configured_cpu_codec, color_map)
             # 与内置分支一致：HEVC 用 hvc1 标签（Safari / QuickTime 识别前提）。
             tail += ['-tag:v', _HEVC_MP4_TAG]
     else:
-        codec = _SOFTWARE_ENCODER_CODECS.get(declared, '')
+        codec = _custom_params_effective_codec(custom_params, configured_cpu_codec)
     if not codec:
         # 用户接管了编码器选择，但我们识别不出它是不是 libx264/libx265
         # （copy / 硬件编码器 / 别名……）：不写任何私有参数，避免静默无效的参数。

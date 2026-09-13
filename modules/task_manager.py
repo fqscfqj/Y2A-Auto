@@ -29,14 +29,19 @@ from .subtitle_style import (
     diagnose_style,
 )
 from .video_encoder_params import (
+    VUI_REPORT_NOTHING,
+    VUI_REPORT_USER_NO_VUI,
+    VUI_REPORT_USER_OWNS_CODEC,
+    VUI_REPORT_USER_VUI,
+    VUI_REPORT_WRITTEN,
     build_audio_params,
     build_encoder_params,
+    custom_params_vui_report,
     format_quality_value,
     normalize_color_metadata,
     normalize_cpu_codec,
-    custom_params_declare_video_codec,
-    custom_params_private_vui_state,
     parse_encoder_config,
+    private_param_option_name,
     recommend_quality,
     resolve_color_metadata,
 )
@@ -7671,37 +7676,56 @@ class TaskProcessor:
                 # 质量增强与 VUI 必须写进**同一条** -x265-params（实测两条选项时后者
                 # 完全覆盖前者）。因此合并动作放在 build_encoder_params 内部完成，
                 # 这里只回显，避免两处各追加一条而互相覆盖。
-                for _vui_index, _vui_token in enumerate(vparams):
-                    if (
-                        _vui_token in ('-x264-params', '-x265-params')
-                        and _vui_index + 1 < len(vparams)
-                    ):
-                        if custom_params_private_vui_state(custom_video_params) == 'no_vui':
-                            # 用户自带 -x26?-params 但里面没有色彩键：模块不覆盖用户
-                            # 配置，因此本次**没有**补写色彩 VUI。此前这里照样打印
-                            # 「软件编码私有参数: …」，看起来等同于「VUI 已写入」，
-                            # 用户只能从画面偏色去猜。
-                            task_logger.warning(
-                                "自定义视频参数里的 %s 未包含色彩键（colorprim/transfer/"
-                                "colormatrix）：本次不覆盖用户配置，输出码流未补写原色与"
-                                "传递特性",
-                                _vui_token,
-                            )
-                        else:
-                            task_logger.info(f"软件编码私有参数: {_vui_token} {vparams[_vui_index + 1]}")
-                        break
+                #
+                # 「我们写了哪条、有没有写」由模块给出（custom_params_vui_report），
+                # 不在这里扫 vparams 猜：vparams 会先原样铺开用户的自定义参数，用户给
+                # **另一个**编码器写了私有参数时（切换 VIDEO_CPU_CODEC 后忘了删旧参数），
+                # 扫到的第一条 -x26?-params 不是我们写的那条，日志会按错误的编码器口径
+                # 说反（R5-1）。
+                if custom_video_params:
+                    _vui_option, _vui_codec, _vui_reason = custom_params_vui_report(
+                        custom_video_params, cpu_codec, color_map
+                    )
                 else:
-                    if (
-                        actual_encoder == 'cpu'
-                        and custom_params_declare_video_codec(custom_video_params)
-                    ):
-                        # 用户在不透明参数里接管了编码器选择：VIDEO_CPU_CODEC 不生效，
-                        # 色彩 VUI 也按识别结果决定是否补写。不说明的话，日志看起来
-                        # 像「私有参数没写」等于「没有可写的东西」。
-                        task_logger.warning(
-                            "自定义视频参数已指定编码器：VIDEO_CPU_CODEC 不生效；"
-                            "仅在能识别为 libx264/libx265 时才补写色彩 VUI 私有参数"
-                        )
+                    # 内置参数分支：没有用户参数可让位，VUI 由 build_encoder_params 直接写入
+                    _vui_option = (
+                        private_param_option_name(cpu_codec) if actual_encoder == 'cpu' else ''
+                    )
+                    _vui_codec = cpu_codec
+                    _vui_reason = VUI_REPORT_WRITTEN if _vui_option else VUI_REPORT_NOTHING
+
+                if _vui_reason == VUI_REPORT_WRITTEN:
+                    _vui_index = vparams.index(_vui_option) if _vui_option in vparams else -1
+                    _vui_value = (
+                        vparams[_vui_index + 1]
+                        if 0 <= _vui_index < len(vparams) - 1
+                        else ''
+                    )
+                    if _vui_index >= 0:
+                        task_logger.info(f"软件编码私有参数: {_vui_option} {_vui_value}")
+                elif _vui_reason == VUI_REPORT_USER_NO_VUI:
+                    # 用户自带该编码器的 -x26?-params 但里面没有色彩键：模块不覆盖用户
+                    # 配置，因此本次**没有**补写色彩 VUI。此前这里照样打印「软件编码
+                    # 私有参数: …」，看起来等同于「VUI 已写入」，用户只能从画面偏色去猜。
+                    task_logger.warning(
+                        "自定义视频参数里的 %s 未包含色彩键（colorprim/transfer/"
+                        "colormatrix）：本次不覆盖用户配置，输出码流未补写原色与"
+                        "传递特性",
+                        private_param_option_name(_vui_codec),
+                    )
+                elif _vui_reason == VUI_REPORT_USER_VUI:
+                    task_logger.info(
+                        "色彩 VUI 由用户自定义的 %s 提供：本次不覆盖用户配置",
+                        private_param_option_name(_vui_codec),
+                    )
+                elif _vui_reason == VUI_REPORT_USER_OWNS_CODEC and actual_encoder == 'cpu':
+                    # 用户在不透明参数里接管了编码器选择：VIDEO_CPU_CODEC 不生效，
+                    # 色彩 VUI 也按识别结果决定是否补写。不说明的话，日志看起来
+                    # 像「私有参数没写」等于「没有可写的东西」。
+                    task_logger.warning(
+                        "自定义视频参数已指定编码器：VIDEO_CPU_CODEC 不生效；"
+                        "仅在能识别为 libx264/libx265 时才补写色彩 VUI 私有参数"
+                    )
 
                 main_color_params = list(color_params)
 

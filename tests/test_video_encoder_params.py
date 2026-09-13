@@ -17,12 +17,20 @@ import unittest
 from modules.video_encoder_params import (
     DEFAULT_QUALITY_BY_HEIGHT,
     FALLBACK_QUALITY,
+    VUI_REPORT_NOTHING,
+    VUI_REPORT_USER_NO_VUI,
+    VUI_REPORT_USER_OWNS_CODEC,
+    VUI_REPORT_USER_VUI,
+    VUI_REPORT_WRITTEN,
     build_audio_params,
     build_color_vui_params,
     build_encoder_params,
+    custom_params_private_vui_state,
+    custom_params_vui_report,
     format_quality_value,
     normalize_color_metadata,
     parse_encoder_config,
+    private_param_option_name,
     recommend_quality,
     resolve_color_metadata,
 )
@@ -578,6 +586,51 @@ class ResolveColorMetadataTests(unittest.TestCase):
         logger = _Logger()
         resolve_color_metadata('auto', {'color_space': 'bt709'}, logger=logger)
         self.assertEqual(logger.warnings, [])
+
+    def test_invalid_color_range_is_logged_like_the_other_fields(self):
+        """R5-3：非法的 color_range 也必须留日志（此前只有另外三项有告警循环）。
+
+        影响面很小（tv/pc/full/limited 往返正常），但「静默丢弃」与「有 warning」
+        的不对称本身就是排查陷阱：用户看到另外三项都会提示，唯独范围被吞掉。
+        """
+        logger = _Logger()
+        resolved = resolve_color_metadata(
+            'auto', {'color_range': 'nonsense', 'color_space': 'bt709'}, logger=logger)
+        self.assertEqual(resolved, ['-colorspace', 'bt709'])
+        self.assertTrue(
+            any('color_range=nonsense' in message for message in logger.messages),
+            logger.messages)
+
+    def test_valid_color_range_aliases_do_not_warn(self):
+        for token, expected in (('tv', 'tv'), ('limited', 'tv'), ('pc', 'pc'), ('full', 'pc')):
+            with self.subTest(token=token):
+                logger = _Logger()
+                self.assertEqual(
+                    resolve_color_metadata('auto', {'color_range': token}, logger=logger),
+                    ['-color_range', expected])
+                self.assertEqual(logger.warnings, [])
+
+    def test_non_whitelisted_colorspace_read_names_are_dropped_with_a_warning(self):
+        """R5-2（维持现状，用用例钉住）：6 个非 4:2:0 的 colorspace 读名仍被丢弃。
+
+        复审实测：ycgco / bt2020c / smpte2085 / ictcp / chroma-derived-nc /
+        chroma-derived-cl（ffprobe 截断成 `chroma-derived-c`）确实是 `-colorspace`
+        的合法写名，但**只在输入本身已是该色彩空间时**才成立 —— 同一个选项施于普通
+        yuv420p 输入会让 ffmpeg 直接失败（rc != 0，Nothing was written into output
+        file）。烧录链中间还有 subtitles / scale / format 滤镜，是否会改变中间色彩
+        空间未验证，因此维持「丢弃 + warning」，不得只因为出现在 ffprobe 输出里就
+        加进白名单。这里的断言就是这条取舍的守卫。
+        """
+        for token in ('ycgco', 'bt2020c', 'smpte2085', 'ictcp',
+                      'chroma-derived-nc', 'chroma-derived-c'):
+            with self.subTest(token=token):
+                logger = _Logger()
+                resolved = resolve_color_metadata(
+                    'auto', {'color_space': token, 'color_transfer': 'bt709'}, logger=logger)
+                self.assertEqual(resolved, ['-color_trc', 'bt709'])
+                self.assertTrue(
+                    any(f'color_space={token}' in message for message in logger.messages),
+                    logger.messages)
 
 
 class ColorReadNameNormalizationTests(unittest.TestCase):
@@ -1309,6 +1362,126 @@ class CustomParamsCodecSelectionTests(unittest.TestCase):
         self.assertEqual(custom_params_private_vui_state(['-x264opts', 'aq-mode=3']), 'no_vui')
         for bad in (None, 123, 'x264-params', [None], [object()]):
             custom_params_private_vui_state(bad)
+
+
+class PrivateVuiLogReportTests(unittest.TestCase):
+    """R5-1：三态判定与「模块实际写入哪条私有参数」必须同一个编码器口径。
+
+    缺陷（本轮引入 · 仅日志）：`custom_params_private_vui_state` 用两个编码器私有
+    选项的**并集**判定，而补写逻辑（`_vui_param_pairs`）用**当前编码器**的选项名。
+    用户给另一个编码器写了私有参数时（切换 `VIDEO_CPU_CODEC` 后忘了删旧自定义参数）
+    两者结论相反，日志会说反：
+
+        cpu_codec=x265 + custom=['-crf','18','-x264-params','log-level=error']
+          → 模块真的写了 '-x265-params colorprim=…:transfer=…:colormatrix=…'
+          → 旧判定却返回 'no_vui'，日志打印「本次不覆盖用户配置，输出码流未补写
+            原色与传递特性」——与实际相反
+
+    修法：三态判定加 `cpu_codec` 参数（按该编码器的选项名判定），并把「模块实际写了
+    哪条」收口到 `custom_params_vui_report`（与补写逻辑共用同一处推导），任务日志按
+    它给出的 reason 选文案，不再自己扫 argv 猜。
+
+    本类断言 report 与 `build_encoder_params` 的真实输出一致 —— 日志文案由 report
+    的 (option, reason) 一对一决定，因此这些用例守的就是日志内容。
+    """
+
+    _COLOR_MAP = {'colorspace': 'bt709', 'color_primaries': 'bt709', 'color_trc': 'bt709'}
+
+    def _module_written_option(self, custom, cpu_codec, color_map=None):
+        """模块自己追加的那条私有参数选项（用户自带的前缀不计入）。"""
+        params = build_encoder_params('cpu', _ctx(
+            cpu_codec=cpu_codec, custom_params=list(custom),
+            color_map=self._COLOR_MAP if color_map is None else color_map))
+        tail = params[len(custom):] if custom else params
+        return next(
+            (token for token in tail if token in ('-x264-params', '-x265-params')), '')
+
+    def test_other_encoders_private_params_do_not_flip_the_state(self):
+        """R5-1 复现：给 x265 命令写 x264 私有参数，不得被判成 no_vui。"""
+        custom = ['-crf', '18', '-x264-params', 'log-level=error']
+        option, codec, reason = custom_params_vui_report(custom, 'x265', self._COLOR_MAP)
+        self.assertEqual((option, codec, reason),
+                         ('-x265-params', 'x265', VUI_REPORT_WRITTEN))
+        self.assertEqual(
+            custom_params_private_vui_state(custom, cpu_codec='x265'), 'none')
+        # 并集口径（不传 cpu_codec）仍然返回 no_vui —— 那正是旧日志说反的来源
+        self.assertEqual(custom_params_private_vui_state(custom), 'no_vui')
+
+    def test_mirror_case_x264_command_with_x265_params(self):
+        custom = ['-crf', '18', '-x265-params', 'log-level=error']
+        option, codec, reason = custom_params_vui_report(custom, 'x264', self._COLOR_MAP)
+        self.assertEqual((option, codec, reason),
+                         ('-x264-params', 'x264', VUI_REPORT_WRITTEN))
+        self.assertEqual(
+            custom_params_private_vui_state(custom, cpu_codec='x264'), 'none')
+
+    def test_same_encoder_params_still_suppress_and_report_no_vui(self):
+        """用户自带**当前**编码器的私有参数时仍要让位并告警（N-D 的行为不变）。"""
+        custom = ['-x265-params', 'log-level=error']
+        option, codec, reason = custom_params_vui_report(custom, 'x265', self._COLOR_MAP)
+        self.assertEqual((option, codec, reason), ('', 'x265', VUI_REPORT_USER_NO_VUI))
+        self.assertEqual(
+            custom_params_private_vui_state(custom, cpu_codec='x265'), 'no_vui')
+
+    def test_user_supplied_color_keys_report_user_vui(self):
+        custom = ['-x265-params', 'colorprim=bt709']
+        option, codec, reason = custom_params_vui_report(custom, 'x265', self._COLOR_MAP)
+        self.assertEqual((option, codec, reason), ('', 'x265', VUI_REPORT_USER_VUI))
+
+    def test_report_reasons_cover_every_branch(self):
+        cases = {
+            VUI_REPORT_WRITTEN: (['-crf', '18'], 'x265'),
+            VUI_REPORT_USER_NO_VUI: (['-x265-params', 'log-level=error'], 'x265'),
+            VUI_REPORT_USER_VUI: (['-x265-params', 'transfer=bt709'], 'x265'),
+            VUI_REPORT_USER_OWNS_CODEC: (['-c:v', 'copy'], 'x265'),
+            VUI_REPORT_NOTHING: (['-crf', '18'], 'x265'),
+        }
+        for reason, (custom, codec) in cases.items():
+            with self.subTest(reason=reason):
+                color_map = {} if reason == VUI_REPORT_NOTHING else self._COLOR_MAP
+                option, reported_codec, reported_reason = custom_params_vui_report(
+                    custom, codec, color_map)
+                self.assertEqual(reported_reason, reason)
+                if reason == VUI_REPORT_WRITTEN:
+                    self.assertEqual(
+                        option, self._module_written_option(custom, codec, color_map))
+                else:
+                    self.assertEqual(option, '')
+                    self.assertEqual(
+                        self._module_written_option(custom, codec, color_map), '',
+                        '报告说没写，但 build_encoder_params 其实写了')
+
+    def test_report_matches_the_module_output_across_the_matrix(self):
+        """矩阵不变量：report 说「写了」⇔ 模块尾巴里真有那条；选项名必须一致。"""
+        matrix = (
+            ('x265', ['-crf', '18', '-x264-params', 'log-level=error']),
+            ('x264', ['-crf', '18', '-x265-params', 'log-level=error']),
+            ('x265', ['-crf', '18']),
+            ('x265', ['-x265-params', 'log-level=error']),
+            ('x265', ['-x265-params', 'colorprim=bt709']),
+            ('x265', ['-x264-params', 'colorprim=bt709']),
+            ('x265', ['-c:v', 'libx264', '-crf', '18']),
+            ('x264', ['-c:v', 'libx265', '-crf', '18']),
+            ('x265', ['-c:v', 'copy']),
+            ('x265', ['-c:v', 'hevc_nvenc']),
+            ('x264', []),
+        )
+        for codec, custom in matrix:
+            with self.subTest(codec=codec, custom=custom):
+                written = self._module_written_option(custom, codec)
+                option, _codec, reason = custom_params_vui_report(
+                    custom, codec, self._COLOR_MAP)
+                self.assertEqual(
+                    reason == VUI_REPORT_WRITTEN, written != '',
+                    '报告 reason 与模块实际写入不一致')
+                self.assertEqual(option, written, '报告选项名与模块实际写入不一致')
+
+    def test_private_param_option_name_is_shared(self):
+        """日志里回显的选项名与 build_encoder_params 用的一致（不再硬编字符串）。"""
+        self.assertEqual(private_param_option_name('x265'), '-x265-params')
+        self.assertEqual(private_param_option_name('x264'), '-x264-params')
+        for bad in (None, '', 'x266', 123):
+            self.assertIn(private_param_option_name(bad), ('-x264-params', '-x265-params'))
 
 
 class X264ParamsConflictTests(unittest.TestCase):
