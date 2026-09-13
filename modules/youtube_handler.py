@@ -884,12 +884,23 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
 
         for attempt in range(max_retries):
             try:
-                logger.info(f"执行命令 (尝试 {attempt + 1}/{max_retries}): {' '.join(cmd)}")
+                # 不再回显完整命令：cmd 里的 --proxy 参数携带明文代理凭据，
+                # 回显等同于把代理密码写进日志
+                # （CodeQL py/clear-text-logging-sensitive-data #86）。
+                logger.info(
+                    "执行 yt-dlp 下载命令 (尝试 %d/%d)：网络=%s，cookies=%s，参数数量=%d",
+                    attempt + 1,
+                    max_retries,
+                    "代理已启用" if proxy_url else "直连（未启用代理）",
+                    "已附加" if cookies_path else "未附加",
+                    len(cmd),
+                )
 
                 if progress_callback and not skip_download:
                     # 使用Popen实时获取进度，设置UTF-8编码
                     logger.info(f"准备执行yt-dlp命令: {' '.join(yt_dlp_cmd)}")
-                    logger.debug(f"完整命令: {' '.join(cmd)}")
+                    # 同上：只记录参数规模，不回显可能含代理凭据的命令内容（CodeQL #87）
+                    logger.debug("下载命令已就绪，共 %d 个参数（内容省略以隐藏代理凭据）", len(cmd))
                     
                     try:
                         process = subprocess.Popen(
@@ -1001,7 +1012,13 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             except subprocess.CalledProcessError as e:
                 if cancel_event is not None and cancel_event.is_set():
                     return False, "任务已取消"
-                logger.warning(f"尝试 {attempt + 1} 失败: {str(e)}")
+                # CalledProcessError 的字符串形式会带上完整命令（含代理凭据），
+                # 因此这里只记录退出码，避免凭据泄露到日志。
+                logger.warning(
+                    "尝试 %d 失败: yt-dlp 返回非零退出码 %s",
+                    attempt + 1,
+                    getattr(e, 'returncode', None),
+                )
                 # 使用已初始化的 output 优先，其次回退到异常对象中的 stdout/stderr
                 error_output = output or getattr(e, 'stdout', "")
                 error_stderr = getattr(e, 'stderr', "") or ""
