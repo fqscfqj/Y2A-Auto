@@ -3308,8 +3308,20 @@ document.addEventListener('DOMContentLoaded', function () {
         return size.toFixed(precision) + ' ' + units[unitIndex];
     };
 
+    // 保存进行中需要一并禁用的按钮：保存按钮本身，以及各卡片动态生成的「重置」按钮。
+    // 注意：9 分组重构后全局的 #reset-settings-btn 已被移除，重置入口下沉为卡片级
+    // .settings-card-reset，因此这里必须按类名动态查询。历史缺陷是仍引用已删除的
+    // resetBtn 变量，导致提交处理器在发请求前抛 ReferenceError，点击保存毫无反应。
+    const settingsSaveBusyButtons = function () {
+        const buttons = [saveSettingsBtn];
+        document.querySelectorAll('.settings-card-reset').forEach(function (button) {
+            buttons.push(button);
+        });
+        return buttons;
+    };
+
     const toggleSettingsSaveBusy = function (isBusy) {
-        [saveSettingsBtn, resetBtn].forEach(function (button) {
+        settingsSaveBusyButtons().forEach(function (button) {
             if (!button) {
                 return;
             }
