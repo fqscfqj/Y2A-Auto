@@ -74,8 +74,66 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             client.completions.calls[0]['extra_body']['thinking'],
-            {'type': 'disabled', 'enabled': False},
+            {'type': 'disabled'},
         )
+
+    def test_responses_endpoints_use_reasoning_effort_none(self):
+        providers = (
+            ('https://api.deepseek.com/v1', 'deepseek-flash'),
+            ('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus'),
+            ('https://api.xiaomimimo.com/v1', 'mimo-v2.5'),
+            ('https://gateway.example/v1', 'deepseek-v4.1-flash'),
+            ('https://gateway.example/v1', 'qwen3.8-flash'),
+            ('https://gateway.example/v1', 'mimo-v2.6-flash'),
+        )
+        for base_url, model in providers:
+            with self.subTest(provider=base_url):
+                client = _FakeClient(base_url=base_url)
+                client.api_mode = 'responses'
+
+                utils.openai_chat_create_with_thinking_control(
+                    client, _base_kwargs(model=model), thinking_enabled=False,
+                )
+
+                request = client.completions.calls[0]
+                self.assertEqual(request['reasoning'], {'effort': 'none'})
+                self.assertNotIn('extra_body', request)
+
+    def test_unsupported_responses_reasoning_control_is_dropped(self):
+        def responder(kwargs, _call_number):
+            if 'reasoning' in kwargs:
+                raise _CompatError("Unknown parameter: 'reasoning'")
+            return SimpleNamespace(choices=[])
+
+        client = _FakeClient(
+            base_url='https://api.deepseek.com/v1',
+            responder=responder,
+        )
+        client.api_mode = 'responses'
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='deepseek-flash'), thinking_enabled=False,
+        )
+
+        self.assertEqual(len(client.completions.calls), 2)
+        self.assertIn('reasoning', client.completions.calls[0])
+        self.assertNotIn('reasoning', client.completions.calls[1])
+
+    def test_strip_reasoning_accepts_alternate_tag_names(self):
+        for tag in ('think', 'thinking', 'reasoning', 'thought'):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    utils.strip_reasoning_thoughts(
+                        f'<{tag}>internal chain</{tag}>final answer'
+                    ),
+                    'final answer',
+                )
+                self.assertEqual(
+                    utils.strip_reasoning_thoughts(
+                        f'```{tag}\ninternal chain\n```\nfinal answer'
+                    ),
+                    'final answer',
+                )
 
     def test_enabled_thinking_does_not_inject_or_disable_provider_parameter(self):
         client = _FakeClient(base_url='https://api.deepseek.com/v1')
@@ -125,25 +183,32 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         self.assertNotIn('extra_body', client.completions.calls[1])
 
     def test_qwen_dashscope_uses_enable_thinking_parameter(self):
-        client = _FakeClient(base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
+        for base_url in (
+            'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'https://maas.qwencloudapi.com/compatible-mode/v1',
+        ):
+            with self.subTest(host=base_url):
+                client = _FakeClient(base_url=base_url)
 
-        utils.openai_chat_create_with_thinking_control(
-            client, _base_kwargs(model='qwen-plus'), thinking_enabled=False,
-        )
+                utils.openai_chat_create_with_thinking_control(
+                    client, _base_kwargs(model='qwen-plus'), thinking_enabled=False,
+                )
 
-        self.assertEqual(
-            client.completions.calls[0]['extra_body'],
-            {'enable_thinking': False},
-        )
+                self.assertEqual(
+                    client.completions.calls[0]['extra_body'],
+                    {'enable_thinking': False},
+                )
 
-    def test_qwen_on_unknown_vllm_endpoint_does_not_receive_private_parameter(self):
+    def test_qwen_proxy_uses_standard_reasoning_effort_instead_of_private_parameter(self):
         client = _FakeClient(base_url='http://model-server.example/v1')
 
         utils.openai_chat_create_with_thinking_control(
             client, _base_kwargs(model='Qwen/Qwen3-8B'), thinking_enabled=False,
         )
 
-        self.assertNotIn('extra_body', client.completions.calls[0])
+        request = client.completions.calls[0]
+        self.assertEqual(request['reasoning_effort'], 'none')
+        self.assertNotIn('extra_body', request)
 
     def test_qwen_proxy_hostname_does_not_trigger_private_parameter(self):
         client = _FakeClient(base_url='https://qwen-proxy.example.com/v1')
@@ -153,6 +218,7 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         )
 
         self.assertNotIn('extra_body', client.completions.calls[0])
+        self.assertNotIn('reasoning_effort', client.completions.calls[0])
 
     def test_openrouter_qwen_model_does_not_receive_dashscope_parameter(self):
         client = _FakeClient(base_url='https://openrouter.ai/api/v1')
@@ -161,7 +227,76 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
             client, _base_kwargs(model='qwen/qwen3-235b-a22b'), thinking_enabled=False,
         )
 
-        self.assertNotIn('extra_body', client.completions.calls[0])
+        request = client.completions.calls[0]
+        self.assertEqual(request['reasoning_effort'], 'none')
+        self.assertNotIn('extra_body', request)
+
+    def test_third_party_gateway_deepseek_uses_standard_reasoning_effort(self):
+        client = _FakeClient(base_url='https://gateway.example/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='deepseek-v4.1-flash'), thinking_enabled=False,
+        )
+
+        request = client.completions.calls[0]
+        self.assertEqual(request['reasoning_effort'], 'none')
+        self.assertNotIn('extra_body', request)
+
+    def test_third_party_gateway_mimo_uses_standard_reasoning_effort(self):
+        client = _FakeClient(base_url='https://gateway.example/v1')
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='mimo-v2.6-flash'), thinking_enabled=False,
+        )
+
+        request = client.completions.calls[0]
+        self.assertEqual(request['reasoning_effort'], 'none')
+        self.assertNotIn('extra_body', request)
+
+    def test_ling_and_hunyuan_use_standard_reasoning_effort(self):
+        for model in ('Ling-3.1-flash', 'hy4-preview', 'tencent/Hunyuan-MT-7B'):
+            with self.subTest(model=model):
+                client = _FakeClient(base_url='https://gateway.example/v1')
+
+                utils.openai_chat_create_with_thinking_control(
+                    client, _base_kwargs(model=model), thinking_enabled=False,
+                )
+
+                request = client.completions.calls[0]
+                self.assertEqual(request['reasoning_effort'], 'none')
+                self.assertNotIn('extra_body', request)
+
+    def test_unsupported_standard_reasoning_effort_is_dropped(self):
+        def responder(kwargs, _call_number):
+            if 'reasoning_effort' in kwargs:
+                raise _CompatError("Unsupported parameter: 'reasoning_effort'")
+            return SimpleNamespace(choices=[])
+
+        client = _FakeClient(
+            base_url='https://gateway.example/v1',
+            responder=responder,
+        )
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='qwen3.8-flash'), thinking_enabled=False,
+        )
+
+        self.assertEqual(len(client.completions.calls), 2)
+        self.assertIn('reasoning_effort', client.completions.calls[0])
+        self.assertNotIn('reasoning_effort', client.completions.calls[1])
+
+    def test_official_qwen_does_not_receive_standard_reasoning_effort(self):
+        client = _FakeClient(
+            base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+        )
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='qwen-plus'), thinking_enabled=False,
+        )
+
+        request = client.completions.calls[0]
+        self.assertEqual(request['extra_body'], {'enable_thinking': False})
+        self.assertNotIn('reasoning_effort', request)
 
     def test_known_provider_requires_matching_model_family(self):
         client = _FakeClient(base_url='https://api.xiaomimimo.com/v1')
@@ -191,16 +326,21 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
         self.assertNotIn('extra_body', client.completions.calls[1])
 
     def test_mimo_uses_strict_disabled_thinking_object(self):
-        client = _FakeClient(base_url='https://api.xiaomimimo.com/v1')
+        for base_url in (
+            'https://api.xiaomimimo.com/v1',
+            'https://token-plan-cn.xiaomimimo.com/v1',
+        ):
+            with self.subTest(host=base_url):
+                client = _FakeClient(base_url=base_url)
 
-        utils.openai_chat_create_with_thinking_control(
-            client, _base_kwargs(model='mimo-v2.5'), thinking_enabled=False,
-        )
+                utils.openai_chat_create_with_thinking_control(
+                    client, _base_kwargs(model='mimo-v2.5'), thinking_enabled=False,
+                )
 
-        self.assertEqual(
-            client.completions.calls[0]['extra_body'],
-            {'thinking': {'type': 'disabled'}},
-        )
+                self.assertEqual(
+                    client.completions.calls[0]['extra_body'],
+                    {'thinking': {'type': 'disabled'}},
+                )
 
     def test_retries_without_unsupported_response_format_and_caches_capability(self):
         def responder(kwargs, _call_number):

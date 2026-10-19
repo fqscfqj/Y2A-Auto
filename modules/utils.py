@@ -109,14 +109,23 @@ def process_cover(image_path, output_path=None, mode='crop'):
 # -----------------------------
 
 # Pre-compiled regex patterns for strip_reasoning_thoughts (performance optimization)
-_THINK_TAG_RE = re.compile(r'<\s*think\s*>.*?<\s*/\s*think\s*>', re.IGNORECASE | re.DOTALL)
-_THINK_BLOCK_RE = re.compile(r'```\s*think[^\n]*\n.*?```', re.IGNORECASE | re.DOTALL)
+# 除 DeepSeek 的 <think> 外，也覆盖部分网关/本地推理模型输出的
+# <thinking>、<reasoning>、<thought> 等价标签。
+_THINK_TAG_RE = re.compile(
+    r'<\s*(think|thinking|reasoning|thought)\s*>.*?<\s*/\s*\1\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_BLOCK_RE = re.compile(
+    r'```\s*(?:think|thinking|reasoning|thought)\b[^\n]*\n.*?```',
+    re.IGNORECASE | re.DOTALL,
+)
 _CODE_FENCE_RE = re.compile(r'^```[a-zA-Z0-9_-]*\s*|\s*```$', re.DOTALL)
 
 def strip_reasoning_thoughts(text):
     """
     屏蔽/移除思考模型产出的思考内容，仅保留最终答案。
     - 兼容 DeepSeek 的 <think>...</think> 标签
+    - 兼容部分网关/本地推理模型的 <thinking>、<reasoning>、<thought> 标签
     - 兼容 ```think ...``` 代码块形式
 
     Args:
@@ -352,7 +361,9 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
         return False
 
     parameter_signals = {
-        'thinking': ('thinking', 'enable_thinking'),
+        'thinking': (
+            'thinking', 'enable_thinking', 'reasoning', 'reasoning_effort',
+        ),
         'response_format': (
             'response_format', 'response format', 'text.format',
             'text.format.type', 'json_object', 'json mode',
@@ -429,13 +440,17 @@ def _client_compatibility_key(client, create_kwargs) -> str:
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
-    """仅对已知官方端点和匹配模型注入非标准思考开关。"""
+    """选择思考开关形态：官方端点用各家私有参数，第三方网关用标准参数。"""
     endpoint = safe_str(getattr(client, 'base_url', '')).strip()
     try:
         hostname = (urlparse(endpoint).hostname or '').lower()
     except Exception:
         hostname = ''
     model = _effective_client_model(client, create_kwargs).lower()
+    api_mode = safe_str(
+        getattr(client, 'api_mode', 'chat_completions'),
+        default='chat_completions',
+    ).strip().lower()
 
     def host_matches(*domains):
         return any(
@@ -450,12 +465,27 @@ def _thinking_control_style(client, create_kwargs) -> str:
             if part
         )
 
-    if host_matches('aliyuncs.com') and model_matches('qwen'):
-        return 'qwen'
-    if host_matches('api.xiaomimimo.com') and model_matches('mimo'):
-        return 'mimo'
-    if host_matches('api.deepseek.com') and model_matches('deepseek'):
-        return 'thinking_object'
+    if model_matches('qwen'):
+        official_host = host_matches('aliyuncs.com', 'qwencloudapi.com')
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
+        return 'qwen' if official_host else 'reasoning_effort_none'
+    if model_matches('mimo'):
+        official_host = host_matches('xiaomimimo.com')
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
+        return 'mimo' if official_host else 'reasoning_effort_none'
+    if model_matches('deepseek'):
+        # Chat Completions 的思考开关是 thinking 对象；Responses API 则是
+        # reasoning.effort。协议不同，不能复用同一个私有参数。
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
+        official_host = host_matches('api.deepseek.com')
+        return 'thinking_object' if official_host else 'reasoning_effort_none'
+    if model_matches('ling') or model_matches('hy4') or model_matches('hunyuan'):
+        # Ling / 混元系列在网关后同样默认思考；它们没有稳定的私有开关，
+        # 统一使用标准 reasoning_effort / reasoning.effort。
+        return 'responses_reasoning_none' if api_mode == 'responses' else 'reasoning_effort_none'
     return ''
 
 
@@ -466,15 +496,31 @@ def _inject_thinking_control(create_kwargs, style: str):
     extra_body = copy.deepcopy(extra_body)
     if style == 'qwen':
         extra_body['enable_thinking'] = False
+    elif style == 'reasoning_effort_none':
+        # 非官方 OpenAI 兼容网关（如 new-api / one-api / OpenRouter）通常
+        # 不保证透传各家的私有思考参数，但会接受标准 reasoning_effort。
+        # 无法识别时由兼容层按 400 自动移除，不污染标准请求。
+        create_kwargs['reasoning_effort'] = 'none'
+        return
+    elif style == 'responses_reasoning_none':
+        # Responses API 统一用 reasoning.effort=none 关闭思考模式：
+        # 已知推理模型的 Responses 端点都采用该标准形态，而 Chat 专用参数
+        # （thinking / enable_thinking）会被过滤或直接报错。
+        reasoning = create_kwargs.get('reasoning')
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        reasoning = copy.deepcopy(reasoning)
+        reasoning['effort'] = 'none'
+        create_kwargs['reasoning'] = reasoning
+        return
     elif style in {'thinking_object', 'mimo'}:
         thinking_body = extra_body.get('thinking')
         if not isinstance(thinking_body, dict):
             thinking_body = {}
         thinking_body = copy.deepcopy(thinking_body)
+        # 官方 Chat Completions schema 只接受 type；不要再附带 enabled 等
+        # 未定义字段，避免严格网关以 unknown field 拒绝整条请求。
         thinking_body['type'] = 'disabled'
-        if style == 'thinking_object':
-            # 保留项目既有 DeepSeek 兼容字段；MiMo 使用更严格的 type 形态。
-            thinking_body['enabled'] = False
         extra_body['thinking'] = thinking_body
     if extra_body:
         create_kwargs['extra_body'] = extra_body
@@ -518,6 +564,9 @@ def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
 
 
 def _drop_thinking_control(create_kwargs):
+    # Responses API 的开关是顶层 reasoning 对象；Chat 的私有开关在 extra_body。
+    create_kwargs.pop('reasoning', None)
+    create_kwargs.pop('reasoning_effort', None)
     extra_body = create_kwargs.get('extra_body')
     if not isinstance(extra_body, dict):
         return
@@ -660,13 +709,20 @@ def _openai_chat_create_with_thinking_control_single(
         except Exception as exc:
             action = None
             extra_body = request_kwargs.get('extra_body')
-            if (
-                isinstance(extra_body, dict)
-                and (
-                    'thinking' in extra_body
-                    or 'enable_thinking' in extra_body
-                    or 'enable_thinking' in (extra_body.get('chat_template_kwargs') or {})
+            has_thinking_control = (
+                'reasoning' in request_kwargs
+                or 'reasoning_effort' in request_kwargs
+                or (
+                    isinstance(extra_body, dict)
+                    and (
+                        'thinking' in extra_body
+                        or 'enable_thinking' in extra_body
+                        or 'enable_thinking' in (extra_body.get('chat_template_kwargs') or {})
+                    )
                 )
+            )
+            if (
+                has_thinking_control
                 and _is_parameter_compatibility_error(exc, 'thinking')
             ):
                 action = 'drop_thinking'
