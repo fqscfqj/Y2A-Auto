@@ -36,8 +36,9 @@ class _FakeAcfunUploader:
 class _FakeBilibiliUploader:
     calls = []
 
-    def __init__(self, cookie_file=None):
+    def __init__(self, cookie_file=None, submit_api='auto'):
         self.cookie_file = cookie_file
+        self.submit_api = submit_api
 
     def upload_video(self, **kwargs):
         type(self).calls.append(kwargs)

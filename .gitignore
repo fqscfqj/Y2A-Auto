@@ -23,6 +23,8 @@ logs/
 *.log
 temp/
 *.tmp
+# tools/bilibili_probe.py 扫码登录时落盘的二维码（含登录凭据，勿提交）
+qrcode.png
 
 # Downloads and generated content
 downloads/

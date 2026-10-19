@@ -84,6 +84,8 @@ DEFAULT_CONFIG = {
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
+    # bilibili 投稿通道：auto（优先必剪，失败回退 Web）/ bcut_pc / web
+    "BILIBILI_SUBMIT_API": "auto",
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
     "COOKIECLOUD_ENABLED": False,
     "COOKIECLOUD_SERVER_URL": "",
@@ -540,6 +542,12 @@ def update_config(new_config):
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
                 current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'
+            elif key == 'BILIBILI_SUBMIT_API':
+                # 投稿通道：auto（优先必剪，失败回退 Web）/ bcut_pc / web
+                submit_api = str(new_config[key]).strip().lower()
+                current_config[key] = submit_api if submit_api in (
+                    'auto', 'web', 'bcut_pc', 'bcut', 'bcut-pc', 'bcutpc'
+                ) else 'auto'
             elif key == 'YOUTUBE_DOWNLOAD_QUALITY_MODE':
                 current_config[key] = normalize_youtube_download_quality_mode(new_config[key])
             elif key == 'YOUTUBE_DOWNLOAD_MAX_HEIGHT':

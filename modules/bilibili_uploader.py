@@ -12,13 +12,27 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 
 from .bili_sdk import video_uploader
 from .bili_sdk.exceptions import ArgsException, ResponseCodeException
+from .bili_sdk.video_uploader import (
+    SUBMIT_API_BCUT_PC,
+    SUBMIT_API_WEB,
+    normalize_submit_api,
+)
 
 from .bilibili_runtime import configure_bilibili_runtime
-from .bilibili_auth import load_credential_from_file, validate_credential_remote
+from .bilibili_auth import (
+    ensure_credential_buvid,
+    load_credential_from_file,
+    save_credential_to_file,
+    validate_credential_remote,
+)
 from .utils import get_app_subdir
 
 BILIBILI_TITLE_LIMIT = 80
 BILIBILI_DESCRIPTION_LIMIT = 2000
+BILIBILI_SUBMIT_API_LABELS = {
+    SUBMIT_API_WEB: "Web 投稿接口",
+    SUBMIT_API_BCUT_PC: "必剪 PC 投稿接口",
+}
 
 
 def setup_task_logger(task_id):
@@ -191,6 +205,21 @@ def _bilibili_406_hint() -> str:
     )
 
 
+def _is_bilibili_account_risk(exc: Exception) -> bool:
+    """603 是创作中心侧的账号级风控码，通常伴随账号被强制下线。"""
+    return _extract_response_code_from_exception(exc) == 603
+
+
+def _bilibili_603_hint() -> str:
+    return (
+        "bilibili投稿返回 603（系统检测到异常行为），这是账号级风控，不是接口参数问题。"
+        "自动投稿模式下必剪与 Web 两条通道已依次尝试，说明触发点在账号或网络环境上。"
+        "建议：1) 先用浏览器登录同一账号，在创作中心手动投稿一次，输验证码解除轻度风控；"
+        "2) 检查账号是否被要求实名/刷脸（若已强制下线，只能先实名或走人工客服申诉恢复）；"
+        "3) 保持出口 IP 稳定并降低投稿频率，避免短时间批量投稿。"
+    )
+
+
 class _BilibiliChunkProgress:
     def __init__(self):
         self._completed = {}
@@ -220,8 +249,9 @@ class _BilibiliChunkProgress:
 class BilibiliUploader:
     """Bilibili uploader based on the internal SDK subset."""
 
-    def __init__(self, cookie_file: str):
+    def __init__(self, cookie_file: str, submit_api: str = "auto"):
         self.cookie_file = cookie_file
+        self.submit_api = normalize_submit_api(submit_api)
         self.logger = None
         self.task_id = None
 
@@ -260,6 +290,14 @@ class BilibiliUploader:
             credential_ok, credential_msg = validate_credential_remote(credential)
             if not credential_ok:
                 return False, f"Bilibili登录态无效: {credential_msg}。请在设置页重新扫码登录后重试上传。"
+
+            # 首次运行时生成 buvid3/buvid4/_uuid 并回写 Cookie 文件，
+            # 之后每次上传复用同一套设备指纹，避免被当成"每次换设备"。
+            if ensure_credential_buvid(credential):
+                if save_credential_to_file(credential, self.cookie_file):
+                    self.log("已生成并保存 bilibili 设备指纹（buvid3/buvid4）")
+                else:
+                    self.log("bilibili 设备指纹生成成功，但 Cookie 文件回写失败")
 
             safe_title_limit = int(title_limit or BILIBILI_TITLE_LIMIT)
             safe_desc_limit = int(description_limit or BILIBILI_DESCRIPTION_LIMIT)
@@ -301,6 +339,7 @@ class BilibiliUploader:
                 meta=meta,
                 credential=credential,
                 cover=cover_file_path,
+                submit_api=self.submit_api,
             )
 
             last_emitted_text = ""
@@ -399,9 +438,25 @@ class BilibiliUploader:
                 _emit_progress("99.0%")
                 self.log("视频和封面上传完成，正在提交Bilibili投稿")
 
+            @uploader.on(video_uploader.VideoUploaderEvents.SUBMIT_FALLBACK.value)
+            def on_submit_fallback(data):
+                from_api = data.get("from") if isinstance(data, dict) else None
+                to_api = data.get("to") if isinstance(data, dict) else None
+                code = data.get("code") if isinstance(data, dict) else None
+                is_risk = bool(data.get("risk")) if isinstance(data, dict) else False
+                from_label = BILIBILI_SUBMIT_API_LABELS.get(from_api, from_api or "未知接口")
+                to_label = BILIBILI_SUBMIT_API_LABELS.get(to_api, to_api or "未知接口")
+                reason = "被风控拦截" if is_risk else "提交失败"
+                self.log(
+                    f"Bilibili投稿{reason}（code={code}），已从{from_label}切换到{to_label}重试"
+                )
+
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_SUBMIT.value)
             def on_after_submit(_data):
-                self.log("Bilibili投稿接口提交成功")
+                api_label = BILIBILI_SUBMIT_API_LABELS.get(
+                    uploader.submit_api_used, uploader.submit_api_used or "未知接口"
+                )
+                self.log(f"Bilibili投稿接口提交成功（{api_label}）")
 
             @uploader.on(video_uploader.VideoUploaderEvents.SUBMIT_FAILED.value)
             def on_submit_failed(data):
@@ -445,6 +500,7 @@ class BilibiliUploader:
             return True, {
                 "bvid": bvid,
                 "aid": aid,
+                "submit_api": uploader.submit_api_used or self.submit_api,
                 "url": video_url,
             }
 
@@ -457,11 +513,18 @@ class BilibiliUploader:
             pretty_error = _format_bilibili_exception(e)
             if _is_bilibili_http_406(e):
                 pretty_error = _bilibili_406_hint()
+            elif _is_bilibili_account_risk(e):
+                pretty_error = f"{pretty_error}。{_bilibili_603_hint()}"
             self.log(f"bilibili上传异常: {pretty_error}")
             return False, f"bilibili上传异常: {pretty_error}"
         except Exception as e:
             if _is_bilibili_http_406(e):
                 hint = _bilibili_406_hint()
+                self.log(f"bilibili上传异常: {hint}")
+                self.log(traceback.format_exc())
+                return False, f"bilibili上传异常: {hint}"
+            if _is_bilibili_account_risk(e):
+                hint = f"{_format_bilibili_exception(e)}。{_bilibili_603_hint()}"
                 self.log(f"bilibili上传异常: {hint}")
                 self.log(traceback.format_exc())
                 return False, f"bilibili上传异常: {hint}"

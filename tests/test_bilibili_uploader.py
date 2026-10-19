@@ -189,9 +189,10 @@ class BilibiliProgressTests(unittest.TestCase):
                 self.title = title
 
         class FakeUploader(AsyncEvent):
-            def __init__(self, pages, meta, credential, cover):
+            def __init__(self, pages, meta, credential, cover, **kwargs):
                 super().__init__()
                 self.pages = pages
+                self.submit_api_used = kwargs.get("submit_api", "web")
 
             async def start(self):
                 page = self.pages[0]

@@ -215,6 +215,7 @@ python app.py
 - `YOUTUBE_COOKIES_PATH`：YouTube Cookie 路径
 - `ACFUN_COOKIES_PATH`：AcFun Cookie 路径
 - `BILIBILI_COOKIES_PATH`：bilibili Cookie 路径
+- `BILIBILI_SUBMIT_API`：bilibili 投稿接口，`auto`（默认，优先必剪 PC 接口，失败回退 Web）/ `bcut_pc` / `web`
 - `YOUTUBE_PROXY_ENABLED` / `YOUTUBE_PROXY_URL`：YouTube 下载代理
 - `YOUTUBE_API_PROXY_ENABLED` / `YOUTUBE_API_PROXY_URL`：YouTube 监控 API 独立代理，不继承下载代理
 - `YOUTUBE_DOWNLOAD_THREADS`：下载线程数
@@ -550,6 +551,7 @@ ssh -N -L 5000:127.0.0.1:5000 -o ServerAliveInterval=30 user@<服务器公网IP>
   - 检查人工审核页元信息是否合规
 - 上传 bilibili 失败
   - 更新 `cookies/bili_cookies.json`，或在设置页使用 QR 码重新扫码登录
+  - 报 603「系统检测到异常行为」属于账号级风控：默认的 `auto` 投稿接口会先走必剪 PC 接口，失败再回退 Web；两条通道都被拦截时，请先用浏览器登录同一账号在创作中心手动投稿一次，或按提示完成实名/客服申诉，并保持出口 IP 稳定、降低投稿频率
 - 字幕翻译慢
   - 调整并发与批量大小，同时注意 API 限速
 - Docker 未启用 NVENC
