@@ -28,6 +28,108 @@ from .exceptions.ResponseCodeException import ResponseCodeException
 
 _API = get_api("video_uploader")
 
+# 投稿通道
+#   web      : member.bilibili.com/x/vu/web/add/v3（浏览器投稿页使用的接口）
+#   bcut_pc  : member.bilibili.com/x/vu/mvp/pc/add（必剪 PC 客户端投稿接口）
+# 参考 biliup JS SDK（@renmu/bili-api）addMediaBCutApi 的实现。
+SUBMIT_API_AUTO = "auto"
+SUBMIT_API_WEB = "web"
+SUBMIT_API_BCUT_PC = "bcut_pc"
+
+BCUT_PC_BUILD = "12911853"
+BCUT_PC_PLATFORM = "BcutPc-windows"
+BCUT_PC_USER_AGENT = f"bcut-pc build:{BCUT_PC_BUILD}"
+
+# 风控拦截码：用于错误提示与判定“是否属于风控”（回退策略见 should_fallback_submit_error）。
+# 603 是创作中心侧的“系统检测到异常行为”，-352/-412 是公共风控码，412 是 HTTP 412。
+SUBMIT_RISK_ERROR_CODES = frozenset({603, -352, -412, 412})
+
+# 这些 code 换通道也没意义（登录态/CSRF 已失效、投稿频率超限），不做回退。
+SUBMIT_NO_FALLBACK_CODES = frozenset({-101, -111, 137022})
+
+_SUBMIT_API_ALIASES = {
+    "": SUBMIT_API_AUTO,
+    "auto": SUBMIT_API_AUTO,
+    "web": SUBMIT_API_WEB,
+    "webv3": SUBMIT_API_WEB,
+    "web_v3": SUBMIT_API_WEB,
+    "bcut": SUBMIT_API_BCUT_PC,
+    "bcut_pc": SUBMIT_API_BCUT_PC,
+    "bcut-pc": SUBMIT_API_BCUT_PC,
+    "bcutpc": SUBMIT_API_BCUT_PC,
+}
+
+
+def normalize_submit_api(value: Optional[str]) -> str:
+    """
+    归一化投稿通道名称，无法识别的取值回落到 auto。
+    """
+    key = str(value or "").strip().lower()
+    return _SUBMIT_API_ALIASES.get(key, SUBMIT_API_AUTO)
+
+
+def get_submit_api_candidates(value: Optional[str]) -> List[str]:
+    """
+    返回本次投稿要依次尝试的通道列表。
+
+    auto 优先走必剪 PC 通道（与 Web 投稿风控相互独立），失败后再退回 Web。
+    """
+    api = normalize_submit_api(value)
+    if api == SUBMIT_API_WEB:
+        return [SUBMIT_API_WEB]
+    if api == SUBMIT_API_BCUT_PC:
+        return [SUBMIT_API_BCUT_PC]
+    return [SUBMIT_API_BCUT_PC, SUBMIT_API_WEB]
+
+
+def should_fallback_submit_error(err: Exception) -> bool:
+    """
+    判断本次投稿失败后是否应该换通道重试。
+
+    - ResponseCodeException 表示服务端明确拒绝了这次投稿（code != 0，稿件未创建），
+      换通道重试不会造成重复投稿，因此除登录态/频率类错误外都回退；
+    - NetworkException 只有在明确的拦截码（412 等）时才回退：超时/断连时请求可能已
+      经到达服务端，重发有重复投稿风险。
+    """
+    if isinstance(err, ResponseCodeException):
+        try:
+            return int(err.code) not in SUBMIT_NO_FALLBACK_CODES
+        except (TypeError, ValueError):
+            return True
+    if isinstance(err, NetworkException):
+        try:
+            return int(getattr(err, "status", 0)) in SUBMIT_RISK_ERROR_CODES
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def submit_error_code(err: Exception) -> Optional[int]:
+    """
+    取异常携带的错误码。
+
+    ResponseCodeException 用 `.code`（接口返回的 code），NetworkException 只有
+    `.status`（HTTP 状态码，412 这类风控拦截走的就是这条路径）。两者都没有时返回 None。
+    """
+    if isinstance(err, ResponseCodeException):
+        code = getattr(err, "code", None)
+    elif isinstance(err, NetworkException):
+        code = getattr(err, "status", None)
+    else:
+        return None
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_submit_risk_error(err: Exception) -> bool:
+    """
+    判断异常是否为风控拦截码（仅用于日志/提示，不决定是否回退）。
+    """
+    code = submit_error_code(err)
+    return code is not None and code in SUBMIT_RISK_ERROR_CODES
+
 
 async def upload_cover(cover: Picture, credential: Credential) -> str:
     """
@@ -202,6 +304,7 @@ class VideoUploaderEvents(Enum):
 
     PRE_SUBMIT = "PRE_SUBMIT"
     SUBMIT_FAILED = "SUBMIT_FAILED"
+    SUBMIT_FALLBACK = "SUBMIT_FALLBACK"
     AFTER_SUBMIT = "AFTER_SUBMIT"
 
     COMPLETED = "COMPLETE"
@@ -704,6 +807,7 @@ class VideoUploader(AsyncEvent):
         credential: Credential,
         cover: Optional[Union[str, Picture]] = "",
         line: Optional[Lines] = None,
+        submit_api: Optional[str] = SUBMIT_API_AUTO,
     ):
         """
         Args:
@@ -716,6 +820,8 @@ class VideoUploader(AsyncEvent):
             cover        (Union[str, Picture])    : 封面路径或者封面对象. Defaults to ""，传入 meta 类型为 VideoMeta 时可不传
 
             line         (Lines, Optional)        : 线路. Defaults to None. 不选择则自动测速选择
+
+            submit_api   (str, Optional)          : 投稿通道. auto（默认，必剪优先、失败回退 Web）/ web / bcut_pc
 
         建议传入 VideoMeta 对象，避免参数有误
 
@@ -757,6 +863,12 @@ class VideoUploader(AsyncEvent):
             else cover if isinstance(cover, Picture) else Picture().from_file(cover)
         )
         self.line = line
+        self.submit_api = normalize_submit_api(submit_api)
+        # 记录本次投稿实际成功的通道，便于上层日志展示
+        self.submit_api_used: Optional[str] = None
+        # 本次投稿每个失败通道的尝试记录（api / code / risk / error），
+        # 供上层判断「是否有通道撞上 603」并生成与实际情况相符的提示。
+        self.submit_attempts: List[dict] = []
         self.__task: Union[Task, None] = None
 
     async def _preupload(self, page: VideoUploaderPage) -> dict:
@@ -1306,28 +1418,94 @@ class VideoUploader(AsyncEvent):
 
         self.dispatch(VideoUploaderEvents.PRE_SUBMIT.value, deepcopy(meta))
 
-        meta["csrf"] = self.credential.bili_jct  # csrf 不需要 print
-        api = _API["submit"]
+        candidates = get_submit_api_candidates(self.submit_api)
+        last_error: Optional[Exception] = None
+        self.submit_attempts = []
 
-        try:
-            params = {"csrf": self.credential.bili_jct, "t": time.time() * 1000}
-            # headers = {"content-type": "application/json"}
-            # 已有 json_body，似乎不需要单独设置 content-type
-            resp = (
-                await Api(
-                    **api, credential=self.credential, no_csrf=True, json_body=True
+        for index, api_name in enumerate(candidates):
+            try:
+                resp = await self._submit_once(api_name, meta)
+            except Exception as err:
+                last_error = err
+                attempt = {
+                    "api": api_name,
+                    "code": submit_error_code(err),
+                    "risk": is_submit_risk_error(err),
+                    "error": str(err),
+                }
+                self.submit_attempts.append(attempt)
+                next_api = candidates[index + 1] if index + 1 < len(candidates) else None
+                if next_api and should_fallback_submit_error(err):
+                    # 服务端明确拒绝（code != 0）说明稿件未创建，换通道重试不会重复投稿
+                    self.dispatch(
+                        VideoUploaderEvents.SUBMIT_FALLBACK.value,
+                        {
+                            "from": api_name,
+                            "to": next_api,
+                            "err": err,
+                            "code": attempt["code"],
+                            "risk": attempt["risk"],
+                        },
+                    )
+                    continue
+                self.dispatch(
+                    VideoUploaderEvents.SUBMIT_FAILED.value,
+                    {
+                        "err": err,
+                        "api": api_name,
+                        "attempts": list(self.submit_attempts),
+                    },
                 )
-                .update_params(**params)
-                .update_data(**meta)
-                # .update_headers(**headers)
-                .result
-            )
+                raise
+
+            self.submit_api_used = api_name
             self.dispatch(VideoUploaderEvents.AFTER_SUBMIT.value, resp)
             return resp
 
-        except Exception as err:
-            self.dispatch(VideoUploaderEvents.SUBMIT_FAILED.value, {"err": err})
-            raise err
+        # candidates 非空时循环必然 return 或 raise，这里只做兜底
+        err = last_error or RuntimeError("bilibili 投稿通道均未返回结果")
+        self.dispatch(VideoUploaderEvents.SUBMIT_FAILED.value, {"err": err})
+        raise err
+
+    async def _submit_once(self, api_name: str, meta: dict) -> dict:
+        """
+        用指定通道提交一次投稿。
+
+        Args:
+            api_name (str): web / bcut_pc
+            meta     (dict): 投稿载荷
+
+        Returns:
+            dict: 含 bvid 和 aid 的字典
+        """
+        csrf = self.credential.bili_jct
+        data = copy(meta)
+        data["csrf"] = csrf  # csrf 不需要 print
+
+        if api_name == SUBMIT_API_BCUT_PC:
+            api = _API["submit_bcut_pc"]
+            params = {
+                "csrf": csrf,
+                "platform": BCUT_PC_PLATFORM,
+                "build": BCUT_PC_BUILD,
+            }
+            headers = {
+                # 必剪 PC 客户端只带自己的 UA，不带 Referer / Origin
+                "User-Agent": BCUT_PC_USER_AGENT,
+            }
+        else:
+            api = _API["submit"]
+            params = {"csrf": csrf, "t": time.time() * 1000}
+            headers = {}
+
+        request = (
+            Api(**api, credential=self.credential, no_csrf=True, json_body=True)
+            .update_params(**params)
+            .update_data(**data)
+        )
+        if headers:
+            request.update_headers(**headers)
+        return await request.result
 
     async def abort(self):
         """

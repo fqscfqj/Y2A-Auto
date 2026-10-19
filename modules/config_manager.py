@@ -31,6 +31,22 @@ _VIDEO_CPU_PRESET_HD_DEFAULT = 'veryfast'
 _VIDEO_CPU_CODECS = ('x264', 'x265')
 _VIDEO_CPU_CODEC_DEFAULT = 'x264'
 
+
+def _normalize_submit_api_value(value) -> str:
+    """把 BILIBILI_SUBMIT_API 归一化成 auto / bcut_pc / web 三个规范值。
+
+    别名表（bcut / bcut-pc / bcutpc …）只在 SDK 的 normalize_submit_api 里维护一份，
+    这里按需导入避免配置层复制一张容易漂移的映射表。归一化后再落盘，
+    设置页的 <option> 才能和实际生效的通道对上。SDK 不可用时退化为 auto。
+    """
+    try:
+        from .bili_sdk.video_uploader import normalize_submit_api
+    except Exception as exc:  # pragma: no cover - 依赖缺失时的兜底
+        logger.debug("投稿通道归一化不可用，按 auto 处理: %s", exc)
+        return 'auto'
+    return normalize_submit_api(value)
+
+
 # 默认配置
 DEFAULT_CONFIG = {
     "AUTO_MODE_ENABLED": False, # 无人值守自动投稿总开关
@@ -84,6 +100,8 @@ DEFAULT_CONFIG = {
     "YOUTUBE_COOKIES_PATH": "cookies/yt_cookies.txt", # 相对于项目根目录
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
+    # bilibili 投稿通道：auto（优先必剪，失败回退 Web）/ bcut_pc / web
+    "BILIBILI_SUBMIT_API": "auto",
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
     "COOKIECLOUD_ENABLED": False,
     "COOKIECLOUD_SERVER_URL": "",
@@ -398,6 +416,12 @@ def load_config():
                 config['UPLOAD_TARGET_DEFAULT'] = upload_target_normalized
                 upload_target_changed = config['UPLOAD_TARGET_DEFAULT'] != upload_target_before
 
+                submit_api_before = config.get('BILIBILI_SUBMIT_API')
+                config['BILIBILI_SUBMIT_API'] = _normalize_submit_api_value(
+                    submit_api_before
+                )
+                submit_api_changed = config['BILIBILI_SUBMIT_API'] != submit_api_before
+
                 quality_mode_before = config.get('YOUTUBE_DOWNLOAD_QUALITY_MODE')
                 config['YOUTUBE_DOWNLOAD_QUALITY_MODE'] = normalize_youtube_download_quality_mode(
                     quality_mode_before
@@ -441,6 +465,7 @@ def load_config():
                     or cpu_preset_hd_changed
                     or cpu_codec_changed
                     or upload_target_changed
+                    or submit_api_changed
                     or quality_mode_changed
                     or quality_height_changed
                     or session_timeout_changed
@@ -540,6 +565,11 @@ def update_config(new_config):
             elif key == 'UPLOAD_TARGET_DEFAULT':
                 target = str(new_config[key]).strip().lower()
                 current_config[key] = target if target in ('acfun', 'bilibili', 'both') else 'acfun'
+            elif key == 'BILIBILI_SUBMIT_API':
+                # 投稿通道：auto（优先必剪，失败回退 Web）/ bcut_pc / web。
+                # 别名一律归一化后再落盘，否则设置页三个 option 都匹配不上，
+                # 会出现"显示自动、实际走必剪"的回显错位。
+                current_config[key] = _normalize_submit_api_value(new_config[key])
             elif key == 'YOUTUBE_DOWNLOAD_QUALITY_MODE':
                 current_config[key] = normalize_youtube_download_quality_mode(new_config[key])
             elif key == 'YOUTUBE_DOWNLOAD_MAX_HEIGHT':

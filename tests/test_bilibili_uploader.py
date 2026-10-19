@@ -182,6 +182,7 @@ class BilibiliProgressTests(unittest.TestCase):
     def test_upload_video_emits_stage_progress_and_retry_log(self):
         progress = []
         logger = Mock()
+        captured = {}
 
         class FakePage:
             def __init__(self, path, title):
@@ -189,9 +190,13 @@ class BilibiliProgressTests(unittest.TestCase):
                 self.title = title
 
         class FakeUploader(AsyncEvent):
-            def __init__(self, pages, meta, credential, cover):
+            def __init__(self, pages, meta, credential, cover, **kwargs):
                 super().__init__()
                 self.pages = pages
+                captured["submit_api"] = kwargs.get("submit_api")
+                # 模拟 SDK 实际走必剪通道成功
+                self.submit_api_used = "bcut_pc"
+                self.submit_attempts = []
 
             async def start(self):
                 page = self.pages[0]
@@ -259,7 +264,9 @@ class BilibiliProgressTests(unittest.TestCase):
                 "modules.bilibili_uploader.video_uploader.VideoUploader",
                 FakeUploader,
             ):
-                success, result = BilibiliUploader("cookies.json").upload_video(
+                success, result = BilibiliUploader(
+                    "cookies.json", submit_api="bcut-pc"
+                ).upload_video(
                     video_path,
                     cover_path,
                     "标题",
@@ -273,6 +280,11 @@ class BilibiliProgressTests(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(result["bvid"], "BV1test")
+        # 配置里的别名要归一化后再传给 SDK，实际通道要写进结果字典
+        # （task_manager 随后 json.dumps 成 bilibili_upload_response，
+        #   模板再据此渲染「必剪 / Web」徽标，见 test_bilibili_submit_api_badge.py）
+        self.assertEqual(captured["submit_api"], "bcut_pc")
+        self.assertEqual(result["submit_api"], "bcut_pc")
         self.assertEqual(
             progress,
             ["0.0%", "31.7%", "63.3%", "95.0%", "96.0%", "98.0%", "99.0%", "100.0%"],

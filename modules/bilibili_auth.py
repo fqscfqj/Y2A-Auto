@@ -6,12 +6,19 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from typing import Dict, Optional, Tuple
 
 from .bili_sdk import login_v2
 from .bili_sdk.exceptions import ArgsException
-from .bili_sdk.utils.network import Credential, HEADERS, get_client
+from .bili_sdk.utils.network import (
+    Credential,
+    HEADERS,
+    get_buvid,
+    get_buvid_uuid,
+    get_client,
+)
 
 from .bilibili_runtime import configure_bilibili_runtime
 
@@ -100,6 +107,14 @@ def load_cookie_dict(cookie_file: str) -> Dict[str, str]:
 def build_credential(cookies: Dict[str, str]) -> Credential:
     configure_bilibili_runtime()
     cookies = cookies or {}
+    # 除具名参数外，其余 SDK 认可的 Cookie（_uuid / sid / DedeUserID__ckMd5 等）
+    # 原样透传，避免"加载一次就丢字段"。buvid3/buvid4 走具名参数，不在
+    # Credential.EXTRA_COOKIE_NAMES 里，因此不需要额外排除。
+    extra_cookies = {
+        key: value
+        for key, value in cookies.items()
+        if key in Credential.EXTRA_COOKIE_NAMES and value
+    }
     return Credential(
         sessdata=cookies.get("SESSDATA") or cookies.get("sessdata"),
         bili_jct=cookies.get("bili_jct") or cookies.get("biliJct"),
@@ -107,7 +122,35 @@ def build_credential(cookies: Dict[str, str]) -> Credential:
         buvid3=cookies.get("buvid3"),
         buvid4=cookies.get("buvid4"),
         ac_time_value=cookies.get("ac_time_value"),
+        **extra_cookies,
     )
+
+
+def ensure_credential_buvid(credential: Credential) -> bool:
+    """
+    确保凭据带有 buvid3 / buvid4，并把配套的 `_uuid` 一起补上。
+
+    没有 buvid 时，SDK 每次请求都会新生成一套设备指纹；把生成结果回写 Cookie
+    文件后，后续运行会复用同一套指纹，避免每次都像"换了台设备"。
+
+    Returns:
+        bool: 是否新生成并写入了 buvid（True 表示调用方应该回存 Cookie 文件）。
+    """
+    changed = False
+    try:
+        if not credential.has_buvid3() or not credential.has_buvid4():
+            buvid3, buvid4 = _run_async(get_buvid())
+            credential.buvid3 = buvid3
+            credential.buvid4 = buvid4
+            changed = True
+        uuid = get_buvid_uuid()
+        if uuid and credential.get_cookies().get("_uuid") != uuid:
+            credential._extra_cookies["_uuid"] = uuid
+            changed = True
+    except Exception as exc:
+        logger.warning("生成 bilibili buvid 失败: %s", exc)
+        return False
+    return changed
 
 
 def validate_credential(credential: Credential) -> Tuple[bool, str]:
@@ -197,6 +240,7 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
         "DedeUserID",
         "buvid3",
         "buvid4",
+        "_uuid",
         "ac_time_value",
     ]
     cookie_items = []
@@ -218,7 +262,10 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
     for key, value in cookies.items():
         if key in seen_keys or value is None or str(value) == "":
             continue
-        if key.startswith("_") or key == "proxy":
+        # `_uuid` 是设备标识，必须保留；其余以下划线开头的是 SDK 内部字段
+        if key == "proxy":
+            continue
+        if key.startswith("_") and key != "_uuid":
             continue
         cookie_items.append(
             {
@@ -229,13 +276,32 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
             }
         )
 
+    # 写回是整文件覆盖：这是用户的登录态文件，首次上传就会重写一次，
+    # 所以先写临时文件再 os.replace，避免进程中途退出留下半截 JSON。
+    # 取舍：只保留 Credential 认识的 cookie（上面 6 个具名字段 + EXTRA_COOKIE_NAMES），
+    # 浏览器里那些与本工具无关的字段（例如 CURRENT_FID）会被丢掉 —— 本工具不读它们。
+    temp_path = ""
     try:
-        os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
-        with open(cookie_file, "w", encoding="utf-8") as f:
+        directory = os.path.dirname(os.path.abspath(cookie_file))
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".bili_cookies-", suffix=".json", dir=directory
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cookie_items, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, cookie_file)
+        temp_path = ""
     except (OSError, TypeError, ValueError) as exc:
         logger.error("保存 Bilibili 登录 Cookie 失败: %s", exc)
         return False
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
     return True
 
 

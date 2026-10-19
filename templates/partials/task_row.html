@@ -210,6 +210,7 @@
             {% set bili_result = parse_json(task.bilibili_upload_response) if task.bilibili_upload_response else {} %}
             {% if bili_result and bili_result.bvid %}
                 <a href="{{ bili_result.url or ('https://www.bilibili.com/video/' ~ bili_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ bili_result.bvid }}</a>
+                {% set submit_badge = submit_api_badge(bili_result.submit_api) %}{% if submit_badge %}<span class="badge bg-light text-dark border ms-1" title="投稿接口">{{ submit_badge }}</span>{% endif %}
             {% elif task.status == 'failed' and task.error_message %}
                 {% if ac_result and ac_result.ac_number %}
                 <button type="button"
@@ -254,6 +255,7 @@
             {% set upload_result = parse_json(task.bilibili_upload_response) %}
             {% if upload_result and upload_result.bvid %}
                 <a href="{{ upload_result.url or ('https://www.bilibili.com/video/' ~ upload_result.bvid) }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none" title="打开bilibili页面">{{ upload_result.bvid }}</a>
+                {% set submit_badge = submit_api_badge(upload_result.submit_api) %}{% if submit_badge %}<span class="badge bg-light text-dark border ms-1" title="投稿接口">{{ submit_badge }}</span>{% endif %}
                 <button type="button" class="btn btn-sm btn-outline-success ms-1 copy-bv-btn" title="复制BV号" data-bv-number="{{ upload_result.bvid }}">
                     <i class="bi bi-clipboard"></i>
                 </button>

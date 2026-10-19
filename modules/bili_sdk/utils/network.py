@@ -1624,7 +1624,7 @@ async def _get_spi_buvid() -> dict:
 """
 
 
-async def _active_buvid(buvid3: str, buvid4: str) -> dict:
+async def _active_buvid(buvid3: str, buvid4: str) -> str:
     MOD = 1 << 64
 
     def get_time_milli() -> int:
@@ -1926,6 +1926,8 @@ async def _active_buvid(buvid3: str, buvid4: str) -> dict:
     data = resp.json()
     if data["code"] != 0:
         raise ExClimbWuzhiException(data["code"], data["msg"])
+    # 返回本次激活使用的设备标识，调用方可持久化后复用，避免每次运行换设备指纹
+    return uuid
 
 
 async def _get_nav(credential: Optional[Credential] = None) -> dict:
@@ -2029,6 +2031,7 @@ async def _get_bili_ticket(credential: Optional[Credential] = None) -> str:
 
 __buvid3 = ""
 __buvid4 = ""
+__buvid_uuid = ""
 __bili_ticket = ""
 __bili_ticket_expires = 0
 __wbi_mixin_key = ""
@@ -2038,9 +2041,20 @@ def refresh_buvid() -> None:
     """
     刷新模块自动生成的 buvid3 和 buvid4
     """
-    global __buvid3, __buvid4
+    global __buvid3, __buvid4, __buvid_uuid
     __buvid3 = ""
     __buvid4 = ""
+    __buvid_uuid = ""
+
+
+def get_buvid_uuid() -> str:
+    """
+    获取自动生成 buvid 时使用的设备标识（`_uuid`）。
+
+    Returns:
+        str: 设备标识，尚未生成过时为空字符串。
+    """
+    return __buvid_uuid
 
 
 def refresh_bili_ticket() -> None:
@@ -2067,12 +2081,12 @@ async def get_buvid() -> Tuple[str, str]:
     Returns:
         Tuple[str, str]: 第 0 项为 buvid3，第 1 项为 buvid4。
     """
-    global __buvid3, __buvid4
+    global __buvid3, __buvid4, __buvid_uuid
     if __buvid3 == "" or __buvid4 == "":
         spi = await _get_spi_buvid()
         __buvid3 = spi["b_3"]
         __buvid4 = spi["b_4"]
-        await _active_buvid(__buvid3, __buvid4)
+        __buvid_uuid = await _active_buvid(__buvid3, __buvid4)
         request_log.dispatch(
             "ANTI_SPIDER",
             "反爬虫",

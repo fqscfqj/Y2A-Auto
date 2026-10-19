@@ -407,6 +407,15 @@
                                                     <label for="bilibili-cookies-file" class="form-label">上传新的 Cookies 文件</label>
                                                     <input type="file" id="bilibili-cookies-file" name="bilibili_cookies_file" class="form-control">
                                                 </div>
+                                                <div class="form-group">
+                                                    <label for="bilibili-submit-api" class="form-label">投稿接口</label>
+                                                    <select id="bilibili-submit-api" name="BILIBILI_SUBMIT_API" class="form-control">
+                                                        <option value="auto" {% if config.get('BILIBILI_SUBMIT_API', 'auto') == 'auto' %}selected{% endif %}>自动（优先必剪，失败转 Web）</option>
+                                                        <option value="bcut_pc" {% if config.get('BILIBILI_SUBMIT_API') == 'bcut_pc' %}selected{% endif %}>仅必剪 PC 接口</option>
+                                                        <option value="web" {% if config.get('BILIBILI_SUBMIT_API') == 'web' %}selected{% endif %}>仅 Web 投稿接口</option>
+                                                    </select>
+                                                    <p class="help-text">默认先用必剪 PC 投稿接口（与 Web 投稿风控相互独立），失败后自动回退 Web。</p>
+                                                </div>
                                                 <div class="settings-inline-actions">
                                                     <button type="button" class="btn btn-outline-primary" id="bili-qrcode-start-btn">
                                                         <i class="bi bi-qr-code"></i> 获取二维码登录

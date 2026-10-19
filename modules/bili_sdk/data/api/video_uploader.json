@@ -99,6 +99,46 @@
       "dtime": "int?: 可选，定时发布时间戳（秒）"
     }
   },
+  "submit_bcut_pc": {
+    "url": "https://member.bilibili.com/x/vu/mvp/pc/add",
+    "method": "POST",
+    "verify": true,
+    "params": {
+      "csrf": "str: 位于 Cookie 中的 bili_jct",
+      "platform": "const str: BcutPc-windows",
+      "build": "const str: 12911853"
+    },
+    "data": {
+      "act_reserve_create": "const int: 0",
+      "copyright": "int, 投稿类型。1 自制，2 转载。",
+      "source": "str: 视频来源。投稿类型为转载时注明来源，为原创时为空。",
+      "cover": "str: 封面 URL",
+      "desc": "str: 视频简介。",
+      "desc_format_id": "const int: 0",
+      "dynamic": "str: 动态信息。",
+      "interactive": "const int: 0",
+      "no_reprint": "int: 显示未经作者授权禁止转载。1 为启用，0 为关闭。",
+      "subtitles # 字幕设置": {
+        "lan": "str: 字幕投稿语言，不清楚作用请将该项设置为空",
+        "open": "int: 是否启用字幕投稿，1 or 0"
+      },
+      "tag": "str: 视频标签。使用英文半角逗号分隔的标签组。",
+      "tid": "int: 分区 ID。",
+      "title": "str: 视频标题",
+      "up_close_danmaku": "bool: 是否关闭弹幕。",
+      "up_close_reply": "bool: 是否关闭评论。",
+      "up_selection_reply": "bool: 是否开启评论精选",
+      "videos # 分 P 列表": [
+        {
+          "title": "str: 标题",
+          "desc": "str: 简介",
+          "filename": "str: preupload 时返回的 filename"
+        }
+      ],
+      "csrf": "str: 位于 Cookie 中的 bili_jct"
+    },
+    "comment": "必剪 PC 客户端投稿接口，与 Web 投稿风控相互独立，用于规避 Web 侧 603 风控"
+  },
   "missions": {
     "url": "https://member.bilibili.com/x/vupre/app/h5/mission/type/all",
     "method": "GET",
