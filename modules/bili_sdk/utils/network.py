@@ -1624,7 +1624,7 @@ async def _get_spi_buvid() -> dict:
 """
 
 
-async def _active_buvid(buvid3: str, buvid4: str) -> dict:
+async def _active_buvid(buvid3: str, buvid4: str) -> str:
     MOD = 1 << 64
 
     def get_time_milli() -> int:

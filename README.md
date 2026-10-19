@@ -215,7 +215,7 @@ python app.py
 - `YOUTUBE_COOKIES_PATH`：YouTube Cookie 路径
 - `ACFUN_COOKIES_PATH`：AcFun Cookie 路径
 - `BILIBILI_COOKIES_PATH`：bilibili Cookie 路径
-- `BILIBILI_SUBMIT_API`：bilibili 投稿接口，`auto`（默认，优先必剪 PC 接口，失败回退 Web）/ `bcut_pc` / `web`
+- `BILIBILI_SUBMIT_API`：bilibili 投稿接口，`auto`（默认，优先必剪 PC 接口，失败回退 Web）/ `bcut_pc` / `web`（手改成 `bcut` 等别名也会被归一化后再保存）
 - `YOUTUBE_PROXY_ENABLED` / `YOUTUBE_PROXY_URL`：YouTube 下载代理
 - `YOUTUBE_API_PROXY_ENABLED` / `YOUTUBE_API_PROXY_URL`：YouTube 监控 API 独立代理，不继承下载代理
 - `YOUTUBE_DOWNLOAD_THREADS`：下载线程数

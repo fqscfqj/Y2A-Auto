@@ -20,6 +20,7 @@ from modules.bili_sdk.video_uploader import (
 from modules.bilibili_uploader import (
     _bilibili_603_hint,
     _is_bilibili_account_risk,
+    _submit_attempts_hit_account_risk,
 )
 
 
@@ -75,6 +76,7 @@ def _make_uploader(submit_api="auto"):
     }
     uploader.submit_api = normalize_submit_api(submit_api)
     uploader.submit_api_used = None
+    uploader.submit_attempts = []
     return uploader
 
 
@@ -181,12 +183,57 @@ class SubmitApiSelectionTests(unittest.TestCase):
             NetworkException(412, "Precondition Failed"),
             {"bvid": "BV1n", "aid": 9},
         ]
+        fallbacks = []
+        uploader.add_event_listener(
+            VideoUploaderEvents.SUBMIT_FALLBACK.value, fallbacks.append
+        )
 
         with patch("modules.bili_sdk.video_uploader.Api", _FakeApi):
             result = __import__("asyncio").run(uploader._submit(_VIDEOS))
 
         self.assertEqual(result["bvid"], "BV1n")
         self.assertEqual(len(_FakeApi.calls), 2)
+        # NetworkException 只有 .status，事件里的 code 不能是 None
+        self.assertEqual(len(fallbacks), 1)
+        self.assertEqual(fallbacks[0]["code"], 412)
+        self.assertTrue(fallbacks[0]["risk"])
+        self.assertEqual(
+            uploader.submit_attempts,
+            [
+                {
+                    "api": SUBMIT_API_BCUT_PC,
+                    "code": 412,
+                    "risk": True,
+                    "error": "网络错误，状态码：412 - Precondition Failed。",
+                }
+            ],
+        )
+
+    def test_submit_failed_carries_every_attempt(self):
+        # 必剪 603 → Web -352：最终异常不是 603，但尝试记录里两个通道都在，
+        # 上层据此仍能给出 603 排障提示。
+        uploader = _make_uploader("auto")
+        _FakeApi.results = [
+            ResponseCodeException(603, "系统检测到异常行为"),
+            ResponseCodeException(-352, "风控校验失败"),
+        ]
+        failures = []
+        uploader.add_event_listener(
+            VideoUploaderEvents.SUBMIT_FAILED.value, failures.append
+        )
+
+        with patch("modules.bili_sdk.video_uploader.Api", _FakeApi):
+            with self.assertRaises(ResponseCodeException):
+                __import__("asyncio").run(uploader._submit(_VIDEOS))
+
+        self.assertEqual(
+            [(item["api"], item["code"]) for item in uploader.submit_attempts],
+            [(SUBMIT_API_BCUT_PC, 603), (SUBMIT_API_WEB, -352)],
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["api"], SUBMIT_API_WEB)
+        self.assertEqual(len(failures[0]["attempts"]), 2)
+        self.assertIsNone(uploader.submit_api_used)
 
     def test_bcut_request_shape(self):
         uploader = _make_uploader("bcut_pc")
@@ -229,6 +276,27 @@ class AccountRiskHintTests(unittest.TestCase):
         hint = _bilibili_603_hint()
         self.assertIn("603", hint)
         self.assertIn("实名", hint)
+
+    def test_hint_reflects_actual_attempted_channels(self):
+        both = _bilibili_603_hint(
+            [{"api": SUBMIT_API_BCUT_PC}, {"api": SUBMIT_API_WEB}]
+        )
+        self.assertIn("「必剪 PC 接口」「Web 接口」两条通道", both)
+
+        single = _bilibili_603_hint([{"api": SUBMIT_API_WEB}])
+        self.assertIn("本次只走了「Web 接口」（单通道模式）", single)
+        self.assertNotIn("两条通道", single)
+
+    def test_reraises_when_risk_code_hidden_behind_another_error(self):
+        self.assertTrue(
+            _submit_attempts_hit_account_risk([{"api": "bcut_pc", "code": 603}])
+        )
+        self.assertFalse(
+            _submit_attempts_hit_account_risk(
+                [{"api": "bcut_pc", "code": -352}, {"api": "web", "code": -412}]
+            )
+        )
+        self.assertFalse(_submit_attempts_hit_account_risk(None))
 
 
 if __name__ == "__main__":

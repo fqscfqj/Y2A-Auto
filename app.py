@@ -28,6 +28,7 @@ from modules.subtitle_style import normalize_hex_color
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
+from modules.bilibili_uploader import bilibili_submit_api_badge
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.speech_pipeline_settings import (
@@ -1850,7 +1851,8 @@ app.jinja_env.globals.update(
     task_status_color=task_status_color,
     get_partition_name=get_partition_name,
     parse_json=parse_json,
-    get_aliyun_label_chinese=get_aliyun_label_chinese # 添加新的辅助函数
+    get_aliyun_label_chinese=get_aliyun_label_chinese, # 添加新的辅助函数
+    submit_api_badge=bilibili_submit_api_badge, # 任务列表里的投稿接口徽标
 )
 
 @app.route('/login', methods=['GET', 'POST'])

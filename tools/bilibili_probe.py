@@ -8,7 +8,6 @@ bilibili 投稿通道连通性探测（本地专用）
   auth      只读：验证登录态
   preupload 只申请上传凭证，不上传文件、不投稿
   submit    真实投稿（默认「仅自己可见」），需要显式 --confirm
-  delete    删除测试稿件
 
 设计约束：
   * 任何阶段都不打印 SESSDATA / bili_jct / buvid / access_token；
@@ -21,7 +20,8 @@ bilibili 投稿通道连通性探测（本地专用）
   python tools/bilibili_probe.py --stage preupload
   python tools/bilibili_probe.py --stage submit --api bcut_pc --video test.mp4 \
       --cover cover.jpg --tid 21 --title "接口连通性测试" --confirm
-  python tools/bilibili_probe.py --stage delete --aid 123456
+
+测试稿件请在创作中心「稿件管理」手动删除：删除接口尚未验证，本工具不做自动删除。
 """
 
 import argparse
@@ -42,8 +42,6 @@ from modules.bili_sdk.exceptions import (  # noqa: E402
 )
 from modules.bili_sdk.utils.network import Api, Credential, get_api  # noqa: E402
 from modules.bili_sdk.video_uploader import (  # noqa: E402
-    BCUT_PC_BUILD,
-    BCUT_PC_USER_AGENT,
     VideoUploader,
     VideoUploaderPage,
     normalize_submit_api,
@@ -275,8 +273,6 @@ async def stage_submit(args, credential: Credential) -> int:
         submit_api=args.api,
     )
 
-    used = {}
-
     @uploader.on("SUBMIT_FALLBACK")
     def _on_fallback(data):
         print(
@@ -286,7 +282,6 @@ async def stage_submit(args, credential: Credential) -> int:
 
     @uploader.on("AFTER_SUBMIT")
     def _on_after(_data):
-        used["api"] = uploader.submit_api_used
         print(f"[submit] 投稿接口: {uploader.submit_api_used}")
 
     if not args.public:
@@ -307,7 +302,13 @@ async def stage_submit(args, credential: Credential) -> int:
         return 1
     bvid = result.get("bvid") or (result.get("data") or {}).get("bvid")
     aid = result.get("aid") or (result.get("data") or {}).get("aid")
-    print(f"[submit] 成功 bvid={bvid} aid={aid} url=https://www.bilibili.com/video/{bvid}")
+    if bvid:
+        print(
+            f"[submit] 成功 bvid={bvid} aid={aid} "
+            f"url=https://www.bilibili.com/video/{bvid}"
+        )
+    else:
+        print(f"[submit] 成功，但返回里没有 bvid（aid={aid}）: {result}")
     print("[submit] 测试稿件请到创作中心「稿件管理」手动删除（删除接口未验证，不做自动删除）")
     return 0
 

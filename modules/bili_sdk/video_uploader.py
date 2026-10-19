@@ -104,20 +104,31 @@ def should_fallback_submit_error(err: Exception) -> bool:
     return False
 
 
-def is_submit_risk_error(err: Exception) -> bool:
+def submit_error_code(err: Exception) -> Optional[int]:
     """
-    判断异常是否为风控拦截码（仅用于日志/提示，不决定是否回退）。
+    取异常携带的错误码。
+
+    ResponseCodeException 用 `.code`（接口返回的 code），NetworkException 只有
+    `.status`（HTTP 状态码，412 这类风控拦截走的就是这条路径）。两者都没有时返回 None。
     """
     if isinstance(err, ResponseCodeException):
         code = getattr(err, "code", None)
     elif isinstance(err, NetworkException):
         code = getattr(err, "status", None)
     else:
-        return False
+        return None
     try:
-        return int(code) in SUBMIT_RISK_ERROR_CODES
+        return int(code)
     except (TypeError, ValueError):
-        return False
+        return None
+
+
+def is_submit_risk_error(err: Exception) -> bool:
+    """
+    判断异常是否为风控拦截码（仅用于日志/提示，不决定是否回退）。
+    """
+    code = submit_error_code(err)
+    return code is not None and code in SUBMIT_RISK_ERROR_CODES
 
 
 async def upload_cover(cover: Picture, credential: Credential) -> str:
@@ -810,7 +821,7 @@ class VideoUploader(AsyncEvent):
 
             line         (Lines, Optional)        : 线路. Defaults to None. 不选择则自动测速选择
 
-            submit_api   (str, Optional)          : 投稿通道. auto（默认，Web 失败后换必剪）/ web / bcut_pc
+            submit_api   (str, Optional)          : 投稿通道. auto（默认，必剪优先、失败回退 Web）/ web / bcut_pc
 
         建议传入 VideoMeta 对象，避免参数有误
 
@@ -855,6 +866,9 @@ class VideoUploader(AsyncEvent):
         self.submit_api = normalize_submit_api(submit_api)
         # 记录本次投稿实际成功的通道，便于上层日志展示
         self.submit_api_used: Optional[str] = None
+        # 本次投稿每个失败通道的尝试记录（api / code / risk / error），
+        # 供上层判断「是否有通道撞上 603」并生成与实际情况相符的提示。
+        self.submit_attempts: List[dict] = []
         self.__task: Union[Task, None] = None
 
     async def _preupload(self, page: VideoUploaderPage) -> dict:
@@ -1406,12 +1420,20 @@ class VideoUploader(AsyncEvent):
 
         candidates = get_submit_api_candidates(self.submit_api)
         last_error: Optional[Exception] = None
+        self.submit_attempts = []
 
         for index, api_name in enumerate(candidates):
             try:
                 resp = await self._submit_once(api_name, meta)
             except Exception as err:
                 last_error = err
+                attempt = {
+                    "api": api_name,
+                    "code": submit_error_code(err),
+                    "risk": is_submit_risk_error(err),
+                    "error": str(err),
+                }
+                self.submit_attempts.append(attempt)
                 next_api = candidates[index + 1] if index + 1 < len(candidates) else None
                 if next_api and should_fallback_submit_error(err):
                     # 服务端明确拒绝（code != 0）说明稿件未创建，换通道重试不会重复投稿
@@ -1421,16 +1443,20 @@ class VideoUploader(AsyncEvent):
                             "from": api_name,
                             "to": next_api,
                             "err": err,
-                            "code": getattr(err, "code", None),
-                            "risk": is_submit_risk_error(err),
+                            "code": attempt["code"],
+                            "risk": attempt["risk"],
                         },
                     )
                     continue
                 self.dispatch(
                     VideoUploaderEvents.SUBMIT_FAILED.value,
-                    {"err": err, "api": api_name},
+                    {
+                        "err": err,
+                        "api": api_name,
+                        "attempts": list(self.submit_attempts),
+                    },
                 )
-                raise err
+                raise
 
             self.submit_api_used = api_name
             self.dispatch(VideoUploaderEvents.AFTER_SUBMIT.value, resp)

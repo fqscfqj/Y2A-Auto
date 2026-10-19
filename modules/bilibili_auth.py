@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from typing import Dict, Optional, Tuple
 
@@ -107,12 +108,12 @@ def build_credential(cookies: Dict[str, str]) -> Credential:
     configure_bilibili_runtime()
     cookies = cookies or {}
     # 除具名参数外，其余 SDK 认可的 Cookie（_uuid / sid / DedeUserID__ckMd5 等）
-    # 原样透传，避免"加载一次就丢字段"。
-    named_keys = {"buvid3", "buvid4"}
+    # 原样透传，避免"加载一次就丢字段"。buvid3/buvid4 走具名参数，不在
+    # Credential.EXTRA_COOKIE_NAMES 里，因此不需要额外排除。
     extra_cookies = {
         key: value
         for key, value in cookies.items()
-        if key in Credential.EXTRA_COOKIE_NAMES and key not in named_keys and value
+        if key in Credential.EXTRA_COOKIE_NAMES and value
     }
     return Credential(
         sessdata=cookies.get("SESSDATA") or cookies.get("sessdata"),
@@ -275,13 +276,32 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
             }
         )
 
+    # 写回是整文件覆盖：这是用户的登录态文件，首次上传就会重写一次，
+    # 所以先写临时文件再 os.replace，避免进程中途退出留下半截 JSON。
+    # 取舍：只保留 Credential 认识的 cookie（上面 6 个具名字段 + EXTRA_COOKIE_NAMES），
+    # 浏览器里那些与本工具无关的字段（例如 CURRENT_FID）会被丢掉 —— 本工具不读它们。
+    temp_path = ""
     try:
-        os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
-        with open(cookie_file, "w", encoding="utf-8") as f:
+        directory = os.path.dirname(os.path.abspath(cookie_file))
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".bili_cookies-", suffix=".json", dir=directory
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cookie_items, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, cookie_file)
+        temp_path = ""
     except (OSError, TypeError, ValueError) as exc:
         logger.error("保存 Bilibili 登录 Cookie 失败: %s", exc)
         return False
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
     return True
 
 

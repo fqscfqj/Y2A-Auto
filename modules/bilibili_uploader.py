@@ -8,7 +8,7 @@ import os
 import re
 import traceback
 from logging.handlers import RotatingFileHandler
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 from .bili_sdk import video_uploader
 from .bili_sdk.exceptions import ArgsException, ResponseCodeException
@@ -33,6 +33,22 @@ BILIBILI_SUBMIT_API_LABELS = {
     SUBMIT_API_WEB: "Web 投稿接口",
     SUBMIT_API_BCUT_PC: "必剪 PC 投稿接口",
 }
+# 提示语里用的短名，避免「已依次尝试 Web 投稿接口 与 必剪 PC 投稿接口 两条通道」这类长句
+_SUBMIT_API_SHORT_LABELS = {
+    SUBMIT_API_WEB: "Web 接口",
+    SUBMIT_API_BCUT_PC: "必剪 PC 接口",
+}
+# 任务列表/卡片上的投稿接口徽标（短标签）。未登记的值不显示徽标，
+# 避免把 auto 之类的取值错误地渲染成「Web」。
+BILIBILI_SUBMIT_API_BADGES = {
+    SUBMIT_API_WEB: "Web",
+    SUBMIT_API_BCUT_PC: "必剪",
+}
+
+
+def bilibili_submit_api_badge(value: Optional[str]) -> str:
+    """返回投稿接口徽标文案；未登记的取值返回空字符串（模板据此不渲染徽标）。"""
+    return BILIBILI_SUBMIT_API_BADGES.get(str(value or "").strip().lower(), "")
 
 
 def setup_task_logger(task_id):
@@ -210,11 +226,47 @@ def _is_bilibili_account_risk(exc: Exception) -> bool:
     return _extract_response_code_from_exception(exc) == 603
 
 
-def _bilibili_603_hint() -> str:
+def _submit_attempts_hit_account_risk(attempts: Optional[Sequence[dict]]) -> bool:
+    """本次投稿是否有任一通道撞上 603。"""
+    for attempt in attempts or ():
+        if not isinstance(attempt, dict):
+            continue
+        if attempt.get("code") == 603:
+            return True
+    return False
+
+
+def _submit_api_short_labels(attempts: Optional[Sequence[dict]]) -> List[str]:
+    """按尝试顺序返回去重后的通道短名（Web 接口 / 必剪 PC 接口）。"""
+    labels: List[str] = []
+    for attempt in attempts or ():
+        if not isinstance(attempt, dict):
+            continue
+        api = attempt.get("api")
+        label = _SUBMIT_API_SHORT_LABELS.get(api)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _bilibili_603_hint(submit_attempts: Optional[Sequence[dict]] = None) -> str:
+    labels = _submit_api_short_labels(submit_attempts)
+    if len(labels) > 1:
+        tried = (
+            "本次已依次尝试「" + "」「".join(labels) + "」两条通道，"
+            "说明触发点在账号或网络环境上。"
+        )
+    elif labels:
+        tried = (
+            f"本次只走了「{labels[0]}」（单通道模式），可临时切回「自动（优先必剪）」"
+            "把另一条通道也试一次。"
+        )
+    else:
+        tried = "换投稿接口也无法绕过这类账号级风控，说明触发点在账号或网络环境上。"
     return (
         "bilibili投稿返回 603（系统检测到异常行为），这是账号级风控，不是接口参数问题。"
-        "自动投稿模式下必剪与 Web 两条通道已依次尝试，说明触发点在账号或网络环境上。"
-        "建议：1) 先用浏览器登录同一账号，在创作中心手动投稿一次，输验证码解除轻度风控；"
+        + tried
+        + "建议：1) 先用浏览器登录同一账号，在创作中心手动投稿一次，输验证码解除轻度风控；"
         "2) 检查账号是否被要求实名/刷脸（若已强制下线，只能先实名或走人工客服申诉恢复）；"
         "3) 保持出口 IP 稳定并降低投稿频率，避免短时间批量投稿。"
     )
@@ -277,6 +329,10 @@ class BilibiliUploader:
     ) -> Tuple[bool, Union[dict, str]]:
         self.task_id = task_id
         self.logger = setup_task_logger(task_id or "unknown")
+
+        # 本次投稿每条通道的失败记录，由 SUBMIT_FALLBACK / SUBMIT_FAILED 事件填充。
+        # 放在 try 之前，保证异常处理分支无论 uploader 是否创建成功都能读到。
+        submit_attempts: List[dict] = []
 
         try:
             configure_bilibili_runtime()
@@ -444,6 +500,9 @@ class BilibiliUploader:
                 to_api = data.get("to") if isinstance(data, dict) else None
                 code = data.get("code") if isinstance(data, dict) else None
                 is_risk = bool(data.get("risk")) if isinstance(data, dict) else False
+                submit_attempts.append(
+                    {"api": from_api, "code": code, "risk": is_risk}
+                )
                 from_label = BILIBILI_SUBMIT_API_LABELS.get(from_api, from_api or "未知接口")
                 to_label = BILIBILI_SUBMIT_API_LABELS.get(to_api, to_api or "未知接口")
                 reason = "被风控拦截" if is_risk else "提交失败"
@@ -460,6 +519,12 @@ class BilibiliUploader:
 
             @uploader.on(video_uploader.VideoUploaderEvents.SUBMIT_FAILED.value)
             def on_submit_failed(data):
+                # SUBMIT_FAILED 带的是本次全部尝试记录（含已回退过的通道）
+                attempts = data.get("attempts") if isinstance(data, dict) else None
+                if isinstance(attempts, list):
+                    submit_attempts[:] = [
+                        item for item in attempts if isinstance(item, dict)
+                    ]
                 self.log(f"Bilibili投稿提交失败：{_event_error(data)}")
 
             @uploader.on(video_uploader.VideoUploaderEvents.FAILED.value)
@@ -513,8 +578,12 @@ class BilibiliUploader:
             pretty_error = _format_bilibili_exception(e)
             if _is_bilibili_http_406(e):
                 pretty_error = _bilibili_406_hint()
-            elif _is_bilibili_account_risk(e):
-                pretty_error = f"{pretty_error}。{_bilibili_603_hint()}"
+            elif _is_bilibili_account_risk(e) or _submit_attempts_hit_account_risk(
+                submit_attempts
+            ):
+                # 只要任一条通道撞上 603 就提示：auto 下必剪 603、Web 又抛 -352 时，
+                # 最终异常不是 603，但最有价值的排障信息仍然在 603 里。
+                pretty_error = f"{pretty_error}。{_bilibili_603_hint(submit_attempts)}"
             self.log(f"bilibili上传异常: {pretty_error}")
             return False, f"bilibili上传异常: {pretty_error}"
         except Exception as e:
@@ -523,8 +592,13 @@ class BilibiliUploader:
                 self.log(f"bilibili上传异常: {hint}")
                 self.log(traceback.format_exc())
                 return False, f"bilibili上传异常: {hint}"
-            if _is_bilibili_account_risk(e):
-                hint = f"{_format_bilibili_exception(e)}。{_bilibili_603_hint()}"
+            if _is_bilibili_account_risk(e) or _submit_attempts_hit_account_risk(
+                submit_attempts
+            ):
+                hint = (
+                    f"{_format_bilibili_exception(e)}。"
+                    f"{_bilibili_603_hint(submit_attempts)}"
+                )
                 self.log(f"bilibili上传异常: {hint}")
                 self.log(traceback.format_exc())
                 return False, f"bilibili上传异常: {hint}"
