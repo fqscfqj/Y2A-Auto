@@ -31,6 +31,16 @@ class _FakeRawClient:
         )
 
 
+class _SequencedResponsesResource:
+    def __init__(self, responder):
+        self.responder = responder
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.responder(kwargs, len(self.calls))
+
+
 class _StatusError(Exception):
     def __init__(self, message, status_code):
         super().__init__(message)
@@ -245,6 +255,208 @@ class ResponsesRequestTests(unittest.TestCase):
             'strict': True,
         })
 
+    def test_deepseek_responses_endpoint_disables_thinking_with_reasoning_none(self):
+        raw_response = {
+            'id': 'resp_reasoning',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+        raw_client = _FakeRawClient(responses_result=raw_response)
+        raw_client.base_url = 'https://api.deepseek.com/v1/'
+        config = self._config(
+            OPENAI_BASE_URL='https://api.deepseek.com/v1/responses',
+            OPENAI_MODEL_NAME='deepseek-flash',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'deepseek-flash', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        request = raw_client.responses.calls[0]
+        self.assertEqual(request['reasoning'], {'effort': 'none'})
+        self.assertNotIn('extra_body', request)
+
+    def test_qwen_responses_prefers_enable_thinking_in_extra_body(self):
+        raw_response = {
+            'id': 'resp_qwen',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+        raw_client = _FakeRawClient(responses_result=raw_response)
+        raw_client.base_url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/'
+        config = self._config(
+            OPENAI_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1/responses',
+            OPENAI_MODEL_NAME='qwen-plus',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'qwen-plus', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        request = raw_client.responses.calls[0]
+        self.assertEqual(request['extra_body'], {'enable_thinking': False})
+        self.assertNotIn('reasoning', request)
+
+    def test_mimo_responses_uses_reasoning_effort_not_thinking_object(self):
+        raw_response = {
+            'id': 'resp_mimo',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+        raw_client = _FakeRawClient(responses_result=raw_response)
+        raw_client.base_url = 'https://api.xiaomimimo.com/v1/'
+        config = self._config(
+            OPENAI_BASE_URL='https://api.xiaomimimo.com/v1/responses',
+            OPENAI_MODEL_NAME='mimo-v2.5',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'mimo-v2.5', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        request = raw_client.responses.calls[0]
+        self.assertEqual(request['reasoning'], {'effort': 'none'})
+        self.assertNotIn('extra_body', request)
+
+    def test_qwen_responses_native_rejection_falls_back_to_reasoning_effort(self):
+        raw_response = {
+            'id': 'resp_qwen_fallback',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+
+        def responder(kwargs, _call_number):
+            if 'extra_body' in kwargs:
+                raise _StatusError("Unknown parameter: 'enable_thinking'", 400)
+            return raw_response
+
+        raw_client = _FakeRawClient()
+        raw_client.base_url = 'https://gateway.example/v1/'
+        raw_client.responses = _SequencedResponsesResource(responder)
+        config = self._config(
+            OPENAI_BASE_URL='https://gateway.example/v1/responses',
+            OPENAI_MODEL_NAME='qwen3.8-flash',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        kwargs = {
+            'model': 'qwen3.8-flash',
+            'messages': [{'role': 'user', 'content': 'hi'}],
+        }
+        utils.openai_chat_create_with_thinking_control(
+            client, kwargs, thinking_enabled=False,
+        )
+
+        self.assertEqual(len(raw_client.responses.calls), 2)
+        self.assertNotIn('extra_body', raw_client.responses.calls[1])
+        self.assertEqual(
+            raw_client.responses.calls[1]['reasoning'],
+            {'effort': 'none'},
+        )
+
+        # 成功使用的标准形态按端点+协议+模型缓存，下次不再先试被拒绝的原生开关。
+        utils.openai_chat_create_with_thinking_control(
+            client, kwargs, thinking_enabled=False,
+        )
+        self.assertEqual(len(raw_client.responses.calls), 3)
+        self.assertNotIn('extra_body', raw_client.responses.calls[2])
+        self.assertEqual(
+            raw_client.responses.calls[2]['reasoning'],
+            {'effort': 'none'},
+        )
+
+    def test_responses_drops_thinking_only_after_real_request_rejection(self):
+        raw_response = {
+            'id': 'resp_drop',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+
+        def responder(kwargs, _call_number):
+            if 'reasoning' in kwargs:
+                raise _StatusError("Unknown parameter: 'reasoning'", 400)
+            return raw_response
+
+        raw_client = _FakeRawClient()
+        raw_client.base_url = 'https://api.deepseek.com/v1/'
+        raw_client.responses = _SequencedResponsesResource(responder)
+        config = self._config(
+            OPENAI_BASE_URL='https://api.deepseek.com/v1/responses',
+            OPENAI_MODEL_NAME='deepseek-flash',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'deepseek-flash', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        self.assertEqual(len(raw_client.responses.calls), 2)
+        self.assertIn('reasoning', raw_client.responses.calls[0])
+        self.assertNotIn('reasoning', raw_client.responses.calls[1])
+        self.assertNotIn('extra_body', raw_client.responses.calls[1])
+
+    def test_reasoning_effort_is_converted_to_reasoning_object(self):
+        request = afc._responses_create_kwargs({
+            'model': 'response-model',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'reasoning_effort': 'low',
+        })
+
+        self.assertEqual(request['reasoning'], {'effort': 'low'})
+        self.assertNotIn('reasoning_effort', request)
+
+    def test_reasoning_effort_merges_existing_reasoning_dict(self):
+        request = afc._responses_create_kwargs({
+            'model': 'response-model',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'reasoning': {'summary': 'auto'},
+            'reasoning_effort': 'low',
+        })
+
+        self.assertEqual(request['reasoning'], {'summary': 'auto', 'effort': 'low'})
+        self.assertNotIn('reasoning_effort', request)
+
     def test_explicit_store_setting_is_preserved(self):
         request = afc._responses_create_kwargs({
             'model': 'response-model',
@@ -314,6 +526,40 @@ class ResponsesRequestTests(unittest.TestCase):
         self.assertEqual(response.choices[0].message.content, 'fallback')
         self.assertEqual(primary.responses.calls[0]['model'], 'response-model')
         self.assertEqual(fallback.chat.completions.calls[0]['model'], 'fallback-model')
+
+    def test_fallback_deepseek_responses_disables_thinking_with_reasoning_none(self):
+        primary = _FakeRawClient(error=_StatusError('service unavailable', 503))
+        fallback = _FakeRawClient(responses_result={
+            'id': 'resp_fb',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        })
+        fallback.base_url = 'https://api.deepseek.com/v1/'
+
+        def make_client(endpoint, **_kwargs):
+            return fallback if 'fallback' in endpoint['label'] else primary
+
+        config = self._config(
+            FALLBACK_OPENAI_API_KEY='fallback-key',
+            FALLBACK_OPENAI_BASE_URL='https://api.deepseek.com/v1/responses',
+            FALLBACK_OPENAI_MODEL_NAME='deepseek-flash',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', side_effect=make_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'response-model', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        self.assertEqual(fallback.responses.calls[0]['reasoning'], {'effort': 'none'})
+        self.assertNotIn('extra_body', fallback.responses.calls[0])
 
     def test_failed_responses_server_error_switches_to_fallback(self):
         primary = _FakeRawClient(responses_result={

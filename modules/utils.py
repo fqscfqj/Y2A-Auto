@@ -109,15 +109,45 @@ def process_cover(image_path, output_path=None, mode='crop'):
 # -----------------------------
 
 # Pre-compiled regex patterns for strip_reasoning_thoughts (performance optimization)
-_THINK_TAG_RE = re.compile(r'<\s*think\s*>.*?<\s*/\s*think\s*>', re.IGNORECASE | re.DOTALL)
-_THINK_BLOCK_RE = re.compile(r'```\s*think[^\n]*\n.*?```', re.IGNORECASE | re.DOTALL)
+# 除 DeepSeek 的 <think> 外，也覆盖部分网关/本地推理模型输出的
+# <thinking>、<reasoning>、<thought> 等价标签。
+_THINK_TAG_RE = re.compile(
+    r'<\s*(think|thinking|reasoning|thought)\s*>.*?<\s*/\s*\1\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_UNCLOSED_RE = re.compile(
+    # 只处理“输出以思考标签开头”的截断场景；正文中间出现字面标签时
+    # 不应把后续正文全部删掉。
+    r'^\s*<\s*(?:think|thinking|reasoning|thought)\s*>.*$',
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_BLOCK_UNCLOSED_RE = re.compile(
+    r'^\s*```\s*(?:think|thinking|reasoning|thought)\b[^\n]*\n.*$',
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_STRAY_CLOSE_RE = re.compile(
+    r'<\s*/\s*(?:think|thinking|reasoning|thought)\s*>',
+    re.IGNORECASE,
+)
+_THINK_BLOCK_RE = re.compile(
+    r'```\s*(?:think|thinking|reasoning|thought)\b[^\n]*\n.*?```',
+    re.IGNORECASE | re.DOTALL,
+)
 _CODE_FENCE_RE = re.compile(r'^```[a-zA-Z0-9_-]*\s*|\s*```$', re.DOTALL)
 
 def strip_reasoning_thoughts(text):
     """
     屏蔽/移除思考模型产出的思考内容，仅保留最终答案。
     - 兼容 DeepSeek 的 <think>...</think> 标签
+    - 兼容部分网关/本地推理模型的 <thinking>、<reasoning>、<thought> 标签
     - 兼容 ```think ...``` 代码块形式
+    - 输出以思考标签/思考代码块开头但未闭合（常见于输出被截断）时，
+      会从开头一直移除到文本末尾；正文中间出现的字面标签不会被当作截断；
+      孤立的闭合标签也会被清理。
+
+    说明：成对标签与孤立闭合标签对所有模型输出生效，因此正式正文中如果字面
+    出现这些形态，也会被视为思考内容并移除。这是为避免推理内容泄漏到字幕/
+    元数据而做的取舍；正文中间单独出现的开标签不会被当作截断处理。
 
     Args:
         text (str): 原始模型输出
@@ -131,11 +161,20 @@ def strip_reasoning_thoughts(text):
 
         cleaned = text
 
-        # 移除 <think>...</think>（大小写不敏感，跨行匹配）
+        # 移除成对的 <think>...</think>（大小写不敏感，跨行匹配）
         cleaned = _THINK_TAG_RE.sub('', cleaned)
 
-        # 移除 ```think ...``` 样式的思考内容代码块（仅当语言标记包含 think 时）
+        # 输出被截断时可能只有开标签：仅当标签位于输出开头时，
+        # 才把后续内容全部视为未完成的思考内容。
+        cleaned = _THINK_UNCLOSED_RE.sub('', cleaned)
+
+        # 嵌套/重复闭合后可能残留孤立闭合标签，一并清理。
+        cleaned = _THINK_STRAY_CLOSE_RE.sub('', cleaned)
+
+        # 移除成对的 ```think ...``` 思考代码块；若输出以该围栏开头但被截断，
+        # 同样只保留围栏之前的正文（此处为空）。
         cleaned = _THINK_BLOCK_RE.sub('', cleaned)
+        cleaned = _THINK_BLOCK_UNCLOSED_RE.sub('', cleaned)
 
         # 去除多余空白
         cleaned = cleaned.strip()
@@ -287,6 +326,18 @@ _OPENAI_COMPATIBILITY_WARNED = set()
 _OPENAI_COMPATIBILITY_LOCK = threading.Lock()
 _OPENAI_URL_LOGGER = logging.getLogger(__name__)
 
+# 端点级“某一种思考开关形态不可用”的缓存前缀。与 drop_thinking 区分：
+# 前者只跳过被拒绝的形态，仍会尝试下一种；后者才是彻底放弃关闭思考。
+_THINKING_STYLE_CACHE_PREFIX = 'thinking_style_rejected:'
+_THINKING_STYLE_LABELS = {
+    'qwen': 'Qwen enable_thinking',
+    'responses_enable_thinking': 'Responses enable_thinking',
+    'mimo': 'MiMo thinking',
+    'thinking_object': 'thinking 对象',
+    'reasoning_effort_none': 'reasoning_effort=none',
+    'responses_reasoning_none': 'reasoning.effort=none',
+}
+
 
 def _coerce_bool(value, default=False):
     if isinstance(value, bool):
@@ -347,12 +398,17 @@ def _is_parameter_compatibility_error(exc, parameter: str) -> bool:
         'unsupported', 'not supported', 'unknown parameter', 'unknown field',
         'unrecognized', 'invalid parameter', 'invalid_request', 'not permitted',
         'extra inputs are not permitted', 'does not support', 'not allowed',
+        # 国内网关常在 400 中返回中文错误，英文关键词无法命中。
+        '不支持', '不支持的参数', '未知参数', '参数错误', '非法参数',
+        '无效参数', '不合法',
     )
     if not any(signal in text for signal in rejection_signals):
         return False
 
     parameter_signals = {
-        'thinking': ('thinking', 'enable_thinking'),
+        'thinking': (
+            'thinking', 'enable_thinking', 'reasoning', 'reasoning_effort',
+        ),
         'response_format': (
             'response_format', 'response format', 'text.format',
             'text.format.type', 'json_object', 'json mode',
@@ -410,6 +466,14 @@ def _effective_client_model(client, create_kwargs):
     return safe_str((create_kwargs or {}).get('model'), default='unknown').strip()
 
 
+def _client_api_mode(client) -> str:
+    """Return the concrete client's protocol in normalized form."""
+    return safe_str(
+        getattr(client, 'api_mode', 'chat_completions'),
+        default='chat_completions',
+    ).strip().lower()
+
+
 def _client_compatibility_key(client, create_kwargs) -> str:
     endpoint_value = safe_str(getattr(client, 'base_url', '')).strip()
     try:
@@ -421,21 +485,29 @@ def _client_compatibility_key(client, create_kwargs) -> str:
     except Exception:
         endpoint = endpoint_value or 'unknown'
     model = _effective_client_model(client, create_kwargs).lower() or 'unknown'
-    api_mode = safe_str(
-        getattr(client, 'api_mode', 'chat_completions'),
-        default='chat_completions',
-    ).strip().lower()
-    return f'{endpoint}:{api_mode}:{model}'
+    return f'{endpoint}:{_client_api_mode(client)}:{model}'
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
-    """仅对已知官方端点和匹配模型注入非标准思考开关。"""
+    """选择首选思考开关形态：厂商原生参数优先，标准参数兜底。
+
+    官方端点与第三方网关的差异只在首选顺序上体现：
+    - Qwen 官方/第三方都优先 ``enable_thinking=false``（Chat 与 Responses 通用）；
+    - MiMo Chat 优先 ``thinking={"type": "disabled"}``，Responses 优先
+      ``reasoning.effort=none``（官方 Responses schema 没有 ``thinking``）；
+    - DeepSeek 官方优先 ``thinking`` 对象，第三方优先标准 ``reasoning_effort``；
+    - Ling / 混元没有稳定的私有开关，直接使用标准参数。
+
+    端点可能拒绝首选形态，调用方应通过 ``_thinking_control_styles`` 取得
+    完整候选序列，并在 400/422 时逐个尝试后再决定是否放弃。
+    """
     endpoint = safe_str(getattr(client, 'base_url', '')).strip()
     try:
         hostname = (urlparse(endpoint).hostname or '').lower()
     except Exception:
         hostname = ''
     model = _effective_client_model(client, create_kwargs).lower()
+    api_mode = _client_api_mode(client)
 
     def host_matches(*domains):
         return any(
@@ -450,13 +522,58 @@ def _thinking_control_style(client, create_kwargs) -> str:
             if part
         )
 
-    if host_matches('aliyuncs.com') and model_matches('qwen'):
+    def model_matches_ling():
+        # 允许 ling、ling3、ling3.0 等，但避免误伤 lingua-7b。
+        return any(
+            re.fullmatch(r'ling\d*', part)
+            for part in re.split(r'[/.:_-]+', model)
+            if part
+        )
+
+    if model_matches('qwen'):
+        if api_mode == 'responses':
+            return 'responses_enable_thinking'
         return 'qwen'
-    if host_matches('api.xiaomimimo.com') and model_matches('mimo'):
+    if model_matches('mimo'):
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
         return 'mimo'
-    if host_matches('api.deepseek.com') and model_matches('deepseek'):
-        return 'thinking_object'
+    if model_matches('deepseek'):
+        # Chat Completions 的思考开关是 thinking 对象；Responses API 则是
+        # reasoning.effort。协议不同，不能复用同一个私有参数。
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
+        official_host = host_matches('api.deepseek.com')
+        return 'thinking_object' if official_host else 'reasoning_effort_none'
+    if model_matches_ling() or model_matches('hy4') or model_matches('hunyuan'):
+        # Ling / 混元系列在网关后同样默认思考；它们没有稳定的私有开关，
+        # 统一使用标准 reasoning_effort / reasoning.effort。
+        return 'responses_reasoning_none' if api_mode == 'responses' else 'reasoning_effort_none'
     return ''
+
+
+def _thinking_control_styles(client, create_kwargs):
+    """返回思考开关的候选形态（按尝试顺序），供 400 时逐个降级。
+
+    厂商原生参数排第一；若网关拒绝该字段，再尝试标准 ``reasoning_effort`` /
+    ``reasoning.effort``。只有候选全部被拒绝时，请求层才会彻底移除思考控制
+    （此时模型可能恢复默认思考行为，warning 会明确说明）。
+    """
+    style = _thinking_control_style(client, create_kwargs)
+    if style == 'qwen':
+        return ['qwen', 'reasoning_effort_none']
+    if style == 'responses_enable_thinking':
+        return ['responses_enable_thinking', 'responses_reasoning_none']
+    if style == 'mimo':
+        return ['mimo', 'reasoning_effort_none']
+    if style == 'thinking_object':
+        return ['thinking_object', 'reasoning_effort_none']
+    if style == 'reasoning_effort_none':
+        # 第三方 DeepSeek / Ling / 混元：标准参数不通时再试一次通用 thinking 对象。
+        return ['reasoning_effort_none', 'thinking_object']
+    if style == 'responses_reasoning_none':
+        return ['responses_reasoning_none']
+    return []
 
 
 def _inject_thinking_control(create_kwargs, style: str):
@@ -464,17 +581,30 @@ def _inject_thinking_control(create_kwargs, style: str):
     if not isinstance(extra_body, dict):
         extra_body = {}
     extra_body = copy.deepcopy(extra_body)
-    if style == 'qwen':
+    if style in {'qwen', 'responses_enable_thinking'}:
+        # Qwen / vLLM 的官方开关；Responses 端点也通过 extra_body 透传。
         extra_body['enable_thinking'] = False
+    elif style == 'reasoning_effort_none':
+        # 标准 OpenAI 参数，兼容多数网关；被拒绝时由调用方尝试其他形态。
+        create_kwargs['reasoning_effort'] = 'none'
+        return
+    elif style == 'responses_reasoning_none':
+        # Responses API 的标准思考强度参数。
+        reasoning = create_kwargs.get('reasoning')
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        reasoning = copy.deepcopy(reasoning)
+        reasoning['effort'] = 'none'
+        create_kwargs['reasoning'] = reasoning
+        return
     elif style in {'thinking_object', 'mimo'}:
         thinking_body = extra_body.get('thinking')
         if not isinstance(thinking_body, dict):
             thinking_body = {}
         thinking_body = copy.deepcopy(thinking_body)
+        # 官方 Chat Completions schema 只接受 type；不要再附带 enabled 等
+        # 未定义字段，避免严格网关以 unknown field 拒绝整条请求。
         thinking_body['type'] = 'disabled'
-        if style == 'thinking_object':
-            # 保留项目既有 DeepSeek 兼容字段；MiMo 使用更严格的 type 形态。
-            thinking_body['enabled'] = False
         extra_body['thinking'] = thinking_body
     if extra_body:
         create_kwargs['extra_body'] = extra_body
@@ -518,6 +648,9 @@ def _cache_compatibility_actions(cache_key: str, discovered_actions) -> None:
 
 
 def _drop_thinking_control(create_kwargs):
+    # Responses API 的开关是顶层 reasoning 对象；Chat 的私有开关在 extra_body。
+    create_kwargs.pop('reasoning', None)
+    create_kwargs.pop('reasoning_effort', None)
     extra_body = create_kwargs.get('extra_body')
     if not isinstance(extra_body, dict):
         return
@@ -589,6 +722,29 @@ def _apply_compatibility_actions(create_kwargs, actions):
     return adapted
 
 
+def _warn_thinking_style_fallback(
+    logger, cache_key: str, rejected_style: str, replacement_style: str, scene_name: str,
+):
+    """提示思考开关形态切换；同一端点/场景只提示一次。"""
+    scene = safe_str(scene_name, default='unknown').strip() or 'unknown'
+    action = f'{_THINKING_STYLE_CACHE_PREFIX}{rejected_style}'
+    warn_key = f'{cache_key}:{scene}:{action}'
+    with _OPENAI_COMPATIBILITY_LOCK:
+        is_new = warn_key not in _OPENAI_COMPATIBILITY_WARNED
+        if is_new:
+            if len(_OPENAI_COMPATIBILITY_WARNED) >= _OPENAI_COMPATIBILITY_CACHE_MAX * 4:
+                _OPENAI_COMPATIBILITY_WARNED.clear()
+            _OPENAI_COMPATIBILITY_WARNED.add(warn_key)
+    if not logger or not is_new:
+        return
+    logger.warning(
+        '模型兼容降级[%s]：%s 思考开关不被支持，已尝试切换到 %s',
+        scene,
+        _THINKING_STYLE_LABELS.get(rejected_style, rejected_style),
+        _THINKING_STYLE_LABELS.get(replacement_style, replacement_style),
+    )
+
+
 def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name: str):
     scene = safe_str(scene_name, default='unknown').strip() or 'unknown'
     warn_key = f'{cache_key}:{scene}:{action}'
@@ -601,7 +757,10 @@ def _warn_compatibility_fallback(logger, cache_key: str, action: str, scene_name
     if not logger or not is_new:
         return
     descriptions = {
-        'drop_thinking': '不支持当前模型的思考控制参数，已移除该扩展参数',
+        'drop_thinking': (
+            '所有已知思考控制参数均被拒绝，已移除该扩展参数；'
+            '模型将恢复默认行为（通常仍会开启思考）'
+        ),
         'drop_response_format': '不支持 JSON response_format，已改用提示词约束并解析文本 JSON',
         'drop_temperature': '不支持自定义 temperature，已使用模型默认值',
         'use_developer_role': '不支持 system role，已改用 developer role',
@@ -618,13 +777,15 @@ def _openai_chat_create_with_thinking_control_single(
     logger=None,
     scene_name='unknown',
 ):
-    """统一 Chat Completions 请求，并按端点实际能力自动降级可选参数。
+    """统一 Chat/Responses 请求，并按端点实际能力自动降级可选参数。
 
-    默认只对可识别的 DeepSeek、Qwen、MiMo 端点/模型发送对应的私有思考开关，
-    避免污染其他标准 OpenAI 请求。若兼容网关明确拒绝 JSON 模式、token 参数、
-    temperature 或消息角色，会只移除/替换对应能力后重试；未说明字段的 schema
-    错误则最终降为最小标准请求。只有真正成功的组合才会缓存到同一端点+模型。
-    鉴权、限流、配额和服务端错误不会在这里被误判为兼容问题。
+    思考开关采用“厂商原生参数优先、标准参数兜底”的顺序：DeepSeek、Qwen、
+    MiMo、Ling、混元等可识别模型会先发送各自文档中的开关形态；若端点以
+    400/422 明确拒绝，则在同一请求内换下一种形态，全部失败后才移除控制。
+    移除控制意味着模型可能恢复默认思考行为（通常为开启），warning 会明确说明。
+    其他可选参数（JSON 模式、temperature、消息角色）同样按端点错误逐项降级；
+    未说明字段的 schema 错误才最终降为最小标准请求。只有真正成功的组合才会
+    按端点+协议+模型缓存。鉴权、限流、配额和服务端错误不会在这里被误判。
     """
     base_kwargs = copy.deepcopy(create_kwargs or {})
     # 思考模型会把推理过程和最终正文共同计入输出额度。统一移除客户端侧输出
@@ -638,37 +799,75 @@ def _openai_chat_create_with_thinking_control_single(
         # model selected by the concrete endpoint, not the primary caller's
         # model passed into a failover wrapper.
         base_kwargs['model'] = effective_model
+    thinking_styles = []
     if not _coerce_bool(thinking_enabled, default=False):
-        _inject_thinking_control(
-            base_kwargs,
-            _thinking_control_style(client, base_kwargs),
-        )
+        thinking_styles = _thinking_control_styles(client, base_kwargs)
 
     cache_key = _client_compatibility_key(client, base_kwargs)
     cached_actions = _get_cached_compatibility_actions(cache_key)
+    rejected_styles = {
+        action[len(_THINKING_STYLE_CACHE_PREFIX):]
+        for action in cached_actions
+        if action.startswith(_THINKING_STYLE_CACHE_PREFIX)
+    }
+    thinking_styles = [
+        style for style in thinking_styles if style not in rejected_styles
+    ]
     actions = set(cached_actions)
+    thinking_dropped = 'drop_thinking' in actions
+    style_index = 0
+    rejected_styles_this_request = []
     discovered_actions = set()
     attempted_actions = set()
 
     while True:
         request_kwargs = _apply_compatibility_actions(base_kwargs, actions)
+        if (
+            thinking_styles
+            and not thinking_dropped
+            and 'minimal_request' not in actions
+        ):
+            _inject_thinking_control(request_kwargs, thinking_styles[style_index])
         try:
             response = client.chat.completions.create(**request_kwargs)
-            if discovered_actions:
-                _cache_compatibility_actions(cache_key, discovered_actions)
+            cache_actions = set(discovered_actions)
+            cache_actions.update(
+                f'{_THINKING_STYLE_CACHE_PREFIX}{style}'
+                for style in rejected_styles_this_request
+            )
+            if cache_actions:
+                _cache_compatibility_actions(cache_key, cache_actions)
             return response
         except Exception as exc:
             action = None
             extra_body = request_kwargs.get('extra_body')
-            if (
-                isinstance(extra_body, dict)
-                and (
-                    'thinking' in extra_body
-                    or 'enable_thinking' in extra_body
-                    or 'enable_thinking' in (extra_body.get('chat_template_kwargs') or {})
+            has_thinking_control = (
+                'reasoning' in request_kwargs
+                or 'reasoning_effort' in request_kwargs
+                or (
+                    isinstance(extra_body, dict)
+                    and (
+                        'thinking' in extra_body
+                        or 'enable_thinking' in extra_body
+                        or 'enable_thinking' in (extra_body.get('chat_template_kwargs') or {})
+                    )
                 )
+            )
+            if (
+                has_thinking_control
                 and _is_parameter_compatibility_error(exc, 'thinking')
             ):
+                next_index = style_index + 1
+                if thinking_styles and not thinking_dropped:
+                    rejected_style = thinking_styles[style_index]
+                    rejected_styles_this_request.append(rejected_style)
+                    if next_index < len(thinking_styles):
+                        replacement_style = thinking_styles[next_index]
+                        style_index = next_index
+                        _warn_thinking_style_fallback(
+                            logger, cache_key, rejected_style, replacement_style, scene_name,
+                        )
+                        continue
                 action = 'drop_thinking'
             elif (
                 'response_format' in request_kwargs
@@ -704,6 +903,8 @@ def _openai_chat_create_with_thinking_control_single(
             attempted_actions.add(action)
             actions.add(action)
             discovered_actions.add(action)
+            if action == 'drop_thinking':
+                thinking_dropped = True
             if action == 'inline_instructions':
                 actions.discard('use_developer_role')
                 discovered_actions.discard('use_developer_role')

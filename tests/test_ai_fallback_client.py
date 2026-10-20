@@ -399,13 +399,13 @@ class FallbackInheritsPrimaryTests(unittest.TestCase):
         self.assertNotIsInstance(client, afc.FallbackChatClient)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DeepSeekThinkingControlTests(unittest.TestCase):
-    """P2 回归：DeepSeek 端点仅在调用方显式要求禁用思考时才注入 enable_thinking=False，
-    不得覆盖调用方显式开启的思考模式。"""
+    """回归：DeepSeek 的 thinking 对象必须原样透传。
+
+    api.deepseek.com 的 Chat Completions 只接受 ``thinking`` 对象，不接受
+    ``enable_thinking``。兜底层不得把它改写成非官方字段，否则请求会被拒绝，
+    兼容重试又会移除思考控制、把用户的“关闭思考”静默变成“开启思考”。
+    """
 
     def _create_with_extra(self, extra_body, deepseek_base="https://api.deepseek.com/v1"):
         maker, primary, fallback = _fake_maker(
@@ -433,14 +433,12 @@ class DeepSeekThinkingControlTests(unittest.TestCase):
         self.assertEqual(extra2, {"temperature": 0.5})  # 调用方 extra 原样保留
         self.assertNotIn("enable_thinking", extra2)
 
-    def test_thinking_disabled_injects_deepseek_flag(self):
-        # 调用方显式禁用思考：thinking={type:disabled,enabled:False}
-        # → 移除 thinking 键并写入 DeepSeek 原生 enable_thinking=False
-        extra = self._create_with_extra(
-            {"thinking": {"type": "disabled", "enabled": False}})
-        self.assertIsNotNone(extra)
-        self.assertNotIn("thinking", extra)
-        self.assertIs(extra.get("enable_thinking"), False)
+    def test_thinking_object_is_passed_through(self):
+        # 调用方显式禁用思考 → thinking 对象原样送到 DeepSeek，不改名
+        expected = {"thinking": {"type": "disabled"}}
+        extra = self._create_with_extra(expected)
+        self.assertEqual(extra, expected)
+        self.assertNotIn("enable_thinking", extra)
 
     def test_thinking_disabled_flag_true_is_not_overridden(self):
         # 若调用方发送 thinking={enabled: True}（部分实现用该形式表示启用），
@@ -536,7 +534,7 @@ class EndpointScopedCompatibilityTests(unittest.TestCase):
         self._assert_fallback_thinking(
             "https://api.deepseek.com/v1",
             "deepseek-reasoner",
-            {"enable_thinking": False},
+            {"thinking": {"type": "disabled"}},
         )
 
     def test_fallback_qwen_thinking_control_uses_backup_identity(self):
@@ -651,3 +649,7 @@ class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
         # 全局 600 与 QC 独立键并存时，QC 只看独立键
         cfg = self._capture_cfg({'OPENAI_TIMEOUT_SECONDS': 600, 'SUBTITLE_QC_TIMEOUT_SECONDS': 45})
         self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 45)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -282,14 +282,13 @@ class _FallbackEndpointClient:
         if isinstance(caller_extra, dict):
             merged_extra.update(caller_extra)
 
-        # DeepSeek's native Chat Completions field differs from the generic
-        # thinking object used by the utility layer.  This conversion must be
-        # performed here, after the actual endpoint has been selected.
-        if "deepseek" in (self._endpoint.get("base_url") or "").lower():
-            thinking_cfg = merged_extra.get("thinking")
-            if isinstance(thinking_cfg, dict) and thinking_cfg.get("enabled") is False:
-                merged_extra.pop("thinking", None)
-                merged_extra["enable_thinking"] = False
+        # Do not rewrite provider-specific thinking controls here.  The
+        # request adapter already chose the correct shape by protocol:
+        # Chat Completions uses ``thinking`` (DeepSeek), while the Responses
+        # API uses top-level ``reasoning``.  Rewriting DeepSeek's object to
+        # ``enable_thinking`` would send a non-existent field to
+        # api.deepseek.com, and the subsequent "drop unsupported parameter"
+        # retry would silently re-enable thinking.
         if merged_extra:
             call_kwargs["extra_body"] = merged_extra
 
@@ -390,6 +389,17 @@ def _responses_create_kwargs(chat_kwargs):
     result.pop('max_completion_tokens', None)
     result.pop('max_tokens', None)
     result.pop('max_output_tokens', None)
+
+    # Responses 使用 reasoning.effort；Chat 的 reasoning_effort 需要换一层结构。
+    reasoning_effort = result.pop('reasoning_effort', None)
+    if reasoning_effort is not None:
+        reasoning = result.get('reasoning')
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        else:
+            reasoning = dict(reasoning)
+        reasoning['effort'] = reasoning_effort
+        result['reasoning'] = reasoning
 
     response_format = result.pop('response_format', None)
     if response_format is not None:
