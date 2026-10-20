@@ -315,6 +315,36 @@ class ResponsesRequestTests(unittest.TestCase):
         self.assertEqual(request['extra_body'], {'enable_thinking': False})
         self.assertNotIn('reasoning', request)
 
+    def test_mimo_responses_uses_reasoning_effort_not_thinking_object(self):
+        raw_response = {
+            'id': 'resp_mimo',
+            'status': 'completed',
+            'error': None,
+            'output': [{
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'ok'}],
+            }],
+        }
+        raw_client = _FakeRawClient(responses_result=raw_response)
+        raw_client.base_url = 'https://api.xiaomimimo.com/v1/'
+        config = self._config(
+            OPENAI_BASE_URL='https://api.xiaomimimo.com/v1/responses',
+            OPENAI_MODEL_NAME='mimo-v2.5',
+        )
+        with patch.object(afc, '_load_global_config', return_value={}), \
+             patch.object(afc, '_make_raw_client', return_value=raw_client):
+            client = afc.get_ai_client(config)
+
+        utils.openai_chat_create_with_thinking_control(
+            client,
+            {'model': 'mimo-v2.5', 'messages': [{'role': 'user', 'content': 'hi'}]},
+            thinking_enabled=False,
+        )
+
+        request = raw_client.responses.calls[0]
+        self.assertEqual(request['reasoning'], {'effort': 'none'})
+        self.assertNotIn('extra_body', request)
+
     def test_qwen_responses_native_rejection_falls_back_to_reasoning_effort(self):
         raw_response = {
             'id': 'resp_qwen_fallback',

@@ -86,9 +86,9 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
             ('https://gateway.example/v1', 'qwen3.8-flash',
              {'extra_body': {'enable_thinking': False}}),
             ('https://api.xiaomimimo.com/v1', 'mimo-v2.5',
-             {'extra_body': {'thinking': {'type': 'disabled'}}}),
+             {'reasoning': {'effort': 'none'}}),
             ('https://gateway.example/v1', 'mimo-v2.6-flash',
-             {'extra_body': {'thinking': {'type': 'disabled'}}}),
+             {'reasoning': {'effort': 'none'}}),
             ('https://gateway.example/v1', 'deepseek-v4.1-flash',
              {'reasoning': {'effort': 'none'}}),
         )
@@ -108,6 +108,18 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
                     set(request) & {'reasoning', 'reasoning_effort', 'extra_body'},
                     set(expected),
                 )
+
+    def test_mimo_responses_uses_reasoning_effort_and_not_thinking_object(self):
+        client = _FakeClient(base_url='https://gateway.example/v1')
+        client.api_mode = 'responses'
+
+        utils.openai_chat_create_with_thinking_control(
+            client, _base_kwargs(model='mimo-v2.6-flash'), thinking_enabled=False,
+        )
+
+        request = client.completions.calls[0]
+        self.assertEqual(request['reasoning'], {'effort': 'none'})
+        self.assertNotIn('extra_body', request)
 
     def test_unsupported_responses_reasoning_control_is_dropped(self):
         def responder(kwargs, _call_number):
@@ -151,6 +163,10 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
             '',
         )
         self.assertEqual(
+            utils.strip_reasoning_thoughts('```think\npartial reasoning'),
+            '',
+        )
+        self.assertEqual(
             utils.strip_reasoning_thoughts('text </thinking> tail'),
             'text  tail',
         )
@@ -159,6 +175,20 @@ class OpenAIChatCompatibilityTests(unittest.TestCase):
                 '<thinking>a<thinking>b</thinking>c</thinking>d'
             ),
             'cd',
+        )
+
+    def test_strip_reasoning_keeps_literal_tags_in_middle_of_text(self):
+        self.assertEqual(
+            utils.strip_reasoning_thoughts(
+                '这是一段提到 <reasoning> 标签的字幕译文'
+            ),
+            '这是一段提到 <reasoning> 标签的字幕译文',
+        )
+        self.assertEqual(
+            utils.strip_reasoning_thoughts(
+                '正文第一段\n<thought> 表示思考\n正文第二段'
+            ),
+            '正文第一段\n<thought> 表示思考\n正文第二段',
         )
 
     def test_strip_reasoning_documents_literal_tag_tradeoff(self):

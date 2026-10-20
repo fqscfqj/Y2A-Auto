@@ -237,7 +237,7 @@ python app.py
 ### AI 与投稿
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：全局 AI 配置
-- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时优先发送厂商文档中的原生开关（DeepSeek 用 `thinking`，Qwen 用 `enable_thinking`，MiMo 用 `thinking`；DeepSeek Responses 用 `reasoning.effort=none`）。原生开关被端点以 400/422 拒绝时，会在同一请求内再尝试标准 `reasoning_effort=none` / `reasoning.effort=none`，全部形态都失败才移除控制并记录 warning；此时模型可能恢复默认思考行为。第三方网关上的 DeepSeek/Ling/混元没有可靠原生开关，先尝试标准参数，再尝试通用 `thinking` 对象。通过反向代理访问官方端点时无法从域名识别厂商，会按第三方顺序逐个尝试，但不会因此跳过关闭思考的尝试。OpenAI o 系列 / GPT-5 等推理模型各代支持的 `reasoning_effort` 取值不同，本开关不会自动改写，需在模型网关侧控制
+- `OPENAI_THINKING_ENABLED`：是否允许模型使用思考模式；关闭时优先发送厂商文档中的原生开关（DeepSeek Chat 用 `thinking`、Responses 用 `reasoning.effort=none`；Qwen Chat/Responses 用 `enable_thinking`；MiMo Chat 用 `thinking`、Responses 用 `reasoning.effort=none`）。原生开关被端点以 400/422 拒绝时，会在同一请求内再尝试标准 `reasoning_effort=none` / `reasoning.effort=none`，全部形态都失败才移除控制并记录 warning；此时模型可能恢复默认思考行为。第三方网关上的 DeepSeek/Ling/混元没有可靠原生开关，先尝试标准参数，再尝试通用 `thinking` 对象。通过反向代理访问官方端点时无法从域名识别厂商，会按第三方顺序逐个尝试，但不会因此跳过关闭思考的尝试。OpenAI o 系列 / GPT-5 等推理模型各代支持的 `reasoning_effort` 取值不同，本开关不会自动改写，需在模型网关侧控制
 - `SUBTITLE_OPENAI_*`：字幕翻译专用覆盖配置，留空则回退全局
 - `SUBTITLE_QC_*`：字幕质检专用覆盖配置，留空则回退字幕翻译 / 全局配置
 - `TRANSLATE_TITLE` / `TRANSLATE_DESCRIPTION` / `GENERATE_TAGS`：自动生成标题、简介、标签

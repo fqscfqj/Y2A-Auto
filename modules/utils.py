@@ -116,7 +116,13 @@ _THINK_TAG_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _THINK_UNCLOSED_RE = re.compile(
-    r'<\s*(?:think|thinking|reasoning|thought)\s*>.*$',
+    # 只处理“输出以思考标签开头”的截断场景；正文中间出现字面标签时
+    # 不应把后续正文全部删掉。
+    r'^\s*<\s*(?:think|thinking|reasoning|thought)\s*>.*$',
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_BLOCK_UNCLOSED_RE = re.compile(
+    r'^\s*```\s*(?:think|thinking|reasoning|thought)\b[^\n]*\n.*$',
     re.IGNORECASE | re.DOTALL,
 )
 _THINK_STRAY_CLOSE_RE = re.compile(
@@ -135,11 +141,13 @@ def strip_reasoning_thoughts(text):
     - 兼容 DeepSeek 的 <think>...</think> 标签
     - 兼容部分网关/本地推理模型的 <thinking>、<reasoning>、<thought> 标签
     - 兼容 ```think ...``` 代码块形式
-    - 未闭合的思考标签（常见于输出被截断）会从开标签起一直移除到文本末尾；
+    - 输出以思考标签/思考代码块开头但未闭合（常见于输出被截断）时，
+      会从开头一直移除到文本末尾；正文中间出现的字面标签不会被当作截断；
       孤立的闭合标签也会被清理。
 
-    说明：这些标签对所有模型输出生效，因此正式正文中如果字面出现上述标签，
-    也会被视为思考内容并移除。这是为避免推理内容泄漏到字幕/元数据而做的取舍。
+    说明：成对标签与孤立闭合标签对所有模型输出生效，因此正式正文中如果字面
+    出现这些形态，也会被视为思考内容并移除。这是为避免推理内容泄漏到字幕/
+    元数据而做的取舍；正文中间单独出现的开标签不会被当作截断处理。
 
     Args:
         text (str): 原始模型输出
@@ -156,14 +164,17 @@ def strip_reasoning_thoughts(text):
         # 移除成对的 <think>...</think>（大小写不敏感，跨行匹配）
         cleaned = _THINK_TAG_RE.sub('', cleaned)
 
-        # 输出被截断时可能只有开标签：从该标签起全部视为未完成的思考内容。
+        # 输出被截断时可能只有开标签：仅当标签位于输出开头时，
+        # 才把后续内容全部视为未完成的思考内容。
         cleaned = _THINK_UNCLOSED_RE.sub('', cleaned)
 
         # 嵌套/重复闭合后可能残留孤立闭合标签，一并清理。
         cleaned = _THINK_STRAY_CLOSE_RE.sub('', cleaned)
 
-        # 移除 ```think ...``` 样式的思考内容代码块（仅当语言标记包含 think 时）
+        # 移除成对的 ```think ...``` 思考代码块；若输出以该围栏开头但被截断，
+        # 同样只保留围栏之前的正文（此处为空）。
         cleaned = _THINK_BLOCK_RE.sub('', cleaned)
+        cleaned = _THINK_BLOCK_UNCLOSED_RE.sub('', cleaned)
 
         # 去除多余空白
         cleaned = cleaned.strip()
@@ -455,6 +466,14 @@ def _effective_client_model(client, create_kwargs):
     return safe_str((create_kwargs or {}).get('model'), default='unknown').strip()
 
 
+def _client_api_mode(client) -> str:
+    """Return the concrete client's protocol in normalized form."""
+    return safe_str(
+        getattr(client, 'api_mode', 'chat_completions'),
+        default='chat_completions',
+    ).strip().lower()
+
+
 def _client_compatibility_key(client, create_kwargs) -> str:
     endpoint_value = safe_str(getattr(client, 'base_url', '')).strip()
     try:
@@ -466,11 +485,7 @@ def _client_compatibility_key(client, create_kwargs) -> str:
     except Exception:
         endpoint = endpoint_value or 'unknown'
     model = _effective_client_model(client, create_kwargs).lower() or 'unknown'
-    api_mode = safe_str(
-        getattr(client, 'api_mode', 'chat_completions'),
-        default='chat_completions',
-    ).strip().lower()
-    return f'{endpoint}:{api_mode}:{model}'
+    return f'{endpoint}:{_client_api_mode(client)}:{model}'
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
@@ -478,7 +493,8 @@ def _thinking_control_style(client, create_kwargs) -> str:
 
     官方端点与第三方网关的差异只在首选顺序上体现：
     - Qwen 官方/第三方都优先 ``enable_thinking=false``（Chat 与 Responses 通用）；
-    - MiMo 优先 ``thinking={"type": "disabled"}``；
+    - MiMo Chat 优先 ``thinking={"type": "disabled"}``，Responses 优先
+      ``reasoning.effort=none``（官方 Responses schema 没有 ``thinking``）；
     - DeepSeek 官方优先 ``thinking`` 对象，第三方优先标准 ``reasoning_effort``；
     - Ling / 混元没有稳定的私有开关，直接使用标准参数。
 
@@ -491,10 +507,7 @@ def _thinking_control_style(client, create_kwargs) -> str:
     except Exception:
         hostname = ''
     model = _effective_client_model(client, create_kwargs).lower()
-    api_mode = safe_str(
-        getattr(client, 'api_mode', 'chat_completions'),
-        default='chat_completions',
-    ).strip().lower()
+    api_mode = _client_api_mode(client)
 
     def host_matches(*domains):
         return any(
@@ -522,6 +535,8 @@ def _thinking_control_style(client, create_kwargs) -> str:
             return 'responses_enable_thinking'
         return 'qwen'
     if model_matches('mimo'):
+        if api_mode == 'responses':
+            return 'responses_reasoning_none'
         return 'mimo'
     if model_matches('deepseek'):
         # Chat Completions 的思考开关是 thinking 对象；Responses API 则是
@@ -550,12 +565,7 @@ def _thinking_control_styles(client, create_kwargs):
     if style == 'responses_enable_thinking':
         return ['responses_enable_thinking', 'responses_reasoning_none']
     if style == 'mimo':
-        api_mode = safe_str(
-            getattr(client, 'api_mode', 'chat_completions'),
-            default='chat_completions',
-        ).strip().lower()
-        fallback = 'responses_reasoning_none' if api_mode == 'responses' else 'reasoning_effort_none'
-        return ['mimo', fallback]
+        return ['mimo', 'reasoning_effort_none']
     if style == 'thinking_object':
         return ['thinking_object', 'reasoning_effort_none']
     if style == 'reasoning_effort_none':
@@ -728,7 +738,7 @@ def _warn_thinking_style_fallback(
     if not logger or not is_new:
         return
     logger.warning(
-        '模型兼容降级[%s]：%s 思考开关不被支持，已改用 %s',
+        '模型兼容降级[%s]：%s 思考开关不被支持，已尝试切换到 %s',
         scene,
         _THINKING_STYLE_LABELS.get(rejected_style, rejected_style),
         _THINKING_STYLE_LABELS.get(replacement_style, replacement_style),
@@ -848,19 +858,16 @@ def _openai_chat_create_with_thinking_control_single(
                 and _is_parameter_compatibility_error(exc, 'thinking')
             ):
                 next_index = style_index + 1
-                if (
-                    thinking_styles
-                    and not thinking_dropped
-                    and next_index < len(thinking_styles)
-                ):
+                if thinking_styles and not thinking_dropped:
                     rejected_style = thinking_styles[style_index]
-                    replacement_style = thinking_styles[next_index]
                     rejected_styles_this_request.append(rejected_style)
-                    style_index = next_index
-                    _warn_thinking_style_fallback(
-                        logger, cache_key, rejected_style, replacement_style, scene_name,
-                    )
-                    continue
+                    if next_index < len(thinking_styles):
+                        replacement_style = thinking_styles[next_index]
+                        style_index = next_index
+                        _warn_thinking_style_fallback(
+                            logger, cache_key, rejected_style, replacement_style, scene_name,
+                        )
+                        continue
                 action = 'drop_thinking'
             elif (
                 'response_format' in request_kwargs
