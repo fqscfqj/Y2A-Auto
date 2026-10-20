@@ -399,10 +399,6 @@ class FallbackInheritsPrimaryTests(unittest.TestCase):
         self.assertNotIsInstance(client, afc.FallbackChatClient)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DeepSeekThinkingControlTests(unittest.TestCase):
     """回归：DeepSeek 的 thinking 对象必须原样透传。
 
@@ -653,3 +649,7 @@ class SubtitleQcTimeoutDefaultTests(unittest.TestCase):
         # 全局 600 与 QC 独立键并存时，QC 只看独立键
         cfg = self._capture_cfg({'OPENAI_TIMEOUT_SECONDS': 600, 'SUBTITLE_QC_TIMEOUT_SECONDS': 45})
         self.assertEqual(cfg["OPENAI_TIMEOUT_SECONDS"], 45)
+
+
+if __name__ == "__main__":
+    unittest.main()
