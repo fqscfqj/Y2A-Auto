@@ -12,7 +12,7 @@
 
 从下载、ASR、字幕翻译、字幕质检、内容审核到上传，全流程自动化；内置 Web 管理后台、YouTube 监控和维护能力。
 
-[快速开始](#快速开始) · [功能概览](#功能概览) · [部署与运行](#部署与运行) · [配置说明](#配置说明) · [使用指南](#使用指南) · [通知推送](#通知推送) · [CookieCloud](#cookiecloud-集成) · [安全特性](#安全特性) · [常见问题](#常见问题)
+[快速开始](#快速开始) · [功能概览](#功能概览) · [部署与运行](#部署与运行) · [Telegram 机器人](#方案-dtelegram-转发机器人可选) · [配置说明](#配置说明) · [使用指南](#使用指南) · [通知推送](#通知推送) · [CookieCloud](#cookiecloud-集成) · [安全特性](#安全特性) · [常见问题](#常见问题)
 
 ---
 
@@ -23,10 +23,12 @@
     <img src="https://img.shields.io/badge/Telegram%20Bot-%40Y2AAuto__bot-2CA5E0?logo=telegram&logoColor=white" alt="Telegram Bot" />
   </a>
   <br/>
-  <strong>Telegram 转发机器人（试用）：</strong>
+  <strong>Telegram 转发机器人（公共实例）：</strong>
   <a href="https://t.me/Y2AAuto_bot">@Y2AAuto_bot</a>
   <br/>
-  <sub>自部署版本：<a href="https://github.com/fqscfqj/Y2A-Auto-tgbot">Y2A-Auto-tgbot</a></sub>
+  <sub>⚠️ 公共实例部署在个人 VPS 上，该服务器已被墙，可用性无法保证；若无法连接，请按
+  <a href="#方案-dtelegram-转发机器人可选">自部署说明</a>搭建自己的机器人：
+  <a href="https://github.com/fqscfqj/Y2A-Auto-tgbot">Y2A-Auto-tgbot</a></sub>
 </p>
 
 ## 项目展示
@@ -82,6 +84,9 @@
   - 从 CookieCloud 服务自动拉取 YouTube / Google Cookies
   - 支持 auto / legacy / aes-128-cbc-fixed 加密模式
   - Web UI 一键测试与同步
+- Telegram 转发机器人
+  - 独立部署的 Y2A-Auto-tgbot，在 Telegram 内直接发送 YouTube 链接提交任务
+  - 使用最小权限 API Token，公共实例不保证可用，建议自部署
 - 字幕变换引擎
   - 长行自动拆分、标点标准化、填充词 / 重复词过滤
   - 幻觉文本与噪声标签检测、文本密度过高检测
@@ -195,6 +200,30 @@ python app.py
 - `build-tools/` 提供 Windows 可执行文件构建工具
 - 官方 Windows Release 包通常已内置 FFmpeg / FFprobe
 - 如果手工打包，保持 `ffmpeg/` 目录完整即可
+
+### 方案 D：Telegram 转发机器人（可选）
+
+[Y2A-Auto-tgbot](https://github.com/fqscfqj/Y2A-Auto-tgbot) 是一个独立的 Telegram 机器人：在 Telegram 里直接发送 YouTube 视频 / 播放列表链接，机器人会调用本服务的 `/tasks/add_via_extension` 接口提交上传任务。它需要单独部署，不会随本项目一起启动。
+
+> ⚠️ **公共实例不保证可用。** [@Y2AAuto_bot](https://t.me/Y2AAuto_bot) 运行在个人 VPS 上，该服务器已被墙，可能随时无法访问。需要长期、稳定使用时请自行部署。
+
+自部署要点（Bot Token 创建、Token 作用范围等完整说明见 [Y2A-Auto-tgbot README](https://github.com/fqscfqj/Y2A-Auto-tgbot#安装和部署)）：
+
+1. 在 Telegram 找 [@BotFather](https://t.me/BotFather)，发送 `/newbot` 创建机器人，拿到 `TG_BOT_TOKEN`（形如 `123456789:AAE...`）
+2. 克隆并启动机器人：
+
+   ```bash
+   git clone https://github.com/fqscfqj/Y2A-Auto-tgbot.git
+   cd Y2A-Auto-tgbot
+   # 编辑 docker-compose.yml 填写 TG_BOT_TOKEN（可选 ADMIN_TELEGRAM_IDS），然后：
+   docker compose up -d
+   ```
+
+3. 打开本项目的 **设置 → 运维与安全 → Telegram Bot API Token**，点击「生成 Token」并立即复制 `y2a_tgbot_v1_...`（明文只显示一次）
+4. 在 Telegram 向新建的机器人发送 `/settings`，填写 **API 地址**（机器人所在网络能访问到的本项目地址，例如同机 `http://127.0.0.1:5000`，跨机器 `http://192.168.1.100:5000`）和 **API Token**，再点「🔬 测试」确认连接成功
+5. 测试通过后，直接给机器人发送 YouTube 链接即可提交任务
+
+该 Token 只允许调用 `/tasks/add_via_extension`，无法访问设置、日志等其它接口，并且可以随时在设置页重置或撤销。
 
 ## 配置说明
 
@@ -563,6 +592,16 @@ ssh -N -L 5000:127.0.0.1:5000 -o ServerAliveInterval=30 user@<服务器公网IP>
 - 通知推送未收到消息
   - 确认 `NOTIFY_ENABLED` 已开启，且目标渠道已正确配置
   - 检查 webhook URL / SendKey 是否有效
+
+### Telegram 机器人无法使用
+
+公共实例 [@Y2AAuto_bot](https://t.me/Y2AAuto_bot) 运行在个人 VPS 上，该服务器已被墙，**不保证一直可用**，也可能随时停止服务。遇到连不上、长时间无响应或提示服务异常时，请自行部署，见 [方案 D：Telegram 转发机器人](#方案-dtelegram-转发机器人可选)。
+
+自部署后仍无法转发时，按顺序排查：
+
+- API 地址是否填写了机器人所在网络访问不到的地址（跨机器时不要填 `localhost`）
+- API Token 是否已在设置页重置或撤销，机器人里保存的是否为最新 Token
+- 本项目日志中是否有 `/tasks/add_via_extension` 的请求记录，以及返回的状态码
 
 ## 贡献与反馈
 
