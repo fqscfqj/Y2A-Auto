@@ -122,6 +122,9 @@ MONITOR_CONFIG_FIELD_DEFAULTS: Dict[str, Any] = {
 
 MONITOR_CONFIG_DB_FIELDS: Tuple[str, ...] = tuple(MONITOR_CONFIG_FIELD_DEFAULTS.keys())
 
+# 标题关键词里用引号包住含空格的短语，如 "deep sleep"，整体作为单个关键词
+_TITLE_KEYWORD_QUOTED_RE = re.compile(r'"([^"]*)"|“([^”]*)”')
+
 
 class YouTubeMonitor:
     def __init__(self, api_key: Optional[str] = None):
@@ -776,6 +779,17 @@ class YouTubeMonitor:
                     if old_start != new_start or old_end != new_end:
                         should_reset_offset = True
                         logger.info(f"检测到历史搬运模式时间范围变化，将重置偏移量：{old_start}-{old_end} → {new_start}-{new_end}")
+
+                    # 过滤条件变化会改变过滤后的结果集，偏移量同样需要重置（Issue #158 review）
+                    changed_filter_keys = []
+                    for filter_key in ('title_keywords', 'title_match_mode', 'exclude_keywords'):
+                        old_value = old_config.get(filter_key)
+                        new_value = config_data.get(filter_key, old_value)
+                        if str(old_value or '') != str(new_value or ''):
+                            changed_filter_keys.append(filter_key)
+                    if changed_filter_keys:
+                        should_reset_offset = True
+                        logger.info(f"检测到历史搬运过滤条件变化，将重置偏移量: {', '.join(changed_filter_keys)}")
                 
                 # 如果需要重置偏移量，将其设为0
                 if should_reset_offset:
@@ -784,6 +798,9 @@ class YouTubeMonitor:
                 update_field_defaults = {
                     'historical_offset': old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0,
                     'video_types': old_config.get('video_types', 'video,short,live') if old_config else 'video,short,live',
+                    # 调用方漏传标题过滤字段时沿用旧值，避免静默清空过滤条件（Issue #158 review）
+                    'title_keywords': (old_config or {}).get('title_keywords') or '',
+                    'title_match_mode': (old_config or {}).get('title_match_mode') or 'any',
                 }
                 self._update_monitor_config_record(cursor, config_id, config_data, update_field_defaults)
                 
@@ -1685,11 +1702,24 @@ class YouTubeMonitor:
 
         逗号、空格、分号、顿号、换行都视为分隔符（中英文标点均支持），
         这样「asmr, 助眠」「asmr 助眠」都能被正确拆成多个关键词。
+        需要匹配含空格的短语时用引号包住，如 "deep sleep"，
+        引号内的内容整体作为单个关键词（Issue #158 review）。
         """
         text = str(raw_keywords or '').strip()
         if not text:
             return []
-        return [kw.lower() for kw in re.split(r'[\s,;，；、\n]+', text) if kw]
+
+        keywords: List[str] = []
+
+        def _take_quoted(match) -> str:
+            phrase = (match.group(1) if match.group(1) is not None else match.group(2)).strip().lower()
+            if phrase:
+                keywords.append(phrase)
+            return ' '
+
+        remainder = _TITLE_KEYWORD_QUOTED_RE.sub(_take_quoted, text)
+        keywords.extend(kw.lower() for kw in re.split(r'[\s,;，；、\n]+', remainder) if kw)
+        return keywords
 
     def _title_matches(self, title: str, config: Dict[str, Any]) -> bool:
         """检查标题是否命中「标题包含关键词」过滤。

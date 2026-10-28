@@ -556,6 +556,15 @@ def _safe_join_task_dir(task_dir_real: str, *parts: str) -> str | None:
         return None
 
 
+TITLE_MATCH_MODES = ('any', 'all')
+
+
+def _normalize_title_match_mode(value) -> str:
+    """规范化标题关键词匹配方式，非法值回退 any（Issue #158）。"""
+    mode = str(value or '').strip().lower()
+    return mode if mode in TITLE_MATCH_MODES else 'any'
+
+
 def _get_cover_file_info(path: str):
     ext = os.path.splitext(str(path or ''))[1].lower()
     return ext, ALLOWED_COVER_EXTENSIONS.get(ext)
@@ -3915,7 +3924,7 @@ def youtube_monitor_config():
                 'keywords': request.form.get('keywords', ''),
                 'exclude_keywords': request.form.get('exclude_keywords', ''),
                 'title_keywords': (request.form.get('title_keywords') or '').strip(),
-                'title_match_mode': request.form.get('title_match_mode') if request.form.get('title_match_mode') in ('any', 'all') else 'any',
+                'title_match_mode': _normalize_title_match_mode(request.form.get('title_match_mode')),
                 'channel_ids': request.form.get('channel_ids', ''),
                 'channel_keywords': request.form.get('channel_keywords', ''),
                 'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),
@@ -3987,7 +3996,7 @@ def youtube_monitor_config_edit(config_id):
                 'keywords': request.form.get('keywords', ''),
                 'exclude_keywords': request.form.get('exclude_keywords', ''),
                 'title_keywords': (request.form.get('title_keywords') or '').strip(),
-                'title_match_mode': request.form.get('title_match_mode') if request.form.get('title_match_mode') in ('any', 'all') else 'any',
+                'title_match_mode': _normalize_title_match_mode(request.form.get('title_match_mode')),
                 'channel_ids': request.form.get('channel_ids', ''),
                 'channel_keywords': request.form.get('channel_keywords', ''),
                 'exclude_channel_ids': request.form.get('exclude_channel_ids', ''),

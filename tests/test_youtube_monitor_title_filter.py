@@ -79,6 +79,17 @@ class TitleKeywordMatchingTests(unittest.TestCase):
         config = {'title_keywords': 'asmr 助眠', 'title_match_mode': 'unexpected'}
         self.assertTrue(self.monitor._title_matches('助眠回放', config))
 
+    def test_quoted_phrase_stays_one_keyword(self):
+        self.assertEqual(
+            self.monitor._split_title_keywords('"deep sleep" asmr'),
+            ['deep sleep', 'asmr'],
+        )
+        self.assertEqual(self.monitor._split_title_keywords('“助眠 轻音乐”'), ['助眠 轻音乐'])
+
+        config = {'title_keywords': '"deep sleep"', 'title_match_mode': 'any'}
+        self.assertTrue(self.monitor._title_matches('Deep Sleep Music', config))
+        self.assertFalse(self.monitor._title_matches('Sleep Walking', config))
+
     def test_meets_criteria_applies_title_filter(self):
         config = dict(BASE_CONFIG, title_keywords='asmr, 助眠')
 
@@ -162,6 +173,73 @@ class TitleKeywordsPersistenceTests(unittest.TestCase):
 
         self.assertIn("title_keywords", columns)
         self.assertIn("title_match_mode", columns)
+
+    def test_legacy_database_is_migrated_with_alter_table(self):
+        # 模拟升级前的老库：删掉两列后再实例化，验证 ALTER TABLE 迁移分支
+        with sqlite3.connect(self.monitor.db_path) as conn:
+            conn.execute("ALTER TABLE monitor_configs DROP COLUMN title_keywords")
+            conn.execute("ALTER TABLE monitor_configs DROP COLUMN title_match_mode")
+
+        migrated = YouTubeMonitor()
+        try:
+            with sqlite3.connect(migrated.db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(monitor_configs)")}
+        finally:
+            scheduler = getattr(migrated, "scheduler", None)
+            if scheduler and getattr(scheduler, "running", False):
+                scheduler.shutdown(wait=False)
+
+        self.assertIn("title_keywords", columns)
+        self.assertIn("title_match_mode", columns)
+
+    def test_update_without_title_fields_keeps_existing_filter(self):
+        config_id = self.monitor.create_monitor_config({
+            "name": "keep-filter",
+            "title_keywords": "asmr",
+            "title_match_mode": "all",
+        })
+
+        # 更新调用方漏传标题字段时不应静默清空过滤条件
+        self.monitor.update_monitor_config(config_id, {"name": "keep-filter"})
+
+        config = self.monitor.get_monitor_config(config_id)
+        self.assertEqual(config["title_keywords"], "asmr")
+        self.assertEqual(config["title_match_mode"], "all")
+
+    def test_changing_title_filter_resets_historical_offset(self):
+        config_id = self.monitor.create_monitor_config({
+            "name": "historical-filter",
+            "channel_mode": "historical",
+            "title_keywords": "",
+            "historical_offset": 42,
+        })
+        self.assertEqual(self.monitor.get_monitor_config(config_id)["historical_offset"], 42)
+
+        self.monitor.update_monitor_config(config_id, {
+            "name": "historical-filter",
+            "channel_mode": "historical",
+            "title_keywords": "asmr",
+            "historical_offset": 42,
+        })
+
+        self.assertEqual(self.monitor.get_monitor_config(config_id)["historical_offset"], 0)
+
+    def test_unchanged_title_filter_keeps_historical_offset(self):
+        config_id = self.monitor.create_monitor_config({
+            "name": "historical-keep",
+            "channel_mode": "historical",
+            "title_keywords": "asmr",
+            "historical_offset": 42,
+        })
+
+        self.monitor.update_monitor_config(config_id, {
+            "name": "historical-keep",
+            "channel_mode": "historical",
+            "title_keywords": "asmr",
+            "historical_offset": 42,
+        })
+
+        self.assertEqual(self.monitor.get_monitor_config(config_id)["historical_offset"], 42)
 
 
 if __name__ == '__main__':
