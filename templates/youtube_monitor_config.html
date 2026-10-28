@@ -169,6 +169,23 @@
                     </div>
                     
                     <div class="mb-3">
+                        <label for="title_keywords" class="form-label">标题包含关键词</label>
+                        <div class="row g-2">
+                            <div class="col-md-8">
+                                <input type="text" class="form-control" id="title_keywords" name="title_keywords" 
+                                       value="{{ config.title_keywords if config else '' }}" placeholder="例如：asmr, 助眠">
+                            </div>
+                            <div class="col-md-4">
+                                <select class="form-select" id="title_match_mode" name="title_match_mode" aria-label="标题关键词匹配方式">
+                                    <option value="any" {% if not config or config.title_match_mode != 'all' %}selected{% endif %}>任一关键词（OR）</option>
+                                    <option value="all" {% if config and config.title_match_mode == 'all' %}selected{% endif %}>全部关键词（AND）</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-text">只监控标题包含这些关键词的视频，所有监控模式通用（多个关键词用逗号或空格分隔，含空格的短语请用引号包住，如 "deep sleep"；留空表示不限制）</div>
+                    </div>
+                    
+                    <div class="mb-3">
                         <label for="exclude_channel_ids" class="form-label">排除频道ID</label>
                         <textarea class="form-control" id="exclude_channel_ids" name="exclude_channel_ids" rows="2" 
                                   placeholder="多个频道ID用逗号分隔">{{ config.exclude_channel_ids if config else '' }}</textarea>
