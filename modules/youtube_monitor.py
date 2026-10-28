@@ -98,6 +98,8 @@ MONITOR_CONFIG_FIELD_DEFAULTS: Dict[str, Any] = {
     'min_comment_count': 0,
     'keywords': '',
     'exclude_keywords': '',
+    'title_keywords': '',
+    'title_match_mode': 'any',
     'channel_ids': '',
     'channel_keywords': '',
     'exclude_channel_ids': '',
@@ -163,6 +165,8 @@ class YouTubeMonitor:
                     min_comment_count INTEGER DEFAULT 0,
                     keywords TEXT DEFAULT '',
                     exclude_keywords TEXT DEFAULT '',
+                    title_keywords TEXT DEFAULT '',
+                    title_match_mode TEXT DEFAULT 'any',
                     channel_ids TEXT DEFAULT '',
                     exclude_channel_ids TEXT DEFAULT '',
                     min_duration INTEGER DEFAULT 0,
@@ -239,6 +243,17 @@ class YouTubeMonitor:
             # 添加可监控内容类型字段（逗号分隔: video,short,live）
             try:
                 cursor.execute("ALTER TABLE monitor_configs ADD COLUMN video_types TEXT DEFAULT 'video,short,live'")
+            except sqlite3.OperationalError:
+                pass
+
+            # 添加标题包含关键词过滤（Issue #158）：只搬运标题命中关键词的视频
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN title_keywords TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN title_match_mode TEXT DEFAULT 'any'")
             except sqlite3.OperationalError:
                 pass
             
@@ -1664,6 +1679,34 @@ class YouTubeMonitor:
                 return (h / w) >= 1.2
         return False
     
+    @staticmethod
+    def _split_title_keywords(raw_keywords: Any) -> List[str]:
+        """把用户输入的标题关键词拆成小写列表。
+
+        逗号、空格、分号、顿号、换行都视为分隔符（中英文标点均支持），
+        这样「asmr, 助眠」「asmr 助眠」都能被正确拆成多个关键词。
+        """
+        text = str(raw_keywords or '').strip()
+        if not text:
+            return []
+        return [kw.lower() for kw in re.split(r'[\s,;，；、\n]+', text) if kw]
+
+    def _title_matches(self, title: str, config: Dict[str, Any]) -> bool:
+        """检查标题是否命中「标题包含关键词」过滤。
+
+        - title_keywords 为空：不过滤，直接通过；
+        - title_match_mode == 'all'：标题需同时包含全部关键词；
+        - 其余情况（默认 'any'）：标题包含任一关键词即通过。
+        """
+        keywords = self._split_title_keywords(config.get('title_keywords'))
+        if not keywords:
+            return True
+
+        title_lower = str(title or '').lower()
+        if str(config.get('title_match_mode') or 'any').lower() == 'all':
+            return all(keyword in title_lower for keyword in keywords)
+        return any(keyword in title_lower for keyword in keywords)
+
     def _meets_criteria(self, video_info, config):
         """检查视频是否符合筛选条件"""
         # 检查开始日期
@@ -1703,6 +1746,10 @@ class YouTubeMonitor:
             for word in exclude_words:
                 if word and word in title_lower:
                     return False
+
+        # 检查标题包含关键词（仅本地标题匹配，不额外消耗 API 配额）
+        if not self._title_matches(video_info['title'], config):
+            return False
         
         # 检查频道ID过滤
         if config['exclude_channel_ids']:

@@ -508,6 +508,7 @@ group_add:
 
 - 需要先配置 `YOUTUBE_API_KEY`
 - 支持关键词搜索、指定频道、历史搬运和持续跟进最新模式
+- 支持标题包含关键词过滤（任一 / 全部匹配），可只搬运标题命中特定内容的视频（如某个频道的 ASMR）
 - 支持视频类型筛选：video / short / live
 - 可设置自动添加到任务队列，并保留监控历史记录
 - 配置文件会保存到 `config/youtube_monitor/`，历史数据库位于 `db/youtube_monitor.db`

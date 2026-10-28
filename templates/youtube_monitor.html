@@ -98,6 +98,11 @@
                                 {% if 'short' in types %}<span class="badge bg-info text-dark">短</span>{% endif %}
                                 {% if 'live' in types %}<span class="badge bg-danger">直播</span>{% endif %}
                             {% endif %}
+                            {% if config.title_keywords %}
+                                <br>
+                                <i class="bi bi-funnel" title="标题包含关键词"></i>
+                                标题含: <span title="{{ config.title_keywords }}">{{ config.title_keywords[:20] }}{% if config.title_keywords|length > 20 %}...{% endif %}</span>
+                            {% endif %}
                         </td>
                         <td class="text-center" data-label="调度类型">
                             {% if config.schedule_type == 'auto' %}
