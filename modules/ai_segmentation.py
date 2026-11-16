@@ -16,6 +16,7 @@
 
 import json
 import logging
+import math
 import re
 import string
 import time
@@ -27,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .ai_enhancer import _request_json_object, _request_raw_text, get_openai_client
 from .prompt_manager import get_smart_segment_system_prompt, get_boundary_refine_system_prompt
 from .speech_pipeline_settings import coerce_bool
+from .utils import normalize_reasoning_effort
 from .subtitle_pipeline_types import (
     AlignedSubtitleCue,
     AsrSegmentTiming,
@@ -43,9 +45,11 @@ _CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
 _SOFT_BREAK_PUNCTUATION = frozenset('.!?。！？；;')
 # 中文虚词/连接词/助词——用于无标点时的兜底切分点（在其前面切分）
 _CJK_FUNCTION_WORDS = frozenset(
-    '的了在是和与而但也还就都把被从到会能要想过着'  # 助词/连词/介词/能愿动词/动态助词
-    '而且但是因为所以如果虽然不过然后或者而且因此'  # 双字连接词（优先在前面切）
+    '的了在是和与而但也还就都把被从到会能要想过着'
 )
+_CJK_COMPOUND_FUNCTION_WORDS = frozenset({
+    '而且', '但是', '因为', '所以', '如果', '虽然', '不过', '然后', '或者', '因此',
+})
 # 句末标点——用于判断一条 cue 是否在句子边界结束
 _SENTENCE_END_PUNCTS = set('.!?。！？')
 _CLAUSE_END_PUNCTS = set(';:；：，、')
@@ -112,6 +116,38 @@ class AISegmentationError(Exception):
     """AI 智能分段不可恢复错误（调用方应回退到规则分段）。"""
 
 
+def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        if isinstance(value, bool):
+            return default
+        number = float(value)
+        if not math.isfinite(number):
+            return default
+        return min(maximum, max(minimum, number))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        number = float(value)
+        if not math.isfinite(number):
+            return default
+        return min(maximum, max(minimum, int(number)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 @dataclass
 class AISegmentationConfig:
     """从应用配置字典解析的 AI 分段参数。"""
@@ -142,26 +178,36 @@ class AISegmentationConfig:
     resolved_base_url: str = ''
     resolved_api_key: str = ''
     resolved_model_name: str = ''
+    # New optional field at the end preserves positional construction compatibility.
+    reasoning_effort: str = 'auto'
 
     @classmethod
     def from_app_config(cls, app_config: Dict[str, Any]) -> 'AISegmentationConfig':
+        min_duration = _bounded_float(app_config.get('AI_SEGMENTATION_MIN_CUE_DURATION_S', 0.8), 0.8, 0.05, 60.0)
+        max_duration = _bounded_float(app_config.get('AI_SEGMENTATION_MAX_CUE_DURATION_S', 5.0), 5.0, 0.1, 60.0)
+        if max_duration < min_duration:
+            max_duration = min_duration
+        reasoning_effort = normalize_reasoning_effort(
+            app_config.get('AI_SEGMENTATION_REASONING_EFFORT', 'auto'),
+        )
         cfg = cls(
             enabled=coerce_bool(app_config.get('AI_SEGMENTATION_ENABLED', False)),
             base_url=str(app_config.get('AI_SEGMENTATION_BASE_URL', '') or '').strip(),
             api_key=str(app_config.get('AI_SEGMENTATION_API_KEY', '') or '').strip(),
             model_name=str(app_config.get('AI_SEGMENTATION_MODEL_NAME', '') or '').strip(),
             thinking_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_THINKING_ENABLED', False)),
-            min_cue_duration_s=float(app_config.get('AI_SEGMENTATION_MIN_CUE_DURATION_S', 0.8) or 0.8),
-            max_cue_duration_s=float(app_config.get('AI_SEGMENTATION_MAX_CUE_DURATION_S', 5.0) or 5.0),
-            max_cps=float(app_config.get('AI_SEGMENTATION_MAX_CPS', 18.0) or 18.0),
-            batch_window_s=float(app_config.get('AI_SEGMENTATION_BATCH_WINDOW_S', 120.0) or 120.0),
-            max_chars_per_batch=int(app_config.get('AI_SEGMENTATION_MAX_CHARS_PER_BATCH', 4000) or 4000),
-            temperature=float(app_config.get('AI_SEGMENTATION_TEMPERATURE', 0.1) or 0.1),
-            max_retries=int(app_config.get('AI_SEGMENTATION_MAX_RETRIES', 2) or 2),
-            request_timeout_s=float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600),
-            context_window=int(app_config.get('AI_SEGMENTATION_CONTEXT_WINDOW', 3) or 3),
+            min_cue_duration_s=min_duration,
+            max_cue_duration_s=max_duration,
+            max_cps=_bounded_float(app_config.get('AI_SEGMENTATION_MAX_CPS', 18.0), 18.0, 0.1, 120.0),
+            batch_window_s=_bounded_float(app_config.get('AI_SEGMENTATION_BATCH_WINDOW_S', 120.0), 120.0, 1.0, 3600.0),
+            max_chars_per_batch=_bounded_int(app_config.get('AI_SEGMENTATION_MAX_CHARS_PER_BATCH', 4000), 4000, 1, 20000),
+            temperature=_bounded_float(app_config.get('AI_SEGMENTATION_TEMPERATURE', 0.1), 0.1, 0.0, 2.0),
+            max_retries=_bounded_int(app_config.get('AI_SEGMENTATION_MAX_RETRIES', 2), 2, 0, 5),
+            request_timeout_s=_bounded_float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600), 600.0, 1.0, 3600.0),
+            reasoning_effort=reasoning_effort,
+            context_window=_bounded_int(app_config.get('AI_SEGMENTATION_CONTEXT_WINDOW', 3), 3, 0, 50),
             boundary_refine_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED', False)),
-            boundary_window=int(app_config.get('AI_SEGMENTATION_BOUNDARY_WINDOW', 3) or 3),
+            boundary_window=_bounded_int(app_config.get('AI_SEGMENTATION_BOUNDARY_WINDOW', 3), 3, 0, 50),
             rhythm_enabled=coerce_bool(app_config.get('AI_SEGMENTATION_RHYTHM_ENABLED', False)),
         )
         # 留空继承全局 OPENAI_*
@@ -223,6 +269,25 @@ def _compute_word_char_offsets(segment_text: str, words: List[AsrWordTiming]) ->
             pos = idx + len(wtext)
 
 
+def _has_complete_word_timestamps(result: AsrTranscriptionResult) -> bool:
+    """Return true only when every non-empty segment has a complete finite word list."""
+    if not result.segments:
+        return False
+    for seg in result.segments:
+        if not str(seg.text or '').strip() or not seg.words:
+            return False
+        seg_start = _finite_float(seg.start_s)
+        seg_end = _finite_float(seg.end_s)
+        if seg_start is None or seg_end is None or seg_end <= seg_start:
+            return False
+        for word in seg.words:
+            start = _finite_float(word.start_s)
+            end = _finite_float(word.end_s)
+            if not str(word.text or '').strip() or start is None or end is None or end <= start:
+                return False
+    return True
+
+
 def _flatten_words(
     results: List[AsrTranscriptionResult],
     apply_window_offset: bool = True,
@@ -238,15 +303,27 @@ def _flatten_words(
     """
     words: List[AsrWordTiming] = []
     for result in results:
-        offset = float(result.window.start_s) if (apply_window_offset and result.window) else 0.0
+        absolute_timestamps = bool(getattr(result, 'metadata', {}).get('timestamps_absolute', False))
+        offset = (
+            0.0 if absolute_timestamps or not apply_window_offset or not result.window
+            else _finite_float(result.window.start_s)
+        )
+        if offset is None:
+            continue
         for seg in result.segments:
+            seg_start = _finite_float(seg.start_s)
+            seg_end = _finite_float(seg.end_s)
+            if not str(seg.text or '').strip() or seg_start is None or seg_end is None or seg_end <= seg_start:
+                continue
             seg_text = str(seg.text or '')
             seg_words: List[AsrWordTiming] = []
             for w in seg.words:
-                if str(w.text or '').strip() and w.end_s > w.start_s:
+                start = _finite_float(w.start_s)
+                end = _finite_float(w.end_s)
+                if str(w.text or '').strip() and start is not None and end is not None and end > start:
                     new_w = AsrWordTiming(
-                        start_s=w.start_s + offset,
-                        end_s=w.end_s + offset,
+                        start_s=start + offset,
+                        end_s=end + offset,
                         text=w.text,
                         source_text=seg_text,
                     )
@@ -266,22 +343,32 @@ def _flatten_segments(
 ) -> Tuple[List[AsrSegmentTiming], float, float]:
     segs: List[AsrSegmentTiming] = []
     for result in results:
-        offset = float(result.window.start_s) if (apply_window_offset and result.window) else 0.0
+        absolute_timestamps = bool(getattr(result, 'metadata', {}).get('timestamps_absolute', False))
+        offset = (
+            0.0 if absolute_timestamps or not apply_window_offset or not result.window
+            else _finite_float(result.window.start_s)
+        )
+        if offset is None:
+            continue
         for seg in result.segments:
-            if str(seg.text or '').strip() and seg.end_s > seg.start_s:
+            seg_start = _finite_float(seg.start_s)
+            seg_end = _finite_float(seg.end_s)
+            if str(seg.text or '').strip() and seg_start is not None and seg_end is not None and seg_end > seg_start:
                 seg_text = str(seg.text or '')
                 # 同步偏移 segment 及其 words，并计算字符偏移
-                offset_words = [
-                    AsrWordTiming(
-                        start_s=w.start_s + offset, end_s=w.end_s + offset, text=w.text,
-                        source_text=seg_text,
-                    )
-                    for w in seg.words
-                ]
+                offset_words = []
+                for w in seg.words:
+                    start = _finite_float(w.start_s)
+                    end = _finite_float(w.end_s)
+                    if start is not None and end is not None and end > start:
+                        offset_words.append(AsrWordTiming(
+                            start_s=start + offset, end_s=end + offset, text=w.text,
+                            source_text=seg_text,
+                        ))
                 _compute_word_char_offsets(seg_text, offset_words)
                 segs.append(AsrSegmentTiming(
-                    start_s=seg.start_s + offset,
-                    end_s=seg.end_s + offset,
+                    start_s=seg_start + offset,
+                    end_s=seg_end + offset,
                     text=seg.text,
                     words=offset_words,
                 ))
@@ -356,10 +443,12 @@ def build_batches(
     单个 result 超过字符上限时，按词切分为多个子批次。
     """
     batches: List[_Batch] = []
-    # 按 window 起始时间排序，保证批次时间单调
+    batch_window_s = _bounded_float(batch_window_s, 120.0, 1.0, 3600.0)
+    max_chars = _bounded_int(max_chars, 4000, 1, 20000)
+    # 按 window 起始时间排序，保证批次时间单调；无效窗口交给扁平化过滤
     ordered = sorted(
         [r for r in results if r.segments],
-        key=lambda r: (r.window.start_s if r.window else 0.0),
+        key=lambda r: (_finite_float(r.window.start_s) if r.window else 0.0) or 0.0,
     )
 
     current: Optional[_Batch] = None
@@ -371,15 +460,25 @@ def build_batches(
         current = None
 
     for result in ordered:
-        win_start = result.window.start_s if result.window else 0.0
-        win_end = result.window.end_s if result.window else 0.0
         words, _, _ = _flatten_words([result])
         segs, _, _ = _flatten_segments([result])
-        has_word = bool(words)
+        if not words and not segs:
+            continue
+        if result.window:
+            win_start = _finite_float(result.window.start_s)
+            win_end = _finite_float(result.window.end_s)
+        else:
+            win_start = segs[0].start_s if segs else words[0].start_s
+            win_end = segs[-1].end_s if segs else words[-1].end_s
+        if win_start is None or win_end is None or win_end < win_start:
+            continue
+        # 只要一个输入段的 word 表不完整，就整条结果走段级，不能静默丢词
+        has_word = bool(words) and _has_complete_word_timestamps(result)
 
         # 字符超限：单独按词切分子批次，不与邻窗合并
-        result_chars = sum(len(str(w.text or '')) for w in words) if words else sum(
-            len(str(s.text or '')) for s in segs
+        result_chars = (
+            sum(len(str(w.text or '')) for w in words)
+            if has_word else sum(len(str(s.text or '')) for s in segs)
         )
         if result_chars > max_chars:
             _flush(current)
@@ -583,7 +682,7 @@ def _coerce_index(value: Any) -> Optional[int]:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value.is_integer() and value >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     if isinstance(value, str):
         token = value.strip()
         if not token:
@@ -592,7 +691,7 @@ def _coerce_index(value: Any) -> Optional[int]:
             number = float(token)
         except Exception:
             return None
-        return int(number) if number.is_integer() and number >= 0 else None
+        return int(number) if math.isfinite(number) and number.is_integer() and number >= 0 else None
     return None
 
 
@@ -624,7 +723,9 @@ def _parse_index_ranges(
     for item in parsed:
         start: Optional[int] = None
         end: Optional[int] = None
-        if isinstance(item, list) and len(item) >= 2:
+        if isinstance(item, list):
+            if len(item) != 2:
+                raise AISegmentationError('智能分段结果索引必须为严格二元组')
             start = _coerce_index(item[0])
             end = _coerce_index(item[1])
         elif isinstance(item, dict):
@@ -634,7 +735,7 @@ def _parse_index_ranges(
             end = _coerce_index(
                 item.get('end_index', item.get('end', item.get('to', item.get('stop'))))
             )
-            if (start is None or end is None) and isinstance(item.get('indices'), list) and len(item['indices']) >= 2:
+            if (start is None or end is None) and isinstance(item.get('indices'), list) and len(item['indices']) == 2:
                 start = _coerce_index(item['indices'][0])
                 end = _coerce_index(item['indices'][1])
         if start is None or end is None:
@@ -1202,6 +1303,14 @@ def _parse_cues_response(
     raw_cues = parsed.get('cues')
     if not isinstance(raw_cues, list) or not raw_cues:
         return []
+    # Reject oversized arrays atomically; truncation could silently discard source text.
+    max_allowed = max(8, max(0, int(input_count)) * 2 + 4)
+    if len(raw_cues) > max_allowed:
+        logging.getLogger(__name__).warning(
+            '段级 AI 输出 cue 数量超限 (%d > %d)，整批拒绝并降级',
+            len(raw_cues), max_allowed,
+        )
+        return []
 
     tol = 0.5
     lo = batch_start_s - tol
@@ -1214,10 +1323,9 @@ def _parse_cues_response(
         raw_end = item.get('end_s', item.get('end', item.get('end_time')))
         if raw_start is None or raw_end is None:
             continue
-        try:
-            start_s = float(raw_start)
-            end_s = float(raw_end)
-        except (TypeError, ValueError):
+        start_s = _finite_float(raw_start)
+        end_s = _finite_float(raw_end)
+        if start_s is None or end_s is None:
             continue
         text = str(item.get('text', '') or '').strip()
         if not text:
@@ -1632,27 +1740,35 @@ def _find_best_fallback_split(text: str) -> int:
     search_start = max(0, mid_pos - 20)
     search_end = min(len(text), mid_pos + 20)
 
-    # 优先在中文虚词前切分
-    for pos in range(search_start, min(search_end, len(text))):
-        ch = text[pos]
-        # 双字虚词：在第二个字的位置切（即虚词整体归入右侧）
-        if pos + 1 < len(text) and text[pos:pos + 2] in _CJK_FUNCTION_WORDS:
-            if pos > 0:
-                return pos
-        # 单字虚词：在虚词前切分
-        if ch in _CJK_FUNCTION_WORDS and pos > 0:
-            return pos
+    # Prefer the candidate nearest the midpoint so long cues do not split at the
+    # first weak boundary in the search window.
+    positions = [
+        pos for pos in range(search_start, min(search_end, len(text)))
+        if pos > 0 and pos + 1 < len(text)
+        and text[pos:pos + 2] in _CJK_COMPOUND_FUNCTION_WORDS
+    ]
+    if positions:
+        return min(positions, key=lambda pos: abs(pos - mid_pos))
+
+    positions = [
+        pos for pos in range(search_start, min(search_end, len(text)))
+        if pos > 0 and text[pos] in _CJK_FUNCTION_WORDS
+    ]
+    if positions:
+        return min(positions, key=lambda pos: abs(pos - mid_pos))
 
     # 其次在空格处切分
-    for pos in range(search_start, search_end):
-        if text[pos].isspace():
-            return pos + 1
+    positions = [pos + 1 for pos in range(search_start, search_end) if text[pos].isspace()]
+    if positions:
+        return min(positions, key=lambda pos: abs(pos - mid_pos))
 
     # 再次在 CJK 字符边界处切分
-    for pos in range(search_start, search_end):
-        ch = text[pos]
-        if _CJK_CHAR_RE.match(ch) and pos > 0 and _CJK_CHAR_RE.match(text[pos - 1]):
-            return pos
+    positions = [
+        pos for pos in range(search_start, search_end)
+        if pos > 0 and _CJK_CHAR_RE.match(text[pos]) and _CJK_CHAR_RE.match(text[pos - 1])
+    ]
+    if positions:
+        return min(positions, key=lambda pos: abs(pos - mid_pos))
 
     # 最后兜底中点
     return mid_pos
@@ -1678,6 +1794,17 @@ def enforce_rhythm(
                     alignment_confidence=c.alignment_confidence,
                 )
             else:
+                # Preserve text from a fully overlapped cue instead of silently dropping it.
+                previous = deduped[-1]
+                previous_text = str(previous.text or '').strip()
+                current_text = str(c.text or '').strip()
+                if current_text and current_text != previous_text:
+                    joined = f"{previous_text} {current_text}".strip() if previous_text else current_text
+                    deduped[-1] = AlignedSubtitleCue(
+                        start_s=previous.start_s, end_s=max(previous.end_s, c.end_s), text=joined,
+                        provider=previous.provider, timing_source=previous.timing_source,
+                        alignment_confidence=previous.alignment_confidence,
+                    )
                 continue
         deduped.append(c)
 
@@ -1738,7 +1865,7 @@ def _repair_broken_sentences(
             if last_char in _CJK_FUNCTION_WORDS:
                 should_merge = True
             # 双字虚词结尾（检查最后两个字符）
-            elif len(text) >= 2 and text[-2:] in _CJK_FUNCTION_WORDS:
+            elif len(text) >= 2 and text[-2:] in _CJK_COMPOUND_FUNCTION_WORDS:
                 should_merge = True
             # 英文虚词结尾
             elif last_char.isalpha():
@@ -1838,8 +1965,12 @@ def _normalize_output_cues(
         if not text:
             discarded.append(('empty_text', cue))
             continue
-        start_s = float(cue.start_s)
-        end_s = float(cue.end_s)
+        start_s = _finite_float(getattr(cue, 'start_s', None))
+        end_s = _finite_float(getattr(cue, 'end_s', None))
+        if start_s is None or end_s is None:
+            discarded.append(('non_finite_timestamp', cue))
+            absorbed_texts.append((0.0, text))
+            continue
         if end_s <= start_s:
             discarded.append((f'non_positive_duration:{start_s:.3f}-{end_s:.3f}', cue))
             absorbed_texts.append((start_s, text))
@@ -1849,8 +1980,9 @@ def _normalize_output_cues(
     cleaned.sort(key=lambda c: float(c.start_s))
 
     limit: Optional[float] = None
-    if total_duration_s is not None and float(total_duration_s) > 0:
-        limit = float(total_duration_s)
+    total_limit = _finite_float(total_duration_s) if total_duration_s is not None else None
+    if total_limit is not None and total_limit > 0:
+        limit = total_limit
 
     normalized: List[AlignedSubtitleCue] = []
     previous_end: Optional[float] = None
@@ -2076,6 +2208,11 @@ class AISegmenter:
         label = f'批次 {idx + 1}/{total}'
         has_ctx = bool(context_cues)
         stats = self.last_degradation_stats
+        max_chars = _bounded_int(self.config.max_chars_per_batch, 4000, 1, 20000)
+        if batch.char_count > max_chars:
+            stats['baseline'] += 1
+            self.logger.warning('%s 输入超出字符预算 (%d > %d)，回退基线以避免超大请求', label, batch.char_count, max_chars)
+            return _baseline_align_batch(batch, provider)
 
         # 第一级：字级 AI（带上下文）
         if batch.has_word_timestamps and batch.words:
@@ -2295,6 +2432,7 @@ class AISegmenter:
             # 会被替换成默认 gpt-3.5-turbo，在仅支持其它模型的端点上直接失败。
             'OPENAI_MODEL_NAME': self.config.resolved_model_name,
             'OPENAI_TIMEOUT_SECONDS': self.config.request_timeout_s,
+            'OPENAI_REASONING_EFFORT': self.config.reasoning_effort,
         }
         return get_openai_client(client_config)
 
@@ -2471,6 +2609,7 @@ def srt_to_asr_results(
             text=text,
             segments=[seg],
             window=window,
+            metadata={'timestamps_absolute': True},
         )
         results.append(result)
 

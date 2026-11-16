@@ -9,7 +9,7 @@ import threading
 import functools
 from contextlib import contextmanager
 from copy import deepcopy
-from .utils import get_app_subdir
+from .utils import get_app_subdir, normalize_reasoning_effort
 from .speech_pipeline_settings import (
     inject_speech_pipeline_defaults,
     migrate_legacy_speech_pipeline_config,
@@ -96,6 +96,13 @@ def _config_locked(func):
     wrapped.__name__ = func.__name__
     wrapped.__doc__ = func.__doc__
     return wrapped
+
+AI_REASONING_EFFORT_KEYS = (
+    'OPENAI_REASONING_EFFORT',
+    'SUBTITLE_OPENAI_REASONING_EFFORT',
+    'SUBTITLE_QC_REASONING_EFFORT',
+    'AI_SEGMENTATION_REASONING_EFFORT',
+)
 
 _YOUTUBE_DOWNLOAD_QUALITY_MODES = ('highest', 'manual')
 _YOUTUBE_DOWNLOAD_MAX_HEIGHT_VALUES = ('2160', '1440', '1080', '720', '480', '360')
@@ -200,6 +207,7 @@ DEFAULT_CONFIG = {
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",
     "OPENAI_THINKING_ENABLED": False,
+    "OPENAI_REASONING_EFFORT": "auto",
     "OPENAI_TIMEOUT_SECONDS": 600,  # OpenAI API 请求超时秒数；思考模型输出可达64k token，建议不低于300
     # 兜底 AI 端点（可选）：当主端点 OPENAI_* 不可用（连接错误 / 超时 / 5xx）时自动切换。
     # 未配置 FALLBACK_OPENAI_API_KEY 时退化为单端点，行为与原来完全一致。
@@ -219,6 +227,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_OPENAI_API_KEY": "",
     "SUBTITLE_OPENAI_MODEL_NAME": "",
     "SUBTITLE_OPENAI_THINKING_ENABLED": False,
+    "SUBTITLE_OPENAI_REASONING_EFFORT": "auto",
     "YOUTUBE_API_KEY": "",
     "YOUTUBE_API_PROXY_ENABLED": False,  # 是否为 YouTube Data API 监控启用独立代理
     "YOUTUBE_API_PROXY_URL": "",  # 监控 API 代理地址，格式：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
@@ -277,6 +286,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_API_KEY": "",  # 留空则回退到 SUBTITLE_OPENAI_API_KEY / OPENAI_API_KEY
     "SUBTITLE_QC_MODEL_NAME": "",  # 留空则回退到 SUBTITLE_OPENAI_MODEL_NAME / OPENAI_MODEL_NAME
     "SUBTITLE_QC_THINKING_ENABLED": False,  # 字幕质检独立思考开关
+    "SUBTITLE_QC_REASONING_EFFORT": "auto",
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）
@@ -528,6 +538,13 @@ def load_config():
                 )
                 removed_unknown_keys = bool(removed_keys)
 
+                reasoning_effort_changed = False
+                for key in AI_REASONING_EFFORT_KEYS:
+                    normalized = normalize_reasoning_effort(config.get(key))
+                    if normalized != config.get(key):
+                        config[key] = normalized
+                        reasoning_effort_changed = True
+
                 # Prompt 中心模式值标准化
                 prompt_mode_changed = False
                 try:
@@ -558,6 +575,7 @@ def load_config():
                     or migrated_pinned_wrap
                     or removed_unknown_keys
                     or prompt_mode_changed
+                    or reasoning_effort_changed
                 ):
                     if migrated_legacy_speech:
                         logger.info("检测到旧版 ASR/VAD 默认值，已自动迁移到质量优先默认配置")
@@ -658,6 +676,8 @@ def update_config(new_config):
             elif key in ('password', 'COOKIECLOUD_PASSWORD'):
                 if str(new_config[key]).strip(): # Only update password if a new one is provided
                     current_config[key] = new_config[key]
+            elif key in AI_REASONING_EFFORT_KEYS:
+                current_config[key] = normalize_reasoning_effort(new_config[key])
             elif key == 'VIDEO_ENCODER':
                 # 支持硬件编码：auto/cpu/nvidia/intel/amd
                 encoder_value = str(new_config[key]).lower().strip()

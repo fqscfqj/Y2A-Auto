@@ -122,7 +122,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="row">
                         <div class="col-md-4">
                             <div class="mb-3">
@@ -153,26 +153,26 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="keywords" class="form-label">包含关键词 <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="keywords" name="keywords" 
                                value="{{ config.keywords if config else '' }}" placeholder="多个关键词用空格分隔">
                         <div class="form-text">视频标题或描述中必须包含的关键词（全YouTube检索时必填）</div>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="exclude_keywords" class="form-label">排除关键词</label>
                         <input type="text" class="form-control" id="exclude_keywords" name="exclude_keywords" 
                                value="{{ config.exclude_keywords if config else '' }}" placeholder="多个关键词用逗号分隔">
                         <div class="form-text">包含这些关键词的视频将被排除</div>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="title_keywords" class="form-label">标题包含关键词</label>
                         <div class="row g-2">
                             <div class="col-md-8">
-                                <input type="text" class="form-control" id="title_keywords" name="title_keywords" 
+                                <input type="text" class="form-control" id="title_keywords" name="title_keywords"
                                        value="{{ config.title_keywords if config else '' }}" placeholder="例如：asmr, 助眠">
                             </div>
                             <div class="col-md-4">
@@ -184,7 +184,7 @@
                         </div>
                         <div class="form-text">只监控标题包含这些关键词的视频，所有监控模式通用（多个关键词用逗号或空格分隔，含空格的短语请用引号包住，如 "deep sleep"；留空表示不限制）</div>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="exclude_channel_ids" class="form-label">排除频道ID</label>
                         <textarea class="form-control" id="exclude_channel_ids" name="exclude_channel_ids" rows="2" 
@@ -385,7 +385,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="row">
                         <div class="col-md-6">
                             <div class="mb-3">
@@ -445,7 +445,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="row">
                         <div class="col-12">
                             <div class="mb-3">
@@ -461,7 +461,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle"></i> 
                         <strong>说明：</strong>调度间隔既控制执行频率，也作为API请求限制的时间窗口。例如设置120分钟间隔、最大20个请求，表示每120分钟执行一次，且这120分钟内最多使用20个API请求。

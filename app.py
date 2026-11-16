@@ -22,8 +22,8 @@ from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
 from werkzeug.security import safe_join
 from modules.youtube_handler import extract_video_urls_from_playlist, normalize_youtube_url
-from modules.utils import get_app_subdir
-from modules.config_manager import load_config, update_config, reset_specific_config, DEFAULT_CONFIG
+from modules.utils import get_app_subdir, normalize_reasoning_effort
+from modules.config_manager import load_config, update_config, reset_specific_config, DEFAULT_CONFIG, AI_REASONING_EFFORT_KEYS
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.subtitle_style import normalize_hex_color
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path, request_task_cancel, _is_task_active, _TASK_SCHEDULING_LOCK
@@ -1077,6 +1077,16 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         for checkbox in SETTINGS_CHECKBOX_FIELDS:
             if checkbox not in form_data:
                 form_data[checkbox] = 'off'
+
+        for field in AI_REASONING_EFFORT_KEYS:
+            if field in form_data:
+                submitted_effort = form_data[field]
+                form_data[field] = normalize_reasoning_effort(submitted_effort)
+                if form_data[field] != str(submitted_effort).strip().lower():
+                    remember_revert(
+                        field, submitted_effort, form_data[field],
+                        allowed="auto / minimal / low / medium / high / xhigh",
+                    )
 
         numeric_fields = SETTINGS_INT_FIELDS
         for field in numeric_fields:
