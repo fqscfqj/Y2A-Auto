@@ -18,6 +18,7 @@
             <div class="text-center login-subtitle">请输入管理员密码以继续访问控制台</div>
 
             <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <div class="form-floating mb-3">
                     <input type="password" class="form-control" id="password" name="password" placeholder="密码" required>
                     <label for="password">密码</label>

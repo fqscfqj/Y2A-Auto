@@ -25,6 +25,20 @@ def run_internal_yt_dlp_cli(argv=None):
     result = yt_dlp_main(args[1:])
     return result if isinstance(result, int) else 0
 
+def initialize_application(app_module=None):
+    """Delegate to app.py's shared, idempotent startup sequence."""
+    if app_module is None:
+        import app as app_module
+    return app_module.initialize_application()
+
+
+def cleanup_application(runtime=None, app_module=None):
+    """Delegate to app.py's shared, idempotent shutdown sequence."""
+    if app_module is None:
+        import app as app_module
+    return app_module.shutdown_application(runtime)
+
+
 def setup_chinese_encoding():
     """设置中文编码支持"""
     if platform.system() == "Windows":
@@ -145,16 +159,13 @@ def check_ffmpeg():
 
 def start_application(app_path, is_frozen):
     """启动主应用"""
+    runtime = None
     try:
-        # 导入主应用模块
+        # Import and initialize the same services as app.py's source entry.
         import app
+        runtime = initialize_application(app)
 
         print("✓ 主应用模块加载成功")
-
-        # 配置Flask应用
-        app.app.config['DEBUG'] = False
-        app.app.config['TEMPLATES_AUTO_RELOAD'] = False
-
         print("启动Web服务...")
         print("=" * 50)
         print("🌐 Web界面地址: http://localhost:5000")
@@ -162,7 +173,6 @@ def start_application(app_path, is_frozen):
         print("📋 按 Ctrl+C 停止程序")
         print("=" * 50)
 
-        # 启动Flask应用
         app.app.run(
             host='0.0.0.0',
             port=5000,
@@ -176,10 +186,9 @@ def start_application(app_path, is_frozen):
     except Exception as e:
         print(f"❌ 启动失败: {e}")
 
-        # 调试信息
         print(f"\n调试信息:")
         print(f"当前工作目录: {os.getcwd()}")
-        print(f"Python路径: {sys.path[:3]}...")  # 只显示前3个路径
+        print(f"Python路径: {sys.path[:3]}...")
 
         if is_frozen:
             internal_dir = os.path.join(app_path, '_internal')
@@ -191,6 +200,8 @@ def start_application(app_path, is_frozen):
 
         input("\n按回车键退出...")
         sys.exit(1)
+    finally:
+        cleanup_application(runtime)
 
 def main():
     """主函数"""
