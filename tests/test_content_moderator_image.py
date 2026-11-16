@@ -35,7 +35,7 @@ class FakeGreenClient:
         self.request = None
 
     def describe_upload_token(self):
-        token = SimpleNamespace(oss_internet_endpoint="oss.example", bucket_name="moderation", access_key_id="id", access_key_secret="secret", security_token="sts", file_name_prefix="tmp/")
+        token = SimpleNamespace(oss_internet_end_point="oss.example", bucket_name="moderation", access_key_id="id", access_key_secret="secret", security_token="sts", file_name_prefix="tmp/")
         return SimpleNamespace(status_code=200, body=SimpleNamespace(code=200, data=token))
 
     def image_moderation_with_options(self, request, runtime):
@@ -76,6 +76,26 @@ class ImageModerationTests(unittest.TestCase):
         self.assertNotIn("imageUrl", json.loads(client.request.service_parameters))
         self.assertEqual(client.request.service, "baselineCheck")
         self.assertTrue(json.loads(client.request.service_parameters)["ossObjectName"].startswith("tmp/"))
+
+    @unittest.skipIf(sdk_models is None, "Alibaba SDK is not installed")
+    def test_real_sdk_upload_token_uses_internet_end_point(self):
+        client = FakeGreenClient()
+        token_body = sdk_models.DescribeUploadTokenResponseBody().from_map({
+            "Code": 200,
+            "Data": {
+                "AccessKeyId": "id", "AccessKeySecret": "secret",
+                "SecurityToken": "sts", "BucketName": "moderation",
+                "FileNamePrefix": "tmp/",
+                "OssInternetEndPoint": "https://oss.example",
+            },
+        })
+        client.describe_upload_token = lambda: sdk_models.DescribeUploadTokenResponse(
+            status_code=200, body=token_body)
+        with patch.object(moderator, "models", sdk_models):
+            result = self.make_moderator(client).moderate_image(self.temp.name)
+        self.assertTrue(result["pass"])
+        self.assertEqual(FakeOssBucket.uploads[0][0], "https://oss.example")
+        self.assertIsInstance(client.request, sdk_models.ImageModerationRequest)
 
     def test_custom_service_and_risk_response(self):
         body = SimpleNamespace(code=200, data=SimpleNamespace(result=[{"Label": "porn", "Suggestion": "block", "Confidence": 99}]))

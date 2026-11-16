@@ -145,7 +145,7 @@ class AlibabaCloudModerator:
             token = getattr(token_body, "data", None)
             if getattr(token_response, "status_code", None) != 200 or getattr(token_body, "code", None) != 200 or token is None:
                 raise ValueError("获取图片上传 token 失败")
-            endpoint = getattr(token, "oss_internet_endpoint", None)
+            endpoint = getattr(token, "oss_internet_end_point", None)
             bucket_name = getattr(token, "bucket_name", None)
             access_key_id = getattr(token, "access_key_id", None)
             access_key_secret = getattr(token, "access_key_secret", None)
