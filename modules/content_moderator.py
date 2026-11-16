@@ -47,8 +47,10 @@ class AlibabaCloudModerator:
             aliyun_config (dict): 阿里云配置信息
             task_id (str, optional): 任务ID，用于日志
         """
-        self.aliyun_config = aliyun_config
+        self.aliyun_config = aliyun_config or {}
         self.task_id = task_id
+        # 未提供开关时沿用直接调用方的历史默认；显式 false 才禁用。
+        self.enabled = bool(self.aliyun_config.get('CONTENT_MODERATION_ENABLED', self.aliyun_config.get('enabled', True)))
         
         # 设置日志器
         if task_id:
@@ -56,10 +58,15 @@ class AlibabaCloudModerator:
         else:
             self.logger = logging.getLogger('content_moderator')
         
+        if not self.enabled:
+            self.logger.info("内容审核已禁用")
+            self.client = None
+            return
+
         # 检查阿里云依赖是否可用
         if not ALIBABA_CLOUD_AVAILABLE:
             self.logger.warning(f"阿里云内容审核依赖未安装: {_import_error}")
-            self.logger.warning("内容审核功能将被跳过")
+            self.logger.warning("内容审核不可用，将按失败关闭处理")
             self.client = None
             return
         
@@ -111,19 +118,28 @@ class AlibabaCloudModerator:
         Returns:
             dict: 审核结果
         """
-        # 如果阿里云依赖不可用，直接跳过审核
-        if not ALIBABA_CLOUD_AVAILABLE:
-            self.logger.info("阿里云依赖不可用，跳过内容审核")
+        if not self.enabled:
             return {
-                "pass": True, 
-                "details": [{"label": "skipped", "suggestion": "pass", "reason": "阿里云内容审核依赖未安装"}]
+                "pass": True,
+                "status": "disabled",
+                "details": [{"label": "skipped", "suggestion": "pass", "reason": "内容审核已禁用"}],
+            }
+
+        # 显式启用时依赖不可用必须 fail-closed，不能伪装成 pass。
+        if not ALIBABA_CLOUD_AVAILABLE:
+            self.logger.error("阿里云依赖不可用，内容审核失败关闭")
+            return {
+                "pass": False,
+                "status": "unavailable",
+                "details": [{"label": "unavailable", "suggestion": "review", "reason": "阿里云内容审核依赖未安装"}],
             }
         
         if not self.client:
-            self.logger.warning("阿里云客户端未初始化，跳过内容审核")
+            self.logger.error("阿里云客户端未初始化，内容审核失败关闭")
             return {
-                "pass": True, 
-                "details": [{"label": "skipped", "suggestion": "pass", "reason": "阿里云客户端未初始化"}]
+                "pass": False,
+                "status": "unavailable",
+                "details": [{"label": "unavailable", "suggestion": "review", "reason": "阿里云客户端未初始化"}],
             }
         
         if not text_content or not text_content.strip():
@@ -330,21 +346,23 @@ class AlibabaCloudModerator:
             dict: 解析后的审核结果
         """
         result = {
-            "pass": True,
+            "pass": False,
+            "status": "unavailable",
             "details": []
         }
-        
+
         try:
             response_map = response.to_map()
             self.logger.info(f"响应结构: {json.dumps(response_map, ensure_ascii=False)}")
-            
-            risk_level = "unknown"
-            if hasattr(response, "data") and response.data and hasattr(response.data, "risk_level"):
-                risk_level = response.data.risk_level
-                self.logger.info(f"风险等级: {risk_level}")
-            
-            if risk_level in ["high", "middle"]:
-                result["pass"] = False
+
+            data = getattr(response, "data", None)
+            risk_level = str(getattr(data, "risk_level", "") or "").strip().lower() if data is not None else ""
+            allowed_risk_levels = {"none", "low", "normal", "middle", "high"}
+            if data is None or risk_level not in allowed_risk_levels:
+                raise ValueError(f"审核响应缺少有效 data/risk_level: {risk_level or 'unknown'}")
+            self.logger.info(f"风险等级: {risk_level}")
+            result["pass"] = risk_level not in {"high", "middle"}
+            result["status"] = "passed" if result["pass"] else "rejected"
             
             if hasattr(response, "data") and response.data and hasattr(response.data, "result") and response.data.result:
                 for item_obj in response.data.result: # 重命名避免与外层result冲突
@@ -401,6 +419,7 @@ class AlibabaCloudModerator:
                     }
                     result["details"].append(detail)
             
+            result["status"] = "passed" if result["pass"] else "rejected"
             if not result["pass"] and not result["details"]:
                 self.logger.warning(f"审核未通过但没有详细信息: {response_map}")
                 result["details"].append({

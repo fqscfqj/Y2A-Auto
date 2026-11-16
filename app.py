@@ -14,18 +14,19 @@ import uuid
 import threading
 
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
 from werkzeug.security import safe_join
-from modules.youtube_handler import extract_video_urls_from_playlist
+from modules.youtube_handler import extract_video_urls_from_playlist, normalize_youtube_url
 from modules.utils import get_app_subdir
 from modules.config_manager import load_config, update_config, reset_specific_config, DEFAULT_CONFIG
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.subtitle_style import normalize_hex_color
-from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
+from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, is_metadata_translation_retryable, get_metadata_translation_retry_block_reason, retry_metadata_translation_task, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path, request_task_cancel, _is_task_active, _TASK_SCHEDULING_LOCK
 from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from modules.bilibili_uploader import bilibili_submit_api_badge
@@ -64,6 +65,62 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+
+def _ensure_csrf_token() -> str:
+    token = session.get('csrf_token')
+    if not isinstance(token, str) or len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        session['csrf_token'] = token
+    return token
+
+
+def _request_csrf_token() -> str:
+    return str(
+        request.headers.get('X-CSRF-Token')
+        or request.form.get('csrf_token')
+        or ((request.get_json(silent=True) or {}).get('csrf_token') if request.is_json else '')
+        or ''
+    )
+
+
+def _origin_is_same_site(origin: str | None) -> bool:
+    if not origin:
+        return True
+    if origin == 'null':
+        return False
+    try:
+        parsed = urlparse(origin)
+        request_host = (request.host_url or '').rstrip('/')
+        return bool(parsed.scheme and parsed.netloc and f'{parsed.scheme}://{parsed.netloc}'.rstrip('/') == request_host)
+    except Exception:
+        return False
+
+
+@app.before_request
+def _protect_cookie_state_changes():
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return None
+    # 外部扩展入口使用独立 Bearer Token，不依赖浏览器 Cookie。
+    if request.endpoint == 'add_task_via_extension':
+        return None
+    # 登录请求本身需要 token；未启用认证保护时不存在可利用的认证 Cookie，
+    # 保留旧版匿名本地表单兼容性。受保护会话则必须经过 login_required 后再校验。
+    if request.endpoint not in ('login', 'logout') and not session.get('logged_in'):
+        return None
+    origin = request.headers.get('Origin')
+    if origin and not _origin_is_same_site(origin):
+        return jsonify({'success': False, 'message': '请求来源校验失败。'}), 403
+    token = _request_csrf_token()
+    expected = session.get('csrf_token')
+    if not isinstance(expected, str) or not token or not secrets.compare_digest(expected, token):
+        return jsonify({'success': False, 'message': '安全校验失败，请刷新页面后重试。'}), 403
+    return None
+
+
+@app.context_processor
+def _inject_csrf_context():
+    return {'csrf_token': _ensure_csrf_token()}
 
 
 @app.context_processor
@@ -1771,6 +1828,29 @@ def get_partition_name(partition_id, upload_target='acfun'):
 
     return None
 
+def validate_youtube_submission_url(value):
+    """校验任务提交 URL，返回 (是否有效, 用户可见原因)。"""
+    raw = str(value or '').strip()
+    if not raw or len(raw) > 2048:
+        return False, 'YouTube URL 无效或过长'
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme.lower() not in ('http', 'https'):
+            return False, '仅支持 http/https 的 YouTube URL'
+        if parsed.username or parsed.password or (parsed.port not in (None, 80, 443)):
+            return False, 'YouTube URL 包含不允许的凭据或端口'
+    except (TypeError, ValueError):
+        return False, 'YouTube URL 格式无效'
+
+    if normalize_youtube_url(raw) is None:
+        return False, '仅支持有效的 YouTube 视频或播放列表 URL'
+    return True, ''
+
+
+# 兼容调用方使用更短的公共名称。
+is_valid_youtube_url = validate_youtube_submission_url
+
+
 def parse_json(json_str):
     """将JSON字符串解析为Python对象"""
     if not json_str:
@@ -1926,7 +2006,8 @@ def login():
     
     return render_template('login.html')
 
-@app.route('/logout')
+@app.route('/logout', methods=['POST'])
+@login_required
 def logout():
     session.clear()
     flash('您已成功退出。', 'info')
@@ -2442,6 +2523,9 @@ def add_task_via_extension():
 
         if not youtube_url:
             return jsonify({'success': False, 'message': 'YouTube URL不能为空'}), 400
+        valid_url, url_error = validate_youtube_submission_url(youtube_url)
+        if not valid_url:
+            return jsonify({'success': False, 'message': url_error}), 400
 
         config = load_config()
         if not upload_target:
@@ -2511,6 +2595,10 @@ def add_task_route():
     
     if not youtube_url:
         flash('YouTube URL不能为空', 'danger')
+        return redirect(url_for('tasks'))
+    valid_url, url_error = validate_youtube_submission_url(youtube_url)
+    if not valid_url:
+        flash(url_error, 'danger')
         return redirect(url_for('tasks'))
 
     config = load_config()
@@ -2705,21 +2793,57 @@ def reset_stuck_tasks_route():
     
     return redirect(url_for('tasks'))
 
+def _schedule_cancelled_task_file_cleanup(task_id, timeout_seconds=300):
+    """等待取消的 worker 退出后清理任务文件，超时则保守保留。"""
+    def _cleanup_when_inactive():
+        deadline = time.monotonic() + timeout_seconds
+        while _is_task_active(task_id) and time.monotonic() < deadline:
+            time.sleep(0.25)
+        if _is_task_active(task_id):
+            logger.warning("任务取消后 worker 未在超时内退出，跳过文件清理: %s", task_id)
+            return
+        try:
+            from modules.task_manager import delete_task_files
+            if not delete_task_files(task_id):
+                logger.warning("取消任务文件清理失败: %s", task_id)
+        except Exception as exc:
+            logger.warning("取消任务文件清理异常: %s", exc)
+
+    threading.Thread(
+        target=_cleanup_when_inactive,
+        name=f"cleanup-cancelled-{task_id[:8]}",
+        daemon=True,
+    ).start()
+
+
 @app.route('/tasks/<task_id>/abandon', methods=['POST'])
 @login_required
 def abandon_task_route(task_id):
-    """放弃任务"""
+    """放弃任务：先取消，再标记失败；活动任务不立即删除文件。"""
     delete_files = request.form.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
-    
-    # 更新任务状态为失败
-    update_task(task_id, status=TASK_STATES['FAILED'], error_message="用户主动放弃任务")
-    
-    if delete_files:
-        # 删除任务文件
+    task = get_task(task_id)
+    if not task:
+        flash('任务不存在', 'danger')
+        return redirect(url_for('tasks'))
+
+    request_task_cancel(task_id)
+    active = _is_task_active(task_id)
+    if not update_task(task_id, status=TASK_STATES['FAILED'], error_message="用户主动放弃任务"):
+        flash('放弃任务失败，请稍后重试', 'danger')
+        return redirect(url_for('tasks'))
+
+    files_skipped = False
+    if delete_files and not active:
         from modules.task_manager import delete_task_files
         delete_task_files(task_id)
-    
-    flash('任务已废弃', 'success')
+    elif delete_files:
+        _schedule_cancelled_task_file_cleanup(task_id)
+        files_skipped = True
+
+    if files_skipped:
+        flash('任务已废弃；检测到任务仍在运行，下载文件将在任务停止后清理。', 'warning')
+    else:
+        flash('任务已废弃', 'success')
     return redirect(url_for('tasks'))
 
 # 系统健康检查辅助函数
@@ -3172,6 +3296,8 @@ def settings():
         result = _perform_settings_save(form_data, uploads)
         for item in result.get('messages', []):
             flash(item.get('text', ''), item.get('category', 'info'))
+        if not result.get('success', False):
+            flash('配置保存失败，原配置未被替换。', 'danger')
         return redirect(url_for('settings'))
     
     # GET请求，显示设置页面
@@ -3742,19 +3868,50 @@ def cleanup_downloads(hours: int):
         for entry in os.listdir(downloads_dir):
             path = os.path.join(downloads_dir, entry)
             try:
-                if os.path.isdir(path):
-                    # check last modification
-                    mtime = os.path.getmtime(path)
-                    if mtime < cutoff:
-                        # accumulate size
-                        for root, dirs, files in os.walk(path):
-                            for f in files:
-                                fp = os.path.join(root, f)
-                                if os.path.exists(fp):
-                                    bytes_freed += os.path.getsize(fp)
-                                    files_removed += 1
-                        shutil.rmtree(path)
-                        dirs_removed += 1
+                if not os.path.isdir(path):
+                    continue
+                # 只清理规范任务 UUID 目录；未知目录不做猜测性删除。
+                try:
+                    task_id = str(uuid.UUID(entry))
+                except (ValueError, AttributeError, TypeError):
+                    continue
+                with _TASK_SCHEDULING_LOCK:
+                    task = get_task(task_id)
+                    if not task or _is_task_active(task_id):
+                        continue
+                    # 未完成任务及可恢复/上传中的任务均保留；仅清理终态目录。
+                    if task.get('status') not in (TASK_STATES['COMPLETED'], TASK_STATES['FAILED']):
+                        continue
+                    # 取消标记存在时仍可能有线程尚未退出，保守跳过本轮。
+                    from modules.task_manager import is_task_cancelled
+                    if is_task_cancelled(task_id) and _is_task_active(task_id):
+                        continue
+                    file_entries = []
+                    latest_mtime = os.path.getmtime(path)
+                    for root, dirs, files in os.walk(path):
+                        for filename in files:
+                            fp = os.path.join(root, filename)
+                            if os.path.exists(fp):
+                                file_mtime = os.path.getmtime(fp)
+                                latest_mtime = max(latest_mtime, file_mtime)
+                                file_entries.append((fp, os.path.getsize(fp)))
+                    # 任务状态更新时间也是活动信号，避免刚失败/完成的任务立即被清理。
+                    updated_at = task.get('updated_at')
+                    if updated_at:
+                        try:
+                            latest_mtime = max(
+                                latest_mtime,
+                                datetime.strptime(str(updated_at), '%Y-%m-%d %H:%M:%S').timestamp(),
+                            )
+                        except (TypeError, ValueError, OSError):
+                            pass
+                    # 目录 mtime 可能很旧，但重试/编码刚写入的文件应保护整个任务目录。
+                    if latest_mtime >= cutoff:
+                        continue
+                    bytes_freed += sum(size for _, size in file_entries)
+                    files_removed += len(file_entries)
+                    shutil.rmtree(path)
+                    dirs_removed += 1
             except Exception:
                 continue
 
@@ -3802,6 +3959,12 @@ def configure_app(app, config):
                 timeout_minutes = 30
         app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=max(1, timeout_minutes))
         app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+        app.config['SESSION_COOKIE_HTTPONLY'] = True
+        app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+        secure_cookie = config.get('SESSION_COOKIE_SECURE') if isinstance(config, dict) else None
+        if secure_cookie is None:
+            secure_cookie = os.environ.get('Y2A_COOKIE_SECURE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+        app.config['SESSION_COOKIE_SECURE'] = bool(secure_cookie)
 
         # 允许覆盖的内容
         app.config['Y2A_SETTINGS'] = config
@@ -3872,7 +4035,93 @@ def schedule_download_cleanup():
         return None
 
 
-# YouTube监控系统路由
+# 启动流程运行时状态。源码入口和 PyInstaller 入口共享同一状态，避免重复启动。
+_application_runtime = None
+
+
+def initialize_application():
+    """初始化应用服务一次，返回可供 shutdown_application 使用的运行时状态。"""
+    global _application_runtime
+    if _application_runtime is not None:
+        return _application_runtime
+
+    logger.info("Y2A-Auto 启动中...")
+    runtime = {
+        'log_cleanup_scheduler': None,
+        'download_cleanup_scheduler': None,
+        'task_processor_started': False,
+    }
+    try:
+        init_id_mapping()
+        config = load_config()
+        app.config['Y2A_SETTINGS'] = config
+        logger.info(
+            "配置已加载（摘要）: %s",
+            json.dumps(_build_startup_config_log_summary(config), ensure_ascii=False),
+        )
+        _sync_notification_service(config)
+
+        from modules.task_manager import get_global_task_processor
+        get_global_task_processor(config)
+        runtime['task_processor_started'] = True
+
+        if config.get('AUTO_MODE_ENABLED', False):
+            logger.info("自动模式已启用，正在启动所有pending任务...")
+            auto_start_pending_tasks(config)
+
+        if config.get('YOUTUBE_API_KEY'):
+            api_ready, api_status = youtube_monitor.reload_api_client(config)
+            if api_ready:
+                youtube_monitor.start_all_schedules()
+                if api_status == 'proxy_ready':
+                    logger.info("YouTube监控系统已初始化，独立代理已启用")
+                else:
+                    logger.info("YouTube监控系统已初始化，当前为直连模式")
+            elif api_status == 'missing_api_key':
+                logger.warning('YouTube API 密钥未配置，请先在设置页完成接入。')
+            else:
+                logger.warning('YouTube监控 API 初始化失败，请检查 API 密钥、代理配置与网络连通性。')
+
+        configure_app(app, config)
+        app.config['DEBUG'] = False
+        app.config['TEMPLATES_AUTO_RELOAD'] = False
+        runtime['log_cleanup_scheduler'] = schedule_log_cleanup()
+        runtime['download_cleanup_scheduler'] = schedule_download_cleanup()
+        runtime['config'] = config
+        _application_runtime = runtime
+        return runtime
+    except Exception:
+        shutdown_application(runtime)
+        raise
+
+
+def shutdown_application(runtime=None):
+    """关闭启动流程创建的资源一次；重复调用不会重复关闭。"""
+    global _application_runtime
+    runtime = runtime or _application_runtime
+    if runtime is None or runtime.get('cleaned'):
+        return
+
+    runtime['cleaned'] = True
+    for key in ('log_cleanup_scheduler', 'download_cleanup_scheduler'):
+        scheduler = runtime.get(key)
+        if scheduler is not None:
+            try:
+                scheduler.shutdown()
+            except Exception:
+                pass
+
+    if runtime.get('task_processor_started'):
+        try:
+            from modules.task_manager import shutdown_global_task_processor
+            shutdown_global_task_processor()
+        except Exception:
+            pass
+
+    if _application_runtime is runtime:
+        _application_runtime = None
+
+
 @app.route('/youtube_monitor')
 @login_required
 def youtube_monitor_index():
@@ -4306,69 +4555,15 @@ def cookie_refresh_needed():
         return jsonify({'error': '处理失败，请稍后重试'}), 500
 
 if __name__ == '__main__':
-    logger.info("Y2A-Auto 启动中...")
-
-    # 初始化AcFun分区ID映射
-    init_id_mapping()
-
-    # 加载配置
-    config = load_config()
-    app.config['Y2A_SETTINGS'] = config
-    logger.info(
-        "配置已加载（摘要）: %s",
-        json.dumps(_build_startup_config_log_summary(config), ensure_ascii=False)
-    )
-    _sync_notification_service(config)
-
-    # 初始化全局任务处理器，确保并发控制生效
-    from modules.task_manager import get_global_task_processor, shutdown_global_task_processor
-    get_global_task_processor(config)
-    logger.info("全局任务处理器已初始化")
-
-    # 自动启动所有pending任务（如果启用了自动模式）
-    if config.get('AUTO_MODE_ENABLED', False):
-        logger.info("自动模式已启用，正在启动所有pending任务...")
-        auto_start_pending_tasks(config)
-
-    # 初始化YouTube监控API
-    if config.get('YOUTUBE_API_KEY'):
-        api_ready, api_status = youtube_monitor.reload_api_client(config)
-        if api_ready:
-            youtube_monitor.start_all_schedules()
-            if api_status == 'proxy_ready':
-                logger.info("YouTube监控系统已初始化，独立代理已启用")
-            else:
-                logger.info("YouTube监控系统已初始化，当前为直连模式")
-        else:
-            if api_status == 'missing_api_key':
-                logger.warning('YouTube API 密钥未配置，请先在设置页完成接入。')
-            else:
-                logger.warning('YouTube监控 API 初始化失败，请检查 API 密钥、代理配置与网络连通性。')
-
-    # 配置应用
-    configure_app(app, config)
-
-    # 设置日志清理定时任务
-    log_cleanup_scheduler = schedule_log_cleanup()
-
-    # 设置下载内容清理定时任务
-    download_cleanup_scheduler = schedule_download_cleanup()
-
+    runtime = None
     try:
+        runtime = initialize_application()
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{port}")
-        # 使用标准Flask运行
         app.run(host='0.0.0.0', port=port, debug=False)
     except KeyboardInterrupt:
         logger.info("接收到退出信号，服务正在关闭...")
     except Exception as e:
         logger.error(f"服务启动失败: {str(e)}")
     finally:
-        # 关闭全局任务处理器
-        shutdown_global_task_processor()
-
-        if log_cleanup_scheduler:
-            log_cleanup_scheduler.shutdown()
-        if download_cleanup_scheduler:
-            download_cleanup_scheduler.shutdown()
-        logger.info("服务已关闭")
+        shutdown_application(runtime)
