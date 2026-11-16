@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
+import tempfile
 from collections import Counter
 from threading import Lock
 from modules.task_manager import TaskCancelledError
@@ -641,43 +642,37 @@ class SubtitleWriter:
     @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
         """写入SRT字幕文件"""
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for item in items:
-                    # 空译文回退原文的语义：
-                    # - allow_partial=False（默认）：存在未译残留会在验收阶段直接失败，
-                    #   不会走到写盘，因此这里只等同于「译文恰好为空串」的兜底；
-                    # - allow_partial=True：未译条目在验收阶段被标记
-                    #   （SubtitleItem.residual_untranslated）并清空译文，此处回退为原文，
-                    #   属于显式容忍的原文/译文混排行为，已在验收阶段记录 warning。
-                    text = item.translated_text if translated and item.translated_text else item.source_text
-                    if translated:
-                        text = SubtitleWriter._strip_terminal_full_stop(text)
-                    f.write(f"{item.index}\n")
-                    f.write(f"{item.time_range}\n")
-                    f.write(f"{text}\n\n")
-            logger.info(f"SRT文件已保存: {output_path}")
-        except Exception as e:
-            logger.error(f"写入SRT文件失败: {e}")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for item in items:
+                # 空译文回退原文的语义：
+                # - allow_partial=False（默认）：存在未译残留会在验收阶段直接失败，
+                #   不会走到写盘，因此这里只等同于「译文恰好为空串」的兜底；
+                # - allow_partial=True：未译条目在验收阶段被标记
+                #   （SubtitleItem.residual_untranslated）并清空译文，此处回退为原文，
+                #   属于显式容忍的原文/译文混排行为，已在验收阶段记录 warning。
+                text = item.translated_text if translated and item.translated_text else item.source_text
+                if translated:
+                    text = SubtitleWriter._strip_terminal_full_stop(text)
+                f.write(f"{item.index}\n")
+                f.write(f"{item.time_range}\n")
+                f.write(f"{text}\n\n")
+        logger.info(f"SRT文件已保存: {output_path}")
     
     @staticmethod
     def write_vtt(items: List[SubtitleItem], output_path: str, translated: bool = True):
         """写入VTT字幕文件"""
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write("WEBVTT\n\n")
-                for item in items:
-                    # 空译文回退原文的语义同 write_srt（见上方注释）
-                    text = item.translated_text if translated and item.translated_text else item.source_text
-                    if translated:
-                        text = SubtitleWriter._strip_terminal_full_stop(text)
-                    start_time = item.start_time.replace(',', '.')
-                    end_time = item.end_time.replace(',', '.')
-                    f.write(f"{start_time} --> {end_time}\n")
-                    f.write(f"{text}\n\n")
-            logger.info(f"VTT文件已保存: {output_path}")
-        except Exception as e:
-            logger.error(f"写入VTT文件失败: {e}")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("WEBVTT\n\n")
+            for item in items:
+                # 空译文回退原文的语义同 write_srt（见上方注释）
+                text = item.translated_text if translated and item.translated_text else item.source_text
+                if translated:
+                    text = SubtitleWriter._strip_terminal_full_stop(text)
+                start_time = item.start_time.replace(',', '.')
+                end_time = item.end_time.replace(',', '.')
+                f.write(f"{start_time} --> {end_time}\n")
+                f.write(f"{text}\n\n")
+        logger.info(f"VTT文件已保存: {output_path}")
 
 class SubtitleAlignmentError(RuntimeError):
     """译文与原文无法按下标严格配对（缺项/合并/增项/条数不符）时抛出。
@@ -1439,7 +1434,8 @@ class SubtitleTranslator:
             if out_path.lower().endswith('.vtt'):
                 out_path = out_path[:-4] + '.srt'
                 
-            self.writer.write_srt(items, out_path, translated=True)
+            if not self._write_translated_file(items, out_path):
+                return False
 
             self.logger.info(f"快速修复完成：{out_path}")
             return True
@@ -1966,23 +1962,53 @@ class SubtitleTranslator:
             return SubtitleWriter._strip_terminal_full_stop(text.strip())
     
     def _write_translated_file(self, items: List[SubtitleItem], output_path: str) -> bool:
-        """写入翻译后的文件"""
+        """写入翻译后的文件，成功校验后再原子替换目标文件。"""
+        temp_path = None
         try:
             output_ext = Path(output_path).suffix.lower()
-            if output_ext == '.srt':
-                self.writer.write_srt(items, output_path, translated=True)
-            elif output_ext == '.vtt':
-                self.writer.write_vtt(items, output_path, translated=True)
-            else:
+            if output_ext not in {'.srt', '.vtt'}:
                 self.logger.error(f"不支持的输出格式: {output_ext}")
                 return False
-            
+
+            output_dir = os.path.dirname(os.path.abspath(output_path)) or os.getcwd()
+            os.makedirs(output_dir, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(
+                prefix=f'.{Path(output_path).stem}.', suffix=output_ext, dir=output_dir
+            )
+            os.close(fd)
+            if output_ext == '.srt':
+                self.writer.write_srt(items, temp_path, translated=True)
+            else:
+                self.writer.write_vtt(items, temp_path, translated=True)
+
+            # Writer 成功返回后仍验证临时产物，避免空/不完整文件被报告成功。
+            if not os.path.isfile(temp_path) or os.path.getsize(temp_path) <= 0:
+                raise IOError(f"字幕临时产物无效: {temp_path}")
+            with open(temp_path, 'r', encoding='utf-8') as handle:
+                if not handle.read(1):
+                    raise IOError(f"字幕临时产物为空: {temp_path}")
+            parsed_items = (
+                SubtitleReader.read_srt(temp_path)
+                if output_ext == '.srt'
+                else SubtitleReader.read_vtt(temp_path)
+            )
+            if len(parsed_items) != len(items):
+                raise IOError(
+                    f"字幕临时产物条目数不匹配: expected={len(items)}, actual={len(parsed_items)}"
+                )
+            os.replace(temp_path, output_path)
+            temp_path = None
             self.logger.info(f"字幕翻译完成: {output_path}")
             return True
-            
         except Exception as e:
             self.logger.error(f"写入翻译文件失败: {e}")
             return False
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
     
     def get_subtitle_preview(self, file_path: str, max_items: int = 5) -> List[Dict]:
         """获取字幕预览"""

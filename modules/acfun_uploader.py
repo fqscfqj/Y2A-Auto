@@ -22,6 +22,20 @@ ACFUN_TITLE_LIMIT = 50
 ACFUN_DESCRIPTION_LIMIT = 1000
 
 
+class UploadStageResult(dict):
+    """结构化上传结果，``bool(result)`` 等价于 ``result['ok']``。"""
+    def __bool__(self):
+        return bool(self.get("ok"))
+
+
+def _stage_result(ok: bool, status: str, error: str = "", **extra):
+    result = UploadStageResult(ok=bool(ok), status=status)
+    if error:
+        result["error"] = error
+    result.update(extra)
+    return result
+
+
 def setup_task_logger(task_id):
     """
     为特定任务设置日志记录器
@@ -404,7 +418,7 @@ class AcfunUploader:
         for attempt in range(3):
             try:
                 if cancel_event is not None and cancel_event.is_set():
-                    return False
+                    return _stage_result(False, "cancelled", "任务已取消")
                 # 添加延迟避免请求过快
                 if attempt > 0:
                     time.sleep(2 ** attempt)  # 指数退避
@@ -435,9 +449,7 @@ class AcfunUploader:
                             except Exception:
                                 pass
                         # 如果没有task级logger则不打印成功消息，避免终端或文件过多噪声
-                        return True
-                    else:
-                        self.log(f"分块 {fragment_id + 1} 上传失败: {result}")
+                        return _stage_result(True, "success", fragment_id=fragment_id)
                 else:
                     self.log(f"分块 {fragment_id + 1} HTTP错误: {response.status_code}")
                     
@@ -452,7 +464,7 @@ class AcfunUploader:
             except Exception as e:
                 self.log(f"分块 {fragment_id + 1} 未知错误，重试第 {attempt + 1} 次: {e}")
         
-        return False
+        return _stage_result(False, "failed", "分片上传重试耗尽")
     
     def complete_upload(self, fragment_count: int, upload_token: str, cancel_event=None):
         """完成上传"""
@@ -481,7 +493,7 @@ class AcfunUploader:
         for attempt in range(3):
             try:
                 if cancel_event is not None and cancel_event.is_set():
-                    return
+                    return _stage_result(False, "cancelled", "任务已取消")
                 if attempt > 0:
                     time.sleep(2 ** attempt)
                 
@@ -500,9 +512,7 @@ class AcfunUploader:
                     result = response.json()
                     if result.get("result") == 1:
                         self.log("上传完成确认成功")
-                        return
-                    else:
-                        self.log(f"完成上传失败: {result}")
+                        return _stage_result(True, "success", fragment_count=fragment_count)
                 else:
                     self.log(f"完成上传HTTP错误: {response.status_code}")
                     
@@ -511,27 +521,41 @@ class AcfunUploader:
                 if attempt == 2:
                     self.log("完成上传失败，但文件可能已上传成功")
     
+        return _stage_result(False, "failed", "完成上传重试耗尽")
+
     def upload_finish(self, task_id: int, cancel_event=None):
-        """上传完成处理"""
+        """上传完成处理，返回结构化阶段结果。"""
         if cancel_event is not None and cancel_event.is_set():
-            return
-        response = self.session.post(
-            self.FINISH_URL,
-            data={"taskId": task_id}
-        )
-        
+            return _stage_result(False, "cancelled", "任务已取消")
+        try:
+            response = self.session.post(
+                self.FINISH_URL,
+                data={"taskId": task_id}
+            )
+        except Exception as e:
+            self.log(f"上传完成处理请求失败: {e}")
+            return _stage_result(False, "failed", f"上传完成处理请求失败: {e}")
+
         try:
             result = response.json()
         except (ValueError, TypeError) as e:
             self.log(f"上传完成处理响应JSON解析失败: {response.text}, 错误: {str(e)}")
-            return
-        
+            return _stage_result(False, "failed", f"上传完成处理响应JSON解析失败: {e}")
+
         if not isinstance(result, dict) or result.get("result") != 0:
             err_msg_obj = result.get("errMsg") if isinstance(result, dict) else {}
             if not isinstance(err_msg_obj, dict):
                 err_msg_obj = {}
-            detail = err_msg_obj.get("error_msg") or result.get("error_msg") or ""
-            self.log(f"上传完成处理失败 (code={result.get('result')}): {detail} | 完整响应: {response.text}")
+            detail = (
+                err_msg_obj.get("error_msg")
+                or result.get("error_msg")
+                or result.get("msg")
+                or "未知错误"
+            ) if isinstance(result, dict) else "响应格式异常"
+            self.log(f"上传完成处理失败 (code={result.get('result') if isinstance(result, dict) else 'unknown'}): {detail} | 完整响应: {response.text}")
+            return _stage_result(False, "failed", f"上传完成处理失败: {detail}")
+
+        return _stage_result(True, "success", task_id=task_id)
     
     def create_video(self, video_key: int, filename: str, cancel_event=None):
         """创建视频，返回 (video_id, error_message)。成功时 error_message 为空字符串。"""
@@ -574,11 +598,15 @@ class AcfunUploader:
             self.log(f"创建视频成功但未获取到videoId: {response.text}")
             return None, "创建视频成功但未获取到videoId"
         
-        self.upload_finish(video_key, cancel_event=cancel_event)
+        finish_result = self.upload_finish(video_key, cancel_event=cancel_event)
+        # None 兼容旧的外部 mock/覆写；真实实现始终返回结构化结果。
+        if finish_result is not None and not finish_result:
+            error = finish_result.get('error', '上传完成处理失败') if isinstance(finish_result, dict) else '上传完成处理失败'
+            return None, error
         return video_id, ""
     
-    def upload_cover(self, image_path: str, mode='crop', cancel_event=None) -> str:
-        """上传封面图片（支持 jpg/png/webp，尽量保留原格式）"""
+    def upload_cover(self, image_path: str, mode='crop', cancel_event=None):
+        """上传封面图片，成功返回含 URL 的结构化阶段结果。"""
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("任务已取消")
         self.log(f"处理封面图片: {image_path}")
@@ -633,8 +661,12 @@ class AcfunUploader:
         with open(processed_image, "rb") as f:
             chunk_data = f.read()
 
-        self.upload_chunk(chunk_data, 0, token, cancel_event=cancel_event)
-        self.complete_upload(1, token, cancel_event=cancel_event)
+        chunk_result = self.upload_chunk(chunk_data, 0, token, cancel_event=cancel_event)
+        if not chunk_result:
+            raise RuntimeError(f"封面分片上传失败: {chunk_result.get('error', 'unknown') if isinstance(chunk_result, dict) else chunk_result}")
+        complete_result = self.complete_upload(1, token, cancel_event=cancel_event)
+        if not complete_result:
+            raise RuntimeError(f"封面上传完成确认失败: {complete_result.get('error', 'unknown') if isinstance(complete_result, dict) else complete_result}")
 
         # 获取上传后的URL
         response = self.session.post(
@@ -659,7 +691,7 @@ class AcfunUploader:
         except Exception as e:
             self.log(f"临时封面清理失败: {e}")
 
-        return cover_url
+        return _stage_result(True, "success", url=cover_url)
     
     def create_douga(self, file_path: str, title: str, channel_id: int, cover_path: str,
                      desc: str = "", tags: Optional[List[str]] = None,
@@ -719,7 +751,10 @@ class AcfunUploader:
         # 完成上传
         if cancel_event is not None and cancel_event.is_set():
             return False, "任务已取消"
-        self.complete_upload(fragment_count, token, cancel_event=cancel_event)
+        complete_result = self.complete_upload(fragment_count, token, cancel_event=cancel_event)
+        if not complete_result:
+            error = complete_result.get('error', '完成上传失败') if isinstance(complete_result, dict) else '完成上传失败'
+            return False, error
         
         # 创建视频
         if cancel_event is not None and cancel_event.is_set():
@@ -729,7 +764,12 @@ class AcfunUploader:
             return False, create_err or "创建视频失败"
         
         # 上传封面
-        cover_url = self.upload_cover(cover_path, cancel_event=cancel_event)
+        cover_result = self.upload_cover(cover_path, cancel_event=cancel_event)
+        if not cover_result:
+            error = cover_result.get('error', '封面上传失败') if isinstance(cover_result, dict) else '封面上传失败'
+            return False, error
+        cover_url = cover_result.get('url') if isinstance(cover_result, dict) else cover_result
+
         
         def _submit_create_douga(submit_desc: str) -> Tuple[bool, Union[dict, str], Optional[int], str]:
             data = {

@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{% block title %}Y2A-Auto{% endblock %}</title>
     <!-- 使用本地Bootstrap CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/bootstrap/bootstrap.min.css') }}">
@@ -23,10 +24,13 @@
                 </a>
                 <div class="navbar-utility ms-auto d-flex align-items-center gap-2">
                     {% if show_logout_in_nav %}
-                        <a class="btn btn-outline-light btn-sm navbar-logout-btn" href="{{ url_for('logout') }}">
-                            <i class="bi bi-box-arrow-right"></i>
-                            <span>退出登录</span>
-                        </a>
+                        <form method="post" action="{{ url_for('logout') }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button class="btn btn-outline-light btn-sm navbar-logout-btn" type="submit">
+                                <i class="bi bi-box-arrow-right"></i>
+                                <span>退出登录</span>
+                            </button>
+                        </form>
                     {% endif %}
                     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-label="切换导航菜单">
                         <span class="navbar-toggler-icon"></span>

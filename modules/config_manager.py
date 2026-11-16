@@ -4,6 +4,10 @@
 import os
 import json
 import logging
+import tempfile
+import threading
+import functools
+from contextlib import contextmanager
 from copy import deepcopy
 from .utils import get_app_subdir, normalize_reasoning_effort
 from .speech_pipeline_settings import (
@@ -15,6 +19,83 @@ from .prompt_manager import get_default_config_entries as _get_prompt_default_en
 
 # 获取日志记录器
 logger = logging.getLogger('config_manager')
+_CONFIG_LOCK = threading.RLock()
+_CONFIG_FILE_LOCK_STATE = {}
+_CONFIG_FILE_LOCK_STATE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _config_file_lock(config_path):
+    """用锁文件协调多进程配置读改写，同时允许本进程嵌套调用。"""
+    config_path = os.path.abspath(config_path)
+    lock_path = f"{config_path}.lock"
+    with _CONFIG_FILE_LOCK_STATE_LOCK:
+        depth = _CONFIG_FILE_LOCK_STATE.get(lock_path, 0)
+        _CONFIG_FILE_LOCK_STATE[lock_path] = depth + 1
+    if depth:
+        try:
+            yield
+        finally:
+            with _CONFIG_FILE_LOCK_STATE_LOCK:
+                _CONFIG_FILE_LOCK_STATE[lock_path] -= 1
+                if _CONFIG_FILE_LOCK_STATE[lock_path] == 0:
+                    del _CONFIG_FILE_LOCK_STATE[lock_path]
+        return
+
+    handle = None
+    try:
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        handle = open(lock_path, 'a+b')
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b'0')
+            handle.flush()
+        handle.seek(0)
+        if os.name == 'nt':
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if handle is not None:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+        with _CONFIG_FILE_LOCK_STATE_LOCK:
+            _CONFIG_FILE_LOCK_STATE[lock_path] -= 1
+            if _CONFIG_FILE_LOCK_STATE[lock_path] == 0:
+                del _CONFIG_FILE_LOCK_STATE[lock_path]
+
+
+def _config_file_locked(func):
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        if func.__name__ == 'save_config':
+            config_path = kwargs.get('config_path') or (args[1] if len(args) > 1 else None)
+        else:
+            config_path = None
+        config_path = config_path or os.path.join(get_app_subdir('config'), 'config.json')
+        with _config_file_lock(config_path):
+            return func(*args, **kwargs)
+    return wrapped
+
+
+def _config_locked(func):
+    def wrapped(*args, **kwargs):
+        with _CONFIG_LOCK:
+            return func(*args, **kwargs)
+    wrapped.__name__ = func.__name__
+    wrapped.__doc__ = func.__doc__
+    return wrapped
 
 AI_REASONING_EFFORT_KEYS = (
     'OPENAI_REASONING_EFFORT',
@@ -360,6 +441,8 @@ def _prune_unknown_config_keys(config_data):
     return clean_config, removed_keys
 
 
+@_config_locked
+@_config_file_locked
 def load_config():
     """
     加载配置文件，如果不存在则创建默认配置
@@ -373,8 +456,10 @@ def load_config():
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
     
     try:
-        # 尝试读取配置文件
-        if os.path.exists(config_path) and os.path.getsize(config_path) > 2:  # 文件存在且不为空
+        # 尝试读取配置文件；空文件也视为损坏，而不是首次启动。
+        if os.path.exists(config_path):
+            if os.path.getsize(config_path) == 0:
+                raise ValueError("配置文件为空")
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 logger.info("成功加载配置文件")
@@ -496,12 +581,23 @@ def load_config():
                         logger.info("检测到旧版 ASR/VAD 默认值，已自动迁移到质量优先默认配置")
                     if removed_keys:
                         logger.info("已清理过期配置项: %s", ', '.join(sorted(removed_keys)))
+                    # Windows 不允许替换仍被当前进程打开的目标文件；先关闭读取句柄。
+                    f.close()
                     save_config(config, config_path)
                 return config
-    except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
-        logger.warning(f"读取配置文件时出错: {str(e)}")
+    except (json.JSONDecodeError, FileNotFoundError, PermissionError, OSError) as e:
+        # 已存在的配置不可读/不可解析时不能静默使用默认配置；这会覆盖
+        # 安全设置并造成 fail-open。只有文件不存在时才走首次初始化路径。
+        if isinstance(e, FileNotFoundError) and not os.path.exists(config_path):
+            logger.info("配置文件不存在，将创建默认配置")
+        else:
+            logger.error("读取配置文件失败: %s", e)
+            raise RuntimeError(f"配置文件读取失败: {config_path}") from e
+    except Exception as e:
+        logger.error("读取配置文件时发生未预期错误: %s", e)
+        raise RuntimeError(f"配置文件读取失败: {config_path}") from e
     
-    # 如果配置文件不存在或读取失败，创建默认配置
+    # 如果配置文件不存在，创建默认配置。
     logger.info("使用默认配置并创建配置文件")
     # 调用方会原地更新 load_config() 的返回值。这里必须返回独立副本，
     # 否则首次启动或配置损坏后的更新会污染模块级默认值，后续“重置”也会失效。
@@ -509,32 +605,53 @@ def load_config():
     save_config(default_config, config_path)
     return default_config
 
+@_config_locked
+@_config_file_locked
 def save_config(config, config_path=None):
     """
-    保存配置到文件
-    
-    Args:
-        config (dict): 配置字典
-        config_path (str, optional): 配置文件路径，如果不提供则使用默认路径
-    
-    Returns:
-        bool: 保存是否成功
+    原子保存配置；任何写入失败都抛出异常，禁止调用方继续使用未持久化状态。
     """
     if not config_path:
         config_path = os.path.join(get_app_subdir('config'), 'config.json')
-    
-    # 确保config目录存在
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    
+
+    config_path = os.path.abspath(config_path)
+    config_dir = os.path.dirname(config_path)
+    os.makedirs(config_dir, exist_ok=True)
+    temp_path = None
     try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
-        logger.info("配置已保存到文件")
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=config_dir,
+            prefix='.config.', suffix='.tmp', delete=False
+        ) as temp_file:
+            temp_path = temp_file.name
+            json.dump(config, temp_file, ensure_ascii=False, indent=4)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, config_path)
+        # 尽量持久化目录项；Windows 上目录 fsync 不可用时不影响已完成的原子替换。
+        try:
+            dir_fd = os.open(config_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except (AttributeError, OSError):
+            pass
+        logger.info("配置已原子保存到文件")
         return True
     except Exception as e:
-        logger.error(f"保存配置文件时出错: {str(e)}")
-        return False
+        logger.error("保存配置文件时出错: %s", e)
+        raise RuntimeError(f"配置文件保存失败: {config_path}") from e
+    finally:
+        if temp_path:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
+@_config_locked
+@_config_file_locked
 def update_config(new_config):
     """
     更新配置
@@ -613,6 +730,8 @@ def update_config(new_config):
     
     return current_config
 
+@_config_locked
+@_config_file_locked
 def reset_specific_config(keys):
     """
     重置指定的配置项为默认值

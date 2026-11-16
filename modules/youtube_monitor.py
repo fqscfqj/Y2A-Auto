@@ -16,6 +16,7 @@ import httplib2
 import threading
 import time
 import re
+import uuid
 from urllib.parse import quote, urlsplit
 from apscheduler.schedulers.background import BackgroundScheduler
 from logging.handlers import RotatingFileHandler
@@ -98,6 +99,8 @@ MONITOR_CONFIG_FIELD_DEFAULTS: Dict[str, Any] = {
     'min_comment_count': 0,
     'keywords': '',
     'exclude_keywords': '',
+    'title_keywords': '',
+    'title_match_mode': 'any',
     'channel_ids': '',
     'channel_keywords': '',
     'exclude_channel_ids': '',
@@ -119,6 +122,9 @@ MONITOR_CONFIG_FIELD_DEFAULTS: Dict[str, Any] = {
 }
 
 MONITOR_CONFIG_DB_FIELDS: Tuple[str, ...] = tuple(MONITOR_CONFIG_FIELD_DEFAULTS.keys())
+
+# 标题关键词里用引号包住含空格的短语，如 "deep sleep"，整体作为单个关键词
+_TITLE_KEYWORD_QUOTED_RE = re.compile(r'"([^"]*)"|“([^”]*)”')
 
 
 class YouTubeMonitor:
@@ -163,6 +169,8 @@ class YouTubeMonitor:
                     min_comment_count INTEGER DEFAULT 0,
                     keywords TEXT DEFAULT '',
                     exclude_keywords TEXT DEFAULT '',
+                    title_keywords TEXT DEFAULT '',
+                    title_match_mode TEXT DEFAULT 'any',
                     channel_ids TEXT DEFAULT '',
                     exclude_channel_ids TEXT DEFAULT '',
                     min_duration INTEGER DEFAULT 0,
@@ -241,6 +249,17 @@ class YouTubeMonitor:
                 cursor.execute("ALTER TABLE monitor_configs ADD COLUMN video_types TEXT DEFAULT 'video,short,live'")
             except sqlite3.OperationalError:
                 pass
+
+            # 添加标题包含关键词过滤（Issue #158）：只搬运标题命中关键词的视频
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN title_keywords TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN title_match_mode TEXT DEFAULT 'any'")
+            except sqlite3.OperationalError:
+                pass
             
             # 添加历史搬运进度记录字段
             try:
@@ -269,6 +288,7 @@ class YouTubeMonitor:
                     duration TEXT,
                     published_at TEXT,
                     added_to_tasks BOOLEAN DEFAULT 0,
+                     task_claimed_at REAL DEFAULT NULL,
                     run_time TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (config_id) REFERENCES monitor_configs (id)
                 )
@@ -279,7 +299,35 @@ class YouTubeMonitor:
                 cursor.execute("ALTER TABLE monitor_history ADD COLUMN video_type TEXT")
             except sqlite3.OperationalError:
                 pass
-            
+
+            try:
+                cursor.execute("ALTER TABLE monitor_history ADD COLUMN task_claimed_at REAL DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass
+
+            # 历史记录按配置和视频唯一：先清理旧版本可能产生的重复行，再建立唯一索引。
+            # 这一步对已有数据库幂等，重复历史仅保留最早的一条记录。
+            cursor.execute('''
+                DELETE FROM monitor_history
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM monitor_history
+                    GROUP BY config_id, video_id
+                )
+            ''')
+            cursor.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS uq_monitor_history_config_video '
+                'ON monitor_history(config_id, video_id)'
+            )
+
+            # 同一配置的手动运行与调度运行共用 SQLite claim，跨线程/跨进程互斥。
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS monitor_run_claim (
+                    config_id INTEGER PRIMARY KEY,
+                    owner_token TEXT NOT NULL,
+                    claimed_at REAL NOT NULL
+                )
+            ''')
+
             conn.commit()
         
         # 如果是新数据库或表为空，尝试从配置文件恢复
@@ -761,6 +809,17 @@ class YouTubeMonitor:
                     if old_start != new_start or old_end != new_end:
                         should_reset_offset = True
                         logger.info(f"检测到历史搬运模式时间范围变化，将重置偏移量：{old_start}-{old_end} → {new_start}-{new_end}")
+
+                    # 过滤条件变化会改变过滤后的结果集，偏移量同样需要重置（Issue #158 review）
+                    changed_filter_keys = []
+                    for filter_key in ('title_keywords', 'title_match_mode', 'exclude_keywords'):
+                        old_value = old_config.get(filter_key)
+                        new_value = config_data.get(filter_key, old_value)
+                        if str(old_value or '') != str(new_value or ''):
+                            changed_filter_keys.append(filter_key)
+                    if changed_filter_keys:
+                        should_reset_offset = True
+                        logger.info(f"检测到历史搬运过滤条件变化，将重置偏移量: {', '.join(changed_filter_keys)}")
                 
                 # 如果需要重置偏移量，将其设为0
                 if should_reset_offset:
@@ -769,6 +828,9 @@ class YouTubeMonitor:
                 update_field_defaults = {
                     'historical_offset': old_config.get('historical_offset', 0) if old_config and not should_reset_offset else 0,
                     'video_types': old_config.get('video_types', 'video,short,live') if old_config else 'video,short,live',
+                    # 调用方漏传标题过滤字段时沿用旧值，避免静默清空过滤条件（Issue #158 review）
+                    'title_keywords': (old_config or {}).get('title_keywords') or '',
+                    'title_match_mode': (old_config or {}).get('title_match_mode') or 'any',
                 }
                 self._update_monitor_config_record(cursor, config_id, config_data, update_field_defaults)
                 
@@ -831,6 +893,7 @@ class YouTubeMonitor:
                 
                 cursor.execute('DELETE FROM monitor_configs WHERE id = ?', (config_id,))
                 cursor.execute('DELETE FROM monitor_history WHERE config_id = ?', (config_id,))
+                cursor.execute('DELETE FROM monitor_run_claim WHERE config_id = ?', (config_id,))
                 conn.commit()
                 
                 logger.info(f"监控配置已删除: {config_name} (ID: {config_id}), 同时删除了 {history_count} 条历史记录")
@@ -839,6 +902,47 @@ class YouTubeMonitor:
             logger.error(f"删除监控配置失败，ID: {config_id}, 错误: {str(e)}")
             raise
     
+    _MONITOR_RUN_CLAIM_TTL_SECONDS = 6 * 60 * 60
+
+    def _claim_monitor_run(self, config_id):
+        """原子获取配置运行锁，防止手动与调度任务并发执行。"""
+        token = uuid.uuid4().hex
+        now = time.time()
+        try:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute(
+                    'SELECT owner_token, claimed_at FROM monitor_run_claim WHERE config_id = ?',
+                    (config_id,),
+                ).fetchone()
+                if row and now - float(row[1]) < self._MONITOR_RUN_CLAIM_TTL_SECONDS:
+                    conn.rollback()
+                    return None
+                conn.execute(
+                    'INSERT INTO monitor_run_claim(config_id, owner_token, claimed_at) VALUES (?, ?, ?) '
+                    'ON CONFLICT(config_id) DO UPDATE SET owner_token=excluded.owner_token, claimed_at=excluded.claimed_at',
+                    (config_id, token, now),
+                )
+                conn.commit()
+            return token
+        except Exception as exc:
+            logger.warning(f"获取监控运行锁失败，跳过本轮: {exc}")
+            return None
+
+    def _release_monitor_run(self, config_id, token):
+        """仅释放当前 owner 持有的配置运行锁。"""
+        if not token:
+            return
+        try:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute(
+                    'DELETE FROM monitor_run_claim WHERE config_id = ? AND owner_token = ?',
+                    (config_id, token),
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning(f"释放监控运行锁失败，配置ID: {config_id}: {exc}")
+
     def run_monitor(self, config_id: int) -> Tuple[bool, str]:
         """执行监控任务"""
         logger.info(f"开始执行监控任务，配置ID: {config_id}")
@@ -866,6 +970,11 @@ class YouTubeMonitor:
         if not config.get('enabled', True):
             logger.info(f"监控配置已禁用，跳过执行: {config.get('name', config_id)} (ID: {config_id})")
             return False, "监控配置已禁用，跳过执行"
+
+        run_claim_token = self._claim_monitor_run(config_id)
+        if not run_claim_token:
+            logger.info(f"监控配置正在执行，跳过并发运行: {config_id}")
+            return False, "监控配置正在执行，跳过并发运行"
 
         logger.info(f"执行监控配置: {config['name']} (ID: {config_id})")
         logger.info(f"监控类型: {config.get('monitor_type', 'youtube_search')}, "
@@ -915,18 +1024,21 @@ class YouTubeMonitor:
                 # 未处理（新视频）：记录到历史（去重），并按配置决定是否加入任务队列。
                 should_add_to_tasks = auto_add_enabled and added_count < max_add_to_tasks
 
-                # 始终保存到历史记录，但是否添加到任务队列由 auto_add_enabled 控制
-                self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                # 原子插入历史并按配置决定是否加入任务队列；并发运行抢到同一视频时返回 False。
+                inserted = self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                if not inserted:
+                    logger.debug(f"视频已被并发运行处理，跳过: {video['title']}")
+                    continue
                 processed_count += 1
 
-                if should_add_to_tasks:
+                task_added = bool(self._video_history_task_status(video['id'], config_id))
+                if should_add_to_tasks and task_added:
                     added_count += 1
                     logger.info(f"视频已添加到任务队列 ({added_count}/{max_add_to_tasks}): {video['title']}")
+                elif should_add_to_tasks:
+                    logger.warning(f"视频已保存但添加任务失败，可在后续运行重试: {video['title']}")
                 else:
-                    if auto_add_enabled:
-                        logger.info(f"视频已保存到历史记录: {video['title']}")
-                    else:
-                        logger.info(f"视频已保存到历史记录（未添加到任务队列）: {video['title']}")
+                    logger.info(f"视频已保存到历史记录（未添加到任务队列）: {video['title']}")
 
                 # max_results 的截断必须在「去重之后」：每轮最多处理 max_results 条
                 # 新视频，剩余候选留到后续轮次继续去重（避免 max_results 过小导致长期 0 新视频）。
@@ -964,6 +1076,8 @@ class YouTubeMonitor:
         except Exception as e:
             logger.error(f"监控任务执行失败 - 配置: {config['name']} (ID: {config_id}), 错误: {str(e)}")
             return False, self._format_run_error_message(e)
+        finally:
+            self._release_monitor_run(config_id, run_claim_token)
     
     def _fetch_trending_videos(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """获取视频"""
@@ -1664,6 +1778,47 @@ class YouTubeMonitor:
                 return (h / w) >= 1.2
         return False
     
+    @staticmethod
+    def _split_title_keywords(raw_keywords: Any) -> List[str]:
+        """把用户输入的标题关键词拆成小写列表。
+
+        逗号、空格、分号、顿号、换行都视为分隔符（中英文标点均支持），
+        这样「asmr, 助眠」「asmr 助眠」都能被正确拆成多个关键词。
+        需要匹配含空格的短语时用引号包住，如 "deep sleep"，
+        引号内的内容整体作为单个关键词（Issue #158 review）。
+        """
+        text = str(raw_keywords or '').strip()
+        if not text:
+            return []
+
+        keywords: List[str] = []
+
+        def _take_quoted(match) -> str:
+            phrase = (match.group(1) if match.group(1) is not None else match.group(2)).strip().lower()
+            if phrase:
+                keywords.append(phrase)
+            return ' '
+
+        remainder = _TITLE_KEYWORD_QUOTED_RE.sub(_take_quoted, text)
+        keywords.extend(kw.lower() for kw in re.split(r'[\s,;，；、\n]+', remainder) if kw)
+        return keywords
+
+    def _title_matches(self, title: str, config: Dict[str, Any]) -> bool:
+        """检查标题是否命中「标题包含关键词」过滤。
+
+        - title_keywords 为空：不过滤，直接通过；
+        - title_match_mode == 'all'：标题需同时包含全部关键词；
+        - 其余情况（默认 'any'）：标题包含任一关键词即通过。
+        """
+        keywords = self._split_title_keywords(config.get('title_keywords'))
+        if not keywords:
+            return True
+
+        title_lower = str(title or '').lower()
+        if str(config.get('title_match_mode') or 'any').lower() == 'all':
+            return all(keyword in title_lower for keyword in keywords)
+        return any(keyword in title_lower for keyword in keywords)
+
     def _meets_criteria(self, video_info, config):
         """检查视频是否符合筛选条件"""
         # 检查开始日期
@@ -1703,6 +1858,10 @@ class YouTubeMonitor:
             for word in exclude_words:
                 if word and word in title_lower:
                     return False
+
+        # 检查标题包含关键词（仅本地标题匹配，不额外消耗 API 配额）
+        if not self._title_matches(video_info['title'], config):
+            return False
         
         # 检查频道ID过滤
         if config['exclude_channel_ids']:
@@ -1743,26 +1902,32 @@ class YouTubeMonitor:
         return hours * 3600 + minutes * 60 + seconds
     
     def _is_video_processed(self, video_id, config_id):
-        """检查视频是否已经处理过"""
+        """检查视频是否已经处理过；超时的任务 claim 可进入补偿流程。"""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id FROM monitor_history WHERE video_id = ? AND config_id = ?',
-                (video_id, config_id)
+            row = conn.execute(
+                'SELECT added_to_tasks, task_claimed_at FROM monitor_history '
+                'WHERE video_id = ? AND config_id = ?',
+                (video_id, config_id),
+            ).fetchone()
+            if not row:
+                return False
+            return not (
+                row[0] == 2
+                and (row[1] is None or row[1] < time.time() - 600)
             )
-            return cursor.fetchone() is not None
     
     def _save_video_history(self, video_info, config_id, auto_add_to_tasks=False):
-        """保存视频到历史记录"""
-        with sqlite3.connect(self.db_path) as conn:
+        """保存视频到历史记录，并在任务创建成功后才标记 added_to_tasks。"""
+        self._last_history_task_added = False
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
-                INSERT INTO monitor_history (
+                INSERT OR IGNORE INTO monitor_history (
                     config_id, video_id, video_type, video_title, channel_title,
                     view_count, like_count, comment_count, duration,
                     published_at, added_to_tasks
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ''', (
                 config_id,
                 video_info['id'],
@@ -1774,21 +1939,76 @@ class YouTubeMonitor:
                 video_info['comment_count'],
                 video_info['duration'],
                 video_info['published_at'],
-                1 if auto_add_to_tasks else 0
             ))
-            
+            inserted = cursor.rowcount == 1
             conn.commit()
-            logger.info(f"视频已保存到历史记录: {video_info['title']}")
-            
-            # 如果启用自动添加到任务队列，直接添加
-            if auto_add_to_tasks:
+
+        if not inserted:
+            if auto_add_to_tasks and self._claim_video_task(video_info['id'], config_id):
                 task_id = self._add_video_to_tasks(video_info, auto_start=True)
                 if task_id:
-                    # 更新数据库标记为已添加
-                    cursor.execute(
-                        'UPDATE monitor_history SET added_to_tasks = 1 WHERE video_id = ? AND config_id = ?',
-                        (video_info['id'], config_id)
-                    )
+                    try:
+                        marked = self._mark_video_added_to_tasks(
+                            video_info['id'], config_id
+                        )
+                        self._last_history_task_added = bool(marked)
+                        if not marked:
+                            self._reset_video_task_claim(video_info['id'], config_id)
+                    except Exception as exc:
+                        logger.error(f"补偿标记监控历史任务状态失败: {exc}")
+                        self._reset_video_task_claim(video_info['id'], config_id)
+                else:
+                    self._reset_video_task_claim(video_info['id'], config_id)
+            return False
+        logger.info(f"视频已保存到历史记录: {video_info['title']}")
+
+        if auto_add_to_tasks and self._claim_video_task(video_info['id'], config_id):
+            task_id = self._add_video_to_tasks(video_info, auto_start=True)
+            if task_id:
+                try:
+                    marked = self._mark_video_added_to_tasks(video_info['id'], config_id)
+                except Exception as exc:
+                    logger.error(f"标记监控历史任务状态失败: {exc}")
+                    marked = False
+                if marked:
+                    self._last_history_task_added = True
+                else:
+                    self._reset_video_task_claim(video_info['id'], config_id)
+            else:
+                self._reset_video_task_claim(video_info['id'], config_id)
+        return True
+
+    def _video_history_task_status(self, video_id, config_id):
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            row = conn.execute(
+                'SELECT added_to_tasks FROM monitor_history WHERE video_id = ? AND config_id = ?',
+                (video_id, config_id),
+            ).fetchone()
+            return row[0] == 1 if row else False
+
+    def _claim_video_task(self, video_id, config_id):
+        """原子占用待创建任务的历史行，并回收超时的遗留 claim。"""
+        claim_cutoff = time.time() - 600
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.execute(
+                'UPDATE monitor_history SET added_to_tasks = 2, task_claimed_at = ? '
+                'WHERE video_id = ? AND config_id = ? AND '
+                '(added_to_tasks = 0 OR (added_to_tasks = 2 AND '
+                '(task_claimed_at IS NULL OR task_claimed_at < ?)))',
+                (time.time(), video_id, config_id, claim_cutoff),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def _reset_video_task_claim(self, video_id, config_id):
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute(
+                'UPDATE monitor_history SET added_to_tasks = 0, task_claimed_at = NULL '
+                'WHERE video_id = ? AND config_id = ? AND added_to_tasks = 2',
+                (video_id, config_id),
+            )
+            conn.commit()
+
     
     def _add_video_to_tasks(self, video_info, auto_start=True):
         """将视频添加到任务队列"""
@@ -1820,7 +2040,7 @@ class YouTubeMonitor:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT video_id, video_title, channel_title, view_count, like_count, 
-                       comment_count, duration, published_at, added_to_tasks
+                       comment_count, duration, published_at, added_to_tasks, task_claimed_at
                 FROM monitor_history 
                 WHERE video_id = ? AND config_id = ?
             ''', (video_id, config_id))
@@ -1830,9 +2050,25 @@ class YouTubeMonitor:
                 logger.warning(f"视频不存在: {video_id}, 配置ID: {config_id}")
                 return False, "视频不存在"
             
-            if row[8]:  # added_to_tasks
+            claim_cutoff = time.time() - 600
+            if row[8] == 1:
                 logger.warning(f"视频已经添加到任务队列: {row[1]}")
                 return False, "视频已经添加到任务队列"
+            if row[8] == 2 and row[9] and row[9] >= claim_cutoff:
+                logger.warning(f"视频正在被其他运行添加到任务队列: {row[1]}")
+                return False, "视频正在被其他运行添加到任务队列"
+
+            cursor.execute(
+                'UPDATE monitor_history SET added_to_tasks = 2, task_claimed_at = ? '
+                'WHERE video_id = ? AND config_id = ? AND '
+                '(added_to_tasks = 0 OR (added_to_tasks = 2 AND '
+                '(task_claimed_at IS NULL OR task_claimed_at < ?)))',
+                (time.time(), video_id, config_id, claim_cutoff),
+            )
+            if cursor.rowcount != 1:
+                logger.warning(f"视频正在被其他运行添加到任务队列: {row[1]}")
+                return False, "视频已经添加到任务队列"
+            conn.commit()
             
             # 构建视频信息
             video_info = {
@@ -1871,10 +2107,18 @@ class YouTubeMonitor:
             logger.info(f"手动添加视频到任务队列")
             task_id = self._add_video_to_tasks(video_info, auto_start=False)
             if task_id:
-                self._mark_video_added_to_tasks(video_id, config_id)
+                try:
+                    marked = self._mark_video_added_to_tasks(video_id, config_id)
+                except Exception as exc:
+                    logger.error(f"手动标记监控历史任务状态失败: {exc}")
+                    marked = False
+                if not marked:
+                    self._reset_video_task_claim(video_id, config_id)
+                    return False, "任务已创建但历史状态保存失败，请稍后重试"
                 logger.info(f"视频成功添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
                 return True, f"视频已成功添加到任务队列，任务ID: {task_id}"
             else:
+                self._reset_video_task_claim(video_id, config_id)
                 logger.error(f"添加视频到任务队列失败: {video_info['title']}")
                 return False, "添加到任务队列失败"
     
@@ -1883,10 +2127,12 @@ class YouTubeMonitor:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'UPDATE monitor_history SET added_to_tasks = 1 WHERE video_id = ? AND config_id = ?',
+                'UPDATE monitor_history SET added_to_tasks = 1, task_claimed_at = NULL '
+                'WHERE video_id = ? AND config_id = ? AND added_to_tasks = 2',
                 (video_id, config_id)
             )
             conn.commit()
+            return cursor.rowcount == 1
     
     def _get_historical_time_range(self, config):
         """获取历史搬运模式的智能时间范围"""

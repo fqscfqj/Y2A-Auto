@@ -48,6 +48,29 @@ class YouTubeMonitorConfigTemplateTests(unittest.TestCase):
         _raw_config, parsed_config = self._embedded_config(response.get_data(as_text=True))
         self.assertIsNone(parsed_config)
 
+    def test_title_filter_fields_render_saved_values(self):
+        config = {
+            'name': 'asmr-monitor',
+            'title_keywords': 'asmr, 助眠',
+            'title_match_mode': 'all',
+            'channel_ids': '',
+            'schedule_interval': 120,
+            'auto_add_to_tasks': False,
+            'video_types': 'video,short,live',
+        }
+
+        with web_app.app.test_request_context('/youtube_monitor/config/1/edit'):
+            rendered = web_app.render_template(
+                'youtube_monitor_config.html',
+                config=config,
+                is_edit=True,
+            )
+
+        document = html.fromstring(rendered)
+        self.assertEqual(document.get_element_by_id('title_keywords').value, 'asmr, 助眠')
+        selected_modes = document.get_element_by_id('title_match_mode').xpath('.//option[@selected]/@value')
+        self.assertEqual(selected_modes, ['all'])
+
 
 if __name__ == '__main__':
     unittest.main()

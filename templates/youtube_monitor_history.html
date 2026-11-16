@@ -78,6 +78,15 @@
             </div>
         </div>
         {% endif %}
+
+        {% if config.title_keywords %}
+        <div class="row mt-2">
+            <div class="col-12">
+                <strong>标题包含关键词：</strong> {{ config.title_keywords }}
+                {% if config.title_match_mode == 'all' %}<span class="badge bg-secondary">全部匹配</span>{% else %}<span class="badge bg-light text-dark">任一匹配</span>{% endif %}
+            </div>
+        </div>
+        {% endif %}
         
         {% if config.last_run_time %}
         <div class="row mt-2">

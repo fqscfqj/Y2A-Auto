@@ -24,13 +24,14 @@ from .ffmpeg_manager import get_ffmpeg_path, is_ffmpeg_usable
 from .cookiecloud import try_cookiecloud_youtube_sync
 from shutil import which as _which
 from urllib.parse import parse_qs, urlparse
+import ipaddress
 import re
 import tempfile
 
 # 其他导入和常量定义
 logger = logging.getLogger(__name__)
 # YouTube playlist ID 仅允许字母、数字、下划线和连字符
-_YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_YOUTUBE_PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{4,150}$")
 _YOUTUBE_USER_AGENT = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -618,7 +619,12 @@ def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=N
     """
     if not logger:
         logger = logging.getLogger(__name__)
-        
+
+    normalized_url = normalize_youtube_url(youtube_url, logger)
+    if not normalized_url:
+        return False, None, "YouTube URL未通过安全校验"
+    youtube_url = normalized_url
+
     # 仅检查视频是否可访问，不在预检阶段触发格式选择，避免把“格式不可用”误判为“视频不可用”
     cmd = [
         *yt_dlp_cmd,
@@ -707,6 +713,11 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
     
     # 设置任务日志记录器
     logger = setup_task_logger(task_id)
+    normalized_url = normalize_youtube_url(youtube_url, logger)
+    if not normalized_url:
+        logger.error("YouTube URL未通过安全校验")
+        return False, "YouTube URL未通过安全校验"
+    youtube_url = normalized_url
     logger.info(f"开始下载视频: {youtube_url}, 任务ID: {task_id}")
     
     # 创建任务目录
@@ -787,7 +798,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             *yt_dlp_cmd,
             youtube_url,
             '--output', video_output,  # 输出视频文件
-            '--no-check-certificates',  # 不检查SSL证书
             '--geo-bypass',  # 尝试绕过地理限制
             '--extractor-retries', '10',  # 增加提取器重试次数
             '--fragment-retries', '10',  # 增加片段重试次数
@@ -1248,61 +1258,111 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         logger.error(error_msg)
         return False, error_msg
 
-def _is_safe_playlist_url(raw_url, logger):
+def normalize_youtube_url(raw_url: str, logger: logging.Logger | None = None, *, require_playlist: bool = False) -> str | None:
+    """校验并规范化受信任的 YouTube 视频或播放列表 URL。
+
+    该函数是所有进入 yt-dlp 的公共 URL 边界：只接受 HTTP(S) 的官方 YouTube
+    主机，拒绝 userinfo、异常端口、IP 私网地址及控制字符，并要求 URL
+    看起来确实包含视频 ID 或播放列表 ID。返回值会移除 fragment，避免把
+    不参与资源定位的输入继续传给外部下载器。
     """
-    对用户提供的播放列表URL进行严格校验，确保仅为合理的YouTube播放列表链接。
-    """
-    if not raw_url:
+    _log = logger or globals().get("logger")
+    if not isinstance(raw_url, str):
         return None
-    # 限制URL最大长度，避免异常长输入
-    # 使用2048作为常见浏览器URL长度上限
     if len(raw_url) > 2048:
-        logger.warning(f"播放列表URL过长，已拒绝: 长度={len(raw_url)}")
+        if _log:
+            _log.warning("YouTube URL过长，已拒绝: 长度=%s", len(raw_url))
         return None
-    normalized_url = raw_url.strip()
-    if not normalized_url:
+
+    candidate = raw_url.strip()
+    if not candidate or any(ord(char) < 0x20 or ord(char) == 0x7F for char in candidate):
+        if _log:
+            _log.warning("YouTube URL包含空白或控制字符，已拒绝")
         return None
-    # 若URL缺少协议头，则默认补全 https://，并正确处理以 // 开头的 scheme-relative URL
-    if normalized_url and not urlparse(normalized_url).scheme:
-        if normalized_url.startswith("//"):
-            normalized_url = "https:" + normalized_url
-        else:
-            normalized_url = "https://" + normalized_url
-    # 仅允许URL中出现常见安全字符，防止奇异控制字符或空白
-    # 允许: 字母数字和 -._~:/?#[]@!$&'()*+,;=%
-    if not re.fullmatch(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", normalized_url):
-        logger.warning("播放列表URL包含非法字符，已拒绝: %r", normalized_url)
+    if candidate.startswith("//"):
+        candidate = "https:" + candidate
+    elif not urlparse(candidate).scheme:
+        candidate = "https://" + candidate
+
+    # urlparse accepts a surprising number of malformed netlocs; constrain the
+    # textual form before parsing so backslashes/whitespace cannot smuggle a host.
+    if not re.fullmatch(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", candidate):
+        if _log:
+            _log.warning("YouTube URL包含非法字符，已拒绝: %r", candidate)
         return None
-    parsed = urlparse(normalized_url)
-    allowed_schemes = {"http", "https"}
-    # 仅允许 http/https 协议
-    if not parsed.scheme or parsed.scheme.lower() not in allowed_schemes:
-        logger.warning("无效的播放列表URL协议: %r", normalized_url)
+
+    try:
+        parsed = urlparse(candidate)
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        port = parsed.port
+    except ValueError:
         return None
-    # 显式拒绝URL中的userinfo（以及畸形netloc里残留的@），避免混淆主机与日志污染风险
-    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
-        logger.warning("播放列表URL包含不允许的userinfo: %r", normalized_url)
+
+    if scheme != "https" or not hostname:
         return None
-    hostname = (parsed.hostname or "").rstrip('.').lower()
-    # 仅允许 YouTube 官方域名及其子域，以及短链域名 youtu.be
-    is_youtube_domain = hostname == "youtube.com" or hostname.endswith(".youtube.com")
-    is_short_youtube = hostname == "youtu.be"
-    if not (is_youtube_domain or is_short_youtube):
-        logger.warning("不受信任的播放列表URL主机名: %r (原始URL: %r, 规范化URL: %r)", hostname, raw_url, normalized_url)
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
         return None
-    # 额外检查其看起来像播放列表链接（查询参数中包含合法list）
-    query = parse_qs(parsed.query or "")
-    list_ids = query.get("list", [])
-    valid_list_ids = []
-    for value in list_ids:
-        value_stripped = value.strip()
-        if value_stripped and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value_stripped):
-            valid_list_ids.append(value_stripped)
-    # 要求至少存在一个通过校验的 list 参数，避免仅凭 /playlist 路径就放行
-    if not valid_list_ids:
-        logger.warning("URL似乎不是有效的播放列表链接（缺少合法的 list 参数）: %r", normalized_url)
+    if port is not None and port not in {80, 443}:
         return None
-    return normalized_url
+
+    # Reject IP literals explicitly (including loopback/link-local/private and
+    # special-use ranges) before applying the trusted-host suffix check.
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local
+                           or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        return None
+
+    # 只允许已知官方主机；边界匹配不能把任意可控子域当作可信输入。
+    trusted_hosts = {
+        "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+        "youtu.be", "www.youtu.be",
+    }
+    trusted_host = hostname in trusted_hosts
+    if not trusted_host:
+        if _log:
+            _log.warning("不受信任的YouTube URL主机名: %r", hostname)
+        return None
+
+    query = parse_qs(parsed.query or "", keep_blank_values=True)
+    valid_video_ids = [value.strip() for value in query.get("v", [])
+                       if value.strip() and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value.strip())]
+    valid_list_ids = [value.strip() for value in query.get("list", [])
+                      if value.strip() and _YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(value.strip())]
+    path_parts = [part for part in parsed.path.split("/") if part]
+    video_path = False
+    if hostname in {"youtu.be", "www.youtu.be"}:
+        video_path = (
+            len(path_parts) == 1
+            and path_parts[0].lower() != "playlist"
+            and bool(_YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(path_parts[0]))
+        )
+    elif path_parts:
+        if path_parts[0].lower() in {"shorts", "embed", "live"}:
+            video_path = len(path_parts) >= 2 and bool(_YOUTUBE_PLAYLIST_ID_PATTERN.fullmatch(path_parts[1]))
+        elif path_parts[0].lower() == "watch":
+            video_path = bool(valid_video_ids)
+
+    if require_playlist and not valid_list_ids:
+        return None
+    if not require_playlist and not (valid_video_ids or valid_list_ids or video_path):
+        return None
+
+    # Rebuild the URL with a normalized host and no fragment. HTTPS is required
+    # for all requests passed to yt-dlp so redirects cannot downgrade transport.
+    normalized_netloc = hostname
+    if port is not None:
+        normalized_netloc = f"{normalized_netloc}:{port}"
+    return parsed._replace(scheme=scheme, netloc=normalized_netloc, fragment="").geturl()
+
+
+def _is_safe_playlist_url(raw_url, logger):
+    """兼容旧调用点的播放列表 URL 校验包装器。"""
+    return normalize_youtube_url(raw_url, logger, require_playlist=True)
+
 
 def extract_video_urls_from_playlist(playlist_url, cookies_file_path=None):
     """

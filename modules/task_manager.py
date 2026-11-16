@@ -292,6 +292,8 @@ _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
 _TASK_SCHEDULING_LOCK = threading.RLock()
+# 全局 TaskProcessor 的创建、刷新和关闭必须串行，避免并发初始化出多个 scheduler。
+_GLOBAL_TASK_PROCESSOR_LOCK = threading.RLock()
 
 
 def get_task_cancel_event(task_id):
@@ -1774,7 +1776,17 @@ def update_task(task_id, silent=False, **kwargs):
     # 记录状态变化
     status_changed = 'status' in kwargs
     new_status = kwargs.get('status') if status_changed else None
-    
+
+    # 放弃操作由调用方通过 FAILED + 用户主动放弃任务表示。先设置取消事件，
+    # 这样活动 worker 在最终状态写入前仍可观察到取消请求。
+    abandon_requested = (
+        status_changed
+        and new_status == TASK_STATES['FAILED']
+        and '主动放弃' in str(kwargs.get('error_message') or '')
+    )
+    if abandon_requested:
+        request_task_cancel(task_id)
+
     # 添加更新时间
     kwargs['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -1824,6 +1836,21 @@ def update_task(task_id, silent=False, **kwargs):
 
     if not filtered_kwargs:
         return False
+
+    # 取消请求发出后，活动 worker 可能仍从旧快照继续执行；禁止其把任务写回
+    # READY_FOR_UPLOAD/COMPLETED 等状态。FAILED 是取消协议的统一终态，仍允许写入。
+    # 状态写入期间持有取消锁，保证“检查事件 -> SQL 提交”不可被 abandon 插入。
+    cancel_guard_acquired = False
+    if status_changed:
+        _TASK_CANCEL_LOCK.acquire()
+        cancel_guard_acquired = True
+    if status_changed and new_status != TASK_STATES['FAILED']:
+        event = _TASK_CANCEL_FLAGS.get(task_id)
+        if event and event.is_set():
+            _TASK_CANCEL_LOCK.release()
+            cancel_guard_acquired = False
+            logger.info(f"任务 {task_id} 已请求取消，忽略状态回写: {new_status}")
+            return False
 
     # 构建SQL更新语句
     set_clause = ', '.join(ALLOWED_COLUMNS[key] for key, _ in filtered_items)
@@ -1916,6 +1943,8 @@ def update_task(task_id, silent=False, **kwargs):
                 return False
     finally:
         conn.close()
+        if cancel_guard_acquired:
+            _TASK_CANCEL_LOCK.release()
 
 def get_task(task_id):
     """
@@ -2536,15 +2565,20 @@ class TaskProcessor:
             f"最大并发上传: {self._current_max_concurrent_uploads}"
         )
 
-        # 断点续跑：仅在进程生命周期内执行一次，避免配置变更重建处理器时干扰运行中任务
-        global _RESUME_RECOVERY_DONE
-        if not _RESUME_RECOVERY_DONE:
-            try:
-                recover_interrupted_tasks_to_pending()
-            finally:
-                _RESUME_RECOVERY_DONE = True
+        try:
+            # 断点续跑：仅在进程生命周期内执行一次，避免配置变更重建处理器时干扰运行中任务
+            global _RESUME_RECOVERY_DONE
+            if not _RESUME_RECOVERY_DONE:
+                try:
+                    recover_interrupted_tasks_to_pending()
+                finally:
+                    _RESUME_RECOVERY_DONE = True
 
-        self._register_periodic_jobs()
+            self._register_periodic_jobs()
+        except Exception:
+            # scheduler 已启动但初始化后续步骤失败时，必须回收它再向调用方抛错。
+            self.shutdown()
+            raise
 
     def _register_periodic_jobs(self):
         """注册或刷新周期性任务。"""
@@ -2616,9 +2650,10 @@ class TaskProcessor:
 
     def refresh_config(self, config=None):
         """刷新运行时配置，而不是重建处理器实例。"""
-        self.config = dict(config or {})
-        self._register_periodic_jobs()
-        self._refresh_runtime_limits(force=False)
+        with _GLOBAL_TASK_PROCESSOR_LOCK:
+            self.config = dict(config or {})
+            self._register_periodic_jobs()
+            self._refresh_runtime_limits(force=False)
 
     def _enqueue_task_retry(self, task_id, delay_seconds=2):
         """为未抢到执行位的任务注册一次延迟重试，避免创建等待线程。"""
@@ -2646,17 +2681,18 @@ class TaskProcessor:
     
     def shutdown(self):
         """安全关闭调度器"""
-        try:
-            if self.scheduler:
-                # 防止对未运行的调度器调用shutdown引发异常
-                self.scheduler.shutdown(wait=False)
-        except SchedulerNotRunningError:
-            # 已经停止则忽略
-            pass
-        except Exception as e:
-            logger.warning(f"关闭任务处理器时发生异常: {e}")
-        finally:
-            logger.info("任务处理器已关闭")
+        with _GLOBAL_TASK_PROCESSOR_LOCK:
+            try:
+                if self.scheduler:
+                    # 防止对未运行的调度器调用shutdown引发异常
+                    self.scheduler.shutdown(wait=False)
+            except SchedulerNotRunningError:
+                # 已经停止则忽略
+                pass
+            except Exception as e:
+                logger.warning(f"关闭任务处理器时发生异常: {e}")
+            finally:
+                logger.info("任务处理器已关闭")
     
     def schedule_task(self, task_id):
         """
@@ -5135,7 +5171,7 @@ class TaskProcessor:
         return r'\N'.join(escaped_lines)
 
     @classmethod
-    def _compose_ass_dialogue_text(cls, lines, override_font_size=None):
+    def _compose_ass_dialogue_text(cls, lines, override_font_size=None, override_outline=None, override_shadow=None):
         escaped_lines = [
             cls._escape_ass_text_line(line)
             for line in (lines or [])
@@ -5152,7 +5188,16 @@ class TaskProcessor:
             override_font_size = 0
         if override_font_size <= 0:
             return payload
-        return f"{{\\fs{override_font_size}}}{payload}"
+        tags = [f"\\fs{override_font_size}"]
+        for name, value in (("bord", override_outline), ("shad", override_shadow)):
+            if value is not None:
+                try:
+                    number = float(value)
+                    if number == number and number not in (float('inf'), float('-inf')):
+                        tags.append(f"\\{name}{cls._format_ass_number(number)}")
+                except Exception:
+                    pass
+        return f"{{{''.join(tags)}}}{payload}"
 
     @classmethod
     def _build_streaming_ass_style(cls, video_width, video_height, style_overrides=None):
@@ -5221,7 +5266,16 @@ class TaskProcessor:
 
     @staticmethod
     def _sanitize_ass_font_name(font_family):
-        return str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ').strip() or 'Arial'
+        # FontName is embedded in force_style, where commas are field separators.
+        return (
+            str(font_family or 'Arial')
+            .replace('\r', ' ')
+            .replace('\n', ' ')
+            .replace(',', ' ')
+            .replace('\\', '/')
+            .strip()
+            or 'Arial'
+        )
 
     @classmethod
     def _resolve_streaming_srt_template_height(cls, video_width, video_height):
@@ -5516,11 +5570,10 @@ class TaskProcessor:
             # but the partitioner still prefers fewer balanced lines.
             max_lines = 5
         else:
-            # Hard-coded to 1 line for landscape captions. The single-line
-            # priority logic will scale the font down when needed; only if the
-            # text still does not fit will an overflow warning be emitted.
+            # Keep short landscape cues on one line, but allow a balanced
+            # two-line fallback after the minimum safe font size is reached.
             max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
-            max_lines = 1
+            max_lines = 2
         return max_line_length, max_lines
 
     @staticmethod
@@ -5695,7 +5748,7 @@ class TaskProcessor:
         if fits:
             return True
 
-        _, override_fits = cls._resolve_safe_override_font_size(
+        _, _, _, override_fits = cls._resolve_safe_override_font_size(
             lines,
             usable_width,
             font_size,
@@ -5901,6 +5954,7 @@ class TaskProcessor:
         font_size,
         outline,
         shadow,
+        max_lines=2,
     ):
         rescue_line_length = int(round(
             cls._estimate_safe_line_units(
@@ -5917,7 +5971,8 @@ class TaskProcessor:
         ))
 
         best_lines = []
-        for line_count in (3, 4):
+        line_limit = max(2, int(max_lines or 2))
+        for line_count in range(2, line_limit + 1):
             candidate_lines = cls._build_optimal_multiline_partition(
                 normalized,
                 max_line_length=rescue_line_length,
@@ -6018,7 +6073,7 @@ class TaskProcessor:
             shadow,
         )
         if fits or max_width <= 0:
-            return None, True
+            return None, None, None, True
 
         min_font_size = max(
             float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
@@ -6031,14 +6086,26 @@ class TaskProcessor:
         target_font_size = min(float(font_size), target_font_size)
         target_font_size = float(int(max(1, round(target_font_size))))
         if target_font_size >= float(font_size):
-            return None, False
+            return None, None, None, False
 
-        adjusted_outline = cls._clamp(
-            target_font_size * cls._ASS_OVERRIDE_OUTLINE_RATIO,
-            cls._ASS_OVERRIDE_OUTLINE_MIN,
-            cls._ASS_OVERRIDE_OUTLINE_MAX,
+        # Keep the configured outline/shadow proportions when a cue shrinks.
+        # A disabled style component stays disabled in the inline override.
+        outline_ratio = float(outline) / max(1.0, float(font_size))
+        shadow_ratio = float(shadow) / max(1.0, float(font_size))
+        adjusted_outline = (
+            0.0
+            if float(outline) <= 0.0
+            else cls._clamp(
+                target_font_size * outline_ratio,
+                0.0,
+                cls._ASS_OVERRIDE_OUTLINE_MAX,
+            )
         )
-        adjusted_shadow = cls._clamp(target_font_size * 0.016, 0.7, 1.35)
+        adjusted_shadow = (
+            0.0
+            if float(shadow) <= 0.0
+            else cls._clamp(target_font_size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
+        )
         adjusted_fits, _, _, _ = cls._check_ass_lines_width_safety(
             lines,
             usable_width,
@@ -6046,7 +6113,7 @@ class TaskProcessor:
             adjusted_outline,
             adjusted_shadow,
         )
-        return target_font_size, adjusted_fits
+        return target_font_size, adjusted_outline, adjusted_shadow, adjusted_fits
 
     @classmethod
     def _resolve_single_line_scaled_font(
@@ -6080,15 +6147,17 @@ class TaskProcessor:
             return None, None, None
 
         def _fits_at_size(size):
-            test_outline = cls._clamp(
-                size * cls._ASS_OUTLINE_RATIO,
-                cls._ASS_OUTLINE_MIN,
-                cls._ASS_OUTLINE_MAX,
+            outline_ratio = float(outline) / max(1.0, float(font_size))
+            shadow_ratio = float(shadow) / max(1.0, float(font_size))
+            test_outline = (
+                0.0
+                if float(outline) <= 0.0
+                else cls._clamp(size * outline_ratio, 0.0, cls._ASS_OVERRIDE_OUTLINE_MAX)
             )
-            test_shadow = cls._clamp(
-                size * cls._ASS_SHADOW_RATIO,
-                cls._ASS_SHADOW_MIN,
-                cls._ASS_SHADOW_MAX,
+            test_shadow = (
+                0.0
+                if float(shadow) <= 0.0
+                else cls._clamp(size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
             )
             fits, _, _, _ = cls._check_ass_lines_width_safety(
                 single_line,
@@ -6120,15 +6189,17 @@ class TaskProcessor:
         if best_size < min_allowed_font:
             return None, None, None
 
-        best_outline = cls._clamp(
-            best_size * cls._ASS_OUTLINE_RATIO,
-            cls._ASS_OUTLINE_MIN,
-            cls._ASS_OUTLINE_MAX,
+        outline_ratio = float(outline) / max(1.0, float(font_size))
+        shadow_ratio = float(shadow) / max(1.0, float(font_size))
+        best_outline = (
+            0.0
+            if float(outline) <= 0.0
+            else cls._clamp(best_size * outline_ratio, 0.0, cls._ASS_OVERRIDE_OUTLINE_MAX)
         )
-        best_shadow = cls._clamp(
-            best_size * cls._ASS_SHADOW_RATIO,
-            cls._ASS_SHADOW_MIN,
-            cls._ASS_SHADOW_MAX,
+        best_shadow = (
+            0.0
+            if float(shadow) <= 0.0
+            else cls._clamp(best_size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
         )
         return best_size, best_outline, best_shadow
 
@@ -6153,6 +6224,11 @@ class TaskProcessor:
         if cls._is_latin_word_char(left_char) and cls._is_latin_word_char(right_char):
             return True
         if left_char in '([{【（《“‘' or right_char in ')]}】）》」』”’':
+            return True
+        # Do not start a wrapped line with sentence punctuation. Keeping the
+        # punctuation attached to the preceding line also matches libass's
+        # visual rhythm for CJK captions.
+        if right_char in '.,!?;:，。！？；：、…':
             return True
         if left_char.isdigit() and right_char.isascii() and right_char.isalpha():
             return True
@@ -6516,6 +6592,8 @@ class TaskProcessor:
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN,
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
         ))
+        override_outline = None
+        override_shadow = None
 
         # Single-line priority: keep the whole cue on one line if it fits,
         # optionally scaling the font down within the configured range.
@@ -6549,6 +6627,8 @@ class TaskProcessor:
                     ass_text = cls._compose_ass_dialogue_text(
                         wrapped_lines,
                         override_font_size=wrap_meta['font_override'],
+                        override_outline=scaled_outline,
+                        override_shadow=scaled_shadow,
                     )
                     return (ass_text, wrap_meta) if return_meta else ass_text
                 wrapped_lines = cls._build_wrapped_lines_for_ass(
@@ -6620,9 +6700,8 @@ class TaskProcessor:
                     wrap_meta['forced_wrap'] = True
                     fits = portrait_fallback_fits
 
-        # Landscape captions are hard-coded to a single line. Only attempt
-        # multi-line rescue fallbacks when the layout explicitly allows more
-        # than one line (e.g. caller passed prefer_single_line=False).
+        # Landscape captions prefer a single line, then use a balanced
+        # two-line rescue when the configured minimum font still overflows.
         if not fits and not is_portrait and 1 < max_lines < 4:
             landscape_rescue_lines, landscape_rescue_fits = cls._find_landscape_rescue_lines(
                 normalized,
@@ -6631,6 +6710,7 @@ class TaskProcessor:
                 font_size=font_size,
                 outline=outline,
                 shadow=shadow,
+                max_lines=max_lines,
             )
             if landscape_rescue_lines:
                 candidate_lines = landscape_rescue_lines
@@ -6640,7 +6720,7 @@ class TaskProcessor:
                 rescue_lines, rescue_fits = cls._find_safe_hard_wrap_lines(
                     normalized,
                     max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                    max_lines=3,
+                    max_lines=max_lines,
                     usable_width=usable_width,
                     font_size=font_size,
                     outline=outline,
@@ -6655,7 +6735,7 @@ class TaskProcessor:
                 deep_rescue_lines, deep_rescue_fits = cls._find_safe_hard_wrap_lines(
                     normalized,
                     max_line_length=max(max_line_length - 2, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                    max_lines=4,
+                    max_lines=max_lines,
                     usable_width=usable_width,
                     font_size=font_size,
                     outline=outline,
@@ -6668,7 +6748,12 @@ class TaskProcessor:
 
         override_font_size = None
         if not fits and candidate_lines:
-            override_font_size, override_fits = cls._resolve_safe_override_font_size(
+            (
+                override_font_size,
+                override_outline,
+                override_shadow,
+                override_fits,
+            ) = cls._resolve_safe_override_font_size(
                 candidate_lines,
                 usable_width,
                 font_size,
@@ -6682,7 +6767,12 @@ class TaskProcessor:
         if not fits and candidate_lines:
             wrap_meta['overflow_warning'] = True
 
-        ass_text = cls._compose_ass_dialogue_text(candidate_lines, override_font_size=override_font_size)
+        ass_text = cls._compose_ass_dialogue_text(
+            candidate_lines,
+            override_font_size=override_font_size,
+            override_outline=override_outline,
+            override_shadow=override_shadow,
+        )
         return (ass_text, wrap_meta) if return_meta else ass_text
 
     @classmethod
@@ -9841,6 +9931,10 @@ def start_task(task_id, config=None):
         logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能启动")
         return False
     
+    # 放弃的失败任务可能没有 worker 负责在 finally 清理取消事件；重试前仅在任务不活动时清除旧标记。
+    if not _is_task_active(task_id):
+        clear_task_cancel(task_id, clear_flag=True)
+
     # 如果没有提供配置，尝试从Flask app获取
     if not config:
         try:
@@ -9938,23 +10032,29 @@ def get_global_task_processor(config=None):
         TaskProcessor: 全局任务处理器实例
     """
     global _global_task_processor
-    
-    if _global_task_processor is None:
-        logger.info("创建全局任务处理器实例")
-        _global_task_processor = TaskProcessor(config)
-    elif config:
-        logger.info("配置已更新，刷新全局任务处理器运行时配置")
-        _global_task_processor.refresh_config(config)
-    
-    return _global_task_processor
+
+    with _GLOBAL_TASK_PROCESSOR_LOCK:
+        if _global_task_processor is None:
+            logger.info("创建全局任务处理器实例")
+            _global_task_processor = TaskProcessor(config)
+        elif config:
+            logger.info("配置已更新，刷新全局任务处理器运行时配置")
+            _global_task_processor.refresh_config(config)
+
+        return _global_task_processor
+
 
 def shutdown_global_task_processor():
     """关闭全局任务处理器"""
     global _global_task_processor
-    if _global_task_processor:
-        _global_task_processor.shutdown()
-        _global_task_processor = None
-        logger.info("全局任务处理器已关闭")
+    with _GLOBAL_TASK_PROCESSOR_LOCK:
+        processor = _global_task_processor
+        if processor:
+            try:
+                processor.shutdown()
+            finally:
+                _global_task_processor = None
+            logger.info("全局任务处理器已关闭")
 
 # 初始化数据库
 init_db() 

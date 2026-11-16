@@ -1,5 +1,37 @@
 // 主JavaScript文件
+(function installCsrfFetchGuard() {
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+        const options = init ? Object.assign({}, init) : {};
+        const method = String(options.method || (input && input.method) || 'GET').toUpperCase();
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+            const tokenNode = document.querySelector('meta[name="csrf-token"]');
+            const token = tokenNode && tokenNode.getAttribute('content');
+            if (token) {
+                const headers = new Headers(options.headers || (input && input.headers) || {});
+                if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
+                options.headers = headers;
+            }
+        }
+        return originalFetch.call(this, input, options);
+    };
+})();
+
 document.addEventListener('DOMContentLoaded', function() {
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrfValue = csrfMeta && csrfMeta.getAttribute('content');
+    if (csrfValue) {
+        document.querySelectorAll('form[method="post"], form[method="POST"]').forEach(function(form) {
+            if (!form.querySelector('input[name="csrf_token"]')) {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'csrf_token';
+                input.value = csrfValue;
+                form.appendChild(input);
+            }
+        });
+    }
+
     console.log('Y2A-Auto 已加载');
 
     // --- 设置页面的密码保护逻辑 ---
