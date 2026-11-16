@@ -62,9 +62,9 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
     def test_landscape_layout_uses_wider_lines(self):
         max_line_length, max_lines = TaskProcessor._estimate_subtitle_layout_limits(1920, 1080)
 
-        # Landscape captions are hard-coded to a single line; font scaling is
-        # used instead of wrapping when the cue is slightly too long.
-        self.assertEqual(max_lines, 1)
+        # Landscape captions prefer one line, with a two-line fallback
+        # after the minimum safe font size is reached.
+        self.assertEqual(max_lines, 2)
         self.assertGreaterEqual(max_line_length, 22)
 
     def test_portrait_ass_style_keeps_higher_vertical_margin(self):
@@ -103,6 +103,8 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         self.assertNotIn(r'\N', text)
         self.assertIsNotNone(meta.get('font_override'))
         self.assertGreater(meta['font_override'], 0)
+        self.assertIn(r'\bord', text)
+        self.assertIn(r'\shad', text)
 
     def test_long_landscape_wrap_avoids_breaking_common_phrases(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
@@ -219,7 +221,7 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         else:
             self.assertFalse(meta.get('overflow_warning'))
 
-    def test_landscape_forces_single_line_even_when_disabled(self):
+    def test_landscape_falls_back_to_balanced_two_lines_when_single_line_disabled(self):
         text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
             '这是一句中等长度的中文测试字幕，在横屏下默认字体一行放不下，禁用单行优先后应立即换行。',
             1920,
@@ -229,11 +231,23 @@ class SubtitleRenderingLayoutTests(unittest.TestCase):
         )
 
         self.assertTrue(text)
-        # Landscape layout limits are hard-coded to one line regardless of the
-        # single-line preference flag.
-        self.assertNotIn(r'\N', text)
-        self.assertIsNotNone(meta.get('font_override'))
-        self.assertGreater(meta['font_override'], 0)
+        self.assertIn(r'\N', text)
+        self.assertGreaterEqual(text.count(r'\N') + 1, 2)
+        self.assertLessEqual(text.count(r'\N') + 1, 2)
+        self.assertIsNone(meta.get('font_override'))
+        self.assertFalse(meta.get('overflow_warning'))
+
+    def test_landscape_mixed_text_does_not_start_line_with_punctuation(self):
+        text, meta = TaskProcessor._wrap_subtitle_text_for_ass(
+            '如果字幕同时出现 RTX 5090、YouTube Shorts 和 AI workflow，这种中英混排也要保持单词完整，并在必要时自然分成两行。',
+            1920,
+            1080,
+            return_meta=True,
+        )
+
+        lines = self._extract_ass_lines(text)
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertFalse(any(line[:1] in '，。！？；：、)]}】）》」』' for line in lines if line))
         self.assertFalse(meta.get('overflow_warning'))
 
     def test_ass_document_merges_existing_cue_line_breaks_for_landscape(self):

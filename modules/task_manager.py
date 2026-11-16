@@ -5168,7 +5168,7 @@ class TaskProcessor:
         return r'\N'.join(escaped_lines)
 
     @classmethod
-    def _compose_ass_dialogue_text(cls, lines, override_font_size=None):
+    def _compose_ass_dialogue_text(cls, lines, override_font_size=None, override_outline=None, override_shadow=None):
         escaped_lines = [
             cls._escape_ass_text_line(line)
             for line in (lines or [])
@@ -5185,7 +5185,16 @@ class TaskProcessor:
             override_font_size = 0
         if override_font_size <= 0:
             return payload
-        return f"{{\\fs{override_font_size}}}{payload}"
+        tags = [f"\\fs{override_font_size}"]
+        for name, value in (("bord", override_outline), ("shad", override_shadow)):
+            if value is not None:
+                try:
+                    number = float(value)
+                    if number == number and number not in (float('inf'), float('-inf')):
+                        tags.append(f"\\{name}{cls._format_ass_number(number)}")
+                except Exception:
+                    pass
+        return f"{{{''.join(tags)}}}{payload}"
 
     @classmethod
     def _build_streaming_ass_style(cls, video_width, video_height, style_overrides=None):
@@ -5254,7 +5263,16 @@ class TaskProcessor:
 
     @staticmethod
     def _sanitize_ass_font_name(font_family):
-        return str(font_family or 'Arial').replace('\r', ' ').replace('\n', ' ').strip() or 'Arial'
+        # FontName is embedded in force_style, where commas are field separators.
+        return (
+            str(font_family or 'Arial')
+            .replace('\r', ' ')
+            .replace('\n', ' ')
+            .replace(',', ' ')
+            .replace('\\', '/')
+            .strip()
+            or 'Arial'
+        )
 
     @classmethod
     def _resolve_streaming_srt_template_height(cls, video_width, video_height):
@@ -5549,11 +5567,10 @@ class TaskProcessor:
             # but the partitioner still prefers fewer balanced lines.
             max_lines = 5
         else:
-            # Hard-coded to 1 line for landscape captions. The single-line
-            # priority logic will scale the font down when needed; only if the
-            # text still does not fit will an overflow warning be emitted.
+            # Keep short landscape cues on one line, but allow a balanced
+            # two-line fallback after the minimum safe font size is reached.
             max_line_length = int(cls._clamp(max_line_length, 18.0, 22.0))
-            max_lines = 1
+            max_lines = 2
         return max_line_length, max_lines
 
     @staticmethod
@@ -5728,7 +5745,7 @@ class TaskProcessor:
         if fits:
             return True
 
-        _, override_fits = cls._resolve_safe_override_font_size(
+        _, _, _, override_fits = cls._resolve_safe_override_font_size(
             lines,
             usable_width,
             font_size,
@@ -5934,6 +5951,7 @@ class TaskProcessor:
         font_size,
         outline,
         shadow,
+        max_lines=2,
     ):
         rescue_line_length = int(round(
             cls._estimate_safe_line_units(
@@ -5950,7 +5968,8 @@ class TaskProcessor:
         ))
 
         best_lines = []
-        for line_count in (3, 4):
+        line_limit = max(2, int(max_lines or 2))
+        for line_count in range(2, line_limit + 1):
             candidate_lines = cls._build_optimal_multiline_partition(
                 normalized,
                 max_line_length=rescue_line_length,
@@ -6051,7 +6070,7 @@ class TaskProcessor:
             shadow,
         )
         if fits or max_width <= 0:
-            return None, True
+            return None, None, None, True
 
         min_font_size = max(
             float(cls._ASS_OVERRIDE_FONT_SIZE_MIN),
@@ -6064,14 +6083,26 @@ class TaskProcessor:
         target_font_size = min(float(font_size), target_font_size)
         target_font_size = float(int(max(1, round(target_font_size))))
         if target_font_size >= float(font_size):
-            return None, False
+            return None, None, None, False
 
-        adjusted_outline = cls._clamp(
-            target_font_size * cls._ASS_OVERRIDE_OUTLINE_RATIO,
-            cls._ASS_OVERRIDE_OUTLINE_MIN,
-            cls._ASS_OVERRIDE_OUTLINE_MAX,
+        # Keep the configured outline/shadow proportions when a cue shrinks.
+        # A disabled style component stays disabled in the inline override.
+        outline_ratio = float(outline) / max(1.0, float(font_size))
+        shadow_ratio = float(shadow) / max(1.0, float(font_size))
+        adjusted_outline = (
+            0.0
+            if float(outline) <= 0.0
+            else cls._clamp(
+                target_font_size * outline_ratio,
+                0.0,
+                cls._ASS_OVERRIDE_OUTLINE_MAX,
+            )
         )
-        adjusted_shadow = cls._clamp(target_font_size * 0.016, 0.7, 1.35)
+        adjusted_shadow = (
+            0.0
+            if float(shadow) <= 0.0
+            else cls._clamp(target_font_size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
+        )
         adjusted_fits, _, _, _ = cls._check_ass_lines_width_safety(
             lines,
             usable_width,
@@ -6079,7 +6110,7 @@ class TaskProcessor:
             adjusted_outline,
             adjusted_shadow,
         )
-        return target_font_size, adjusted_fits
+        return target_font_size, adjusted_outline, adjusted_shadow, adjusted_fits
 
     @classmethod
     def _resolve_single_line_scaled_font(
@@ -6113,15 +6144,17 @@ class TaskProcessor:
             return None, None, None
 
         def _fits_at_size(size):
-            test_outline = cls._clamp(
-                size * cls._ASS_OUTLINE_RATIO,
-                cls._ASS_OUTLINE_MIN,
-                cls._ASS_OUTLINE_MAX,
+            outline_ratio = float(outline) / max(1.0, float(font_size))
+            shadow_ratio = float(shadow) / max(1.0, float(font_size))
+            test_outline = (
+                0.0
+                if float(outline) <= 0.0
+                else cls._clamp(size * outline_ratio, 0.0, cls._ASS_OVERRIDE_OUTLINE_MAX)
             )
-            test_shadow = cls._clamp(
-                size * cls._ASS_SHADOW_RATIO,
-                cls._ASS_SHADOW_MIN,
-                cls._ASS_SHADOW_MAX,
+            test_shadow = (
+                0.0
+                if float(shadow) <= 0.0
+                else cls._clamp(size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
             )
             fits, _, _, _ = cls._check_ass_lines_width_safety(
                 single_line,
@@ -6153,15 +6186,17 @@ class TaskProcessor:
         if best_size < min_allowed_font:
             return None, None, None
 
-        best_outline = cls._clamp(
-            best_size * cls._ASS_OUTLINE_RATIO,
-            cls._ASS_OUTLINE_MIN,
-            cls._ASS_OUTLINE_MAX,
+        outline_ratio = float(outline) / max(1.0, float(font_size))
+        shadow_ratio = float(shadow) / max(1.0, float(font_size))
+        best_outline = (
+            0.0
+            if float(outline) <= 0.0
+            else cls._clamp(best_size * outline_ratio, 0.0, cls._ASS_OVERRIDE_OUTLINE_MAX)
         )
-        best_shadow = cls._clamp(
-            best_size * cls._ASS_SHADOW_RATIO,
-            cls._ASS_SHADOW_MIN,
-            cls._ASS_SHADOW_MAX,
+        best_shadow = (
+            0.0
+            if float(shadow) <= 0.0
+            else cls._clamp(best_size * shadow_ratio, 0.0, cls._ASS_SHADOW_MAX)
         )
         return best_size, best_outline, best_shadow
 
@@ -6186,6 +6221,11 @@ class TaskProcessor:
         if cls._is_latin_word_char(left_char) and cls._is_latin_word_char(right_char):
             return True
         if left_char in '([{【（《“‘' or right_char in ')]}】）》」』”’':
+            return True
+        # Do not start a wrapped line with sentence punctuation. Keeping the
+        # punctuation attached to the preceding line also matches libass's
+        # visual rhythm for CJK captions.
+        if right_char in '.,!?;:，。！？；：、…':
             return True
         if left_char.isdigit() and right_char.isascii() and right_char.isalpha():
             return True
@@ -6549,6 +6589,8 @@ class TaskProcessor:
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MIN,
             cls._ASS_LANDSCAPE_SINGLE_LINE_LIMIT_MAX,
         ))
+        override_outline = None
+        override_shadow = None
 
         # Single-line priority: keep the whole cue on one line if it fits,
         # optionally scaling the font down within the configured range.
@@ -6582,6 +6624,8 @@ class TaskProcessor:
                     ass_text = cls._compose_ass_dialogue_text(
                         wrapped_lines,
                         override_font_size=wrap_meta['font_override'],
+                        override_outline=scaled_outline,
+                        override_shadow=scaled_shadow,
                     )
                     return (ass_text, wrap_meta) if return_meta else ass_text
                 wrapped_lines = cls._build_wrapped_lines_for_ass(
@@ -6653,9 +6697,8 @@ class TaskProcessor:
                     wrap_meta['forced_wrap'] = True
                     fits = portrait_fallback_fits
 
-        # Landscape captions are hard-coded to a single line. Only attempt
-        # multi-line rescue fallbacks when the layout explicitly allows more
-        # than one line (e.g. caller passed prefer_single_line=False).
+        # Landscape captions prefer a single line, then use a balanced
+        # two-line rescue when the configured minimum font still overflows.
         if not fits and not is_portrait and 1 < max_lines < 4:
             landscape_rescue_lines, landscape_rescue_fits = cls._find_landscape_rescue_lines(
                 normalized,
@@ -6664,6 +6707,7 @@ class TaskProcessor:
                 font_size=font_size,
                 outline=outline,
                 shadow=shadow,
+                max_lines=max_lines,
             )
             if landscape_rescue_lines:
                 candidate_lines = landscape_rescue_lines
@@ -6673,7 +6717,7 @@ class TaskProcessor:
                 rescue_lines, rescue_fits = cls._find_safe_hard_wrap_lines(
                     normalized,
                     max_line_length=max(max_line_length - 1, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                    max_lines=3,
+                    max_lines=max_lines,
                     usable_width=usable_width,
                     font_size=font_size,
                     outline=outline,
@@ -6688,7 +6732,7 @@ class TaskProcessor:
                 deep_rescue_lines, deep_rescue_fits = cls._find_safe_hard_wrap_lines(
                     normalized,
                     max_line_length=max(max_line_length - 2, cls._ASS_HARD_WRAP_MIN_LINE_LENGTH),
-                    max_lines=4,
+                    max_lines=max_lines,
                     usable_width=usable_width,
                     font_size=font_size,
                     outline=outline,
@@ -6701,7 +6745,12 @@ class TaskProcessor:
 
         override_font_size = None
         if not fits and candidate_lines:
-            override_font_size, override_fits = cls._resolve_safe_override_font_size(
+            (
+                override_font_size,
+                override_outline,
+                override_shadow,
+                override_fits,
+            ) = cls._resolve_safe_override_font_size(
                 candidate_lines,
                 usable_width,
                 font_size,
@@ -6715,7 +6764,12 @@ class TaskProcessor:
         if not fits and candidate_lines:
             wrap_meta['overflow_warning'] = True
 
-        ass_text = cls._compose_ass_dialogue_text(candidate_lines, override_font_size=override_font_size)
+        ass_text = cls._compose_ass_dialogue_text(
+            candidate_lines,
+            override_font_size=override_font_size,
+            override_outline=override_outline,
+            override_shadow=override_shadow,
+        )
         return (ass_text, wrap_meta) if return_meta else ass_text
 
     @classmethod
