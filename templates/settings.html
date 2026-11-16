@@ -829,7 +829,17 @@
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="openai-thinking-enabled" name="OPENAI_THINKING_ENABLED" {% if config.get('OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
                                                                 <label class="form-check-label" for="openai-thinking-enabled">允许模型使用思考模式</label>
-                                                                <p class="help-text mb-0 mt-2">关闭时优先发送厂商原生开关：DeepSeek Chat 用 <code>thinking</code>、Responses 用 <code>reasoning.effort=none</code>；Qwen Chat/Responses 用 <code>enable_thinking</code>；MiMo Chat 用 <code>thinking</code>、Responses 用 <code>reasoning.effort=none</code>。原生开关被端点拒绝时会依次尝试标准 <code>reasoning_effort=none</code> / <code>reasoning.effort=none</code>，全部失败才移除控制并记录 warning；此时模型可能恢复默认思考行为。通过反向代理访问官方端点时按第三方顺序逐个尝试。OpenAI o 系列 / GPT-5 等推理模型各代支持的 <code>reasoning_effort</code> 取值不同，本开关不会自动改写。</p>
+                                                                <p class="help-text mb-0 mt-2">关闭时优先发送厂商原生禁用参数；端点不支持时会记录兼容降级警告。开启后可使用模型默认或指定思考力度；各模型支持的力度不同，不支持的参数会降级处理。</p>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="openai-thinking-enabled-effort" class="form-label">默认模型思考力度</label>
+                                                                <select id="openai-thinking-enabled-effort" name="OPENAI_REASONING_EFFORT" class="form-select">
+                                                                    {% for value, label in [('auto', '模型默认'), ('minimal', '最低'), ('low', '低'), ('medium', '中'), ('high', '高'), ('xhigh', '最高')] %}
+                                                                    <option value="{{ value }}" {% if config.get('OPENAI_REASONING_EFFORT', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+                                                                    {% endfor %}
+                                                                </select>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -865,6 +875,16 @@
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="subtitle-openai-thinking-enabled" name="SUBTITLE_OPENAI_THINKING_ENABLED" {% if config.get('SUBTITLE_OPENAI_THINKING_ENABLED', False) %}checked{% endif %}>
                                                                 <label class="form-check-label" for="subtitle-openai-thinking-enabled">允许字幕模型使用思考模式</label>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-openai-thinking-enabled-effort" class="form-label">字幕翻译思考力度</label>
+                                                                <select id="subtitle-openai-thinking-enabled-effort" name="SUBTITLE_OPENAI_REASONING_EFFORT" class="form-select">
+                                                                    {% for value, label in [('auto', '模型默认'), ('minimal', '最低'), ('low', '低'), ('medium', '中'), ('high', '高'), ('xhigh', '最高')] %}
+                                                                    <option value="{{ value }}" {% if config.get('SUBTITLE_OPENAI_REASONING_EFFORT', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+                                                                    {% endfor %}
+                                                                </select>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -951,6 +971,16 @@
                                                                 <label class="form-check-label" for="subtitle-qc-thinking-enabled">质检模型启用思考模式</label>
                                                             </div>
                                                         </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="subtitle-qc-thinking-enabled-effort" class="form-label">字幕质检思考力度</label>
+                                                                <select id="subtitle-qc-thinking-enabled-effort" name="SUBTITLE_QC_REASONING_EFFORT" class="form-select">
+                                                                    {% for value, label in [('auto', '模型默认'), ('minimal', '最低'), ('low', '低'), ('medium', '中'), ('high', '高'), ('xhigh', '最高')] %}
+                                                                    <option value="{{ value }}" {% if config.get('SUBTITLE_QC_REASONING_EFFORT', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+                                                                    {% endfor %}
+                                                                </select>
+                                                            </div>
+                                                        </div>
                                                         <div class="col-12">
                                                             <p class="help-text mb-0">仅用于字幕质检；地址、密钥、模型名留空时按“字幕质检专用覆盖”→“字幕翻译专用覆盖”→“全局模型”的顺序回退。</p>
                                                         </div>
@@ -992,6 +1022,16 @@
                                                             <div class="form-check form-switch">
                                                                 <input class="form-check-input" type="checkbox" id="ai-seg-thinking-enabled" name="AI_SEGMENTATION_THINKING_ENABLED" {% if config.get('AI_SEGMENTATION_THINKING_ENABLED', False) %}checked{% endif %}>
                                                                 <label class="form-check-label" for="ai-seg-thinking-enabled">智能分段模型启用思考模式</label>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="form-group">
+                                                                <label for="ai-seg-thinking-enabled-effort" class="form-label">智能分段思考力度</label>
+                                                                <select id="ai-seg-thinking-enabled-effort" name="AI_SEGMENTATION_REASONING_EFFORT" class="form-select">
+                                                                    {% for value, label in [('auto', '模型默认'), ('minimal', '最低'), ('low', '低'), ('medium', '中'), ('high', '高'), ('xhigh', '最高')] %}
+                                                                    <option value="{{ value }}" {% if config.get('AI_SEGMENTATION_REASONING_EFFORT', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+                                                                    {% endfor %}
+                                                                </select>
                                                             </div>
                                                         </div>
                                                     </div>

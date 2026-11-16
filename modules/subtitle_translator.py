@@ -23,6 +23,7 @@ from .utils import (
     extract_chat_message_json,
     extract_json_from_text,
     get_chat_message_text,
+    normalize_reasoning_effort,
 )
 
 logger = logging.getLogger('subtitle_translator')
@@ -447,6 +448,8 @@ class TranslationConfig:
     allow_partial: bool = SUBTITLE_ALLOW_PARTIAL_DEFAULT
     # 单批字符预算：批内 source_text 长度之和上限，超限即另起一批。
     max_chars_per_batch: int = SUBTITLE_MAX_CHARS_PER_BATCH_DEFAULT
+    # 推理强度；置于末尾以保持旧的 positional 构造兼容。
+    reasoning_effort: str = "auto"
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -806,6 +809,7 @@ class LLMRequester:
                 expected_count=len(texts),
                 batch_id=batch_id,
                 scene_name='subtitle_translate_batch_strict',
+                require_indexed=True,
             )
         except Exception as e:
             with self._log_lock:
@@ -847,6 +851,7 @@ class LLMRequester:
         expected_count: int,
         batch_id: str,
         scene_name: str,
+        require_indexed: bool = False,
     ) -> List[str]:
         """请求并解析字幕；JSON 模式产出不可解析时自动改用纯文本 JSON 重试。
 
@@ -864,15 +869,29 @@ class LLMRequester:
             json_mode=json_mode,
         )
         if not getattr(response, 'choices', None):
-            with self._log_lock:
-                self.logger.warning(f"批次 {batch_id}: API返回空的choices列表")
-            return [""] * expected_count
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: API返回空的choices列表，无法验证翻译结果"
+            )
+
+        choice = response.choices[0]
+        message = choice.get('message') if isinstance(choice, dict) else getattr(choice, 'message', None)
+        finish_reason = choice.get('finish_reason') if isinstance(choice, dict) else getattr(choice, 'finish_reason', None)
+        if finish_reason not in (None, 'stop', 'completed', 'end_turn'):
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: API响应未正常完成（finish_reason={finish_reason}）"
+            )
+        def _message_field(name):
+            return message.get(name) if isinstance(message, dict) else getattr(message, name, None)
+        if (_message_field('refusal') or _message_field('tool_calls') or _message_field('function_call')):
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: API返回拒答或工具调用响应，不是完整翻译"
+            )
 
         (
             translations,
             parsed_successfully,
         ) = self._parse_structured_translation_result_with_status(
-            response.choices[0].message, expected_count, batch_id
+            message, expected_count, batch_id, require_indexed=require_indexed
         )
         if parsed_successfully:
             return translations
@@ -894,7 +913,11 @@ class LLMRequester:
                 + "\n必须按输入下标逐条返回："
                 + '{"translations":[{"index":0,"translation":"译文1"},{"index":1,"translation":"译文2"}]}；'
                 + "index 与输入条目编号一一对应，不得缺项、不得合并、不得增项；"
-                + "若只能输出纯文本，则每行一条译文，行数必须与输入条数完全相同且顺序一致。"
+                + (
+                    "必须返回带完整 index 的 JSON，不得用纯文本行或编号清单代替。"
+                    if require_indexed
+                    else "若只能输出纯文本，则每行一条译文，行数必须与输入条数完全相同且顺序一致。"
+                )
             ),
             user_prompt=user_prompt,
             scene_name=f'{scene_name}_plain_json_retry',
@@ -904,13 +927,35 @@ class LLMRequester:
             raise SubtitleAlignmentError(
                 f"批次 {batch_id}: 纯文本JSON重试返回空的choices列表，判定该批失败"
             )
+        retry_choice = retry_response.choices[0]
+        retry_message = (
+            retry_choice.get('message') if isinstance(retry_choice, dict)
+            else getattr(retry_choice, 'message', None)
+        )
+        retry_finish_reason = (
+            retry_choice.get('finish_reason') if isinstance(retry_choice, dict)
+            else getattr(retry_choice, 'finish_reason', None)
+        )
+        if retry_finish_reason not in (None, 'stop', 'completed', 'end_turn'):
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: 纯文本JSON重试未正常完成（finish_reason={retry_finish_reason}）"
+            )
+        retry_field = (
+            lambda name: retry_message.get(name) if isinstance(retry_message, dict)
+            else getattr(retry_message, name, None)
+        )
+        if retry_field('refusal') or retry_field('tool_calls') or retry_field('function_call'):
+            raise SubtitleAlignmentError(
+                f"批次 {batch_id}: 纯文本JSON重试返回拒答或工具调用响应"
+            )
         (
             retried,
             retry_parsed_successfully,
         ) = self._parse_structured_translation_result_with_status(
-            retry_response.choices[0].message,
+            retry_message,
             expected_count,
             f'{batch_id}_plain_retry',
+            require_indexed=require_indexed,
         )
         if retry_parsed_successfully:
             with self._capability_lock:
@@ -960,12 +1005,15 @@ class LLMRequester:
             ensure_ascii=False,
         )
 
-    def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> Optional[List[str]]:
-        """解析结构化翻译结果（配对不成立时返回 None）"""
+    def _parse_structured_translation_result(
+        self, message, expected_count: int, batch_id: str, *, require_indexed: bool = False
+    ) -> Optional[List[str]]:
+        """解析结构化翻译结果（配对不成立时返回 None）。"""
         translations, _ = self._parse_structured_translation_result_with_status(
             message,
             expected_count,
             batch_id,
+            require_indexed=require_indexed,
         )
         return translations
 
@@ -974,6 +1022,8 @@ class LLMRequester:
         message,
         expected_count: int,
         batch_id: str,
+        *,
+        require_indexed: bool = False,
     ) -> Tuple[Optional[List[str]], bool]:
         """解析结构化翻译结果，并区分解析成功与配对失败。
 
@@ -1019,6 +1069,12 @@ class LLMRequester:
                     )
                 return None, False
             else:
+                if require_indexed:
+                    with self._log_lock:
+                        self.logger.warning(
+                            "批次 %s: 严格模式响应缺少逐条下标，拒绝按位置配对", batch_id
+                        )
+                    return None, False
                 positional = self._coerce_translation_list(json_result, expected_count)
                 if positional is not None:
                     if len(positional) != expected_count:
@@ -1088,7 +1144,7 @@ class LLMRequester:
             if key in element:
                 text_value = element[key]
                 break
-        if text_value is None or isinstance(text_value, (dict, list)):
+        if text_value is None or not isinstance(text_value, str):
             return None
         return index_int, text_value
 
@@ -1104,6 +1160,8 @@ class LLMRequester:
             except Exception:
                 return None
             if index_int in mapping or isinstance(item, (dict, list)):
+                return None
+            if not isinstance(item, str):
                 return None
             mapping[index_int] = item
         return mapping
@@ -1214,10 +1272,12 @@ class LLMRequester:
                     if key in item:
                         item_value = item[key]
                         break
-                if item_value is None:
+                if item_value is None or not isinstance(item_value, str):
                     return None
                 translations.append(item_value)
             else:
+                if not isinstance(item, str):
+                    return None
                 translations.append(item)
         return translations
 
@@ -1288,6 +1348,7 @@ class SubtitleTranslator:
             'OPENAI_BASE_URL': config.base_url or 'https://api.openai.com/v1',
             'OPENAI_MODEL_NAME': config.model_name or 'gpt-3.5-turbo',
             'OPENAI_THINKING_ENABLED': str(config.thinking_enabled).strip().lower() in ('true', '1', 'on', 'yes'),
+            'OPENAI_REASONING_EFFORT': normalize_reasoning_effort(config.reasoning_effort),
             'OPENAI_TIMEOUT_SECONDS': config.timeout_seconds,
             # Prompt 中心配置（快照，避免热修改影响进行中的翻译）
             'PROMPT_MODE': getattr(config, 'prompt_mode', 'builtin'),
@@ -1971,6 +2032,9 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
         max_workers = app_config.get('SUBTITLE_MAX_WORKERS', 2)  # 降低默认并发数
         if isinstance(max_workers, str):
             max_workers = int(max_workers)
+        reasoning_effort = normalize_reasoning_effort(
+            app_config.get('SUBTITLE_OPENAI_REASONING_EFFORT', 'auto')
+        )
 
         # 未译残留策略：默认关闭部分容忍（任一条未译即整体失败，不写盘）
         allow_partial = coerce_bool(
@@ -2025,6 +2089,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             prompt_strict_text=prompt_strict_text,
             allow_partial=allow_partial,
             max_chars_per_batch=max_chars_per_batch,
+            reasoning_effort=reasoning_effort,
         )
         
         if not translation_config.api_key:

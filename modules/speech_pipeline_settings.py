@@ -112,6 +112,7 @@ SPEECH_PIPELINE_DEFAULTS: Dict[str, Any] = {
     "AI_SEGMENTATION_API_KEY": "",  # 留空则回退到 OPENAI_API_KEY
     "AI_SEGMENTATION_MODEL_NAME": "",  # 留空则回退到 OPENAI_MODEL_NAME
     "AI_SEGMENTATION_THINKING_ENABLED": False,  # 智能分段模型独立思考开关
+    "AI_SEGMENTATION_REASONING_EFFORT": "auto",
     "AI_SEGMENTATION_MIN_CUE_DURATION_S": 1.5,  # 最短显示时长（秒），低于此值合并/延长（电影级字幕节奏下限）
     "AI_SEGMENTATION_MAX_CUE_DURATION_S": 5.0,  # 最长段长（秒），超过则拆分（避免单条过长）
     "AI_SEGMENTATION_MAX_CPS": 15.0,  # 最大每秒可见字符数（中文友好），超过则拆分

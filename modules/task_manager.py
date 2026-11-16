@@ -3427,6 +3427,9 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            'OPENAI_REASONING_EFFORT': self.config.get('OPENAI_REASONING_EFFORT', 'auto'),
+            'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
+            'AI_FAILOVER_TIMEOUT_SECONDS': self.config.get('AI_FAILOVER_TIMEOUT_SECONDS', 8),
             # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
             'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),
             'FALLBACK_OPENAI_BASE_URL': self.config.get('FALLBACK_OPENAI_BASE_URL', ''),
@@ -8337,6 +8340,9 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            'OPENAI_REASONING_EFFORT': self.config.get('OPENAI_REASONING_EFFORT', 'auto'),
+            'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
+            'AI_FAILOVER_TIMEOUT_SECONDS': self.config.get('AI_FAILOVER_TIMEOUT_SECONDS', 8),
             # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
             'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),
             'FALLBACK_OPENAI_BASE_URL': self.config.get('FALLBACK_OPENAI_BASE_URL', ''),
@@ -8433,6 +8439,8 @@ class TaskProcessor:
             'OPENAI_BASE_URL': self.config.get('OPENAI_BASE_URL', ''),
             'OPENAI_MODEL_NAME': self.config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
             'OPENAI_THINKING_ENABLED': self.config.get('OPENAI_THINKING_ENABLED', False),
+            'OPENAI_REASONING_EFFORT': self.config.get('OPENAI_REASONING_EFFORT', 'auto'),
+            'AI_FAILOVER_TIMEOUT_SECONDS': self.config.get('AI_FAILOVER_TIMEOUT_SECONDS', 8),
             'OPENAI_TIMEOUT_SECONDS': self.config.get('OPENAI_TIMEOUT_SECONDS', 600),
             # 兜底端点：显式透传，确保 get_ai_client 能拿到（统一客户端也会从全局配置补齐）
             'FALLBACK_OPENAI_API_KEY': self.config.get('FALLBACK_OPENAI_API_KEY', ''),

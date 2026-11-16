@@ -339,6 +339,21 @@ _THINKING_STYLE_LABELS = {
 }
 
 
+_REASONING_EFFORT_VALUES = frozenset({'auto', 'minimal', 'low', 'medium', 'high', 'xhigh'})
+
+
+def normalize_reasoning_effort(value, default='auto') -> str:
+    """Normalize a configured reasoning effort without exposing provider details."""
+    normalized_default = safe_str(default, default='auto').strip().lower()
+    if normalized_default not in _REASONING_EFFORT_VALUES:
+        normalized_default = 'auto'
+    normalized = safe_str(value).strip().lower()
+    if normalized in _REASONING_EFFORT_VALUES:
+        return normalized
+    # "none" is an internal disable sentinel, not a public configuration value.
+    return normalized_default
+
+
 def _coerce_bool(value, default=False):
     if isinstance(value, bool):
         return value
@@ -474,18 +489,28 @@ def _client_api_mode(client) -> str:
     ).strip().lower()
 
 
-def _client_compatibility_key(client, create_kwargs) -> str:
+def _client_compatibility_key(client, create_kwargs, strategy='auto') -> str:
     endpoint_value = safe_str(getattr(client, 'base_url', '')).strip()
     try:
         parsed = urlparse(endpoint_value)
-        if parsed.scheme and parsed.netloc:
-            endpoint = f'{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip("/")}'
-        else:
-            endpoint = endpoint_value or 'unknown'
+        hostname = (parsed.hostname or '').lower()
+        if ':' in hostname and not hostname.startswith('['):
+            hostname = f'[{hostname}]'
+        port = ''
+        try:
+            if parsed.port:
+                port = f':{parsed.port}'
+        except ValueError:
+            port = ''
+        endpoint = (
+            f'{parsed.scheme.lower()}://{hostname}{port}{parsed.path.rstrip("/")}'
+            if parsed.scheme and hostname else 'unknown'
+        )
     except Exception:
-        endpoint = endpoint_value or 'unknown'
+        endpoint = 'unknown'
     model = _effective_client_model(client, create_kwargs).lower() or 'unknown'
-    return f'{endpoint}:{_client_api_mode(client)}:{model}'
+    normalized_strategy = safe_str(strategy, default='auto').strip().lower() or 'auto'
+    return f'{endpoint}:{_client_api_mode(client)}:{model}:{normalized_strategy}'
 
 
 def _thinking_control_style(client, create_kwargs) -> str:
@@ -799,11 +824,23 @@ def _openai_chat_create_with_thinking_control_single(
         # model selected by the concrete endpoint, not the primary caller's
         # model passed into a failover wrapper.
         base_kwargs['model'] = effective_model
-    thinking_styles = []
-    if not _coerce_bool(thinking_enabled, default=False):
+        configured_effort = normalize_reasoning_effort(
+        getattr(client, 'reasoning_effort', 'auto')
+    )
+    thinking_allowed = _coerce_bool(thinking_enabled, default=False)
+    # The legacy disable flag remains authoritative. Explicit effort is used
+    # only when callers explicitly allow thinking, preserving old call sites.
+    if not thinking_allowed:
+        _drop_thinking_control(base_kwargs)
         thinking_styles = _thinking_control_styles(client, base_kwargs)
+    elif configured_effort != 'auto':
+        base_kwargs['reasoning_effort'] = configured_effort
+        thinking_styles = []
+    else:
+        thinking_styles = []
 
-    cache_key = _client_compatibility_key(client, base_kwargs)
+    strategy = configured_effort if thinking_allowed else 'off'
+    cache_key = _client_compatibility_key(client, base_kwargs, strategy=strategy)
     cached_actions = _get_cached_compatibility_actions(cache_key)
     rejected_styles = {
         action[len(_THINKING_STYLE_CACHE_PREFIX):]

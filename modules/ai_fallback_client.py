@@ -17,6 +17,7 @@ AI 客户端协议与兜底层：兼容 Chat Completions / Responses API，并�
   不丢失瞬时 5xx / 连接失败的恢复能力。
 """
 import logging
+import math
 import re
 from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlparse, urlunparse
@@ -24,7 +25,7 @@ from urllib.parse import parse_qsl, urlparse, urlunparse
 import httpx
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 
-from modules.utils import normalize_openai_base_url
+from modules.utils import normalize_openai_base_url, normalize_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ FALLBACK_KEYS = (
     "FALLBACK_OPENAI_API_KEY",
     "FALLBACK_OPENAI_BASE_URL",
     "FALLBACK_OPENAI_MODEL_NAME",
+    "FALLBACK_OPENAI_REASONING_EFFORT",
 )
 
 # 连接阶段（failover 探测）默认超时秒数；可通过全局配置
@@ -83,9 +85,33 @@ def _base_url_and_default_query(base_url):
     return normalize_openai_base_url(normalized_value), default_query
 
 
+def _safe_endpoint_label(prefix, base_url):
+    try:
+        parsed = urlparse(str(base_url or ''))
+        host = (parsed.hostname or 'unknown').lower()
+        if ':' in host and not host.startswith('['):
+            host = f'[{host}]'
+        port = f':{parsed.port}' if parsed.port else ''
+        return f"{prefix.rstrip('_').lower()}:{host}{port}"
+    except (TypeError, ValueError):
+        return f"{prefix.rstrip('_').lower()}:unknown"
+
+
+def _normalize_connect_timeout(value, default=_FAILOVER_CONNECT_TIMEOUT_DEFAULT):
+    """Normalize endpoint-level connect timeout to a finite 1..60 second value."""
+    try:
+        normalized = float(str(value).strip())
+        if math.isfinite(normalized) and 1.0 <= normalized <= 60.0:
+            return normalized
+    except (TypeError, ValueError):
+        pass
+    return float(default)
+
+
 def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
                     default_base="https://api.openai.com/v1",
-                    default_api_mode='chat_completions', default_query=None):
+                    default_api_mode='chat_completions', default_query=None,
+                    default_reasoning_effort='auto'):
     """从配置字典中按前缀读取一个端点配置。无 API key 时返回 None。"""
     api_key = (cfg.get(prefix + "API_KEY") or "").strip()
     if not api_key:
@@ -101,6 +127,14 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
         base_url = normalize_openai_base_url(default_base)
         endpoint_query = dict(default_query or {})
     model = str(cfg.get(prefix + "MODEL_NAME") or "").strip() or str(default_model).strip()
+    reasoning_effort = normalize_reasoning_effort(
+        cfg.get(prefix + "REASONING_EFFORT"),
+        default=default_reasoning_effort,
+    )
+    connect_timeout = _normalize_connect_timeout(
+        cfg.get("AI_FAILOVER_TIMEOUT_SECONDS"),
+        default=_get_failover_connect_timeout(),
+    )
     timeout = cfg.get("OPENAI_TIMEOUT_SECONDS", 600)
     try:
         timeout = float(str(timeout).strip())
@@ -116,8 +150,10 @@ def _build_endpoint(prefix, cfg, default_model="gpt-3.5-turbo",
         "model": model,
         "api_mode": api_mode,
         "default_query": endpoint_query,
+        "reasoning_effort": reasoning_effort,
+        "connect_timeout": connect_timeout,
         "timeout": timeout,
-        "label": f"{prefix.rstrip('_').lower()}:{base_url}",
+        "label": _safe_endpoint_label(prefix, base_url),
     }
 
 
@@ -182,7 +218,9 @@ def _make_raw_client(ep, multi_endpoint=False):
         # 单端点不传 timeout，沿用 OpenAI SDK 默认（connect 5s，read/write 600s）；
         # 多端点仍用 failover 连接短超时快速探测，读取/写入保留 SDK 默认 600s。
         if multi_endpoint:
-            connect_to = float(ep.get("connect_timeout") or _get_failover_connect_timeout())
+            connect_to = _normalize_connect_timeout(
+                ep.get("connect_timeout"), default=_get_failover_connect_timeout()
+            )
             opts["timeout"] = httpx.Timeout(connect=connect_to, read=600.0, write=600.0, pool=connect_to)
             opts["max_retries"] = 0
     elif multi_endpoint:
@@ -268,6 +306,9 @@ class _FallbackEndpointClient:
         self.base_url = getattr(raw_client, "base_url", None) or endpoint.get("base_url", "")
         self.api_mode = endpoint.get("api_mode", "chat_completions")
         self._endpoint_model = endpoint.get("model", "")
+        self.reasoning_effort = normalize_reasoning_effort(
+            endpoint.get("reasoning_effort", "auto")
+        )
         self.chat = _ChatProxy(self)
 
     def _create(self, kwargs):
@@ -414,9 +455,9 @@ def _responses_create_kwargs(chat_kwargs):
 
 
 def _responses_output_text(response):
-    """兼容 SDK 对象和普通字典，提取 Responses API 的所有文本输出。"""
+    """兼容 SDK 对象和普通字典，提取 Responses API 的正文文本。"""
     output_text = _value(response, 'output_text')
-    if isinstance(output_text, str) and output_text:
+    if isinstance(output_text, str):
         return output_text
 
     parts = []
@@ -424,22 +465,57 @@ def _responses_output_text(response):
         if _value(item, 'type') != 'message':
             continue
         for content in _value(item, 'content', []) or []:
-            content_type = _value(content, 'type')
-            if content_type == 'output_text':
+            if _value(content, 'type') == 'output_text':
                 parts.append(str(_value(content, 'text', '') or ''))
-            elif content_type == 'refusal':
-                parts.append(str(_value(content, 'refusal', '') or ''))
     return ''.join(parts)
+
+
+def _responses_refusal(response):
+    for item in _value(response, 'output', []) or []:
+        if _value(item, 'type') != 'message':
+            continue
+        for content in _value(item, 'content', []) or []:
+            if _value(content, 'type') == 'refusal':
+                refusal = _value(content, 'refusal', '')
+                if refusal:
+                    return str(refusal)
+    return None
+
+
+def _responses_finish_reason(response):
+    status = str(_value(response, 'status', '') or '').strip().lower()
+    if status == 'completed':
+        return 'stop'
+    if status == 'incomplete':
+        details = _value(response, 'incomplete_details') or {}
+        reason = str(_value(details, 'reason', '') or '').strip().lower()
+        if reason in {'content_filter', 'content-filter'}:
+            return 'content_filter'
+        if reason in {'max_output_tokens', 'length'}:
+            return 'length'
+        return reason or 'incomplete'
+    if _responses_refusal(response):
+        return 'content_filter'
+    return None
 
 
 def _as_chat_completion(response):
     """把 Responses API 结果适配为项目既有的 choices[0].message 结构。"""
-    message = SimpleNamespace(role='assistant', content=_responses_output_text(response))
+    refusal = _responses_refusal(response)
+    message = SimpleNamespace(
+        role='assistant',
+        content=_responses_output_text(response),
+        refusal=refusal,
+    )
     return SimpleNamespace(
         id=_value(response, 'id'),
         model=_value(response, 'model'),
         usage=_value(response, 'usage'),
-        choices=[SimpleNamespace(index=0, message=message, finish_reason=None)],
+        choices=[SimpleNamespace(
+            index=0,
+            message=message,
+            finish_reason=_responses_finish_reason(response),
+        )],
         raw_response=response,
     )
 
@@ -478,6 +554,7 @@ class ResponsesResultError(RuntimeError):
 def _raise_for_responses_failure(response):
     """Responses 可用 2xx 返回 failed + error；在归一化前将其恢复为异常语义。"""
     status = str(_value(response, 'status', '') or '').strip().lower()
+    # incomplete is a valid HTTP response but keeps a non-stop reason in the adapter.
     if status == 'failed' or _value(response, 'error') is not None:
         raise ResponsesResultError(response)
 
@@ -505,6 +582,9 @@ class ResponsesChatClient:
         self.base_url = getattr(raw_client, 'base_url', None) or endpoint.get('base_url', '')
         self._endpoint_model = endpoint.get('model', '')
         self.api_mode = endpoint.get('api_mode', 'responses')
+        self.reasoning_effort = normalize_reasoning_effort(
+            endpoint.get('reasoning_effort', 'auto')
+        )
         self.chat = _ChatProxy(self)
 
     def _create(self, kwargs):
@@ -525,6 +605,9 @@ class FallbackChatClient:
         # thinking 控制和兼容性缓存把备用端点的能力写入主端点。
         self.base_url = getattr(self._raw[0], "base_url", None) or endpoints[0].get("base_url", "")
         self.api_mode = endpoints[0].get('api_mode', 'chat_completions')
+        self.reasoning_effort = normalize_reasoning_effort(
+            endpoints[0].get('reasoning_effort', 'auto')
+        )
         # 兼容 client.chat.completions.create(...) 调用链
         self.chat = _ChatProxy(self)
 
@@ -544,12 +627,16 @@ class FallbackChatClient:
             except Exception as exc:  # noqa: BLE001
                 if _is_unavailable_error(exc):
                     logger.warning(
-                        f"[AI兜底] 端点 {ep['label']} 不可用: {str(exc)[:160]}，尝试下一个端点"
+                        "[AI兜底] 端点 #%d 不可用 (%s)，尝试下一个端点",
+                        idx + 1,
+                        type(exc).__name__,
                     )
                     last_exc = exc
                     continue
                 logger.error(
-                    f"[AI兜底] 端点 {ep['label']} 返回非可用性错误，不再切换: {str(exc)[:160]}"
+                    "[AI兜底] 端点 #%d 返回非可用性错误 (%s)，不再切换",
+                    idx + 1,
+                    type(exc).__name__,
                 )
                 raise
         logger.error("[AI兜底] 所有 AI 端点均不可用")
@@ -612,10 +699,12 @@ def get_ai_client(openai_config):
     fb_default_model = (primary or {}).get("model") or "gpt-3.5-turbo"
     fb_default_api_mode = (primary or {}).get('api_mode') or 'chat_completions'
     fb_default_query = (primary or {}).get('default_query') or {}
+    fb_default_reasoning_effort = (primary or {}).get('reasoning_effort') or 'auto'
     fb = _build_endpoint(
         "FALLBACK_OPENAI_", openai_config,
         default_base=fb_default_base, default_model=fb_default_model,
         default_api_mode=fb_default_api_mode, default_query=fb_default_query,
+        default_reasoning_effort=fb_default_reasoning_effort,
     )
     if fb:
         endpoints.append(fb)
@@ -627,5 +716,11 @@ def get_ai_client(openai_config):
         raw_client = _make_raw_client(endpoints[0], multi_endpoint=False)
         if endpoints[0].get('api_mode') == 'responses':
             return ResponsesChatClient(raw_client, endpoints[0])
+        try:
+            raw_client.reasoning_effort = normalize_reasoning_effort(
+                endpoints[0].get('reasoning_effort', 'auto')
+            )
+        except Exception:
+            pass
         return raw_client
     return FallbackChatClient(endpoints)
