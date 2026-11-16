@@ -21,7 +21,17 @@ echo 检查Python环境...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo 错误: 未找到Python环境
-    echo 请先安装Python 3.11或更高版本
+    echo 请先安装Python 3.12或更高版本
+    echo.
+    pause
+    exit /b 1
+)
+
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo 错误: Python版本过低，需要Python 3.12或更高版本
+    python --version
+    echo 请安装Python 3.12或更高版本后重试
     echo.
     pause
     exit /b 1

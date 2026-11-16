@@ -13,7 +13,7 @@ import shutil
 import threading
 import gc
 import shlex
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 import re
 import unicodedata
@@ -1312,7 +1312,7 @@ def publish_task_event(event_type='refresh', data=None):
     event_payload = {
         'type': event_type,
         'data': data or {},
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     }
     _emit_task_event(event_payload)
 

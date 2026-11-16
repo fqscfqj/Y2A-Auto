@@ -241,6 +241,23 @@ lazy_settings: Dict[str, Dict[asyncio.AbstractEventLoop, Dict[str, Any]]] = {}
 client_settings: Dict[str, list] = {}
 selected_client: str = ""
 
+
+def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
+    """Return the current loop, creating one when the thread has none."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
 class RequestSettings:
     def __init__(self):
         self.__settings: dict = {
@@ -1072,7 +1089,7 @@ def get_client() -> BiliAPIClient:
     pool = session_pool.get(selected_client)
     if pool is None:
         raise ArgsException("未找到用户指定的请求客户端。")
-    loop = asyncio.get_event_loop()
+    loop = _get_or_create_event_loop()
     session = pool.get(loop)
     if session is None:
         kwargs = {}
@@ -1114,7 +1131,7 @@ def set_session(session: object) -> None:
     pool = session_pool.get(selected_client)
     if not pool:
         raise ArgsException("未找到用户指定的请求客户端。")
-    loop = asyncio.get_event_loop()
+    loop = _get_or_create_event_loop()
     session_pool[selected_client][loop] = sessions[selected_client](session=session)
 
 
@@ -1123,20 +1140,25 @@ def __clean() -> None:
     """
     程序退出清理操作。
     """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return
+    async def __close_client(client: BiliAPIClient) -> None:
+        await client.close()
 
-    async def __clean_task():
-        for _, pool in session_pool.items():
-            for _, client in pool.items():
-                await client.close()
-
-    if loop.is_closed():
-        loop.run_until_complete(__clean_task())
-    else:
-        loop.create_task(__clean_task())
+    for pool in session_pool.values():
+        for loop, client in list(pool.items()):
+            if loop.is_closed():
+                continue
+            try:
+                if loop.is_running():
+                    # The interpreter is shutting down; schedule on the loop that
+                    # owns the client instead of awaiting it from another loop.
+                    asyncio.run_coroutine_threadsafe(
+                        __close_client(client), loop
+                    )
+                else:
+                    loop.run_until_complete(__close_client(client))
+            except RuntimeError:
+                # A loop may stop between the state check and scheduling.
+                continue
 
 
 ################################################## END Session Management ##################################################
