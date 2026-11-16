@@ -1,0 +1,16 @@
+[Script Info]
+Title: Streaming Subtitle
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+Collisions: Normal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans CJK SC,68,&H00FFFFFF,&H00FFFFFF,&HB2000000,&H00000000,1,0,0,0,100,100,0,0,1,5.1,1.7,2,103,103,220,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\fs42\bord3\shad1.05}竖屏字幕需要避开底部贴纸\N和互动区，\N长句应保持视觉重心稳定，\N中文、Release notes、\Nworkflow status 等混排内容也不能拆开。
