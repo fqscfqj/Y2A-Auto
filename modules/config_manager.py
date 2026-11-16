@@ -152,6 +152,7 @@ DEFAULT_CONFIG = {
     "RECOMMEND_PARTITION": False,
     "RECOMMEND_PARTITION_WITH_COVER": False,
     "CONTENT_MODERATION_ENABLED": False,
+    "CONTENT_MODERATION_COVER_ENABLED": False,
     "LOG_CLEANUP_ENABLED": True, # 是否启用日志自动清理
     "LOG_CLEANUP_HOURS": 72, # 保留最近多少小时的日志
     "LOG_CLEANUP_INTERVAL": 12, # 日志清理间隔（小时）
@@ -237,6 +238,7 @@ DEFAULT_CONFIG = {
     "ALIYUN_ACCESS_KEY_SECRET": "",
     "ALIYUN_CONTENT_MODERATION_REGION": "cn-shanghai",
     "ALIYUN_TEXT_MODERATION_SERVICE": "comment_detection_pro",
+    "ALIYUN_IMAGE_MODERATION_SERVICE": "baselineCheck",
     "COVER_PROCESSING_MODE": "crop",
     # YouTube下载相关配置
     "YOUTUBE_PROXY_ENABLED": False,  # 是否启用代理

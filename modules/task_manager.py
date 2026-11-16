@@ -1115,10 +1115,27 @@ def _infer_completed_stages_from_task(task, config=None):
     return completed
 
 
+def _needs_cover_moderation(task, config=None):
+    config = config or {}
+    if (not task or not config.get('CONTENT_MODERATION_ENABLED', False)
+            or not config.get('CONTENT_MODERATION_COVER_ENABLED', False)):
+        return False
+    moderation = _safe_json_loads(task.get('moderation_result'), {})
+    cover = moderation.get('cover') if isinstance(moderation, dict) else None
+    if not isinstance(cover, dict) or not isinstance(cover.get('pass'), bool):
+        return True
+    if cover['pass']:
+        return cover.get('status') != 'passed'
+    return cover.get('status') != 'rejected'
+
+
 def _get_completed_stages(task, config=None):
     cp = _parse_pipeline_checkpoint(task.get(PIPELINE_CHECKPOINT_FIELD) if task else None)
     completed = set(cp.get('completed', []) or [])
     completed |= _infer_completed_stages_from_task(task, config)
+    # Legacy placeholders and disabled cover checks cannot satisfy the new policy.
+    if _needs_cover_moderation(task, config):
+        completed.discard(PIPELINE_STAGE_MODERATE_CONTENT)
     # 差集修正：checkpoint 只能做并集，而 ``_infer_completed_stages_from_task``
     # 只能**加**阶段、无法移除 checkpoint 里已有的项。于是「上一轮已写入
     # translate_subtitle、本轮被门控拒绝」的任务仍会带着该阶段被判定完成，
@@ -8702,6 +8719,10 @@ class TaskProcessor:
     
     def _moderate_content(self, task_id, task_logger):
         """内容审核"""
+        if not self.config.get('CONTENT_MODERATION_ENABLED', False):
+            task_logger.info("内容审核已禁用")
+            return
+
         from modules.content_moderator import AlibabaCloudModerator
         
         task = get_task(task_id)
@@ -8754,7 +8775,7 @@ class TaskProcessor:
             'ALIYUN_CONTENT_MODERATION_REGION': self.config.get('ALIYUN_CONTENT_MODERATION_REGION', 'cn-shanghai')
         }
         
-        text_moderation_service = self.config.get('ALIYUN_TEXT_MODERATION_SERVICE', 'comment_detection')
+        text_moderation_service = self.config.get('ALIYUN_TEXT_MODERATION_SERVICE') or 'comment_detection_pro'
         task_logger.info(f"使用阿里云文本审核服务类型: {text_moderation_service}")
 
         moderator = AlibabaCloudModerator(aliyun_config, task_id)
@@ -8777,14 +8798,31 @@ class TaskProcessor:
         else:
             task_logger.info("没有标签需要审核。")
         
-        cover_result = {"pass": True, "details": [{"label": "skipped", "suggestion": "pass", "reason": "封面审核已禁用"}]}
+        cover_result = {"pass": True, "status": "disabled", "details": [{"label": "skipped", "suggestion": "pass", "reason": "封面审核已禁用"}]}
+        if self.config.get('CONTENT_MODERATION_COVER_ENABLED', False):
+            image_service = self.config.get('ALIYUN_IMAGE_MODERATION_SERVICE') or 'baselineCheck'
+            task_logger.info(f"开始视频封面审核，服务类型: {image_service}")
+            try:
+                cover_path = self._recover_cover_path(task_id, task.get('cover_path_local', ''), task_logger)
+                cover_result = moderator.moderate_image(cover_path, service_type=image_service)
+            except Exception as exc:
+                task_logger.error(f"封面审核失败: {exc}")
+                cover_result = {
+                    "pass": False,
+                    "status": "error",
+                    "details": [{"label": "error", "suggestion": "review", "reason": "封面审核失败，请检查封面文件与审核服务"}],
+                }
+            task_logger.info(f"封面审核结果: {cover_result}")
         
         moderation_result = {
             "title": title_result,
             "description": description_result,
             "tags": tags_moderation_result, # 添加标签审核结果
             "cover": cover_result,
-            "overall_pass": title_result.get("pass", True) and description_result.get("pass", True) and tags_moderation_result.get("pass", True) # 整体通过需要标签也通过
+            "overall_pass": (title_result.get("pass", True)
+                             and description_result.get("pass", True)
+                             and tags_moderation_result.get("pass", True)
+                             and cover_result.get("pass", False))
         }
         
         task_logger.info(f"综合审核结果: overall_pass={moderation_result['overall_pass']}")
@@ -8803,6 +8841,11 @@ class TaskProcessor:
                 task_logger.warning("标签未通过审核")
                 for detail in tags_moderation_result.get("details", []):
                     task_logger.warning(f"标签问题: {detail.get('label')} - {detail.get('reason')}")
+
+            if not cover_result.get("pass", False):
+                task_logger.warning("封面未通过审核")
+                for detail in cover_result.get("details", []):
+                    task_logger.warning(f"封面问题: {detail.get('label')} - {detail.get('reason')}")
         
         update_task(
             task_id,
@@ -9197,6 +9240,28 @@ class TaskProcessor:
             if task.get('status') != TASK_STATES['COMPLETED']:
                 update_task(task_id, status=TASK_STATES['COMPLETED'], error_message=None, upload_progress=None)
             return
+
+        cover_check_pending = _needs_cover_moderation(task, self.config)
+        if cover_check_pending:
+            task_logger.info("上传前补充历史任务的封面审核")
+            self._moderate_content(task_id, task_logger)
+            task = get_task(task_id)
+            if not task:
+                return
+
+        cover_check_enabled = (self.config.get('CONTENT_MODERATION_ENABLED', False)
+                               and self.config.get('CONTENT_MODERATION_COVER_ENABLED', False))
+        if cover_check_pending or (cover_check_enabled and not allow_missing_translations):
+            moderation = _safe_json_loads(task.get('moderation_result'), {})
+            cover_result = moderation.get('cover') if isinstance(moderation, dict) else None
+            if (not isinstance(moderation, dict)
+                    or (not allow_missing_translations and moderation.get('overall_pass') is not True)
+                    or not isinstance(cover_result, dict) or cover_result.get('pass') is not True
+                    or _needs_cover_moderation(task, self.config)):
+                task_logger.info("封面审核未完成或内容需要人工处理，暂停上传")
+                update_task(task_id, status=TASK_STATES['AWAITING_REVIEW'],
+                            error_category=CONTENT_MODERATION_ERROR_CATEGORY)
+                return
 
         if upload_target == UPLOAD_TARGET_BOTH:
             task_logger.info("双平台上传将字幕预处理延后到各平台上传阶段执行，确保视频已下载后再处理字幕")

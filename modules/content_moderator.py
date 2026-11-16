@@ -3,7 +3,9 @@
 
 import json
 import logging
+import os
 import time
+import uuid
 
 # 尝试导入阿里云依赖，如果失败则设置标记
 ALIBABA_CLOUD_AVAILABLE = True
@@ -22,6 +24,13 @@ except ImportError as e:
     models: Any = None
     open_api_models: Any = None
     RuntimeOptions: Any = None
+
+try:
+    import oss2
+    OSS_AVAILABLE = True
+except ImportError:
+    oss2 = None
+    OSS_AVAILABLE = False
 
 def setup_task_logger(task_id):
     """
@@ -50,6 +59,7 @@ class AlibabaCloudModerator:
         """
         self.aliyun_config = aliyun_config or {}
         self.task_id = task_id
+        self.region = str(self.aliyun_config.get('ALIYUN_CONTENT_MODERATION_REGION', self.aliyun_config.get('region', 'cn-shanghai')) or 'cn-shanghai').strip().lower()
         # 未提供开关时沿用直接调用方的历史默认；显式 false 才禁用。
         self.enabled = bool(self.aliyun_config.get('CONTENT_MODERATION_ENABLED', self.aliyun_config.get('enabled', True)))
         
@@ -92,10 +102,12 @@ class AlibabaCloudModerator:
                 self.logger.error(f"当前配置: access_key_id={'***有值***' if access_key_id else '无'}, access_key_secret={'***有值***' if access_key_secret else '无'}")
                 return
             
+            endpoint = f'green-cip.{self.region}.aliyuncs.com'
             config = open_api_models.Config(
                 access_key_id=access_key_id,
                 access_key_secret=access_key_secret,
-                endpoint='green-cip.cn-shanghai.aliyuncs.com'
+                region_id=self.region,
+                endpoint=endpoint
             )
             
             self.client = Green20220302Client(config)
@@ -108,6 +120,93 @@ class AlibabaCloudModerator:
             self.logger.error(f"调试信息：异常堆栈: {traceback.format_exc()}")
             self.client = None
     
+    def moderate_image(self, image_path, service_type='baselineCheck'):
+        """审核本地图片，使用官方临时 OSS 上传流程，失败时拒绝。"""
+        failure = lambda status, reason: {
+            "pass": False,
+            "status": status,
+            "details": [{"label": "error", "suggestion": "review", "reason": reason}],
+        }
+        if not self.enabled:
+            return {"pass": True, "status": "disabled", "details": [{"label": "skipped", "suggestion": "pass", "reason": "内容审核已禁用"}]}
+        if not ALIBABA_CLOUD_AVAILABLE:
+            return failure("unavailable", "阿里云内容审核依赖未安装")
+        if not OSS_AVAILABLE:
+            return failure("unavailable", "oss2 依赖未安装，无法上传本地图片")
+        if not self.client:
+            return failure("unavailable", "阿里云客户端未初始化")
+        if not image_path or not os.path.isfile(image_path):
+            return failure("invalid", "图片文件不存在")
+        if not hasattr(self.client, "describe_upload_token") or not hasattr(self.client, "image_moderation_with_options"):
+            return failure("unavailable", "阿里云客户端不支持图片审核上传接口")
+        try:
+            token_response = self.client.describe_upload_token()
+            token_body = getattr(token_response, "body", None)
+            token = getattr(token_body, "data", None)
+            if getattr(token_response, "status_code", None) != 200 or getattr(token_body, "code", None) != 200 or token is None:
+                raise ValueError("获取图片上传 token 失败")
+            endpoint = getattr(token, "oss_internet_end_point", None)
+            bucket_name = getattr(token, "bucket_name", None)
+            access_key_id = getattr(token, "access_key_id", None)
+            access_key_secret = getattr(token, "access_key_secret", None)
+            security_token = getattr(token, "security_token", None)
+            prefix = getattr(token, "file_name_prefix", None)
+            if not all((endpoint, bucket_name, access_key_id, access_key_secret, security_token, prefix)):
+                raise ValueError("上传 token 字段不完整")
+            object_name = f"{prefix}{uuid.uuid4().hex}{os.path.splitext(image_path)[1].lower()}"
+            auth = oss2.StsAuth(access_key_id, access_key_secret, security_token)
+            oss2.Bucket(auth, endpoint, bucket_name).put_object_from_file(object_name, image_path)
+            parameters = {"ossBucketName": bucket_name, "ossObjectName": object_name, "dataId": str(uuid.uuid4())}
+            request = models.ImageModerationRequest(service=service_type, service_parameters=json.dumps(parameters))
+            response = self.client.image_moderation_with_options(request, RuntimeOptions())
+            body = getattr(response, "body", None)
+            if getattr(response, "status_code", None) != 200 or getattr(body, "code", None) != 200:
+                raise ValueError(f"图片审核请求失败，状态码: {getattr(response, 'status_code', 'unknown')}")
+            return self._parse_image_moderation_response(body)
+        except Exception as exc:
+            self.logger.error("图片审核失败: %s", exc)
+            return failure("error", f"图片审核过程中发生错误: {exc}")
+
+    def _parse_image_moderation_response(self, response):
+        """将 ImageModerationResponse 转换为统一 pass/details/status 结构。"""
+        result = {"pass": False, "status": "unavailable", "details": []}
+        try:
+            data = getattr(response, "data", None)
+            items = getattr(data, "result", None) if data is not None else None
+            if not isinstance(items, list) or not items:
+                raise ValueError("图片审核响应缺少 result")
+            overall_risk = str(getattr(data, "risk_level", "") or "").lower()
+            for item_obj in items:
+                item = item_obj.to_map() if hasattr(item_obj, "to_map") else item_obj
+                if not isinstance(item, dict):
+                    raise ValueError("图片审核 result 项格式错误")
+                label = item.get("Label", item.get("label", "unknown"))
+                suggestion = str(item.get("Suggestion", item.get("suggestion", "")) or "").lower()
+                confidence = item.get("Confidence", item.get("confidence"))
+                # ImageModeration returns RiskLevel/Label, not the text API's Suggestion.
+                risk_level = str(item.get("RiskLevel", item.get("risk_level", "")) or "").lower()
+                passed = (label in ("normal", "nonLabel", "nonlabel", "nonLabel_lib")
+                          and overall_risk in ("", "none")
+                          and risk_level in ("", "none")
+                          and suggestion in ("", "pass"))
+                rejected_suggestion = ("block" if "high" in (overall_risk, risk_level)
+                                       or suggestion == "block" else "review")
+                detail = {
+                    "label": label,
+                    "confidence": confidence,
+                    "risk_level": risk_level or overall_risk,
+                    "suggestion": "pass" if passed else rejected_suggestion,
+                    "reason": item.get("Description", item.get("description"))
+                              or ("图片未检测到风险" if passed else f"图片审核风险: {label} ({risk_level or overall_risk or 'unknown'})"),
+                }
+                result["details"].append(detail)
+            result["pass"] = all(d["suggestion"] == "pass" for d in result["details"])
+            result["status"] = "passed" if result["pass"] else "rejected"
+            return result
+        except Exception as exc:
+            result["details"].append({"label": "parse_error", "suggestion": "review", "reason": f"解析图片审核结果出错: {exc}"})
+            return result
+
     def moderate_text(self, text_content, service_type='comment_detection_pro'):
         """
         文本内容审核

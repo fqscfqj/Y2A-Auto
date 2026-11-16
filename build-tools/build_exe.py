@@ -223,6 +223,7 @@ hiddenimports = [
     'alibabacloud_tea_openapi.models',
     'alibabacloud_tea_util',
     'alibabacloud_tea_util.models',
+    'oss2',
 ] + collect_submodules('cryptography') + collect_submodules('yt_dlp') + curl_cffi_hiddenimports
 
 a = Analysis(

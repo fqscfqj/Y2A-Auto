@@ -299,7 +299,16 @@
                                                             <input type="checkbox" name="CONTENT_MODERATION_ENABLED" {% if config.CONTENT_MODERATION_ENABLED %}checked{% endif %}>
                                                             启用内容审核
                                                         </label>
-                                                        <p class="help-text mb-0">审核标题、描述和封面，建议与阿里云凭证一起完成配置。</p>
+                                                        <p class="help-text mb-0">审核标题、描述和标签；视频封面审核可单独开启。</p>
+                                                    </div>
+                                                </div>
+                                                <div class="settings-field settings-field-switch">
+                                                    <div>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" id="content-moderation-cover-enabled" name="CONTENT_MODERATION_COVER_ENABLED" {% if config.CONTENT_MODERATION_COVER_ENABLED %}checked{% endif %}>
+                                                            启用视频封面审核
+                                                        </label>
+                                                        <p class="help-text mb-0">仅在内容审核开启时生效，默认关闭。封面将上传至阿里云图片审核服务。</p>
                                                     </div>
                                                 </div>
                                                 <div class="mt-3">
@@ -330,6 +339,12 @@
                                                         <div class="form-group mb-0">
                                                             <label for="aliyun-text-service" class="form-label">文本审核服务</label>
                                                             <input type="text" id="aliyun-text-service" name="ALIYUN_TEXT_MODERATION_SERVICE" value="{{ config.ALIYUN_TEXT_MODERATION_SERVICE }}" class="form-control" placeholder="如 comment_detection_pro">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-group mb-0">
+                                                            <label for="aliyun-image-service" class="form-label">封面图片审核服务</label>
+                                                            <input type="text" id="aliyun-image-service" name="ALIYUN_IMAGE_MODERATION_SERVICE" value="{{ config.ALIYUN_IMAGE_MODERATION_SERVICE }}" class="form-control" placeholder="默认 baselineCheck">
                                                         </div>
                                                     </div>
                                                     </div>
