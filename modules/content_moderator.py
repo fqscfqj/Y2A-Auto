@@ -7,6 +7,7 @@ import time
 
 # 尝试导入阿里云依赖，如果失败则设置标记
 ALIBABA_CLOUD_AVAILABLE = True
+_import_error = None
 try:
     from alibabacloud_green20220302.client import Client as Green20220302Client
     from alibabacloud_green20220302 import models
