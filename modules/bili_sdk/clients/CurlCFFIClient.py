@@ -11,11 +11,11 @@ from ..utils.network import (
     BiliAPIResponse,
     BiliWsMsgType,
     request_log,
+    _get_or_create_event_loop,
 )
 from curl_cffi import requests  # pylint: disable=E0401
 import curl_cffi  # pylint: disable=E0401
 from typing import Optional, Dict, Union, Tuple, AsyncGenerator
-import asyncio
 
 
 class CurlCFFIClient(BiliAPIClient):
@@ -48,7 +48,7 @@ class CurlCFFIClient(BiliAPIClient):
         if session:
             self.__session = session
         else:
-            loop = asyncio.get_event_loop()
+            loop = _get_or_create_event_loop()
             self.__session = requests.AsyncSession(
                 loop=loop,
                 timeout=timeout,

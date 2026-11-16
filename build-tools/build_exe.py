@@ -35,8 +35,9 @@ def setup_build_environment():
     print(f"项目根目录: {project_root}")
     
     # 检查Python版本
-    if sys.version_info < (3, 11):
-        print("错误: 需要Python 3.11或更高版本")
+    if sys.version_info < (3, 12):
+        print("错误: 需要Python 3.12或更高版本")
+        print(f"当前Python版本: {sys.version.split()[0]}")
         sys.exit(1)
     
     return project_root

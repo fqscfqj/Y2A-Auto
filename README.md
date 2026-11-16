@@ -7,7 +7,7 @@
 将 YouTube 视频自动搬运到 AcFun / bilibili 的一体化工具。
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
 
 从下载、ASR、字幕翻译、字幕质检、内容审核到上传，全流程自动化；内置 Web 管理后台、YouTube 监控和维护能力。
@@ -182,12 +182,12 @@ UID/GID；映射方式参见 [Docker 官方文档](https://docs.docker.com/engin
 ### 方案 B：本地运行
 
 前置要求：
-- Python 3.11+
+- Python 3.12+
 - FFmpeg
 - yt-dlp
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python app.py

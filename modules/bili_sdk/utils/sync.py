@@ -7,17 +7,36 @@ bilibili_api.utils.sync
 import asyncio
 from typing import Any, TypeVar, Coroutine, Union
 from asyncio.futures import Future as AsyncioFuture
-from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
+from concurrent.futures import Future as ConcurrentFuture
 
 T = TypeVar("T")
 
 
-def __ensure_event_loop() -> None:
+def __ensure_event_loop() -> asyncio.AbstractEventLoop:
+    """Return a usable loop for the current thread (Python 3.12 compatible)."""
     try:
-        asyncio.get_event_loop()
-    except:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-    return asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
+
+def __run_coroutine(coroutine: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine on a loop owned by the calling thread."""
+    loop = __ensure_event_loop()
+    return loop.run_until_complete(coroutine)
+
+
+def __run_in_thread(coroutine: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine on a dedicated thread and loop."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coroutine).result()
 
 
 def sync(
@@ -32,12 +51,29 @@ def sync(
     Returns:
         Any: 该异步函数的返回值
     """
+    if isinstance(coroutine, ConcurrentFuture):
+        return coroutine.result()
+
     try:
-        asyncio.get_running_loop()
+        running_loop = asyncio.get_running_loop()
     except RuntimeError:
-        return __ensure_event_loop().run_until_complete(coroutine)
-    else:
-        with ThreadPoolExecutor() as executor:
-            return executor.submit(
-                lambda x: __ensure_event_loop().run_until_complete(x), coroutine
-            ).result()
+        running_loop = None
+
+    if isinstance(coroutine, AsyncioFuture):
+        # An asyncio Future is permanently bound to its creating loop. It cannot
+        # be synchronously waited from a different or currently running loop.
+        future_loop = coroutine.get_loop()
+        if running_loop is not None:
+            if future_loop is running_loop:
+                raise RuntimeError(
+                    "sync() cannot wait for an asyncio.Future from its running loop"
+                )
+            raise RuntimeError("sync() cannot wait for a Future from another event loop")
+        loop = __ensure_event_loop()
+        if future_loop is not loop:
+            raise RuntimeError("sync() cannot wait for a Future from another event loop")
+        return loop.run_until_complete(coroutine)
+
+    if running_loop is None:
+        return __run_coroutine(coroutine)
+    return __run_in_thread(coroutine)

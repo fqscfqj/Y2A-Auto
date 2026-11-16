@@ -4,7 +4,7 @@
 # ============================================================
 # 第一阶段：Python 依赖构建
 # ============================================================
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
@@ -40,7 +40,7 @@ RUN /root/.local/bin/yt-dlp --version
 # - 删除所有 __pycache__ / .pyc / .pyo 缓存文件
 # - 去除共享库的调试符号
 RUN set -eux; \
-    SITE=/root/.local/lib/python3.11/site-packages; \
+    SITE=/root/.local/lib/python3.12/site-packages; \
     rm -rf "$SITE/torch/test" \
            "$SITE/torch/testing/_internal" \
            "$SITE/torch/include" \
@@ -102,7 +102,7 @@ RUN set -eux \
 # ============================================================
 # 第三阶段：运行阶段
 # ============================================================
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ARG ENABLE_GPU_DRIVERS=false
 
@@ -215,7 +215,7 @@ exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
 # 确保本地包在PATH中
 ENV PATH=/home/y2a/.local/bin:$PATH
 # 避免引用未定义变量的告警，直接补充常见站点路径
-ENV PYTHONPATH=/home/y2a/.local/lib/python3.11/site-packages:/usr/local/lib/python3.11/site-packages
+ENV PYTHONPATH=/home/y2a/.local/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
 
 # 切换到非root用户
 USER y2a

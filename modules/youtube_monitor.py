@@ -5,7 +5,7 @@ import os
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import socket
 import ssl
 from typing import Optional, Dict, List, Any, Union, Tuple
@@ -1116,11 +1116,11 @@ class YouTubeMonitor:
                             logger.info(f"最新跟进模式：使用上次运行时间为基准: {published_after}")
                         except Exception:
                             # 解析失败则退回到当前时间
-                            published_after = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                            published_after = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y-%m-%dT%H:%M:%SZ')
                             logger.info("最新跟进模式：无法解析上次运行时间，使用当前时间为基准")
                     else:
                         # 首次运行：从当前时间开始，不处理历史视频
-                        published_after = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                        published_after = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y-%m-%dT%H:%M:%SZ')
                         logger.info("最新跟进模式：首次运行，仅从当前时间开始跟进新发布的视频")
                 else:
                     # 其他模式或全局检索：使用配置的时间段
@@ -1128,7 +1128,7 @@ class YouTubeMonitor:
                     # 避免动态1天窗口漏掉稍早发布的视频；配合任务去重不会重复建任务。
                     days = max(config.get('time_period', 7), 1)
                     logger.info(f"使用时间段: 最近 {days} 天（time_period 配置）")
-                    published_after = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    published_after = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             # 如果指定了频道，优先使用频道搜索
             if config.get('channel_ids') and config['channel_ids'].strip():
@@ -2262,7 +2262,7 @@ class YouTubeMonitor:
             # 比夏令时晚 1 小时——因此配额日边界**绝不会早于**真实 PT 日，最坏只是比
             # 真实 PT 日最多晚 1 小时重置（延迟而非提前，安全侧，不会提前放出第二批额度）。
             # 生产环境仍应在 requirements 中安装 tzdata 使 ZoneInfo 始终可用。
-            return (datetime.utcnow() - timedelta(hours=8)).strftime('%Y-%m-%d')
+            return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=8)).strftime('%Y-%m-%d')
 
     def _quota_reset_tables(self):
         """惰性创建配额相关表（幂等）。"""
