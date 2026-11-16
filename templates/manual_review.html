@@ -64,8 +64,8 @@
                                             </div>
                                         {% endif %}
                                         
-                                        {% for content_type, result in [('标题', moderation.title), ('描述', moderation.description)] %}
-                                            {% if result and result.details %}
+                                        {% for content_type, result in [('标题', moderation.title), ('描述', moderation.description), ('封面', moderation.cover)] %}
+                                            {% if result and result.details and (content_type != '封面' or not result.get('pass', False)) %}
                                                 <div class="moderation-item">
                                                     <h6><i class="bi bi-exclamation-triangle"></i> {{ content_type }}问题:</h6>
                                                     <div class="list-group list-group-flush" role="list">{%- for detail in result.details %}

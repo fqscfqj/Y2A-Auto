@@ -359,10 +359,14 @@ AI 文本功能同时兼容 OpenAI Chat Completions 与 Responses API。`OPENAI_
 
 ### 内容审核
 
-- `CONTENT_MODERATION_ENABLED`：启用阿里云内容审核，默认 `false`
+- `CONTENT_MODERATION_ENABLED`：启用阿里云内容审核，审核标题、描述和标签，默认 `false`
+- `CONTENT_MODERATION_COVER_ENABLED`：可选的视频封面审核开关，默认 `false`，仅在内容审核总开关开启时生效
 - `ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET`：阿里云 AK/SK
 - `ALIYUN_CONTENT_MODERATION_REGION`：审核服务区域
 - `ALIYUN_TEXT_MODERATION_SERVICE`：文本审核服务名，默认 `comment_detection_pro`
+- `ALIYUN_IMAGE_MODERATION_SERVICE`：封面图片审核服务名，默认 `baselineCheck`
+
+在「系统设置 → 运行与投稿 → 内容审核（阿里云内容安全）」中可开启视频封面审核，并在高级选项中配置图片审核服务。开启后，本地封面会上传至阿里云进行图片审核，请确保对应区域已开通服务并授予访问权限；调用可能产生额外费用。封面按保守策略审核：低、中、高风险（`low` / `medium` / `high`）均进入人工复审；文件缺失、返回结果异常或审核服务不可用也不会自动放行。详情在人工审核页和任务编辑页显示。关闭封面审核时不上传封面，不影响文本审核。
 
 ### 下载质量
 
@@ -557,7 +561,7 @@ group_add:
 - **会话超时**：登录空闲 30 分钟自动过期，访问受保护页面会自动续期
 - **SECRET_KEY 持久化**：首次运行自动生成 256-bit 随机密钥并保存，重启不丢失
 - **路径遍历防护**：所有文件操作使用 `werkzeug.security.safe_join`，Cookie 路径限制在项目目录内
-- **内容审核**：可对接阿里云 Green 审核服务，对 AI 生成的文本做合规检测
+- **内容审核**：可对接阿里云 Green 审核服务，检测标题、描述和标签，并可选审核视频封面；未通过或审核失败时转入人工复审
 - **登录事件通知**：QR 登录成功/失败、密码锁定等事件可推送到企业微信等渠道
 
 ## 常见问题

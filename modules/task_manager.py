@@ -8702,6 +8702,10 @@ class TaskProcessor:
     
     def _moderate_content(self, task_id, task_logger):
         """内容审核"""
+        if not self.config.get('CONTENT_MODERATION_ENABLED', False):
+            task_logger.info("内容审核已禁用")
+            return
+
         from modules.content_moderator import AlibabaCloudModerator
         
         task = get_task(task_id)
@@ -8754,7 +8758,7 @@ class TaskProcessor:
             'ALIYUN_CONTENT_MODERATION_REGION': self.config.get('ALIYUN_CONTENT_MODERATION_REGION', 'cn-shanghai')
         }
         
-        text_moderation_service = self.config.get('ALIYUN_TEXT_MODERATION_SERVICE', 'comment_detection')
+        text_moderation_service = self.config.get('ALIYUN_TEXT_MODERATION_SERVICE') or 'comment_detection_pro'
         task_logger.info(f"使用阿里云文本审核服务类型: {text_moderation_service}")
 
         moderator = AlibabaCloudModerator(aliyun_config, task_id)
@@ -8777,14 +8781,31 @@ class TaskProcessor:
         else:
             task_logger.info("没有标签需要审核。")
         
-        cover_result = {"pass": True, "details": [{"label": "skipped", "suggestion": "pass", "reason": "封面审核已禁用"}]}
+        cover_result = {"pass": True, "status": "disabled", "details": [{"label": "skipped", "suggestion": "pass", "reason": "封面审核已禁用"}]}
+        if self.config.get('CONTENT_MODERATION_COVER_ENABLED', False):
+            image_service = self.config.get('ALIYUN_IMAGE_MODERATION_SERVICE') or 'baselineCheck'
+            task_logger.info(f"开始视频封面审核，服务类型: {image_service}")
+            try:
+                cover_path = self._recover_cover_path(task_id, task.get('cover_path_local', ''), task_logger)
+                cover_result = moderator.moderate_image(cover_path, service_type=image_service)
+            except Exception as exc:
+                task_logger.error(f"封面审核失败: {exc}")
+                cover_result = {
+                    "pass": False,
+                    "status": "error",
+                    "details": [{"label": "error", "suggestion": "review", "reason": "封面审核失败，请检查封面文件与审核服务"}],
+                }
+            task_logger.info(f"封面审核结果: {cover_result}")
         
         moderation_result = {
             "title": title_result,
             "description": description_result,
             "tags": tags_moderation_result, # 添加标签审核结果
             "cover": cover_result,
-            "overall_pass": title_result.get("pass", True) and description_result.get("pass", True) and tags_moderation_result.get("pass", True) # 整体通过需要标签也通过
+            "overall_pass": (title_result.get("pass", True)
+                             and description_result.get("pass", True)
+                             and tags_moderation_result.get("pass", True)
+                             and cover_result.get("pass", False))
         }
         
         task_logger.info(f"综合审核结果: overall_pass={moderation_result['overall_pass']}")
@@ -8803,6 +8824,11 @@ class TaskProcessor:
                 task_logger.warning("标签未通过审核")
                 for detail in tags_moderation_result.get("details", []):
                     task_logger.warning(f"标签问题: {detail.get('label')} - {detail.get('reason')}")
+
+            if not cover_result.get("pass", False):
+                task_logger.warning("封面未通过审核")
+                for detail in cover_result.get("details", []):
+                    task_logger.warning(f"封面问题: {detail.get('label')} - {detail.get('reason')}")
         
         update_task(
             task_id,
