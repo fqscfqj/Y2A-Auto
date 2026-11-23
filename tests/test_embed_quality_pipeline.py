@@ -227,6 +227,38 @@ class AssDocumentWiringTests(unittest.TestCase):
         self.assertIn('&H80101010', style_line)
 
 
+    def test_platform_srt_rollup_cues_are_removed_before_ass_rendering(self):
+        subtitle_text = """1
+00:00:00,320 --> 00:00:03,669
+This is a $100 million fishing
+
+2
+00:00:03,669 --> 00:00:03,679
+This is a $100 million fishing
+
+3
+00:00:03,679 --> 00:00:06,470
+This is a $100 million fishing operation. It includes three super
+
+4
+00:00:06,470 --> 00:00:06,480
+operation. It includes three super
+
+5
+00:00:06,480 --> 00:00:09,669
+operation. It includes three super yachts, private jets, helicopters, and
+"""
+
+        cues = TaskProcessor._parse_subtitle_text_to_cues(subtitle_text)
+
+        self.assertEqual(len(cues), 3)
+        self.assertEqual(cues[0]['text'], 'This is a $100 million fishing')
+        self.assertEqual(
+            cues[1]['text'],
+            'This is a $100 million fishing operation. It includes three super',
+        )
+
+
 class EncoderWiringTests(unittest.TestCase):
     """编码参数与色彩元数据在命令构造层的接线。"""
 

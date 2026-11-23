@@ -331,7 +331,6 @@ def _build_subtitle_download_args(
     return [
         '--write-subs',
         '--all-subs',
-        '--convert-subs', 'srt',
         '--write-auto-subs',
     ]
 

@@ -673,6 +673,61 @@ class SrtTransformEngine:
             return False
         return difflib.SequenceMatcher(None, current_key, previous_key).ratio() >= 0.6
 
+    def remove_rollup_duplicates(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
+        """Remove YouTube's adjacent sub-visible rolling-caption refresh cues.
+
+        YouTube auto captions can contain a 10-50 ms cue whose text is the same
+        as, or a substring of, the neighboring full cue. Those cues are not a
+        second utterance and should not reach subtitle rendering.
+        """
+        normalized_cues = sorted(
+            self._coerce_cue_dicts(cues),
+            key=lambda cue: (cue['start'], cue['end']),
+        )
+        if not normalized_cues:
+            return []
+
+        kept: List[Dict[str, Any]] = []
+        for index, cue in enumerate(normalized_cues):
+            previous = kept[-1] if kept else None
+            following = normalized_cues[index + 1] if index + 1 < len(normalized_cues) else None
+            if (
+                previous is not None
+                and self._is_rollup_micro_duplicate(cue, previous)
+            ) or (
+                following is not None
+                and self._is_rollup_micro_duplicate(cue, following)
+            ):
+                continue
+            kept.append(cue)
+        return kept
+
+    def _is_rollup_micro_duplicate(self, cue: Dict[str, Any], neighbor: Dict[str, Any]) -> bool:
+        try:
+            cue_start = float(cue.get('start', 0.0) or 0.0)
+            cue_end = float(cue.get('end', 0.0) or 0.0)
+            neighbor_start = float(neighbor.get('start', 0.0) or 0.0)
+            neighbor_end = float(neighbor.get('end', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+
+        if cue_end - cue_start >= _MIN_VISIBLE_DUR_S:
+            return False
+        if cue_end < neighbor_start:
+            gap = neighbor_start - cue_end
+        elif neighbor_end < cue_start:
+            gap = cue_start - neighbor_end
+        else:
+            gap = 0.0
+        if gap > 0.05:
+            return False
+
+        cue_text = self._normalize_compare_text(cue.get('text'))
+        neighbor_text = self._normalize_compare_text(neighbor.get('text'))
+        if not cue_text or not neighbor_text:
+            return False
+        return cue_text == neighbor_text or cue_text in neighbor_text or neighbor_text in cue_text
+
     def resolve_overlaps(self, cues: Sequence[Any], total_duration_s: float = 0.0) -> List[Dict[str, Any]]:
         normalized_cues = sorted(self._coerce_cue_dicts(cues), key=lambda cue: (cue['start'], cue['end']))
         if not normalized_cues:

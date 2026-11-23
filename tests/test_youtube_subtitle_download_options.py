@@ -42,8 +42,7 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
             include_subtitles=True,
         )
 
-        self.assertIn("--write-auto-subs", args)
-        self.assertEqual(args[:-1], ["--write-subs", "--all-subs", "--convert-subs", "srt"])
+        self.assertEqual(args, ["--write-subs", "--all-subs", "--write-auto-subs"])
 
 
 class YouTubeJsRuntimeOptionsTests(unittest.TestCase):

@@ -243,7 +243,9 @@ def _convert_vtt_text_to_srt_text(vtt_content: str) -> str:
             optimized_cues.append({
                 'start': previous_cue['start'],
                 'end': cue['end'],
-                'text': cue['text'],
+                # 保留带内联时间戳的完整滚动 cue；短 cue 只是 YouTube 的
+                # 窗口刷新标记，不能用它的文本覆盖前一个完整 cue。
+                'text': previous_cue['text'],
             })
             consumed_indices.add(index - 1)
             consumed_indices.add(index)
@@ -5466,6 +5468,7 @@ class TaskProcessor:
         cues = engine.parse_srt(subtitle_text or '')
         if not cues:
             return []
+        cues = engine.remove_rollup_duplicates(cues)
         total_duration = max(float(cue.get('end', 0.0) or 0.0) for cue in cues)
         # Rendering should preserve validated subtitle content. Hallucination cleanup
         # is part of the ASR generation pipeline and is too destructive here,
@@ -6850,6 +6853,7 @@ class TaskProcessor:
         if not cues:
             return []
         processed = engine.apply_text_processing(cues)
+        processed = engine.remove_rollup_duplicates(processed)
         return cls._rebalance_split_cue_durations(processed)
 
     @staticmethod
