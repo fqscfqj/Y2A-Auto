@@ -43,6 +43,37 @@ class SrtTransformEngineTests(unittest.TestCase):
         self.assertGreaterEqual(resolved[1]['end'] - resolved[1]['start'], 0.05)
         self.assertLessEqual(resolved[0]['end'], resolved[1]['start'])
 
+    def test_remove_rollup_duplicates_drops_micro_cues_without_losing_text(self):
+        engine = SrtTransformEngine(SrtTransformConfig())
+        cues = [
+            {'start': 0.320, 'end': 3.669, 'text': 'This is a $100 million fishing'},
+            {'start': 3.669, 'end': 3.679, 'text': 'This is a $100 million fishing'},
+            {
+                'start': 3.679,
+                'end': 6.470,
+                'text': 'This is a $100 million fishing operation. It includes three super',
+            },
+            {'start': 6.470, 'end': 6.480, 'text': 'operation. It includes three super'},
+            {
+                'start': 6.480,
+                'end': 9.669,
+                'text': 'operation. It includes three super yachts, private jets, helicopters, and',
+            },
+        ]
+
+        cleaned = engine.remove_rollup_duplicates(cues)
+
+        self.assertEqual(len(cleaned), 3)
+        self.assertEqual(cleaned[0]['text'], 'This is a $100 million fishing')
+        self.assertEqual(
+            cleaned[1]['text'],
+            'This is a $100 million fishing operation. It includes three super',
+        )
+        self.assertEqual(
+            cleaned[2]['text'],
+            'operation. It includes three super yachts, private jets, helicopters, and',
+        )
+
     def test_split_long_cue_uses_visual_units_for_cjk_text(self):
         engine = SrtTransformEngine(SrtTransformConfig(max_line_length=6, max_lines=2))
         cue = {

@@ -79,5 +79,43 @@ Next line""",
         )
 
 
+    def test_keeps_full_text_when_short_rollup_cue_follows_long_cue(self):
+        convert = _load_function("_convert_vtt_text_to_srt_text")
+        vtt_text = """WEBVTT
+
+00:00:00.320 --> 00:00:03.669 align:start position:0%
+<c>This is a $100 million fishing</c>
+
+00:00:03.669 --> 00:00:03.679 align:start position:0%
+This is a $100 million fishing
+
+00:00:03.679 --> 00:00:06.470 align:start position:0%
+<c>This is a $100 million fishing</c><00:00:04.000><c> operation. It includes three super</c>
+
+00:00:06.470 --> 00:00:06.480 align:start position:0%
+operation. It includes three super
+
+00:00:06.480 --> 00:00:09.669 align:start position:0%
+<c>operation. It includes three super yachts, private jets, helicopters, and</c>
+"""
+
+        srt_text = convert(vtt_text)
+
+        self.assertEqual(
+            srt_text,
+            """1
+00:00:00,320 --> 00:00:03,679
+This is a $100 million fishing
+
+2
+00:00:03,679 --> 00:00:06,480
+This is a $100 million fishing operation. It includes three super
+
+3
+00:00:06,480 --> 00:00:09,669
+operation. It includes three super yachts, private jets, helicopters, and""",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
